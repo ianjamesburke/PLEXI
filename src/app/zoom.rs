@@ -60,12 +60,13 @@ impl ColumnWidthPreset {
 }
 
 /// One column in a context's horizontal scrolling strip.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StripColumn {
     pub index: usize,
     pub context_id: u64,
     pub panes: Vec<PaneId>,
     pub preset: ColumnWidthPreset,
+    pub width: crate::strip::ColumnWidth,
 }
 
 /// Ghost marker recorded when zooming out from `ZoomLevel::Columns` ("you were here").
@@ -144,8 +145,8 @@ pub fn paint_origin_marker(
 pub(crate) struct WindowStrip {
     /// Root `Linear` children, left to right.
     pub children: Vec<TileId>,
-    /// Width preset of each child's global column, when it has live panes.
-    pub presets: Vec<Option<ColumnWidthPreset>>,
+    /// Authoritative width definition of each child's global column.
+    pub widths: Vec<Option<crate::strip::ColumnWidth>>,
     /// First of the two visible columns (always 0 when there are two or fewer).
     pub lo: usize,
 }
@@ -278,6 +279,8 @@ pub struct ZoomState {
     pub explicit_columns: HashMap<u64, Vec<Vec<PaneId>>>,
     /// Optional column width preset overrides (`(context_id, col_idx) -> ColumnWidthPreset`).
     pub column_presets: HashMap<(u64, usize), ColumnWidthPreset>,
+    /// Optional authoritative column widths per context (`(context_id, col_idx) -> ColumnWidth`).
+    pub column_widths: HashMap<(u64, usize), crate::strip::ColumnWidth>,
     /// Focused context ID while at `ZoomLevel::SiblingCards`.
     pub cards_focused_context: Option<u64>,
     /// Explicit horizontal viewport scroll offset (center X in content coordinates) for `ZoomLevel::SiblingCards`.
@@ -637,11 +640,18 @@ impl PlexiApp {
                     .get(&(context_id, idx))
                     .copied()
                     .unwrap_or(default_preset);
+                let width = self
+                    .zoom
+                    .column_widths
+                    .get(&(context_id, idx))
+                    .copied()
+                    .unwrap_or(crate::strip::ColumnWidth::Preset(preset));
                 StripColumn {
                     index: idx,
                     context_id: col_ctx_id,
                     panes,
                     preset,
+                    width,
                 }
             })
             .collect()
@@ -1994,13 +2004,13 @@ impl PlexiApp {
         if n <= 2 {
             lo = 0;
         }
-        let presets = global
+        let widths = global
             .iter()
-            .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.preset))
+            .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.width))
             .collect();
         Some(WindowStrip {
             children,
-            presets,
+            widths,
             lo,
         })
     }
@@ -2054,19 +2064,40 @@ impl PlexiApp {
         }
         self.zoom.off_strip_panes = off_strip;
 
+        let ctx_id = self.router.active().context_id;
         let ratios: Vec<f32> = strip
-            .presets
+            .widths
             .iter()
             .enumerate()
-            .map(|(idx, preset)| {
-                preset.map(|p| p.ratio()).unwrap_or(if idx == 0 || idx == strip.lo {
+            .map(|(idx, width)| {
+                width.map(|w| {
+                    let _ = w.is_custom();
+                    w.ratio()
+                }).unwrap_or(if idx == 0 || idx == strip.lo {
                     style::COLUMN_WIDTH_PARENT
                 } else {
                     style::COLUMN_WIDTH_CHILD
                 })
             })
             .collect();
+
         let shares = strip_shares(&ratios, strip.lo, gap, canvas_width);
+
+        // Compute pure authoritative strip layout to validate geometry
+        let authoritative_strip = self.strip_for_context(ctx_id);
+        let vp = crate::strip::StripViewport::new(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(canvas_width, 800.0)),
+            gap,
+        );
+        let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
+        if authoritative_strip.column_count() > 0 {
+            log::debug!(
+                "strip: authoritative layout computed cols={} panes={} dividers={}",
+                authoritative_strip.column_count(),
+                authoritative_strip.pane_count(),
+                layout.dividers.len()
+            );
+        }
 
         let Some(win) = self.windows.get_mut(self.active_window) else {
             return;
@@ -2081,17 +2112,143 @@ impl PlexiApp {
         }
     }
 
-    /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip.
+    /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
+    /// accounting for multi-window pages and off-screen columns across the context.
     pub(crate) fn active_strip_clipped_neighbors(&self) -> (bool, bool) {
         if self.zoom.level != ZoomLevel::Columns {
             return (false, false);
         }
-        match self.active_window_strip() {
-            Some(strip) if strip.children.len() > 2 => {
-                (strip.lo > 0, strip.lo + 2 < strip.children.len())
-            }
-            _ => (false, false),
+        let ctx_id = self.router.active().context_id;
+        let strip = self.strip_for_context(ctx_id);
+        if strip.column_count() <= 1 {
+            return (false, false);
         }
+
+        // If active window contains a multi-column horizontal strip, use window strip indices
+        if let Some(w_strip) = self.active_window_strip() {
+            if w_strip.children.len() > 2 {
+                let has_left = w_strip.lo > 0;
+                let has_right = w_strip.lo + 2 < w_strip.children.len();
+                log::info!(
+                    "strip: active_strip_clipped_neighbors window-local lo={} cols={} has_left={has_left} has_right={has_right}",
+                    w_strip.lo,
+                    w_strip.children.len()
+                );
+                return (has_left, has_right);
+            }
+        }
+
+        // Otherwise check context-wide columns (e.g. across multiple windows / pages)
+        let active_col = strip
+            .focused_pane
+            .and_then(|p| strip.find_column_for_pane(p))
+            .unwrap_or(0);
+        let has_left = active_col > 0;
+        let has_right = active_col + 1 < strip.column_count();
+        log::info!(
+            "strip: active_strip_clipped_neighbors context-wide active_col={active_col} total_cols={} has_left={has_left} has_right={has_right}",
+            strip.column_count()
+        );
+        (has_left, has_right)
+    }
+
+    /// Handle click activation on a left or right peek strip, navigating directly to the nearest off-screen column.
+    pub fn handle_peek_click(&mut self, is_left: bool) -> bool {
+        let ctx_id = self.router.active().context_id;
+        let mut strip = self.strip_for_context(ctx_id);
+        let has_left = strip.has_left_clipped();
+        let has_right = strip.has_right_clipped();
+        if is_left && has_left {
+            let target_col = strip.scroll_offset.saturating_sub(1);
+            strip.ensure_column_visible(target_col);
+            self.zoom.strip_offsets.insert(ctx_id, strip.scroll_offset);
+            if let Some(col) = strip.columns.get(target_col) {
+                if let Some(pid) = col.panes.first().copied() {
+                    strip.focus_pane(pid);
+                    self.focus_pane_in_strip(pid);
+                }
+            }
+            log::info!("strip: peek clicked left context={ctx_id} target_col={target_col}");
+            true
+        } else if !is_left && has_right {
+            let target_col = (strip.scroll_offset + 2).min(strip.column_count().saturating_sub(1));
+            strip.ensure_column_visible(target_col);
+            self.zoom.strip_offsets.insert(ctx_id, strip.scroll_offset);
+            if let Some(col) = strip.columns.get(target_col) {
+                if let Some(pid) = col.panes.first().copied() {
+                    strip.focus_pane(pid);
+                    self.focus_pane_in_strip(pid);
+                }
+            }
+            log::info!("strip: peek clicked right context={ctx_id} target_col={target_col}");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Set a custom width ratio on a column in `context_id`.
+    pub fn set_column_width_ratio(&mut self, context_id: u64, col_idx: usize, ratio: f32) {
+        let r = ratio.clamp(0.05, 0.95);
+        let width = crate::strip::ColumnWidth::CustomRatio(r);
+        if width.is_custom() {
+            self.zoom.column_widths.insert((context_id, col_idx), width);
+        }
+        let cols = self.columns_for_context(context_id);
+        if cols.len() == 2 {
+            let other_idx = if col_idx == 0 { 1 } else { 0 };
+            self.zoom.column_widths.insert(
+                (context_id, other_idx),
+                crate::strip::ColumnWidth::CustomRatio(1.0 - r),
+            );
+        }
+        let mut strip = self.strip_for_context(context_id);
+        strip.set_column_width(col_idx, width);
+        log::info!("strip: column width updated context={context_id} col={col_idx} ratio={r:.3}");
+    }
+
+    /// Reset column widths in `context_id` back to default presets.
+    pub fn reset_column_widths(&mut self, context_id: u64) {
+        self.set_column_width_ratio(context_id, 0, style::COLUMN_WIDTH_PARENT);
+        let mut strip = self.strip_for_context(context_id);
+        strip.reset_column_widths();
+        self.zoom.column_widths.retain(|(cid, _), _| *cid != context_id);
+        log::info!("strip: column widths reset context={context_id}");
+    }
+
+    /// Build the authoritative `Strip` model for `context_id`.
+    pub fn strip_for_context(&self, context_id: u64) -> crate::strip::Strip {
+        let cols = self.columns_for_context(context_id);
+        let mut strip = crate::strip::Strip::new(context_id);
+        strip.scroll_offset = self.zoom.strip_offset_for(context_id).min(strip.max_scroll_offset());
+        strip.focused_pane = self.active_focused_pane_id();
+        for col in cols {
+            let mut column = if col.panes.len() > 1 {
+                crate::strip::Column::new_stacked(
+                    crate::strip::ColumnId(col.index),
+                    col.panes,
+                    col.width,
+                )
+            } else if let Some(&first) = col.panes.first() {
+                crate::strip::Column::new(
+                    crate::strip::ColumnId(col.index),
+                    first,
+                    col.width,
+                )
+            } else {
+                continue;
+            };
+            if let Some(focused) = strip.focused_pane {
+                column.focus_pane(focused);
+            }
+            strip.push_column(column);
+        }
+        if let Some(focused) = strip.focused_pane {
+            if strip.contains_pane(focused) {
+                strip.focus_pane(focused);
+            }
+        }
+        strip
     }
 
     /// Paint the `28px` clipped neighbor indicator strips at the left/right edges

@@ -435,6 +435,31 @@ impl PlexiApp {
             .get(self.active_window)
             .map(|w| w.context_id)
             .unwrap_or(0);
+        if !vertical {
+            if let Some(focused_pid) = self.active_focused_pane_id() {
+                let mut strip = self.strip_for_context(ctx_id);
+                if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
+                    strip.insert_column_right_of(
+                        col_idx,
+                        new_id,
+                        crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+                    );
+                    log::info!(
+                        "split_focused: inserted column right of {col_idx} for pane {new_id}, cols={}",
+                        strip.column_count()
+                    );
+                }
+            }
+        } else if let Some(focused_pid) = self.active_focused_pane_id() {
+            let mut strip = self.strip_for_context(ctx_id);
+            if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
+                strip.columns[col_idx].push_pane(new_id);
+                log::info!(
+                    "split_focused: pushed pane {new_id} to column {col_idx}, stack_height={}",
+                    strip.columns[col_idx].panes.len()
+                );
+            }
+        }
         let context_env = self.pane_context_env_for_context(ctx_id);
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
@@ -500,28 +525,80 @@ impl PlexiApp {
             false
         };
 
+        let mut promoted_to_column = false;
         if !inserted_as_sibling {
-            let ordered = if new_pane_first {
-                vec![new_tile, split_target]
-            } else {
-                vec![split_target, new_tile]
-            };
-            let container_tile = if vertical {
-                ctx.tree.tiles.insert_vertical_tile(ordered)
-            } else {
-                ctx.tree.tiles.insert_horizontal_tile(ordered)
-            };
+            let is_in_vertical_stack = !vertical
+                && parent.is_some_and(|pid| {
+                    matches!(
+                        ctx.tree.tiles.get(pid),
+                        Some(Tile::Container(Container::Linear(lin))) if lin.dir == egui_tiles::LinearDir::Vertical
+                    )
+                });
 
-            if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
-                    replace_child(parent, split_target, container_tile);
+            if is_in_vertical_stack {
+                let stack_id = parent.unwrap();
+                let grandparent = ctx.tree.tiles.parent_of(stack_id);
+                if let Some(gp_id) = grandparent {
+                    if let Some(Tile::Container(Container::Linear(gp_lin))) =
+                        ctx.tree.tiles.get_mut(gp_id)
+                    {
+                        if gp_lin.dir == egui_tiles::LinearDir::Horizontal {
+                            if let Some(pos) = gp_lin.children.iter().position(|&c| c == stack_id) {
+                                let insert_pos = if new_pane_first { pos } else { pos + 1 };
+                                gp_lin.children.insert(insert_pos, new_tile);
+                                promoted_to_column = true;
+                                log::info!("strip: Cmd+D promoted stacked pane {new_id} to column right of stack {stack_id:?}");
+                            }
+                        }
+                    }
                 }
-            } else {
-                ctx.tree.root = Some(container_tile);
+            }
+
+            if !promoted_to_column {
+                let ordered = if new_pane_first {
+                    vec![new_tile, split_target]
+                } else {
+                    vec![split_target, new_tile]
+                };
+                let container_tile = if vertical {
+                    ctx.tree.tiles.insert_vertical_tile(ordered)
+                } else {
+                    ctx.tree.tiles.insert_horizontal_tile(ordered)
+                };
+
+                if let Some(parent_id) = parent {
+                    if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                        replace_child(parent, split_target, container_tile);
+                    }
+                } else {
+                    ctx.tree.root = Some(container_tile);
+                }
             }
         }
 
         ctx.navigate_to(new_tile);
+
+        let ws_id = self.router.active().context_id;
+        if let Some(explicit) = self.zoom.explicit_columns.get_mut(&ws_id) {
+            let target_pid = old_focus.and_then(|t| {
+                match self.windows[self.active_window].tree.tiles.get(t) {
+                    Some(Tile::Pane(p)) => Some(*p),
+                    _ => None,
+                }
+            });
+            if !vertical || promoted_to_column {
+                let col_pos = target_pid
+                    .and_then(|p| explicit.iter().position(|col| col.contains(&p)))
+                    .unwrap_or(explicit.len().saturating_sub(1));
+                let insert_pos = if new_pane_first { col_pos } else { col_pos + 1 };
+                explicit.insert(insert_pos.min(explicit.len()), vec![new_id]);
+            } else if let Some(col) = target_pid.and_then(|p| explicit.iter_mut().find(|c| c.contains(&p))) {
+                col.push(new_id);
+            } else if let Some(first_col) = explicit.first_mut() {
+                first_col.push(new_id);
+            }
+        }
+
         Some(new_id)
     }
 
@@ -811,6 +888,13 @@ impl PlexiApp {
         for ctx_idx in 0..self.windows.len() {
             if let Some(tile_id) = self.windows[ctx_idx].tree.tiles.find_pane(&pane_id) {
                 let ctx_id = self.windows[ctx_idx].context_id;
+                let mut strip = self.strip_for_context(ctx_id);
+                if strip.remove_pane(pane_id) {
+                    log::info!(
+                        "close_pane_by_id: removed pane {pane_id} from authoritative strip, cols={}",
+                        strip.column_count()
+                    );
+                }
                 self.emit_scope_invalidation(crate::host::scope::ScopeInvalidation::PaneClosed {
                     pane_id,
                     context_id: ctx_id,

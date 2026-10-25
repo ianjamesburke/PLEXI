@@ -41,6 +41,7 @@ mod rpc;
 mod scenes;
 mod search;
 mod spatial;
+pub(crate) mod strip;
 #[cfg(test)]
 mod testing;
 mod ui;
