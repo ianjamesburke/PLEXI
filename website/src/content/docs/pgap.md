@@ -846,6 +846,15 @@ Capture the live host window as a PNG through the real render pipeline (`egui::V
 | `pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 
+### `host_key`
+
+Inject a synthetic key into the host-level input path. Sent by `plexi host key` for validating host shortcuts without...
+
+| Field | Type | Required |
+|-------|------|----------|
+| `key` | `string` | yes |
+| `response_file` | `string` | yes |
+
 ### `send_app_action`
 
 Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`. Host delivers `Pl...
