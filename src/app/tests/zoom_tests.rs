@@ -454,25 +454,25 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
     assert_eq!(child_b_node.direct_asks, 1);
     assert!(!edges.is_empty());
 
-    // `l` moves from root to first child (child_a).
-    send_key(&mut h, Modifiers::NONE, Key::L);
+    // `j` moves down from root to first child (child_a).
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
-    // `j` moves to next node at same depth (child_b); `j` again bumps edge (no wrap).
-    send_key(&mut h, Modifiers::NONE, Key::J);
+    // `l` moves right to neighboring sibling (child_b); `l` again bumps edge (no wrap).
+    send_key(&mut h, Modifiers::NONE, Key::L);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_b_id));
     let b = h.app.zoom.edge_bump_count;
-    send_key(&mut h, Modifiers::NONE, Key::J);
+    send_key(&mut h, Modifiers::NONE, Key::L);
     assert_eq!(h.app.zoom.edge_bump_count, b + 1);
 
     // `]` wraps around siblings from child_b back to child_a.
     send_key(&mut h, Modifiers::NONE, Key::CloseBracket);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
-    // `h` returns to parent (root), and `l` remembers last-visited child (child_a).
-    send_key(&mut h, Modifiers::NONE, Key::H);
+    // `k` returns to parent (root), and `j` remembers last-visited child (child_a).
+    send_key(&mut h, Modifiers::NONE, Key::K);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root_ctx_id));
-    send_key(&mut h, Modifiers::NONE, Key::L);
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child_a_id));
 
     // `p` opens Peek card; Cmd+Esc closes Peek first without leaving TreeAtlas.
@@ -554,14 +554,16 @@ fn tree_atlas_layout_multi_root_hub_top_down() {
         );
     }
 
-    // Keyboard nav works across roots (j/k at depth 0) and down to child (l).
-    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
-    send_key(&mut h, Modifiers::NONE, Key::J);
-    assert_eq!(h.app.zoom.atlas_focused_context, Some(root2_id));
-    send_key(&mut h, Modifiers::NONE, Key::K);
+    // Keyboard nav works across roots (h/l neighboring siblings) and down to child (j).
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
     send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root2_id));
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
+    send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(child1_id));
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(root1_id));
 }
 
 /// R37 & R38: Attention queue category ordering (`Ask -> Failed -> Result -> Done`, oldest first)
@@ -1158,4 +1160,208 @@ fn cmd_enter_toggles_focused_pane_zoom_and_restores_geometry_focus_and_scroll() 
         bumps_before + 1,
         "single pane Cmd+Enter must record edge bump"
     );
+}
+
+#[test]
+fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
+    let mut h = HostHarness::new();
+    // Root 1 (active)
+    let r1_pane = h.add_test_pane();
+    let r1_id = h.app.router.active().context_id;
+    h.app.set_context_columns(r1_id, vec![vec![r1_pane]]);
+
+    // Root 1 -> Child 1A
+    let c1a_id = h.app.create_context_without_pty("c1a", Some(r1_id));
+    let c1a_pane = h.add_test_pane();
+    h.app.set_context_columns(c1a_id, vec![vec![c1a_pane]]);
+
+    // Root 1 -> Child 1A -> Grandchild 1A1
+    let g1a1_id = h.app.create_context_without_pty("g1a1", Some(c1a_id));
+    let g1a1_pane = h.add_test_pane();
+    h.app.set_context_columns(g1a1_id, vec![vec![g1a1_pane]]);
+
+    // Root 1 -> Child 1B (leaf)
+    let c1b_id = h.app.create_context_without_pty("c1b", Some(r1_id));
+    let c1b_pane = h.add_test_pane();
+    h.app.set_context_columns(c1b_id, vec![vec![c1b_pane]]);
+
+    // Root 2
+    let r2_id = h.app.create_context_without_pty("r2", None);
+    let r2_pane = h.add_test_pane();
+    h.app.set_context_columns(r2_id, vec![vec![r2_pane]]);
+
+    // Root 2 -> Child 2A, 2B, 2C
+    let c2a_id = h.app.create_context_without_pty("c2a", Some(r2_id));
+    let c2a_pane = h.add_test_pane();
+    h.app.set_context_columns(c2a_id, vec![vec![c2a_pane]]);
+    let c2b_id = h.app.create_context_without_pty("c2b", Some(r2_id));
+    let c2b_pane = h.add_test_pane();
+    h.app.set_context_columns(c2b_id, vec![vec![c2b_pane]]);
+    let c2c_id = h.app.create_context_without_pty("c2c", Some(r2_id));
+    let c2c_pane = h.add_test_pane();
+    h.app.set_context_columns(c2c_id, vec![vec![c2c_pane]]);
+
+    // Root 3: leaf root (no children)
+    let r3_id = h.app.create_context_without_pty("r3", None);
+    let r3_pane = h.add_test_pane();
+    h.app.set_context_columns(r3_id, vec![vec![r3_pane]]);
+
+    // Root 4: missing parent (parent_id points to nonexistent context)
+    let r4_id = h.app.create_context_without_pty("r4-orphan", Some(999999));
+    let r4_pane = h.add_test_pane();
+    h.app.set_context_columns(r4_id, vec![vec![r4_pane]]);
+
+    // Parked context: marked parked
+    let parked_id = h.app.create_context_without_pty("parked-child", Some(r1_id));
+    let parked_pane = h.add_test_pane();
+    h.app.set_context_columns(parked_id, vec![vec![parked_pane]]);
+    if let Some(idx) = h.app.router.as_slice().iter().position(|c| c.context_id == parked_id) {
+        h.app.router.get_mut(idx).parked = true;
+    }
+
+    // Switch to root 1 and zoom out to TreeAtlas
+    h.app.switch_to_context_restoring_last_pane(r1_id);
+    h.app.zoom_out_or_close_surface();
+    h.app.zoom_out_or_close_surface();
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
+
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0));
+    let (nodes, _) = h.app.compute_atlas_graph(viewport);
+
+    // Verify parked context is omitted from nodes
+    assert!(!nodes.iter().any(|n| n.context_id == parked_id));
+
+    // Verify roots are placed left-to-right: r1, r2, r3, r4
+    let r1_node = nodes.iter().find(|n| n.context_id == r1_id).unwrap();
+    let r2_node = nodes.iter().find(|n| n.context_id == r2_id).unwrap();
+    let r3_node = nodes.iter().find(|n| n.context_id == r3_id).unwrap();
+    let r4_node = nodes.iter().find(|n| n.context_id == r4_id).unwrap();
+    assert!(r1_node.rect.center().x < r2_node.rect.center().x);
+    assert!(r2_node.rect.center().x < r3_node.rect.center().x);
+    assert!(r3_node.rect.center().x < r4_node.rect.center().x);
+
+    // Initial focus on r1
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // 1. Root boundary: Up from root is a no-op with edge bump
+    let bumps = h.app.zoom.edge_bump_count;
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 1);
+    // ArrowUp parity
+    send_key(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 2);
+
+    // 2. Leftmost root boundary: Left from r1 is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 3);
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 4);
+
+    // 3. Right through roots: r1 -> r2 (L), r2 -> r3 (ArrowRight), r3 -> r4 (L)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r2_id));
+    send_key(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+
+    // Rightmost root boundary: Right from r4 is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 5);
+
+    // r4 (missing parent) Up is root boundary:
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r4_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 6);
+
+    // Move Left back to r3 (leaf root)
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+
+    // Leaf boundary: Down from r3 (leaf root) is a no-op with edge bump
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 7);
+    send_key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r3_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 8);
+
+    // Move Left back to r1: r3 -> r2 (ArrowLeft) -> r1 (H)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r2_id));
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // 4. Down from r1 moves to first child c1a
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Sibling boundary: Left from c1a is a no-op (leftmost child of r1)
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 9);
+
+    // Right from c1a moves to sibling c1b (and updates r1's child memory to c1b)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+
+    // Sibling boundary: Right from c1b is a no-op (rightmost child of r1)
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 10);
+
+    // Leaf boundary: Down from c1b is a no-op (leaf)
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 11);
+
+    // Up from c1b returns to parent r1
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // Child memory test: Down from r1 now returns to remembered child c1b!
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1b_id));
+
+    // Left to c1a
+    send_key(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Down from c1a moves to g1a1 (depth 2)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+
+    // Leaf boundary: Down from g1a1 is a no-op
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 12);
+
+    // Sibling boundaries: g1a1 is an only child
+    send_key(&mut h, Modifiers::NONE, Key::H);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 13);
+    send_key(&mut h, Modifiers::NONE, Key::L);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+    assert_eq!(h.app.zoom.edge_bump_count, bumps + 14);
+
+    // Up to c1a (ArrowUp)
+    send_key(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Up to r1 (K)
+    send_key(&mut h, Modifiers::NONE, Key::K);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(r1_id));
+
+    // Child memory: Down from r1 remembers c1a
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(c1a_id));
+
+    // Down from c1a remembers g1a1
+    send_key(&mut h, Modifiers::NONE, Key::J);
+    assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
 }

@@ -1781,6 +1781,164 @@ mod tests {
         }
     }
 
+    /// Stint 0989: Tree Atlas directional navigation follows top-down hierarchy:
+    /// - up: parent
+    /// - down: remembered-or-first child
+    /// - left/right: neighboring siblings
+    /// Proves arrows and hjkl parity, child memory, root/leaf boundaries, and that
+    /// selected nodes remain visible and focused through every move, including
+    /// uneven multi-root, leaf-root, and missing-parent fixtures.
+    #[test]
+    fn screenshot_tree_atlas_directional_navigation_hierarchy() {
+        let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
+        let tap_key = |h: &mut PlexiUiHarness, key: egui::Key, modifiers: egui::Modifiers| {
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            });
+            h.harness().input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers,
+            });
+        };
+
+        let (r1, _c1a, _g1a1, _c1b, _r2, _c2a, _c2b, _c2c, _r3, _r4) = h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            // Root 1 (active root)
+            let r1 = app.router.active().context_id;
+            let c1a = app.create_context_without_pty("client-web", Some(r1));
+            let g1a1 = app.create_context_without_pty("design-tokens", Some(c1a));
+            let c1b = app.create_context_without_pty("client-mobile", Some(r1));
+
+            // Root 2
+            let r2 = app.create_context_without_pty("backend-cluster", None);
+            let c2a = app.create_context_without_pty("api-gateway", Some(r2));
+            let c2b = app.create_context_without_pty("auth-service", Some(r2));
+            let c2c = app.create_context_without_pty("billing-engine", Some(r2));
+
+            // Root 3: leaf root (no children)
+            let r3 = app.create_context_without_pty("docs-site", None);
+
+            // Root 4: missing parent
+            let r4 = app.create_context_without_pty("legacy-orphan", Some(999999));
+
+            // Parked context: marked parked
+            let parked = app.create_context_without_pty("parked-archive", Some(r1));
+            if let Some(idx) = app.router.as_slice().iter().position(|c| c.context_id == parked) {
+                app.router.get_mut(idx).parked = true;
+            }
+
+            app.switch_to_context_restoring_last_pane(r1);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+            app.zoom.atlas_focused_context = Some(r1);
+            (r1, c1a, g1a1, c1b, r2, c2a, c2b, c2c, r3, r4)
+        });
+
+        // Run frames to render TreeAtlas
+        h.run_steps(4);
+
+        let check_selected_visible = |h: &mut PlexiUiHarness, expected_ctx: u64| {
+            let (canvas, nodes): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
+                app.ctx
+                    .data(|data| data.get_temp(egui::Id::new("tree_atlas_painted_geometry")))
+                    .expect("Atlas render must report its painted geometry")
+            });
+            let selected = nodes
+                .iter()
+                .find(|(cid, _, _)| *cid == expected_ctx)
+                .unwrap_or_else(|| panic!("context {expected_ctx} must be painted in tree atlas"));
+            assert!(selected.2, "context {expected_ctx} must have focus treatment");
+            assert!(
+                canvas.contains_rect(selected.1),
+                "context {expected_ctx} rect {:?} must be wholly visible in canvas {:?}",
+                selected.1,
+                canvas
+            );
+        };
+
+        // 1. Initial focused node: Root 1
+        check_selected_visible(&mut h, r1);
+
+        // 2. Down (ArrowDown) -> First child (c1a)
+        tap_key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 3. Right (ArrowRight) -> Sibling (c1b)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1b);
+
+        // 4. Up (K) -> Parent (r1)
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, r1);
+
+        // 5. Down (J) -> Remembered child (c1b)
+        tap_key(&mut h, egui::Key::J, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1b);
+
+        // 6. Left (H) -> Sibling (c1a)
+        tap_key(&mut h, egui::Key::H, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 7. Down (J) -> Grandchild (g1a1)
+        tap_key(&mut h, egui::Key::J, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _g1a1);
+
+        // 8. Up (K) -> c1a
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _c1a);
+
+        // 9. Up (K) -> r1
+        tap_key(&mut h, egui::Key::K, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, r1);
+
+        // 10. Right (L) -> Root 2 (r2)
+        tap_key(&mut h, egui::Key::L, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r2);
+
+        // 11. Right (ArrowRight) -> Root 3 (r3, leaf root)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r3);
+
+        // 12. Down (ArrowDown) at leaf root is a no-op -> stays on r3
+        tap_key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r3);
+
+        // 13. Right (ArrowRight) -> Root 4 (r4, missing parent orphan)
+        tap_key(&mut h, egui::Key::ArrowRight, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r4);
+
+        // 14. Up (ArrowUp) at orphan root is a no-op -> stays on r4
+        tap_key(&mut h, egui::Key::ArrowUp, egui::Modifiers::NONE);
+        h.run_steps(2);
+        check_selected_visible(&mut h, _r4);
+
+        // Screenshot for visual review
+        let shot_path = "/tmp/plexi_tree_atlas_hierarchy_nav.png";
+        h.save_screenshot(shot_path).expect("save atlas screenshot");
+        assert!(std::path::Path::new(shot_path).exists());
+        if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
+            let _ = std::fs::remove_file(shot_path);
+        }
+    }
+
     #[test]
     fn screenshot_ui_scale_cards() {
         let scale = ui_scale_shot();

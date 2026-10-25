@@ -28,7 +28,7 @@ pub enum ZoomLevel {
     Columns,
     /// Current context plus its siblings (same `parent_id`), in creation order.
     SiblingCards,
-    /// Whole-workspace context graph: left-to-right tidy tree with Motorways road edges.
+    /// Whole-workspace context graph: top-down tidy tree with Motorways road edges.
     TreeAtlas,
 }
 
@@ -286,7 +286,7 @@ pub struct ZoomState {
     pub cards_last_focused_context: Option<u64>,
     /// Focused context ID while at `ZoomLevel::TreeAtlas`.
     pub atlas_focused_context: Option<u64>,
-    /// Per-parent context last-visited child context in the atlas (`h` / `l` memory).
+    /// Per-parent context last-visited child context in the atlas (`j` / `k` child memory).
     pub atlas_last_child: HashMap<u64, u64>,
     /// True when the read-only Peek card (`p`) is open in the Tree Atlas.
     pub atlas_peek_open: bool,
@@ -1532,8 +1532,8 @@ impl PlexiApp {
         out
     }
 
-    /// Move in the Tree Atlas along `h` (`Left` = parent), `l` (`Right` = last-visited/first child),
-    /// `j` (`Down` = next node at same depth), `k` (`Up` = prev node at same depth).
+    /// Move in the Tree Atlas along `k` (`Up` = parent), `j` (`Down` = last-visited/first child),
+    /// `h` (`Left` = previous neighboring sibling), `l` (`Right` = next neighboring sibling).
     /// Never wraps (`SPEC.md` lines 21–22, 32).
     pub fn navigate_tree_atlas_dir(&mut self, dir: Direction) -> bool {
         let (nodes, _) =
@@ -1546,6 +1546,13 @@ impl PlexiApp {
             .zoom
             .atlas_focused_context
             .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
         let Some(cur_node) = nodes.iter().find(|n| n.context_id == cur_ctx) else {
             self.record_edge_bump(dir);
@@ -1553,27 +1560,32 @@ impl PlexiApp {
         };
 
         match dir {
-            Direction::Left => {
-                // `h`: Parent context.
+            Direction::Up => {
+                // `k` / `ArrowUp`: Parent context. Root boundary if none.
                 let Some(parent_id) = cur_node.parent_id else {
-                    self.record_edge_bump(Direction::Left);
+                    self.record_edge_bump(Direction::Up);
                     return false;
                 };
+                if !nodes.iter().any(|n| n.context_id == parent_id) {
+                    self.record_edge_bump(Direction::Up);
+                    return false;
+                }
                 self.zoom.atlas_last_child.insert(parent_id, cur_ctx);
                 self.zoom.atlas_focused_context = Some(parent_id);
+                log::info!("zoom: atlas nav up parent target_ctx={parent_id}");
                 true
             }
-            Direction::Right => {
-                // `l`: Last-visited (else first) child context.
+            Direction::Down => {
+                // `j` / `ArrowDown`: Last-visited (else first/leftmost) child context. Leaf boundary if none.
                 let mut children: Vec<&AtlasNode> = nodes
                     .iter()
                     .filter(|n| n.parent_id == Some(cur_ctx))
                     .collect();
-                children.sort_by_key(|a| a.order);
                 if children.is_empty() {
-                    self.record_edge_bump(Direction::Right);
+                    self.record_edge_bump(Direction::Down);
                     return false;
                 }
+                children.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
                 let target_child = self
                     .zoom
                     .atlas_last_child
@@ -1583,40 +1595,56 @@ impl PlexiApp {
                     .unwrap_or(children[0].context_id);
                 self.zoom.atlas_last_child.insert(cur_ctx, target_child);
                 self.zoom.atlas_focused_context = Some(target_child);
+                log::info!("zoom: atlas nav down child target_ctx={target_child}");
                 true
             }
-            Direction::Down | Direction::Up => {
-                // `j` / `k`: Next / prev node at the SAME depth in tree (vertical y) order.
-                let mut same_depth: Vec<&AtlasNode> =
-                    nodes.iter().filter(|n| n.depth == cur_node.depth).collect();
-                same_depth.sort_by_key(|a| a.order);
-                let pos = same_depth
+            Direction::Left => {
+                // `h` / `ArrowLeft`: Left neighboring sibling (same parent_id, ordered by x). Boundary if none.
+                let mut siblings: Vec<&AtlasNode> = nodes
+                    .iter()
+                    .filter(|n| n.parent_id == cur_node.parent_id)
+                    .collect();
+                siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
+                let pos = siblings
                     .iter()
                     .position(|n| n.context_id == cur_ctx)
                     .unwrap_or(0);
-                if dir == Direction::Down {
-                    if pos + 1 >= same_depth.len() {
-                        self.record_edge_bump(Direction::Down);
-                        return false;
-                    }
-                    let next_node = same_depth[pos + 1];
-                    if let Some(pid) = next_node.parent_id {
-                        self.zoom.atlas_last_child.insert(pid, next_node.context_id);
-                    }
-                    self.zoom.atlas_focused_context = Some(next_node.context_id);
-                    true
-                } else {
-                    if pos == 0 {
-                        self.record_edge_bump(Direction::Up);
-                        return false;
-                    }
-                    let prev_node = same_depth[pos - 1];
-                    if let Some(pid) = prev_node.parent_id {
-                        self.zoom.atlas_last_child.insert(pid, prev_node.context_id);
-                    }
-                    self.zoom.atlas_focused_context = Some(prev_node.context_id);
-                    true
+                if pos == 0 {
+                    self.record_edge_bump(Direction::Left);
+                    return false;
                 }
+                let target_node = siblings[pos - 1];
+                let target_ctx = target_node.context_id;
+                if let Some(pid) = cur_node.parent_id {
+                    self.zoom.atlas_last_child.insert(pid, target_ctx);
+                }
+                self.zoom.atlas_focused_context = Some(target_ctx);
+                log::info!("zoom: atlas nav left sibling target_ctx={target_ctx}");
+                true
+            }
+            Direction::Right => {
+                // `l` / `ArrowRight`: Right neighboring sibling (same parent_id, ordered by x). Boundary if none.
+                let mut siblings: Vec<&AtlasNode> = nodes
+                    .iter()
+                    .filter(|n| n.parent_id == cur_node.parent_id)
+                    .collect();
+                siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
+                let pos = siblings
+                    .iter()
+                    .position(|n| n.context_id == cur_ctx)
+                    .unwrap_or(0);
+                if pos + 1 >= siblings.len() {
+                    self.record_edge_bump(Direction::Right);
+                    return false;
+                }
+                let target_node = siblings[pos + 1];
+                let target_ctx = target_node.context_id;
+                if let Some(pid) = cur_node.parent_id {
+                    self.zoom.atlas_last_child.insert(pid, target_ctx);
+                }
+                self.zoom.atlas_focused_context = Some(target_ctx);
+                log::info!("zoom: atlas nav right sibling target_ctx={target_ctx}");
+                true
             }
         }
     }
@@ -1628,6 +1656,14 @@ impl PlexiApp {
         let cur_ctx = self
             .zoom
             .atlas_focused_context
+            .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
         let Some(cur_node) = nodes.iter().find(|n| n.context_id == cur_ctx) else {
             return false;
@@ -1636,12 +1672,12 @@ impl PlexiApp {
             .iter()
             .filter(|n| n.parent_id == cur_node.parent_id)
             .collect();
-        siblings.sort_by_key(|a| a.order);
+        siblings.sort_by(|a, b| a.rect.center().x.total_cmp(&b.rect.center().x));
         if siblings.len() <= 1 {
             self.record_edge_bump(if forward {
-                Direction::Down
+                Direction::Right
             } else {
-                Direction::Up
+                Direction::Left
             });
             return false;
         }
@@ -1659,6 +1695,7 @@ impl PlexiApp {
             self.zoom.atlas_last_child.insert(pid, next_ctx);
         }
         self.zoom.atlas_focused_context = Some(next_ctx);
+        log::info!("zoom: atlas nav sibling forward={forward} target_ctx={next_ctx}");
         true
     }
 
@@ -2544,7 +2581,16 @@ impl PlexiApp {
         let focused_ctx = self
             .zoom
             .atlas_focused_context
+            .filter(|id| nodes.iter().any(|n| n.context_id == *id))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.context_id == self.router.active().context_id)
+                    .map(|n| n.context_id)
+            })
+            .or_else(|| nodes.first().map(|n| n.context_id))
             .unwrap_or_else(|| self.router.active().context_id);
+        self.zoom.atlas_focused_context = Some(focused_ctx);
 
         // 1. Draw Motorways road edges (casing + road stroke, elbow paths for tree edges).
         for edge in &edges {
@@ -2734,7 +2780,7 @@ impl PlexiApp {
         painter.text(
             Pos2::new(rect.center().x, rect.max.y - 16.0),
             Align2::CENTER_BOTTOM,
-            "h parent · l child · j/k same depth · [/] sibling · n/N needs you · p peek · Enter dive · q back to ghost",
+            "k parent · j child · h/l sibling · [/] sibling · n/N needs you · p peek · Enter dive · q back to ghost",
             FontId::new(style::TEXT_HINT, FontFamily::Proportional),
             colors.text_dim,
         );
