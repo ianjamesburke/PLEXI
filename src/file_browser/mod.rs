@@ -476,6 +476,11 @@ impl FileBrowserApp {
             last_status_bar_layout: None,
         };
         app.refresh();
+        log::info!(
+            "file_browser: initial listing populated cwd={} entries={}",
+            app.cwd.display(),
+            app.entries.len()
+        );
         app
     }
 
@@ -559,6 +564,10 @@ impl FileBrowserApp {
                 self.multi_selected.retain(|path| live_paths.contains(path));
             }
             Err(e) => {
+                log::info!(
+                    "file_browser: listing failed to read directory cwd={}: {e}",
+                    self.cwd.display()
+                );
                 self.error = Some(format!("Cannot read directory: {e}"));
             }
         }
@@ -3198,7 +3207,10 @@ impl App for FileBrowserApp {
                 std::sync::Arc::clone(wake),
                 "file_browser",
             ) {
-                Ok(watch) => self.watch = Some((self.cwd.clone(), watch)),
+                Ok(watch) => {
+                    log::info!("file_browser: watcher armed for cwd={}", self.cwd.display());
+                    self.watch = Some((self.cwd.clone(), watch));
+                }
                 Err(e) => {
                     log::warn!("file_browser: cannot watch {}: {e}", self.cwd.display());
                     return changed;
@@ -4405,6 +4417,493 @@ mod tests {
             Some("bravo.txt"),
             "selection follows the path, not the index"
         );
+    }
+
+    #[test]
+    fn file_explorer_initial_population_qualifies_entries_and_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("subfolder")).expect("create subfolder");
+        std::fs::write(dir.path().join("alpha.txt"), b"hello alpha").expect("write alpha");
+        std::fs::write(dir.path().join("bravo.png"), b"fake png bytes").expect("write bravo");
+        std::fs::write(dir.path().join(".hidden.txt"), b"hidden").expect("write hidden");
+
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        assert!(app.error.is_none());
+        assert_eq!(app.selected, 0);
+
+        // Hidden files skipped by default.
+        assert_eq!(app.entries.len(), 3);
+
+        // Enable folders_on_top and name ascending to test deterministic ordering & metadata
+        app.columns.folders_on_top = true;
+        app.columns.sort = SortDescriptor {
+            column: ColumnId::Name,
+            direction: SortDirection::Asc,
+        };
+        app.refresh();
+
+        assert_eq!(app.entries.len(), 3);
+        assert!(app.entries[0].is_dir, "first entry should be subfolder when folders_on_top is true");
+        assert_eq!(app.entries[0].name, "subfolder");
+        assert!(app.entries[0].size_bytes.is_none());
+
+        assert!(!app.entries[1].is_dir);
+        assert_eq!(app.entries[1].name, "alpha.txt");
+        assert_eq!(app.entries[1].size_bytes, Some(11));
+        assert_eq!(app.entries[1].extension.as_deref(), Some("txt"));
+        assert!(!app.entries[1].is_image);
+
+        assert!(!app.entries[2].is_dir);
+        assert_eq!(app.entries[2].name, "bravo.png");
+        assert!(app.entries[2].is_image);
+        assert_eq!(app.entries[2].extension.as_deref(), Some("png"));
+
+        // Toggle show_hidden
+        app.columns.show_hidden = true;
+        app.refresh();
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == ".hidden.txt"));
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_in_visible_pass() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_app();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_app_pane(
+            Box::new(app),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                })
+                .unwrap()
+        }
+
+        harness.run_frames(1);
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // 1. Create delta.txt
+        std::fs::write(dir.path().join("delta.txt"), b"d").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            if browser(&mut harness).entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == "delta.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+
+        // 2. Rename charlie.txt -> echo.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::rename(dir.path().join("charlie.txt"), dir.path().join("echo.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            let b = browser(&mut harness);
+            if b.entries.iter().any(|e| e.name == "echo.txt") && !b.entries.iter().any(|e| e.name == "charlie.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert!(app.entries.iter().any(|e| e.name == "echo.txt"));
+        assert!(!app.entries.iter().any(|e| e.name == "charlie.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+
+        // 3. Delete alpha.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.run_frames(1);
+            let b = browser(&mut harness);
+            if b.entries.len() == 3 && !b.entries.iter().any(|e| e.name == "alpha.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 3);
+        assert!(!app.entries.iter().any(|e| e.name == "alpha.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_through_create_rename_delete_in_hidden_pass() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (mut app, dir) = make_three_file_app();
+        app.select_path(&dir.path().join("bravo.txt"));
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_app_pane(
+            Box::new(app),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                })
+                .unwrap()
+        }
+
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // 1. Create 0-hidden-agent.txt
+        std::fs::write(dir.path().join("0-hidden-agent.txt"), "hi").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            if browser(&mut harness).entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 4);
+        assert!(app.entries.iter().any(|e| e.name == "0-hidden-agent.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+
+        // 2. Rename charlie.txt -> renamed-hidden.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::rename(dir.path().join("charlie.txt"), dir.path().join("renamed-hidden.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = browser(&mut harness);
+            if b.entries.iter().any(|e| e.name == "renamed-hidden.txt") && !b.entries.iter().any(|e| e.name == "charlie.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert!(app.entries.iter().any(|e| e.name == "renamed-hidden.txt"));
+        assert!(!app.entries.iter().any(|e| e.name == "charlie.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+
+        // 3. Delete alpha.txt
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(200),
+        ));
+        std::fs::remove_file(dir.path().join("alpha.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = browser(&mut harness);
+            if b.entries.len() == 3 && !b.entries.iter().any(|e| e.name == "alpha.txt") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let app = browser(&mut harness);
+        assert_eq!(app.entries.len(), 3);
+        assert!(!app.entries.iter().any(|e| e.name == "alpha.txt"));
+        assert_eq!(app.selected_entry().map(|e| e.name.as_str()), Some("bravo.txt"));
+    }
+
+    #[test]
+    fn host_external_io_refreshes_browser_in_inactive_context() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (app_b, dir_b) = make_three_file_app();
+        let mut harness = crate::testing::HostHarness::new();
+
+        let ctx_b_id = 2;
+        harness.app.router.push(crate::host::context::Context {
+            name: "Context B".into(),
+            root: dir_b.path().to_path_buf(),
+            description: None,
+            context_id: ctx_b_id,
+            parent_id: None,
+            depth: 0,
+            parked: false,
+        });
+        let mut win_b = crate::host::context::Window {
+            name: "Context B".into(),
+            path: dir_b.path().to_path_buf(),
+            tree: egui_tiles::Tree::empty("inactive_context_browser_test"),
+            panes: std::collections::HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 1,
+            grid_y: 0,
+            window_id: 2,
+            context_id: ctx_b_id,
+        };
+        let pane_id = harness.app.host.alloc_pane_id();
+        let app_pane = crate::host::pane::AppPane {
+            pip_status: None,
+            id: pane_id,
+            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app_b)),
+            workspace_root: dir_b.path().to_path_buf(),
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            manifest_id: "file-browser".to_string(),
+            name: "Files".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+            hidden: false,
+            agent: None,
+            slots: std::collections::HashMap::new(),
+            semantic_state: Default::default(),
+        };
+        let tile_id = win_b.tree.tiles.insert_pane(pane_id);
+        win_b.tree.root = Some(tile_id);
+        win_b.panes.insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        harness.app.windows.push(win_b);
+
+        // Active context remains Window 0 / Context A
+        assert_eq!(harness.app.active_window, 0);
+
+        harness.hidden_frame();
+        std::thread::sleep(crate::testing::load_aware_timeout(
+            std::time::Duration::from_millis(300),
+        ));
+
+        // External mutation in Context B's directory
+        std::fs::write(dir_b.path().join("0-inactive.txt"), "hello").unwrap();
+
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            harness.hidden_frame();
+            let b = harness.app.windows[1]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|p| p.as_app_mut())
+                .and_then(|a| match &mut a.runtime {
+                    crate::host::pane::AppRuntime::Builtin(app) => {
+                        app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            if b.entries.len() == 4 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        let b = harness.app.windows[1]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_app_mut())
+            .and_then(|a| match &mut a.runtime {
+                crate::host::pane::AppRuntime::Builtin(app) => {
+                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(b.entries.len(), 4);
+        assert!(b.entries.iter().any(|e| e.name == "0-inactive.txt"));
+    }
+
+    #[test]
+    fn file_explorer_filter_and_selection_retention_through_mutations() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("apple.txt"), b"apple").unwrap();
+        std::fs::write(dir.path().join("banana.txt"), b"banana").unwrap();
+        std::fs::write(dir.path().join("cherry.txt"), b"cherry").unwrap();
+        std::fs::write(dir.path().join("date.txt"), b"date").unwrap();
+
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        app.service_external(&wake);
+
+        // Enter search mode with query "an" -> matches banana.txt
+        app.enter_search();
+        app.search_query = "an".to_string();
+        app.refilter();
+        assert_eq!(app.search_session.hits().len(), 1);
+        assert_eq!(app.search_session.hits()[0].file_name, "banana.txt");
+        assert_eq!(app.selected_entry_or_hit().map(|e| e.name), Some("banana.txt".to_string()));
+
+        // 1. Create cantaloupe.txt -> also matches "an"
+        std::thread::sleep(crate::testing::load_aware_timeout(std::time::Duration::from_millis(300)));
+        std::fs::write(dir.path().join("cantaloupe.txt"), b"cantaloupe").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.search_session.hits().len() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.search_session.hits().len(), 2);
+        assert_eq!(app.selected_entry_or_hit().map(|e| e.name), Some("banana.txt".to_string()));
+
+        // 2. Create fig.txt -> does NOT match "an"
+        std::thread::sleep(crate::testing::load_aware_timeout(std::time::Duration::from_millis(200)));
+        std::fs::write(dir.path().join("fig.txt"), b"fig").unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.entries.len() == 6 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.entries.len(), 6);
+        assert_eq!(app.search_session.hits().len(), 2, "fig.txt must not match 'an'");
+        assert_eq!(app.selected_entry_or_hit().map(|e| e.name), Some("banana.txt".to_string()));
+
+        // 3. Delete banana.txt (the currently selected hit)
+        std::thread::sleep(crate::testing::load_aware_timeout(std::time::Duration::from_millis(200)));
+        std::fs::remove_file(dir.path().join("banana.txt")).unwrap();
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        while std::time::Instant::now() < deadline {
+            app.service_external(&wake);
+            if app.search_session.hits().len() == 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(app.search_session.hits().len(), 1);
+        assert_eq!(app.search_session.hits()[0].file_name, "cantaloupe.txt");
+        assert_eq!(app.selected_entry_or_hit().map(|e| e.name), Some("cantaloupe.txt".to_string()));
+    }
+
+    #[test]
+    fn file_explorer_handles_watcher_failure_and_deleted_directory_gracefully() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let deleted_sub = temp.path().join("sub_to_delete");
+        std::fs::create_dir(&deleted_sub).unwrap();
+        std::fs::write(deleted_sub.join("file.txt"), b"hello").unwrap();
+
+        let mut app = FileBrowserApp::new(deleted_sub.clone());
+        let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
+            std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+        app.service_external(&wake);
+        assert_eq!(app.entries.len(), 1);
+        assert!(app.error.is_none());
+
+        // Delete the directory while the explorer is open
+        std::fs::remove_dir_all(&deleted_sub).unwrap();
+
+        // Trigger refresh
+        app.refresh_after_external_change();
+        assert!(app.entries.is_empty(), "entries must be cleared when directory is deleted");
+        assert!(app.error.is_some(), "error message must be set for deleted directory");
+
+        // Subsequent service_external calls must not panic
+        let _ = app.service_external(&wake);
+
+        // Nonexistent path on startup
+        let nonexistent = temp.path().join("does_not_exist");
+        let mut app2 = FileBrowserApp::new(nonexistent);
+        assert!(app2.error.is_some());
+        assert!(app2.entries.is_empty());
+        let _ = app2.service_external(&wake);
+    }
+
+    #[test]
+    fn file_explorer_cli_key_drives_selection_and_navigation() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let (app, dir) = make_three_file_app();
+        let mut harness = crate::testing::HostHarness::new();
+        harness.app.open_builtin_app_pane(
+            Box::new(app),
+            crate::app::permissions::AppPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        let pane_id = *harness.app.windows[harness.app.active_window]
+            .panes
+            .keys()
+            .next()
+            .unwrap();
+
+        fn browser_selected(harness: &mut crate::testing::HostHarness) -> usize {
+            harness
+                .app
+                .windows
+                .iter_mut()
+                .flat_map(|w| w.panes.values_mut())
+                .find_map(|pane| {
+                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    else {
+                        return None;
+                    };
+                    let b = app.as_any_mut().downcast_mut::<FileBrowserApp>()?;
+                    Some(b.selected)
+                })
+                .unwrap()
+        }
+
+        harness.run_frames(1);
+        assert_eq!(browser_selected(&mut harness), 0);
+
+        // Drive Down arrow via AppRequest::KeyPane (the socket IPC for `plexi pane key <id> down`)
+        harness.inject_ipc(crate::protocol::AppRequest::KeyPane {
+            pane_id,
+            key: "down".into(),
+            response_file: None,
+        });
+        harness.run_frames(2);
+        assert_eq!(browser_selected(&mut harness), 1);
+
+        // Drive Up arrow via KeyPane
+        harness.inject_ipc(crate::protocol::AppRequest::KeyPane {
+            pane_id,
+            key: "up".into(),
+            response_file: None,
+        });
+        harness.run_frames(2);
+        assert_eq!(browser_selected(&mut harness), 0);
     }
 
     #[test]
