@@ -126,7 +126,6 @@ pub enum AttentionDestination {
     LiveParent(crate::spatial::tiling::PaneId),
     SourcePane(crate::spatial::tiling::PaneId),
     ResultArtifact(PathBuf),
-    None,
 }
 
 #[derive(Debug, Clone)]
@@ -1277,9 +1276,27 @@ impl PlexiApp {
             }
         }
 
-        // 6. Ensure default artifact exists on disk so text-editor can open it
-        if let Some(parent) = profile_md.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        None
+    }
+
+    /// Profile-scoped fallback used when no persisted result artifact remains.
+    ///
+    /// This only identifies the fallback; it must stay side-effect-free because
+    /// destination resolution is also used for preview and keyboard routing.
+    fn fallback_result_artifact_path(&self, pane_id: u64) -> PathBuf {
+        crate::config::config_dir()
+            .join("results")
+            .join(pane_id.to_string())
+            .join("RESULT.md")
+    }
+
+    /// Materialize the fallback only when the person activates it for viewing.
+    fn ensure_fallback_result_artifact(&self, pane_id: u64, path: &Path) -> std::io::Result<()> {
+        if path.is_file() {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
         let summary_str = self
             .child_result_events
@@ -1287,8 +1304,7 @@ impl PlexiApp {
             .and_then(|ev| ev.summary.clone())
             .unwrap_or_else(|| format!("Result for pane {pane_id}"));
         let content = format!("# Agent Result\n\nPane: {pane_id}\n\n{summary_str}\n");
-        let _ = std::fs::write(&profile_md, content);
-        Some(profile_md)
+        std::fs::write(path, content)
     }
 
     /// Resolve the navigation destination for an attention queue item.
@@ -1316,11 +1332,10 @@ impl PlexiApp {
             return AttentionDestination::SourcePane(bar.pane_id);
         }
 
-        if let Some(path) = self.find_agent_result_artifact_path(bar.pane_id) {
-            return AttentionDestination::ResultArtifact(path);
-        }
-
-        AttentionDestination::None
+        AttentionDestination::ResultArtifact(
+            self.find_agent_result_artifact_path(bar.pane_id)
+                .unwrap_or_else(|| self.fallback_result_artifact_path(bar.pane_id)),
+        )
     }
 
     /// Single destination helper for mouse and keyboard activation from attention items.
@@ -1364,6 +1379,14 @@ impl PlexiApp {
                 if bar.context_id != 0 && self.router.active().context_id != bar.context_id {
                     self.switch_to_context_restoring_last_pane(bar.context_id);
                 }
+                if let Err(error) = self.ensure_fallback_result_artifact(bar.pane_id, path) {
+                    log::warn!(
+                        "attention_queue: failed to materialize fallback result artifact {} for bar_id={}: {error}",
+                        path.display(),
+                        bar.id
+                    );
+                    return dest;
+                }
                 let path_str = path.to_string_lossy().into_owned();
                 if let Err(e) = self.launch_app_by_id_with_layout(
                     "text-editor",
@@ -1382,13 +1405,6 @@ impl PlexiApp {
                         bar.id
                     );
                 }
-            }
-            AttentionDestination::None => {
-                self.attention_queue.open = false;
-                log::warn!(
-                    "attention_queue: no destination resolvable for bar_id={}",
-                    bar.id
-                );
             }
         }
 
@@ -2723,12 +2739,25 @@ mod tests {
         match dest_closed {
             AttentionDestination::ResultArtifact(ref path) => {
                 assert!(path.ends_with("RESULT.md"));
+                assert!(
+                    !path.exists(),
+                    "resolving a destination must not create a result artifact"
+                );
             }
             other => panic!("expected ResultArtifact, got {other:?}"),
         }
 
         // Activation opens text-editor viewer pane
         h.app.activate_attention_bar(&bar);
+        match dest_closed {
+            AttentionDestination::ResultArtifact(ref path) => {
+                assert!(
+                    path.is_file(),
+                    "opening the fallback artifact must synthesize it only on activation"
+                );
+            }
+            _ => unreachable!("checked ResultArtifact above"),
+        }
         assert!(
             h.app
                 .windows
@@ -2770,12 +2799,12 @@ mod tests {
         assert!(matches!(dest_a, AttentionDestination::ResultArtifact(_)));
 
         // Case B: Non-agent parent (terminal with no agent harness/role)
-        let p_shell = add_test_terminal_pane(&mut h, None, None, Some("human"));
+        let p_shell = add_test_terminal_pane(&mut h, None, None, None);
         let p_child_b = add_test_terminal_pane(
             &mut h,
             Some(("claude", "child_b")),
             Some(p_shell),
-            Some("human"),
+            Some("agent:shell"),
         );
         h.app.record_child_agent_result(
             Some(p_shell),
@@ -2791,12 +2820,26 @@ mod tests {
         h.app.close_pane_by_id(p_child_b);
         h.app.sync_attention_queue();
         let bar_b = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child_b).unwrap().clone();
+        assert_eq!(h.app.find_parent_pane_id(p_child_b), Some(p_shell));
+        let (parent_window, _) = h
+            .app
+            .find_pane_in_any_window(p_shell)
+            .expect("live non-agent parent");
+        assert!(
+            !h.app
+                .windows[parent_window]
+                .panes
+                .get(&p_shell)
+                .expect("live non-agent parent pane")
+                .is_agent_pane(),
+            "the parent branch must be reached and reject a live non-agent pane"
+        );
         let dest_b = h.app.resolve_attention_destination(&bar_b);
         assert!(matches!(dest_b, AttentionDestination::ResultArtifact(_)));
     }
 
     #[test]
-    fn attention_result_nav_enter_and_click_match_and_preserve_ask_overlay() {
+    fn attention_result_nav_enter_preserves_ask_overlay() {
         let mut h = HostHarness::new();
         let p_parent = add_test_terminal_pane(&mut h, Some(("claude", "lead")), None, None);
         let p_child = add_test_terminal_pane(
@@ -2826,13 +2869,33 @@ mod tests {
         let bar_res = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child).unwrap().clone();
         let bar_ask = h.app.attention_queue.items.iter().find(|b| b.id == "ask-test").unwrap().clone();
 
-        // 1. Enter and Click on result resolve to identical destination
-        let dest_enter = h.app.resolve_attention_destination(&bar_res);
-        let dest_click = h.app.resolve_attention_destination(&bar_res);
-        assert_eq!(dest_enter, dest_click);
-        assert_eq!(dest_enter, AttentionDestination::LiveParent(p_parent));
+        // 1. Enter drives the real queue activation path to the live parent.
+        h.app.toggle_attention_queue_list();
+        let result_idx = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .position(|bar| bar.id == bar_res.id)
+            .expect("result bar");
+        h.app.attention_queue.selected_idx = result_idx;
+        let mut enter_input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        assert!(matches!(
+            h.app.handle_attention_queue_list_input(&mut enter_input),
+            KeyDisposition::Consumed
+        ));
+        assert_eq!(h.app.active_focused_pane_id(), Some(p_parent));
 
-        // 2. Ask overlay semantics preserved
+        // 2. Ask overlay semantics stay on the shared activation helper.
         let dest_ask = h.app.resolve_attention_destination(&bar_ask);
         assert_eq!(dest_ask, AttentionDestination::DecisionOverlay("ask-test".into()));
         h.app.activate_attention_bar(&bar_ask);
