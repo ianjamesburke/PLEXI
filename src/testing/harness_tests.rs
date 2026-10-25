@@ -4976,17 +4976,14 @@ fn measure_new_context_initialization_latency_cold_and_warm() {
     let mut h = HostHarness::new();
     let initial_cwd = std::env::temp_dir();
     let context0 = h.app.pane_context_env_for_window(0);
-    if h.app
+    h.app
         .seed_window_root_pane(
             0,
             &context0,
             initial_cwd,
             crate::pane_ops::create::TerminalSpawnOptions::default(),
         )
-        .is_none()
-    {
-        return; // PTY unavailable in this test environment
-    }
+        .expect("PTY and shell measurement must be available for latency test");
 
     // Prepare test directories:
     // A. An empty directory (no .plexi directory or config).
@@ -5115,8 +5112,18 @@ description = "test anchor project"
     );
 
     // --- Warm Phase: Repeated iterations to measure warm latency distribution ---
-    let mut warm_empty_durations = Vec::new();
-    let mut warm_project_durations = Vec::new();
+    #[derive(Debug, Clone, Copy)]
+    struct WarmMeasurement {
+        total: std::time::Duration,
+        id_resolve: std::time::Duration,
+        pane_spawn: std::time::Duration,
+        router_register: std::time::Duration,
+        first_paint: std::time::Duration,
+        save: std::time::Duration,
+    }
+
+    let mut warm_empty = Vec::new();
+    let mut warm_project = Vec::new();
 
     for i in 0..5 {
         let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
@@ -5127,8 +5134,37 @@ description = "test anchor project"
             .as_ref()
             .expect("warm empty must record timing");
         assert_eq!(t_empty.kind, crate::pane_ops::NewContextKind::AtPath);
-        warm_empty_durations.push(t_empty.total);
+        let t_empty = t_empty.clone();
+        let paint_start = std::time::Instant::now();
         h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let empty_measurement = WarmMeasurement {
+            total: t_empty.total,
+            id_resolve: t_empty.id_resolve,
+            pane_spawn: t_empty.pane_spawn,
+            router_register: t_empty.router_register,
+            first_paint,
+            save,
+        };
+        assert!(empty_measurement.total > std::time::Duration::ZERO);
+        assert!(empty_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(empty_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(empty_measurement.router_register > std::time::Duration::ZERO);
+        assert!(empty_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(empty_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Empty iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            empty_measurement.total,
+            empty_measurement.id_resolve,
+            empty_measurement.pane_spawn,
+            empty_measurement.router_register,
+            empty_measurement.first_paint,
+            empty_measurement.save,
+        );
+        warm_empty.push(empty_measurement);
 
         let warm_project_sub = tempfile::tempdir().expect("create warm project tempdir");
         let sub_plexi = warm_project_sub.path().join(&channel_dir);
@@ -5145,29 +5181,86 @@ description = "test anchor project"
             .as_ref()
             .expect("warm project must record timing");
         assert_eq!(t_proj.kind, crate::pane_ops::NewContextKind::AtPath);
-        warm_project_durations.push(t_proj.total);
+        let t_proj = t_proj.clone();
+        let paint_start = std::time::Instant::now();
         h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        let save = save_start.elapsed();
+        let project_measurement = WarmMeasurement {
+            total: t_proj.total,
+            id_resolve: t_proj.id_resolve,
+            pane_spawn: t_proj.pane_spawn,
+            router_register: t_proj.router_register,
+            first_paint,
+            save,
+        };
+        assert!(project_measurement.total > std::time::Duration::ZERO);
+        assert!(project_measurement.id_resolve > std::time::Duration::ZERO);
+        assert!(project_measurement.pane_spawn > std::time::Duration::ZERO);
+        assert!(project_measurement.router_register > std::time::Duration::ZERO);
+        assert!(project_measurement.first_paint > std::time::Duration::ZERO);
+        assert!(project_measurement.save > std::time::Duration::ZERO);
+        eprintln!(
+            "[BENCH] Warm Project iteration={i}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
+            project_measurement.total,
+            project_measurement.id_resolve,
+            project_measurement.pane_spawn,
+            project_measurement.router_register,
+            project_measurement.first_paint,
+            project_measurement.save,
+        );
+        warm_project.push(project_measurement);
     }
 
-    assert_eq!(warm_empty_durations.len(), 5);
-    assert_eq!(warm_project_durations.len(), 5);
-    for d in warm_empty_durations.iter().chain(warm_project_durations.iter()) {
-        assert!(*d > std::time::Duration::ZERO);
-    }
-
-    let avg_warm_empty: std::time::Duration =
-        warm_empty_durations.iter().sum::<std::time::Duration>() / (warm_empty_durations.len() as u32);
-    let avg_warm_proj: std::time::Duration =
-        warm_project_durations.iter().sum::<std::time::Duration>() / (warm_project_durations.len() as u32);
+    assert_eq!(warm_empty.len(), 5);
+    assert_eq!(warm_project.len(), 5);
+    let avg = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).sum::<std::time::Duration>() / values.len() as u32
+    };
+    let min = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).min().expect("five warm samples")
+    };
+    let max = |values: &[WarmMeasurement], f: fn(&WarmMeasurement) -> std::time::Duration| {
+        values.iter().map(f).max().expect("five warm samples")
+    };
     eprintln!(
-        "[BENCH] Warm Empty (n=5): avg={avg_warm_empty:?} min={:?} max={:?}",
-        warm_empty_durations.iter().min().unwrap(),
-        warm_empty_durations.iter().max().unwrap(),
+        "[BENCH] Warm Empty (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_empty, |m| m.total), min(&warm_empty, |m| m.total), max(&warm_empty, |m| m.total),
+        avg(&warm_empty, |m| m.id_resolve), min(&warm_empty, |m| m.id_resolve), max(&warm_empty, |m| m.id_resolve),
+        avg(&warm_empty, |m| m.pane_spawn), min(&warm_empty, |m| m.pane_spawn), max(&warm_empty, |m| m.pane_spawn),
+        avg(&warm_empty, |m| m.router_register), min(&warm_empty, |m| m.router_register), max(&warm_empty, |m| m.router_register),
+        avg(&warm_empty, |m| m.first_paint), min(&warm_empty, |m| m.first_paint), max(&warm_empty, |m| m.first_paint),
+        avg(&warm_empty, |m| m.save), min(&warm_empty, |m| m.save), max(&warm_empty, |m| m.save),
     );
     eprintln!(
-        "[BENCH] Warm Project (n=5): avg={avg_warm_proj:?} min={:?} max={:?}",
-        warm_project_durations.iter().min().unwrap(),
-        warm_project_durations.iter().max().unwrap(),
+        "[BENCH] Warm Project (n=5): total avg={:?} min={:?} max={:?}; id_resolve avg={:?} min={:?} max={:?}; pane_spawn avg={:?} min={:?} max={:?}; router_register avg={:?} min={:?} max={:?}; first_paint avg={:?} min={:?} max={:?}; save avg={:?} min={:?} max={:?}",
+        avg(&warm_project, |m| m.total), min(&warm_project, |m| m.total), max(&warm_project, |m| m.total),
+        avg(&warm_project, |m| m.id_resolve), min(&warm_project, |m| m.id_resolve), max(&warm_project, |m| m.id_resolve),
+        avg(&warm_project, |m| m.pane_spawn), min(&warm_project, |m| m.pane_spawn), max(&warm_project, |m| m.pane_spawn),
+        avg(&warm_project, |m| m.router_register), min(&warm_project, |m| m.router_register), max(&warm_project, |m| m.router_register),
+        avg(&warm_project, |m| m.first_paint), min(&warm_project, |m| m.first_paint), max(&warm_project, |m| m.first_paint),
+        avg(&warm_project, |m| m.save), min(&warm_project, |m| m.save), max(&warm_project, |m| m.save),
+    );
+
+    let mut shell_startup = Vec::new();
+    for _ in 0..5 {
+        let start = std::time::Instant::now();
+        let output = std::process::Command::new("/bin/zsh")
+            .args(["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"])
+            .output()
+            .expect("interactive login shell must start for latency measurement");
+        let elapsed = start.elapsed();
+        assert!(output.status.success(), "login shell failed: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("__PLEXI_SHELL_READY__"));
+        shell_startup.push(elapsed);
+    }
+    eprintln!(
+        "[BENCH] Shell login-to-first-output (n=5): avg={:?} min={:?} max={:?}",
+        shell_startup.iter().sum::<std::time::Duration>() / shell_startup.len() as u32,
+        shell_startup.iter().min().expect("five shell samples"),
+        shell_startup.iter().max().expect("five shell samples"),
     );
 }
 
