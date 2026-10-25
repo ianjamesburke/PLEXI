@@ -3,6 +3,58 @@ use crate::host::context::Window;
 
 #[test]
 fn workspace_config_applies_when_switching_contexts() {
+    let profile = tempfile::tempdir().expect("isolated config profile");
+    let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+    assert_workspace_config_applies_when_switching_contexts();
+}
+
+/// Regression for the process-shared fallback profile: a concurrent test can
+/// make that fallback malformed while this test reloads workspace config. The
+/// target profile guard must make both root-A and root-B workspace accents
+/// independent of that concurrent fallback activity.
+#[test]
+fn workspace_config_context_switch_isolated_from_parallel_fallback_activity() {
+    let fallback_base = tempfile::tempdir().expect("controlled fallback base");
+    let target_profile = tempfile::tempdir().expect("target config profile");
+    let writer_fallback_base = fallback_base.path().to_path_buf();
+    let target_fallback_base = writer_fallback_base.clone();
+    let target_profile_path = target_profile.path().to_path_buf();
+    let (start_write_tx, start_write_rx) = std::sync::mpsc::sync_channel(0);
+    let (fallback_written_tx, fallback_written_rx) = std::sync::mpsc::sync_channel(0);
+    let (target_done_tx, target_done_rx) = std::sync::mpsc::sync_channel(0);
+
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let _fallback_guard =
+                crate::config::set_test_profile_fallback_base(writer_fallback_base);
+            start_write_rx.recv().expect("target starts concurrent write");
+            let fallback_path = crate::config::config_path();
+            std::fs::write(&fallback_path, "font_size = not_a_number\n")
+                .expect("write malformed fallback config");
+            fallback_written_tx
+                .send(())
+                .expect("tell target fallback write completed");
+            let _ = target_done_rx.recv();
+        });
+
+        scope.spawn(move || {
+            let _fallback_guard =
+                crate::config::set_test_profile_fallback_base(target_fallback_base);
+            let _profile_guard =
+                crate::config::set_test_profile_dir(target_profile_path);
+            start_write_tx
+                .send(())
+                .expect("ask concurrent test to write fallback config");
+            fallback_written_rx
+                .recv()
+                .expect("wait for concurrent fallback activity");
+            assert_workspace_config_applies_when_switching_contexts();
+            target_done_tx.send(()).expect("release fallback writer");
+        });
+    });
+}
+
+fn assert_workspace_config_applies_when_switching_contexts() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);

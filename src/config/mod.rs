@@ -1537,6 +1537,11 @@ static NEXT_TEST_DIR_GUARD_TOKEN: std::sync::atomic::AtomicU64 =
 thread_local! {
     static TEST_PROFILE_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Test-only parent for the legacy process-shared fallback profile. This
+    /// lets a regression test reproduce fallback interference without writing
+    /// to the suite's real `/tmp/plexi-t-<pid>` directory.
+    static TEST_PROFILE_FALLBACK_BASE_OVERRIDE: std::cell::RefCell<Vec<(u64, std::path::PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// RAII guard that removes its per-thread test profile dir override on drop.
@@ -1566,6 +1571,40 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
     TestProfileDirGuard { token }
 }
 
+/// RAII guard that removes a test-only legacy fallback base override on drop.
+///
+/// This is exclusively for tests that need to demonstrate why direct config
+/// tests must install [`set_test_profile_dir`]. Production resolution continues
+/// to use the platform's normal temporary directory.
+#[cfg(test)]
+pub(crate) struct TestProfileFallbackBaseGuard {
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestProfileFallbackBaseGuard {
+    fn drop(&mut self) {
+        let token = self.token;
+        TEST_PROFILE_FALLBACK_BASE_OVERRIDE
+            .with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+    }
+}
+
+/// Override the parent directory for the legacy process-shared fallback profile
+/// on the current test thread.
+///
+/// This must not substitute for [`set_test_profile_dir`]: it deliberately
+/// preserves the fallback's shared `<base>/plexi-t-<pid>` shape so tests can
+/// prove an isolated profile guard is required.
+#[cfg(test)]
+pub(crate) fn set_test_profile_fallback_base(
+    path: std::path::PathBuf,
+) -> TestProfileFallbackBaseGuard {
+    let token = NEXT_TEST_DIR_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestProfileFallbackBaseGuard { token }
+}
+
 /// The isolated profile directory installed by [`set_test_profile_dir`], if any.
 ///
 /// Notes-index persistence consults this instead of `config_dir()` so a test
@@ -1574,6 +1613,11 @@ pub fn set_test_profile_dir(path: std::path::PathBuf) -> TestProfileDirGuard {
 #[cfg(test)]
 pub(crate) fn test_profile_dir_override() -> Option<std::path::PathBuf> {
     TEST_PROFILE_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()))
+}
+
+#[cfg(test)]
+fn test_profile_fallback_base_override() -> Option<std::path::PathBuf> {
+    TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow().last().map(|(_, dir)| dir.clone()))
 }
 
 /// Returns the workspace channel directory name for the current binary.
@@ -1669,9 +1713,9 @@ pub fn config_dir() -> PathBuf {
             return dir;
         }
         #[cfg(unix)]
-        let base = PathBuf::from("/tmp");
+        let base = test_profile_fallback_base_override().unwrap_or_else(|| PathBuf::from("/tmp"));
         #[cfg(not(unix))]
-        let base = std::env::temp_dir();
+        let base = test_profile_fallback_base_override().unwrap_or_else(std::env::temp_dir);
         let fallback = base.join(format!("plexi-t-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&fallback);
         return fallback;
