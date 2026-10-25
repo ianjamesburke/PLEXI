@@ -5,10 +5,10 @@
 # mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker_small  = ["agyf", "cos", "cs", "pi"]
+worker_small  = ["pi", "agyf", "cos", "cs"]
 worker_medium = ["agyf", "com", "cm", "pi"]
 worker_large  = ["agyg", "col", "agyl", "cl", "pi"]
-tester        = ["agy", "cs", "agym", "cos"]
+tester        = ["agy", "pi", "cs", "agym", "cos"]
 
 [engines.alias_vendor]
 cos = "codex"
