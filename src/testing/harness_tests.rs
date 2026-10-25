@@ -15270,26 +15270,75 @@ mod strip_navigation_frame_tests {
 
     #[test]
     fn terminal_spawn_failure_leaves_no_ghost_pane() {
-        let h = HostHarness::new();
-        let initial_panes = h.app.windows[0].panes.len();
-        let initial_tiles = h.app.windows[0].tree.tiles.len();
+        let mut h = HostHarness::new();
+        let existing_pane = h.add_test_pane();
+        let context_id = h.app.router.active().context_id;
+        h.app
+            .set_context_columns(context_id, vec![vec![existing_pane]]);
+        h.app.focus_pane_in_strip(existing_pane);
+        h.run_frames(1);
 
-        let settings = egui_term::BackendSettings {
-            shell: "/nonexistent/binary/path/that/cannot/exist".into(),
-            ..Default::default()
-        };
-        let failed_pane = crate::host::pane::TerminalPane::new(
-            9999,
-            h.app.ctx.clone(),
-            h.app.pty_event_tx.clone(),
-            settings,
-            14.0,
+        let window = &h.app.windows[0];
+        let initial_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let initial_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        let initial_tile_count = window.tree.tiles.len();
+        let initial_focus = window.focused_pane;
+        let initial_strip = h.app.zoom.strips.get(&context_id).cloned();
+
+        // `split_focused` is the production terminal-creation path. Force its
+        // real `TerminalPane::new` call to fail without sharing a process env
+        // mutation with concurrent tests.
+        let _shell_override = crate::host::shell::set_test_shell_override(
+            "/nonexistent/plexi-test-shell-that-cannot-spawn",
         );
-        assert!(failed_pane.is_none(), "TerminalPane::new with invalid binary must fail");
+        assert!(
+            h.app
+                .split_focused(true, None, false, false, None)
+                .is_none(),
+            "the real split path must report terminal spawn failure"
+        );
 
-        // Verify window state was not touched
-        assert_eq!(h.app.windows[0].panes.len(), initial_panes);
-        assert_eq!(h.app.windows[0].tree.tiles.len(), initial_tiles);
+        let window = &h.app.windows[0];
+        let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
+        let final_tree_panes: std::collections::BTreeSet<_> = window
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(_, tile)| match tile {
+                egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            final_panes, initial_panes,
+            "failed split must not add a pane"
+        );
+        assert_eq!(
+            final_tree_panes, initial_tree_panes,
+            "failed split must not add a ghost pane tile"
+        );
+        assert_eq!(
+            window.tree.tiles.len(),
+            initial_tile_count,
+            "failed split must leave the tile tree unchanged"
+        );
+        assert_eq!(
+            window.focused_pane, initial_focus,
+            "failed split must retain focus on the existing pane"
+        );
+        assert_eq!(
+            h.app.zoom.strips.get(&context_id),
+            initial_strip.as_ref(),
+            "failed split must leave the authoritative strip unchanged"
+        );
     }
 }
 

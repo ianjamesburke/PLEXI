@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 #[cfg(target_os = "macos")]
@@ -12,8 +14,46 @@ use std::time::{Duration, Instant};
 const TERMINAL_ENV_NAMES_VAR: &str = "PLEXI_TERMINAL_ENV_NAMES";
 const TERMINAL_ENV_VALUE_PREFIX: &str = "PLEXI_TERMINAL_ENV_VALUE_";
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only shell selection used to make the real terminal creation path
+    /// fail deterministically without mutating process-wide environment state.
+    static TEST_SHELL_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Temporarily force [`detect_shell`] on this test thread.
+///
+/// Production shell selection never observes this hook. It exists so pane
+/// creation tests can exercise a real spawn failure without racing other tests
+/// through the process environment.
+#[cfg(test)]
+pub(crate) fn set_test_shell_override(shell: impl Into<String>) -> TestShellOverrideGuard {
+    let previous =
+        TEST_SHELL_OVERRIDE.with(|override_slot| override_slot.replace(Some(shell.into())));
+    TestShellOverrideGuard { previous }
+}
+
+#[cfg(test)]
+pub(crate) struct TestShellOverrideGuard {
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl Drop for TestShellOverrideGuard {
+    fn drop(&mut self) {
+        TEST_SHELL_OVERRIDE.with(|override_slot| {
+            override_slot.replace(self.previous.take());
+        });
+    }
+}
+
 #[cfg(unix)]
 pub fn detect_shell() -> String {
+    #[cfg(test)]
+    if let Some(shell) = TEST_SHELL_OVERRIDE.with(|override_slot| override_slot.borrow().clone()) {
+        return shell;
+    }
+
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
             return shell;
