@@ -2153,8 +2153,6 @@ impl PlexiApp {
             })
             .unwrap_or(0);
 
-        let mut toggle_queue = false;
-
         egui::Panel::top("zoom_path_bar")
             .exact_size(style::PATH_BAR_H)
             .frame(
@@ -2165,155 +2163,77 @@ impl PlexiApp {
             .show_inside(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     let bar = ui.max_rect();
-                    let gap = style::SPACE_SM;
-                    // The chip owns a slot at the right edge: left siblings are
-                    // clipped short of its minimum width, never the other way round.
-                    let left_limit = bar.right() - style::ATTENTION_CHIP_MIN_W - gap;
-                    let left = ui.scope_builder(
+                    ui.scope_builder(
                         egui::UiBuilder::new().layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| {
-                            ui.set_clip_rect(ui.clip_rect().intersect(Rect::from_min_max(
-                                Pos2::new(f32::MIN, bar.top()),
-                                Pos2::new(left_limit, bar.bottom()),
-                            )));
-                        // Breadcrumb
-                        ui.label(
-                            RichText::new(&breadcrumb)
-                                .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
-                                .color(colors.text_primary),
-                        );
+                            ui.set_clip_rect(ui.clip_rect().intersect(bar));
+                            // Breadcrumb
+                            ui.label(
+                                RichText::new(&breadcrumb)
+                                    .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
+                                    .color(colors.text_primary),
+                            );
 
-                        // Level badge when zoomed out
-                        match self.zoom.level {
-                            ZoomLevel::Columns => {}
-                            ZoomLevel::SiblingCards => {
-                                ui.label(
-                                    RichText::new("· SIBLING CARDS")
-                                        .size(style::TEXT_META)
-                                        .color(colors.accent),
-                                );
+                            // Level badge when zoomed out
+                            match self.zoom.level {
+                                ZoomLevel::Columns => {}
+                                ZoomLevel::SiblingCards => {
+                                    ui.label(
+                                        RichText::new("· SIBLING CARDS")
+                                            .size(style::TEXT_META)
+                                            .color(colors.accent),
+                                    );
+                                }
+                                ZoomLevel::TreeAtlas => {
+                                    ui.label(
+                                        RichText::new("· TREE ATLAS")
+                                            .size(style::TEXT_META)
+                                            .color(colors.accent),
+                                    );
+                                }
                             }
-                            ZoomLevel::TreeAtlas => {
-                                ui.label(
-                                    RichText::new("· TREE ATLAS")
-                                        .size(style::TEXT_META)
-                                        .color(colors.accent),
-                                );
-                            }
-                        }
 
-                        // Position pips for columns (Niri strip scroll indicator)
-                        if self.zoom.level == ZoomLevel::Columns && !cols.is_empty() {
-                            ui.add_space(style::SPACE_SM);
-                            let offset = self.zoom.strip_offset_for(active_ctx_id);
-                            for col in &cols {
-                                let is_focused_col = col.index == active_col_idx;
-                                let is_visible =
-                                    cols.len() <= 2 || (col.index >= offset && col.index < offset + 2);
-                                let pip_char = if is_focused_col {
-                                    "●"
-                                } else if is_visible {
-                                    "•"
-                                } else {
-                                    "◦"
-                                };
-                                let pip_color = if is_focused_col {
-                                    colors.accent
-                                } else if is_visible {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_dim
-                                };
-                                ui.label(RichText::new(pip_char).size(11.0).color(pip_color));
-                            }
-                        }
-
-                        // Transient hint if active
-                        if let Some((ref hint, at)) = self.attention_queue.transient_hint {
-                            if at.elapsed() < Duration::from_millis(1600) {
+                            // Position pips for columns (Niri strip scroll indicator)
+                            if self.zoom.level == ZoomLevel::Columns && !cols.is_empty() {
                                 ui.add_space(style::SPACE_SM);
-                                ui.label(
-                                    RichText::new(hint)
-                                        .size(style::TEXT_HINT)
-                                        .color(colors.zoom_needs),
-                                );
+                                let offset = self.zoom.strip_offset_for(active_ctx_id);
+                                for col in &cols {
+                                    let is_focused_col = col.index == active_col_idx;
+                                    let is_visible =
+                                        cols.len() <= 2 || (col.index >= offset && col.index < offset + 2);
+                                    let pip_char = if is_focused_col {
+                                        "●"
+                                    } else if is_visible {
+                                        "•"
+                                    } else {
+                                        "◦"
+                                    };
+                                    let pip_color = if is_focused_col {
+                                        colors.accent
+                                    } else if is_visible {
+                                        colors.text_primary
+                                    } else {
+                                        colors.text_dim
+                                    };
+                                    ui.label(RichText::new(pip_char).size(11.0).color(pip_color));
+                                }
                             }
-                        }
 
+                            // Transient hint if active
+                            if let Some((ref hint, at)) = self.attention_queue.transient_hint {
+                                if at.elapsed() < Duration::from_millis(1600) {
+                                    ui.add_space(style::SPACE_SM);
+                                    ui.label(
+                                        RichText::new(hint)
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.zoom_needs),
+                                    );
+                                }
+                            }
                         },
                     );
-
-                    // Right-anchored calm Attention Queue pill (`◆N · total` + top bar preview)
-                    let asks = self.attention_queue.ask_count();
-                    let failed = self.attention_queue.failed_count();
-                    let total = self.attention_queue.total_count();
-                    let (pill_stroke_col, pill_fill, pill_text_col) = if asks > 0 {
-                        (colors.zoom_needs, colors.needs_badge_fill, colors.zoom_needs)
-                    } else if failed > 0 {
-                        (colors.zoom_failed, colors.failed_fill, colors.zoom_failed)
-                    } else {
-                        (colors.border, colors.code_bg, colors.text_dim)
-                    };
-                    let counts =
-                        crate::app::attention_queue::format_attention_pill_counts(asks, total);
-                    let pill_text = if let Some(top) = self.attention_queue.items.first() {
-                        let lock_prefix = if top.locked { "🔒 " } else { "" };
-                        format!("{lock_prefix}{counts}  {} {}", top.pane_name, top.summary)
-                    } else {
-                        counts
-                    };
-                    let font = FontId::proportional(style::TEXT_HINT);
-                    let pad_x = style::ATTENTION_CHIP_PAD_X;
-                    let preferred_w = ui.fonts_mut(|f| {
-                        f.layout_no_wrap(pill_text.clone(), font.clone(), pill_text_col)
-                            .size()
-                            .x
-                    }) + pad_x * 2.0;
-                    let slot_w = (bar.right() - left.response.rect.right().min(left_limit) - gap)
-                        .max(style::ATTENTION_CHIP_MIN_W);
-                    let chip_w = preferred_w.min(slot_w).min(bar.width());
-                    let text = crate::ui::text::elide(
-                        ui,
-                        &pill_text,
-                        font.clone(),
-                        chip_w - pad_x * 2.0,
-                        crate::ui::text::Side::Trailing,
-                    );
-                    let chip_h = ui.fonts_mut(|f| f.row_height(&font)) + style::SPACE_XS * 1.5;
-                    let chip_rect = Rect::from_min_size(
-                        Pos2::new(bar.right() - chip_w, bar.center().y - chip_h / 2.0),
-                        Vec2::new(chip_w, chip_h),
-                    );
-                    let resp = ui.interact(
-                        chip_rect,
-                        egui::Id::new("attention_queue_chip"),
-                        Sense::click(),
-                    );
-                    let painter = ui.painter();
-                    painter.rect(
-                        chip_rect,
-                        style::RADIUS_PILL,
-                        pill_fill,
-                        Stroke::new(1.0_f32, pill_stroke_col),
-                        egui::StrokeKind::Inside,
-                    );
-                    let galley = painter.layout_no_wrap(text, font, pill_text_col);
-                    painter.galley(
-                        Pos2::new(chip_rect.left() + pad_x, chip_rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        pill_text_col,
-                    );
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(egui::Id::new("attention_chip_rect"), chip_rect));
-                    if resp.clicked() {
-                        toggle_queue = true;
-                    }
                 });
             });
-
-        if toggle_queue {
-            self.toggle_attention_queue_list();
-        }
     }
 
     /// Render the `ZoomLevel::SiblingCards` view inside the central canvas.

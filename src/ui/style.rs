@@ -80,11 +80,9 @@ pub fn radius_fit(rect: egui::Rect) -> CornerRadius {
 
 /// Edge of the square pane-header provenance icon (who spawned the pane).
 pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
-/// Attention chip (path bar, right edge): minimum slot width and horizontal text padding.
-pub const ATTENTION_CHIP_MIN_W: f32 = 64.0;
-pub const ATTENTION_CHIP_PAD_X: f32 = 10.0;
 
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
+pub const TOOLBAR_H: f32 = 28.0;
 pub const PATH_BAR_H: f32 = 34.0;
 #[allow(dead_code)]
 pub const STRIP_GAP: f32 = 10.0;
