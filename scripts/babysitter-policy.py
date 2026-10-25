@@ -183,7 +183,7 @@ def preflight(settings, task_root, sprint_file, requested):
             "preflight": "0991", "preflight_status": "done"}
 
 
-def verify_manifest(manifest, record, final_head):
+def verify_manifest(manifest, record, final_head, allow_unresolved=False):
     if manifest.get("topology") != "aggregate" or not manifest.get("requested_stints"):
         raise PolicyError("aggregate manifest is missing its requested queue")
     batches = manifest.get("batches", [])
@@ -191,7 +191,8 @@ def verify_manifest(manifest, record, final_head):
         raise PolicyError("final record omits or reorders integrated batches")
     if len({item["pr"] for item in batches}) != len(batches):
         raise PolicyError("aggregate manifest repeats a PR")
-    if any(item.get("base_race") for item in batches):
+    if any(item.get("base_race") and item.get("recovery_head") != final_head
+           for item in batches) and not allow_unresolved:
         raise PolicyError("aggregate contains an integration with a changed base; park for recovery")
     for previous, current in zip(batches, batches[1:]):
         if current.get("base_before") != previous.get("aggregate_head"):
@@ -209,7 +210,7 @@ def verify_manifest(manifest, record, final_head):
     return True
 
 
-def live_gate(settings, record, pr_number, phase, manifest=None):
+def live_gate(settings, record, pr_number, phase, manifest=None, allow_unresolved=False):
     before = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
                                 "baseRefName,headRefOid,state"))
     if before["state"] != "OPEN":
@@ -226,7 +227,7 @@ def live_gate(settings, record, pr_number, phase, manifest=None):
         ) if task_id != "0991"]
         if sorted(manifest.get("requested_stints", [])) != sorted(actual_queue):
             raise PolicyError("aggregate manifest omits sprint tasks")
-        verify_manifest(manifest, record, head)
+        verify_manifest(manifest, record, head, allow_unresolved)
         branch = settings["topology"]["branch"]
         aggregate_remote = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
         if aggregate_remote != head:
@@ -246,6 +247,25 @@ def integrate(settings, record, pr_number, manifest_path):
     with open(manifest_path.with_suffix(".lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         return integrate_locked(settings, record, pr_number, manifest_path)
+
+
+def recover_base_race(settings, record, pr_number, manifest_path):
+    """Resolve a recorded base race only after full combined installed validation."""
+    with open(manifest_path.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        manifest = json.loads(manifest_path.read_text())
+        raced = [item for item in manifest.get("batches", [])
+                 if item.get("base_race") and not item.get("recovery_head")]
+        if not raced:
+            raise PolicyError("manifest has no unresolved base race")
+        head = live_gate(settings, record, pr_number, "final", manifest, allow_unresolved=True)
+        for item in raced:
+            item["recovery_head"] = head
+            item["recovery_validator"] = record["tester_alias"]
+        temporary = manifest_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(manifest, indent=2) + "\n")
+        temporary.replace(manifest_path)
+        return head
 
 
 def integrate_locked(settings, record, pr_number, manifest_path):
@@ -346,6 +366,10 @@ def main():
     merge_parser.add_argument("pr", type=int)
     merge_parser.add_argument("record", type=Path)
     merge_parser.add_argument("manifest", type=Path)
+    recovery_parser = sub.add_parser("recover-base-race")
+    recovery_parser.add_argument("pr", type=int)
+    recovery_parser.add_argument("record", type=Path)
+    recovery_parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
     settings = config()
     try:
@@ -359,9 +383,12 @@ def main():
             record = json.loads(args.record.read_text())
             manifest = json.loads(args.manifest.read_text()) if args.manifest else None
             print(live_gate(settings, record, args.pr, args.phase, manifest))
-        else:
+        elif args.action == "integrate":
             record = json.loads(args.record.read_text())
             print(integrate(settings, record, args.pr, args.manifest))
+        else:
+            record = json.loads(args.record.read_text())
+            print(recover_base_race(settings, record, args.pr, args.manifest))
     except (PolicyError, KeyError, IndexError, subprocess.CalledProcessError) as error:
         print(f"babysitter-policy: {error}", file=sys.stderr)
         return 1

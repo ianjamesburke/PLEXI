@@ -206,6 +206,32 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(policy.PolicyError):
             policy.verify_manifest(manifest, record, self.head)
 
+    def test_base_race_recovery_requires_final_live_gate_and_preserves_evidence(self):
+        manifest = {"topology": "aggregate", "requested_stints": ["0986"],
+                    "batches": [{"pr": 100, "base_before": self.base,
+                                 "actual_parent": "c" * 40, "base_race": True,
+                                 "aggregate_head": self.head, "stints": ["0986"]}],
+                    "parked": []}
+        record = {**self.record, "aggregate_head": self.head, "integrated_batches": [100]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "aggregate.json"
+            path.write_text(json.dumps(manifest))
+            with self.assertRaises(policy.PolicyError):
+                policy.verify_manifest(manifest, record, self.head)
+            with patch.object(policy, "live_gate", side_effect=policy.PolicyError("stale install")):
+                with self.assertRaises(policy.PolicyError):
+                    policy.recover_base_race(self.settings, record, 200, path)
+            self.assertNotIn("recovery_head", json.loads(path.read_text())["batches"][0])
+            with patch.object(policy, "live_gate", return_value=self.head) as live:
+                self.assertEqual(policy.recover_base_race(self.settings, record, 200, path), self.head)
+                self.assertEqual(live.call_args.args[3], "final")
+                self.assertTrue(live.call_args.kwargs["allow_unresolved"])
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["batches"][0]["actual_parent"], "c" * 40)
+            self.assertEqual(saved["batches"][0]["recovery_head"], self.head)
+            self.assertTrue(saved["batches"][0]["base_race"])
+            self.assertTrue(policy.verify_manifest(saved, record, self.head))
+
     def test_preflight_blocks_products_until_0991_done(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
