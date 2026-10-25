@@ -9,6 +9,8 @@ source: local
 
 Implements one or more `.stint` tasks into a single PR targeting `alpha`, coordinates state via Plexi pane slots, and cleanly retires the worktree and PR channel on merge.
 
+When a babysitter brief explicitly selects `feature/alpha-cleanup` aggregate mode, the [aggregate instructions](../babysitter-v3/SKILL.md) override this skill's alpha-only start, PR base, and PASS merge steps. Use `just bs-start --base feature/alpha-cleanup <ids...>`, open the batch PR against that branch, and after PASS use `scripts/babysitter-policy.py integrate` with the validated JSON record. Never run `just bs-merge` for an aggregate batch or mark its stints done before the combined PR reaches alpha. All implementation and pre-push gates below still apply.
+
 ```
 /implement-stint-v2 <STINT_ID> [<STINT_ID> ...]
 ```
