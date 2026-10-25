@@ -46,6 +46,10 @@ if [[ -z "$base_root" ]]; then
   echo "bs-start: no worktree for base $base_branch" >&2
   exit 1
 fi
+if [[ "$base_branch" == "feature/alpha-cleanup" ]]; then
+  # Refuse blocked product dispatch before worktree creation or stint claim.
+  uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" >/dev/null
+fi
 
 # The selected base must be clean.
 git -C "$base_root" update-index -q --refresh || true

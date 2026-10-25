@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +43,8 @@ class PolicyTests(unittest.TestCase):
         fallback = policy.route(self.settings, "S", ["cos"])
         self.assertEqual(fallback["worker"], "cs")
         self.assertNotEqual(fallback["worker_vendor"], fallback["tester_vendor"])
+        pair_fallback = policy.route(self.settings, "M", ["agy", "cs", "agym"])
+        self.assertEqual((pair_fallback["worker"], pair_fallback["tester"]), ("cm", "cos"))
         with self.assertRaises(policy.PolicyError):
             policy.route(self.settings, "S", ["cos", "cs", "agym"])
         with self.assertRaises(policy.PolicyError):
@@ -79,21 +83,18 @@ class PolicyTests(unittest.TestCase):
             policy.check_gate(self.settings, self.record, self.pr,
                               [{"bucket": "pending"}], self.base, "batch")
 
-    def test_waivers_require_pre_dispatch_human_ruling(self):
+    def test_waivers_cannot_be_self_attested_to_automated_merge(self):
         record = json.loads(json.dumps(self.record))
-        record["dispatched_at"] = "2026-10-25T01:00:00+00:00"
         record["waivers"] = [{"kind": "pre_existing_alpha", "evidence": "run/alpha.log",
                               "ruling": "accept flake", "approved_by": "Ian",
                               "ruling_at": "2026-10-25T00:00:00+00:00",
                               "alpha_head": "d" * 40, "check_name": "required"}]
         failed = [{"name": "required", "bucket": "fail"}]
-        policy.check_gate(self.settings, record, self.pr, failed, self.base, "batch")
-        for key in ("evidence", "ruling", "approved_by", "ruling_at", "alpha_head", "check_name"):
-            bad = json.loads(json.dumps(record))
-            bad["waivers"][0].pop(key)
-            with self.assertRaises(policy.PolicyError):
-                policy.check_gate(self.settings, bad, self.pr, failed, self.base, "batch")
-        record["waivers"][0]["ruling_at"] = "2026-10-25T02:00:00+00:00"
+        with self.assertRaises(policy.PolicyError):
+            policy.check_gate(self.settings, record, self.pr, failed, self.base, "batch")
+        with self.assertRaises(policy.PolicyError):
+            policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+        record["waivers"] = []
         with self.assertRaises(policy.PolicyError):
             policy.check_gate(self.settings, record, self.pr, failed, self.base, "batch")
 
@@ -122,6 +123,8 @@ class PolicyTests(unittest.TestCase):
     def test_aggregate_integration_records_result_without_alpha_mutation(self):
         first = {**self.pr, "state": "OPEN"}
         commands = []
+        parent = [self.base]
+        already_merged = [False]
 
         def fake_command(*args):
             commands.append(args)
@@ -132,29 +135,76 @@ class PolicyTests(unittest.TestCase):
             if args[:3] == ("git", "ls-remote", "origin"):
                 return f"{self.base}\trefs/heads/feature/alpha-cleanup"
             if args[:4] == ("git", "-C", "/tmp/aggregate", "rev-parse"):
-                if args[-1] == "HEAD^":
-                    return self.base
-                return self.base if not any(command[:4] == ("gh", "pr", "merge", "100") for command in commands) else "d" * 40
+                if args[-1].endswith("^"):
+                    return parent[0]
+                return ("d" * 40 if already_merged[0] or any(
+                    command[:4] == ("gh", "pr", "merge", "100") for command in commands
+                ) else self.base)
             if args[:4] == ("gh", "pr", "view", "100"):
                 if "state,mergeCommit" in args:
                     return json.dumps({"state": "MERGED", "mergeCommit": {"oid": "d" * 40}})
+                if already_merged[0] and "state,baseRefName,headRefOid,mergeCommit" in args:
+                    return json.dumps({**self.pr, "state": "MERGED",
+                                       "mergeCommit": {"oid": "d" * 40}})
                 return json.dumps(first)
             if args[:4] == ("gh", "pr", "checks", "100"):
                 return json.dumps(self.checks)
             return ""
 
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            policy, "command", side_effect=fake_command
-        ), patch.object(policy, "read_checks", return_value=self.checks), patch.object(
-            policy, "alpha_root", return_value=Path("/tmp/alpha")
-        ), patch.object(policy, "preflight", return_value={"size": "S"}):
-            manifest = Path(directory) / "aggregate.json"
-            self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sprint = root / ".stint/sprints/s03.md"
+            sprint.parent.mkdir(parents=True)
+            sprint.write_text("- [0991](../tasks/0991-gate.md)\n- [0986](../tasks/0986-zoom.md)\n")
+            manifest = root / "aggregate.json"
+            with patch.object(policy, "command", side_effect=fake_command), patch.object(
+                policy, "read_checks", return_value=self.checks
+            ), patch.object(policy, "alpha_root", return_value=root), patch.object(
+                policy, "preflight", return_value={"size": "S"}
+            ):
+                self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
+                self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
+                commands.clear()
+                parent[0] = "e" * 40
+                raced = root / "race.json"
+                with self.assertRaisesRegex(policy.PolicyError, "recorded for recovery"):
+                    policy.integrate(self.settings, self.record, 100, raced)
+                self.assertTrue(json.loads(raced.read_text())["batches"][0]["base_race"])
+                with self.assertRaises(policy.PolicyError):
+                    policy.verify_manifest(json.loads(raced.read_text()),
+                                           {"integrated_batches": [100]}, "d" * 40)
+                commands.clear()
+                parent[0] = self.base
+                already_merged[0] = True
+                recovered = root / "recovered.json"
+                self.assertEqual(policy.integrate(self.settings, self.record, 100, recovered), "d" * 40)
+                self.assertFalse(any(command[:3] == ("gh", "pr", "merge") for command in commands))
             saved = json.loads(manifest.read_text())
             self.assertEqual(saved["batches"][0]["source_head"], self.head)
             self.assertEqual(saved["batches"][0]["aggregate_head"], "d" * 40)
-        self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
+            self.assertEqual(saved["requested_stints"], ["0986"])
         self.assertFalse(any("alpha" == arg for command in commands for arg in command))
+
+    def test_final_manifest_binds_every_batch_and_requested_task(self):
+        manifest = {"topology": "aggregate", "requested_stints": ["0986", "0987"],
+                    "batches": [{"pr": 100, "base_before": "b" * 40,
+                                 "aggregate_head": "c" * 40, "stints": ["0986"]},
+                                {"pr": 101, "base_before": "c" * 40,
+                                 "aggregate_head": self.head, "stints": ["0987"]}],
+                    "parked": []}
+        record = {"integrated_batches": [100, 101]}
+        self.assertTrue(policy.verify_manifest(manifest, record, self.head))
+        for bad in (
+            {**record, "integrated_batches": [100]},
+            {**record, "integrated_batches": [100, 101, 102]},
+        ):
+            with self.assertRaises(policy.PolicyError):
+                policy.verify_manifest(manifest, bad, self.head)
+        with self.assertRaises(policy.PolicyError):
+            policy.verify_manifest(manifest, record, "d" * 40)
+        manifest["requested_stints"].append("0988")
+        with self.assertRaises(policy.PolicyError):
+            policy.verify_manifest(manifest, record, self.head)
 
     def test_preflight_blocks_products_until_0991_done(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -178,6 +228,24 @@ class PolicyTests(unittest.TestCase):
             product.write_text(product.read_text().replace("blocked_by:\n", "blocked_by:\n  - 991\n  - 986\n"))
             with self.assertRaisesRegex(policy.PolicyError, "cycle"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
+
+    def test_lane_start_stops_before_worktree_when_preflight_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / "wtp-called"
+            git = root / "git"
+            git.write_text("#!/bin/sh\nprintf 'worktree /tmp/alpha\\nbranch refs/heads/alpha\\nworktree /tmp/aggregate\\nbranch refs/heads/feature/alpha-cleanup\\n'\n")
+            uv = root / "uv"
+            uv.write_text("#!/bin/sh\nexit 7\n")
+            wtp = root / "wtp"
+            wtp.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+            for executable in (git, uv, wtp):
+                executable.chmod(0o755)
+            result = subprocess.run(("bash", str(SCRIPT.with_name("bs-start.sh")), "--base",
+                                     "feature/alpha-cleanup", "0986"), capture_output=True,
+                                    text=True, env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}"})
+            self.assertEqual(result.returncode, 7)
+            self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

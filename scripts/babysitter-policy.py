@@ -2,7 +2,7 @@
 """Fail-closed routing and exact-head gates for babysitter aggregate runs."""
 
 import argparse
-from datetime import datetime
+import fcntl
 import json
 import re
 import subprocess
@@ -37,16 +37,16 @@ def route(settings, size, exhausted=(), worker_alias=None):
             raise PolicyError(f"unconfigured alias: {alias}")
         return alias not in unavailable
 
-    if worker_alias is None:
-        worker_alias = next((alias for alias in settings["roles"][role] if eligible(alias)), None)
-    elif worker_alias not in settings["roles"][role] or not eligible(worker_alias):
+    if worker_alias is not None and (worker_alias not in settings["roles"][role]
+                                     or not eligible(worker_alias)):
         raise PolicyError("worker alias is unavailable for this size")
-    if worker_alias is None:
-        raise PolicyError(f"{role} exhausted")
-    tester_alias = next((alias for alias in settings["roles"]["tester"]
-                         if eligible(alias) and vendors[alias] != vendors[worker_alias]), None)
-    if tester_alias is None:
-        raise PolicyError("independent tester pool exhausted")
+    candidates = [worker_alias] if worker_alias else settings["roles"][role]
+    selected = next(((worker, tester) for worker in candidates if eligible(worker)
+                     for tester in settings["roles"]["tester"]
+                     if eligible(tester) and vendors[tester] != vendors[worker]), None)
+    if selected is None:
+        raise PolicyError("no available independent worker/tester pair")
+    worker_alias, tester_alias = selected
     return {"size": size.upper(), "worker": worker_alias, "worker_model": models[worker_alias],
             "worker_vendor": vendors[worker_alias], "tester": tester_alias,
             "tester_model": models[tester_alias], "tester_vendor": vendors[tester_alias]}
@@ -86,27 +86,13 @@ def check_gate(settings, record, pr, checks, base_head, phase):
         raise PolicyError("installed PR build does not match head")
     if record.get("checks_head") != head:
         raise PolicyError("CI record does not match head")
-    waivers = record.get("waivers", [])
-    for waiver in waivers:
-        if (waiver.get("kind") != "pre_existing_alpha" or not waiver.get("evidence")
-                or not waiver.get("ruling") or waiver.get("approved_by") != "Ian"
-                or not waiver.get("check_name") or not waiver.get("alpha_head")
-                or not waiver.get("ruling_at") or not record.get("dispatched_at")):
-            raise PolicyError("waiver lacks a pre-dispatch human ruling")
-        try:
-            if datetime.fromisoformat(waiver["ruling_at"]) >= datetime.fromisoformat(record["dispatched_at"]):
-                raise PolicyError("waiver ruling came after dispatch")
-        except ValueError as error:
-            raise PolicyError("waiver has invalid timestamps") from error
+    if record.get("waivers"):
+        raise PolicyError("automated merge cannot authenticate a human waiver; park for explicit ruling")
     if not checks:
         raise PolicyError("PR checks are missing")
     for check in checks:
-        if check.get("bucket") == "pass":
-            continue
-        if check.get("bucket") != "fail" or not any(
-            waiver["check_name"] == check.get("name") for waiver in waivers
-        ):
-            raise PolicyError("PR check failed or is pending without an explicit waiver")
+        if check.get("bucket") != "pass":
+            raise PolicyError("PR check failed or is pending; park for an explicit ruling")
     return head
 
 
@@ -197,7 +183,33 @@ def preflight(settings, task_root, sprint_file, requested):
             "preflight": "0991", "preflight_status": "done"}
 
 
-def live_gate(settings, record, pr_number, phase):
+def verify_manifest(manifest, record, final_head):
+    if manifest.get("topology") != "aggregate" or not manifest.get("requested_stints"):
+        raise PolicyError("aggregate manifest is missing its requested queue")
+    batches = manifest.get("batches", [])
+    if not batches or record.get("integrated_batches") != [item.get("pr") for item in batches]:
+        raise PolicyError("final record omits or reorders integrated batches")
+    if len({item["pr"] for item in batches}) != len(batches):
+        raise PolicyError("aggregate manifest repeats a PR")
+    if any(item.get("base_race") for item in batches):
+        raise PolicyError("aggregate contains an integration with a changed base; park for recovery")
+    for previous, current in zip(batches, batches[1:]):
+        if current.get("base_before") != previous.get("aggregate_head"):
+            raise PolicyError("aggregate commit chain is broken")
+    if batches[-1].get("aggregate_head") != final_head:
+        raise PolicyError("final installed head differs from aggregate manifest")
+    integrated = [task_id for item in batches for task_id in item.get("stints", [])]
+    parked = manifest.get("parked", [])
+    if any(not item.get("reason") or not item.get("stint") for item in parked):
+        raise PolicyError("parked stint lacks a reason")
+    accounted = integrated + [item["stint"] for item in parked]
+    requested = manifest["requested_stints"]
+    if len(accounted) != len(set(accounted)) or sorted(accounted) != sorted(requested):
+        raise PolicyError("aggregate manifest does not account for the full requested queue")
+    return True
+
+
+def live_gate(settings, record, pr_number, phase, manifest=None):
     before = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
                                 "baseRefName,headRefOid,state"))
     if before["state"] != "OPEN":
@@ -206,6 +218,15 @@ def live_gate(settings, record, pr_number, phase):
     checks = read_checks(pr_number)
     head = check_gate(settings, record, before, checks, base_head, phase)
     if phase == "final":
+        if manifest is None:
+            raise PolicyError("final gate requires the aggregate manifest")
+        sprint_file = alpha_root() / ".stint/sprints/s03.md"
+        actual_queue = [task_id for task_id in re.findall(
+            r"\[(\d{4})\]\(\.\./tasks/", sprint_file.read_text()
+        ) if task_id != "0991"]
+        if sorted(manifest.get("requested_stints", [])) != sorted(actual_queue):
+            raise PolicyError("aggregate manifest omits sprint tasks")
+        verify_manifest(manifest, record, head)
         branch = settings["topology"]["branch"]
         aggregate_remote = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
         if aggregate_remote != head:
@@ -221,6 +242,13 @@ def live_gate(settings, record, pr_number, phase):
 
 
 def integrate(settings, record, pr_number, manifest_path):
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path.with_suffix(".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return integrate_locked(settings, record, pr_number, manifest_path)
+
+
+def integrate_locked(settings, record, pr_number, manifest_path):
     """Squash one validated batch into the aggregate branch, never alpha."""
     if not record.get("stints") or not all(re.fullmatch(r"\d{4}", task_id) for task_id in record["stints"]):
         raise PolicyError("batch record has no valid stint IDs")
@@ -231,7 +259,11 @@ def integrate(settings, record, pr_number, manifest_path):
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
     else:
-        manifest = {"topology": "aggregate", "batches": []}
+        members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
+                             (root / ".stint/sprints/s03.md").read_text())
+        manifest = {"topology": "aggregate", "requested_stints":
+                    [task_id for task_id in members if task_id != "0991"],
+                    "batches": [], "parked": []}
     if manifest.get("topology") != "aggregate" or any(
         item.get("pr") == pr_number for item in manifest.get("batches", [])
     ):
@@ -248,29 +280,51 @@ def integrate(settings, record, pr_number, manifest_path):
             break
     if not worktree or command("git", "-C", worktree, "status", "--porcelain"):
         raise PolicyError("aggregate worktree is missing or dirty")
-    remote_before = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
-    if command("git", "-C", worktree, "rev-parse", "HEAD") != remote_before:
-        raise PolicyError("aggregate worktree differs from remote base")
-    head = live_gate(settings, record, pr_number, "batch")
-    # GitHub rejects a changed head atomically. No rebase happens after validation.
-    command("gh", "pr", "merge", str(pr_number), "--squash", "--match-head-commit", head)
-    merged = json.loads(command("gh", "pr", "view", str(pr_number), "--json", "state,mergeCommit"))
+    snapshot = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
+                                  "state,baseRefName,headRefOid,mergeCommit"))
+    if snapshot.get("state") == "MERGED":
+        # Recover a merge that succeeded before the caller could write its manifest.
+        remote_before = record["base_head"]
+        head = check_gate(settings, record, snapshot, read_checks(pr_number), remote_before, "batch")
+        merged = snapshot
+    elif snapshot.get("state") == "OPEN":
+        remote_before = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
+        if command("git", "-C", worktree, "rev-parse", "HEAD") != remote_before:
+            raise PolicyError("aggregate worktree differs from remote base")
+        head = live_gate(settings, record, pr_number, "batch")
+        if command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0] != remote_before:
+            raise PolicyError("aggregate base changed before merge")
+        # GitHub rejects a changed head atomically. No rebase happens after validation.
+        try:
+            command("gh", "pr", "merge", str(pr_number), "--squash", "--match-head-commit", head)
+        except subprocess.CalledProcessError:
+            # A network error may arrive after GitHub accepted the merge.
+            pass
+        merged = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
+                                    "state,mergeCommit"))
+    else:
+        raise PolicyError("PR is neither open nor merged")
     if merged.get("state") != "MERGED":
         raise PolicyError("PR merge did not complete")
     command("git", "-C", worktree, "fetch", "origin", branch)
     command("git", "-C", worktree, "merge", "--ff-only", f"origin/{branch}")
-    aggregate_head = command("git", "-C", worktree, "rev-parse", "HEAD")
-    parent_head = command("git", "-C", worktree, "rev-parse", "HEAD^")
-    if (aggregate_head == remote_before or aggregate_head != merged.get("mergeCommit", {}).get("oid")
-            or parent_head != remote_before):
-        raise PolicyError("aggregate head does not match the merged commit")
+    aggregate_tip = command("git", "-C", worktree, "rev-parse", "HEAD")
+    aggregate_head = merged.get("mergeCommit", {}).get("oid")
+    if not aggregate_head or aggregate_head == remote_before:
+        raise PolicyError("GitHub did not identify the merged commit")
+    parent_head = command("git", "-C", worktree, "rev-parse", f"{aggregate_head}^")
+    external_advance = aggregate_tip != aggregate_head
     manifest["batches"].append({"pr": pr_number, "source_head": head,
                                  "base_before": remote_before, "aggregate_head": aggregate_head,
+                                 "actual_parent": parent_head,
+                                 "base_race": parent_head != remote_before or external_advance,
                                  "stints": record.get("stints", [])})
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = manifest_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(manifest, indent=2) + "\n")
     temporary.replace(manifest_path)
+    if parent_head != remote_before or external_advance:
+        raise PolicyError("PR merged after the base moved; integration recorded for recovery")
     return aggregate_head
 
 
@@ -285,6 +339,7 @@ def main():
     gate_parser.add_argument("phase", choices=("batch", "final"))
     gate_parser.add_argument("pr", type=int)
     gate_parser.add_argument("record", type=Path)
+    gate_parser.add_argument("--manifest", type=Path)
     preflight_parser = sub.add_parser("preflight")
     preflight_parser.add_argument("tasks", nargs="+")
     merge_parser = sub.add_parser("integrate")
@@ -302,7 +357,8 @@ def main():
                                        root / ".stint/sprints/s03.md", args.tasks)))
         elif args.action == "gate":
             record = json.loads(args.record.read_text())
-            print(live_gate(settings, record, args.pr, args.phase))
+            manifest = json.loads(args.manifest.read_text()) if args.manifest else None
+            print(live_gate(settings, record, args.pr, args.phase, manifest))
         else:
             record = json.loads(args.record.read_text())
             print(integrate(settings, record, args.pr, args.manifest))
