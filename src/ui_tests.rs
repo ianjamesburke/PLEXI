@@ -9066,4 +9066,428 @@ mod tests {
             );
         });
     }
+
+    #[test]
+    fn attention_mailbox_states_and_absence_of_second_queue_bar() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+
+        let path_bar_shape_count = |h: &mut PlexiUiHarness| {
+            let path_bar = egui::Rect::from_min_size(
+                egui::pos2(0.0, crate::ui::style::TOOLBAR_H + 1.0),
+                egui::vec2(
+                    h.with_app(|app| app.ctx.content_rect().width()),
+                    crate::ui::style::PATH_BAR_H,
+                ),
+            );
+            h.harness()
+                .output()
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    let painted = shape.shape.visual_bounding_rect();
+                    painted.is_positive() && path_bar.contains_rect(painted)
+                })
+                .count()
+        };
+
+        // 1. Empty state
+        h.run_steps(4);
+        let empty_path_bar_shape_count = path_bar_shape_count(&mut h);
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in empty state");
+            assert!(mailbox_rect.width() > 0.0 && mailbox_rect.height() > 0.0);
+        });
+
+        // 2. Asks-present state
+        let pane_id = h.with_app_mut(|app| {
+            let pid = app.host.alloc_pane_id();
+            app.enqueue_ask(
+                "ask-mb-1",
+                pid,
+                "permission: allow cargo test",
+                1_000,
+                Vec::new(),
+            );
+            pid
+        });
+        h.run_steps(4);
+        assert_eq!(
+            path_bar_shape_count(&mut h),
+            empty_path_bar_shape_count,
+            "the path bar paint must not gain a second attention queue affordance when asks arrive"
+        );
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in asks state");
+            assert!(mailbox_rect.width() > 0.0);
+            assert_eq!(app.attention_queue.ask_count(), 1);
+        });
+
+        // 3. Failure/result state
+        h.with_app_mut(|app| {
+            app.attention_queue.synthetic_items.clear();
+            app.attention_queue.answered_ask_ids.insert("ask-mb-1".to_string());
+            app.record_child_agent_result(
+                None,
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: pane_id,
+                    child_agent: "worker".to_string(),
+                    status: "failed".to_string(),
+                    summary: Some("Build failed with compilation error".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1000,
+                },
+            );
+            app.sync_attention_queue();
+        });
+        h.run_steps(4);
+        assert_eq!(
+            path_bar_shape_count(&mut h),
+            empty_path_bar_shape_count,
+            "the path bar paint must not gain a second attention queue affordance for failures"
+        );
+        h.with_app(|app| {
+            let mailbox_rect = app
+                .ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect rendered in failure state");
+            assert!(mailbox_rect.width() > 0.0);
+            assert_eq!(app.attention_queue.ask_count(), 0);
+            assert!(app.attention_queue.failed_count() > 0);
+            assert_eq!(
+                app.ctx
+                    .data(|d| {
+                        d.get_temp::<egui::Color32>(egui::Id::new("attention_mailbox_color"))
+                    }),
+                Some(app.colors.zoom_failed),
+                "failed attention mailbox must use the zoom_failed color"
+            );
+        });
+    }
+
+    #[test]
+    fn attention_mailbox_pointer_and_keyboard_activation_preserve_decision_and_parent_first_semantics() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+
+        // Initially closed
+        h.with_app(|app| assert!(!app.attention_queue.open));
+
+        let mb_rect = h.with_app(|app| {
+            app.ctx
+                .data(|d| d.get_temp::<egui::Rect>(egui::Id::new("attention_mailbox_rect")))
+                .expect("mailbox rect")
+        });
+
+        // Guard/mutation test: click somewhere else (not the mailbox)
+        let miss_pos = egui::pos2(10.0, 10.0);
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(miss_pos),
+            egui::Event::PointerButton {
+                pos: miss_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: miss_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "clicking outside mailbox must not open queue list"
+            );
+        });
+
+        // Pointer click on mailbox opens the queue list
+        let click_pos = mb_rect.center();
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.open,
+                "pointer click on mailbox must open attention queue list"
+            );
+        });
+
+        // Click again toggles it closed
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click_pos),
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "second click on mailbox must close attention queue list"
+            );
+        });
+
+        // Keyboard Cmd+I toggles it open
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::I);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.open,
+                "Cmd+I must open attention queue list"
+            );
+        });
+
+        // Close list with Esc
+        h.harness().key_press(egui::Key::Escape);
+        h.step();
+        h.with_app(|app| {
+            assert!(
+                !app.attention_queue.open,
+                "Esc must close attention queue list"
+            );
+        });
+
+        // Verify decision actions: an open ask can be opened in Decision Overlay via Enter
+        let ask_pane = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.enqueue_ask(
+                "ask-decision-test",
+                ask_pane,
+                "permission: allow rm -rf",
+                1_000,
+                Vec::new(),
+            );
+            app.toggle_attention_queue_list();
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert!(
+                app.attention_queue.decision_overlay.is_some(),
+                "Enter on an ask bar must open Decision Overlay"
+            );
+        });
+
+        // Close overlay with Esc
+        h.harness().key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            app.attention_queue
+                .answered_ask_ids
+                .insert("ask-decision-test".to_string());
+            app.attention_queue
+                .synthetic_items
+                .retain(|b| b.id != "ask-decision-test");
+            app.close_pane_by_id(ask_pane);
+            app.sync_attention_queue();
+        });
+
+        // Verify parent-first result navigation is preserved (stint 0962)
+        let (parent, child) = h.with_app_mut(|app| {
+            let parent = add_attention_result_terminal(app, Some(("claude", "lead")), None, None);
+            let child = add_attention_result_terminal(
+                app,
+                Some(("claude", "worker")),
+                Some(parent),
+                Some("agent:lead"),
+            );
+            app.record_child_agent_result(
+                Some(parent),
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: child,
+                    child_agent: "worker".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Task finished".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1_000,
+                },
+            );
+            app.close_pane_by_id(child);
+            app.sync_attention_queue();
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+            (parent, child)
+        });
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(
+                app.active_focused_pane_id(),
+                Some(parent),
+                "parent-first navigation must activate parent pane"
+            );
+            assert!(
+                app.attention_queue.items.iter().any(|bar| bar.pane_id == child),
+                "child result remains reachable"
+            );
+        });
+    }
+
+    #[test]
+    fn screenshot_attention_mailbox_empty_asks_results_narrow_and_scaled() {
+        // 1. Empty state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.run_steps(4);
+            let shot = evidence_png!("_empty");
+            h.save_screenshot(&shot).expect("render empty mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 2. Asks-present state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-shot",
+                    pid,
+                    "permission: Allow flash: cargo test --workspace",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_asks");
+            h.save_screenshot(&shot).expect("render asks mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 3. Failed state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                app.record_child_agent_result(
+                    None,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: 1041,
+                        child_agent: "builder".to_string(),
+                        status: "failed".to_string(),
+                        summary: Some("Build failed with a compiler error".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: 1000,
+                    },
+                );
+                app.sync_attention_queue();
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_failed");
+            h.save_screenshot(&shot)
+                .expect("render failed mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 4. Completed-result state
+        {
+            let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+            h.with_app_mut(|app| {
+                app.record_child_agent_result(
+                    None,
+                    crate::workspace::QueuedChildResult {
+                        child_pane_id: 1042,
+                        child_agent: "researcher".to_string(),
+                        status: "completed".to_string(),
+                        summary: Some("Analyzed navigation patterns".to_string()),
+                        result_json: "{}".to_string(),
+                        finished_at_epoch_secs: 1000,
+                    },
+                );
+                app.sync_attention_queue();
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_results");
+            h.save_screenshot(&shot).expect("render results mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 5. Narrow width (700.0)
+        {
+            let mut h = PlexiUiHarness::new_sized(700.0, 800.0);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-narrow",
+                    pid,
+                    "permission: Allow narrow layout",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_narrow");
+            h.save_screenshot(&shot).expect("render narrow mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+
+        // 6. High UI scale (1.5x)
+        {
+            let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.5);
+            h.with_app_mut(|app| {
+                let pid = app.host.alloc_pane_id();
+                app.enqueue_ask(
+                    "ask-scaled",
+                    pid,
+                    "permission: Allow high scale layout",
+                    1_000,
+                    Vec::new(),
+                );
+            });
+            h.run_steps(4);
+            let shot = evidence_png!("_scaled");
+            h.save_screenshot(&shot).expect("render scaled mailbox screenshot");
+            assert!(std::path::Path::new(&shot).exists());
+            let png_bytes = std::fs::read(&shot).expect("read screenshot");
+            assert!(!png_bytes.is_empty());
+            let _ = std::fs::remove_file(&shot);
+        }
+    }
 }

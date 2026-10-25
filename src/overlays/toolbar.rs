@@ -78,24 +78,57 @@ impl PlexiApp {
                     self.show_changelog = !self.show_changelog;
                 }
 
-                let notif_count = self.visible_notification_count();
-                if notif_count > 0 {
-                    let badge_text = if notif_count > 9 {
-                        "9+".to_string()
-                    } else {
-                        notif_count.to_string()
-                    };
-                    if button::toolbar_button(
-                        ui,
-                        RichText::new(format!("\u{25C6} {badge_text}"))
-                            .size(style::TEXT_CAPTION)
-                            .color(self.colors.zoom_needs),
-                        "Attention Queue (\u{2318}I)",
-                    )
-                    .clicked()
-                    {
-                        self.toggle_attention_queue_list();
+                self.sync_attention_queue();
+                let asks = self.attention_queue.ask_count();
+                let failed = self.attention_queue.failed_count();
+                let total = self.attention_queue.total_count();
+
+                let (icon, count_str, state) =
+                    crate::app::attention_queue::format_attention_mailbox(asks, failed, total);
+                let color = match state {
+                    crate::app::attention_queue::AttentionMailboxVisualState::Empty => {
+                        self.colors.text_dim
                     }
+                    crate::app::attention_queue::AttentionMailboxVisualState::AsksPresent => {
+                        self.colors.zoom_needs
+                    }
+                    crate::app::attention_queue::AttentionMailboxVisualState::Failed => {
+                        self.colors.zoom_failed
+                    }
+                    crate::app::attention_queue::AttentionMailboxVisualState::ResultOrNotice => {
+                        self.colors.accent
+                    }
+                };
+
+                let label = format!("{icon} {count_str}");
+                let hover_text = if total == 0 {
+                    "Attention Queue (\u{2318}I) \u{2014} Queue is calm"
+                } else {
+                    "Attention Queue (\u{2318}I)"
+                };
+
+                let mailbox = button::toolbar_button(
+                    ui,
+                    RichText::new(label)
+                        .size(style::TEXT_CAPTION)
+                        .color(color),
+                    hover_text,
+                );
+                record_toolbar_rect(ui, "attention_mailbox", mailbox.rect);
+                record_toolbar_rect(ui, "attention_chip", mailbox.rect);
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("attention_chip_rect"), mailbox.rect);
+                    d.insert_temp(egui::Id::new("attention_mailbox_rect"), mailbox.rect);
+                    d.insert_temp(egui::Id::new("attention_mailbox_color"), color);
+                });
+                if mailbox.clicked() {
+                    log::info!(
+                        "attention_mailbox: activated via pointer click (asks={}, failed={}, total={})",
+                        asks,
+                        failed,
+                        total
+                    );
+                    self.toggle_attention_queue_list();
                 }
             });
         });

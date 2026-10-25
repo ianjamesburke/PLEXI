@@ -7,7 +7,7 @@
 //! 2. Lock rule: when the focused pane has an unresolved ask, that ask is pinned
 //!    at item 0 with a lock mark (`locked = true`) under any arrivals until
 //!    answered or focus leaves the pane.
-//! 3. Collapsed calm pill in the path line (`◆N · total` + top bar preview).
+//! 3. Compact top-right mailbox icon/count in existing chrome.
 //! 4. Decision Overlay: opens only on explicit user action (`Enter` on an ask bar,
 //!    `Enter` on an asking atlas node, or `Cmd+Alt+B`). Never opens automatically
 //!    on arrival. Shows `"What would you do here?"`, monospace command text, and
@@ -1872,15 +1872,25 @@ impl PlexiApp {
 
     fn draw_attention_queue_list_panel(&mut self, ctx: &egui::Context) {
         let colors = self.colors;
-        let screen = ctx.Viewport_rect_fallback();
+        let screen = ctx.content_rect();
 
-        // Scrim behind the pulled-up queue list.
+        let mut scrim_clicked = false;
+
+        // Scrim behind the pulled-up queue list, positioned below the toolbar
+        // so the top chrome and mailbox button remain interactively accessible.
+        let scrim_rect = Rect::from_min_max(
+            Pos2::new(screen.min.x, screen.min.y + style::TOOLBAR_H),
+            screen.max,
+        );
         egui::Area::new(egui::Id::new("attention_queue_scrim"))
             .order(Order::Foreground)
-            .fixed_pos(screen.min)
+            .fixed_pos(scrim_rect.min)
+            .fade_in(false)
             .show(ctx, |ui| {
-                let (_, painter) = ui.allocate_painter(screen.size(), Sense::click());
-                painter.rect_filled(screen, CornerRadius::ZERO, colors.scrim_queue);
+                ui.painter().rect_filled(scrim_rect, CornerRadius::ZERO, colors.scrim_queue);
+                if ui.allocate_rect(scrim_rect, egui::Sense::click()).clicked() {
+                    scrim_clicked = true;
+                }
             });
 
         let panel_w = style::QUEUE_PANEL_W.min(screen.width() - 32.0).max(280.0);
@@ -2004,6 +2014,11 @@ impl PlexiApp {
                         }
                     });
             });
+
+        if scrim_clicked {
+            self.toggle_attention_queue_list();
+            return;
+        }
 
         if let Some(id) = dismiss_id {
             self.dismiss_queue_bar(&id);
@@ -2224,17 +2239,57 @@ pub(crate) fn format_attention_queue_header_count(asks: usize, total: usize) -> 
     }
 }
 
-/// Format the compact count prefix for the top-bar Attention Queue pill
-/// without repeating the count when `asks == total`.
-pub(crate) fn format_attention_pill_counts(asks: usize, total: usize) -> String {
+/// Visual state for the compact top-right attention mailbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionMailboxVisualState {
+    /// No open items; queue is calm.
+    Empty,
+    /// One or more open asks require user decisions.
+    AsksPresent,
+    /// No open asks, but one or more failures require attention.
+    Failed,
+    /// No asks or failures, but one or more results or notices are ready.
+    ResultOrNotice,
+}
+
+/// Format the compact mailbox icon and count label for the top-right chrome.
+///
+/// Returns `(icon, count_text, visual_state)`.
+/// - When `total == 0`: `("📭", "0", Empty)`
+/// - When `asks > 0`: `("📬", count, AsksPresent)` where count is `{asks}` (when asks == total)
+///   or `{asks} · {total}` (when additional non-ask items are present).
+/// - When `asks == 0 && failed > 0`: `("📬", "{total}", Failed)`
+/// - When `asks == 0 && total > 0`: `("📬", "{total}", ResultOrNotice)`
+pub(crate) fn format_attention_mailbox(
+    asks: usize,
+    failed: usize,
+    total: usize,
+) -> (&'static str, String, AttentionMailboxVisualState) {
     if total == 0 {
-        "Queue calm".to_string()
-    } else if asks == 0 {
-        format!("{total}")
-    } else if asks >= total {
-        format!("◆{asks}")
+        ("\u{1F4ED}", "0".to_string(), AttentionMailboxVisualState::Empty)
+    } else if asks > 0 {
+        let count_str = if asks >= total {
+            crate::ui::text::compact_count(asks)
+        } else {
+            format!(
+                "{} \u{00B7} {}",
+                crate::ui::text::compact_count(asks),
+                crate::ui::text::compact_count(total)
+            )
+        };
+        ("\u{1F4EC}", count_str, AttentionMailboxVisualState::AsksPresent)
+    } else if failed > 0 {
+        (
+            "\u{1F4EC}",
+            crate::ui::text::compact_count(total),
+            AttentionMailboxVisualState::Failed,
+        )
     } else {
-        format!("◆{asks} · {total}")
+        (
+            "\u{1F4EC}",
+            crate::ui::text::compact_count(total),
+            AttentionMailboxVisualState::ResultOrNotice,
+        )
     }
 }
 
@@ -2549,17 +2604,15 @@ mod tests {
     }
 
     #[test]
-    fn attention_queue_header_and_pill_never_duplicate_counts() {
+    fn attention_queue_header_never_duplicate_counts() {
         // total == 0
         let h_zero = format_attention_queue_header_count(0, 0);
         assert_eq!(h_zero, "0 items");
-        assert_eq!(format_attention_pill_counts(0, 0), "Queue calm");
 
         // asks == 0, total > 0
         let h_no_asks = format_attention_queue_header_count(0, 3);
         assert_eq!(h_no_asks, "3 items");
         assert!(!h_no_asks.contains('0'), "asks==0 must not print ◆0: {h_no_asks}");
-        assert_eq!(format_attention_pill_counts(0, 3), "3");
 
         // asks == total (must show the number 3 only once!)
         let h_all_asks = format_attention_queue_header_count(3, 3);
@@ -2569,9 +2622,6 @@ mod tests {
             1,
             "asks==total must print the count once: {h_all_asks}"
         );
-        let p_all_asks = format_attention_pill_counts(3, 3);
-        assert_eq!(p_all_asks, "◆3");
-        assert_eq!(p_all_asks.matches('3').count(), 1);
 
         // singular asks == total == 1
         assert_eq!(format_attention_queue_header_count(1, 1), "◆1 item");
@@ -2579,7 +2629,39 @@ mod tests {
         // 0 < asks < total
         let h_mixed = format_attention_queue_header_count(2, 5);
         assert_eq!(h_mixed, "◆2 · 5 items");
-        assert_eq!(format_attention_pill_counts(2, 5), "◆2 · 5");
+    }
+
+    #[test]
+    fn attention_mailbox_formatting_states() {
+        // Empty state: lowered flag, 0 count, Empty visual state
+        let (icon, count, state) = format_attention_mailbox(0, 0, 0);
+        assert_eq!(icon, "\u{1F4ED}");
+        assert_eq!(count, "0");
+        assert_eq!(state, AttentionMailboxVisualState::Empty);
+
+        // Asks present: raised flag, asks count, AsksPresent state
+        let (icon, count, state) = format_attention_mailbox(1, 0, 1);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "1");
+        assert_eq!(state, AttentionMailboxVisualState::AsksPresent);
+
+        // Asks present with additional non-ask items: asks · total
+        let (icon, count, state) = format_attention_mailbox(2, 1, 5);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "2 · 5");
+        assert_eq!(state, AttentionMailboxVisualState::AsksPresent);
+
+        // Failure state: 0 asks, failed > 0: raised flag, total count, Failed state
+        let (icon, count, state) = format_attention_mailbox(0, 2, 3);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "3");
+        assert_eq!(state, AttentionMailboxVisualState::Failed);
+
+        // Result/notice state: 0 asks, 0 failed, total > 0: raised flag, total count, ResultOrNotice state
+        let (icon, count, state) = format_attention_mailbox(0, 0, 4);
+        assert_eq!(icon, "\u{1F4EC}");
+        assert_eq!(count, "4");
+        assert_eq!(state, AttentionMailboxVisualState::ResultOrNotice);
     }
 
     fn add_test_terminal_pane(

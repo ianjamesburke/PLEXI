@@ -281,7 +281,7 @@ impl PlexiApp {
         let mut focused_terminal_input = focused_terminal_input;
         // Toolbar
         egui::Panel::top("toolbar")
-            .exact_size(28.0)
+            .exact_size(crate::ui::style::TOOLBAR_H)
             .frame(
                 egui::Frame::new()
                     .fill(self.colors.bg_toolbar)
@@ -302,7 +302,7 @@ impl PlexiApp {
             .frame(egui::Frame::new().fill(self.colors.border))
             .show_inside(ui, |_ui| {});
 
-        // Zoom path bar (context breadcrumb, column pips, calm attention queue pill)
+        // Zoom path bar (context breadcrumb, column pips)
         self.draw_zoom_path_bar(ui);
 
         // Sidebar
