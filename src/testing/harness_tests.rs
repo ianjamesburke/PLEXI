@@ -13859,6 +13859,105 @@ allow = ["pane.send"]
     let wait_closed_resp = read_json_response(&wait_after_close);
     assert_eq!(wait_closed_resp["ok"], true);
     assert_eq!(wait_closed_resp["results"][0]["result"]["status"], "passed");
+
+    // 9. Closing an interactive start-without-message pane before `agent done`
+    // persists the host-synthesized unreported exit for the bounded wait.
+    let start_close_wait = temp_response(fake_home.path(), "wait-start-closed-without-done");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![start_pane_id],
+        timeout_secs: 30.0,
+        response_file: start_close_wait.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&start_close_wait).exists(),
+        "AgentWait must block until the interactive start pane closes"
+    );
+
+    let start_close_reply = temp_response(fake_home.path(), "close-start-without-done");
+    h.inject_ipc(AppRequest::ClosePane {
+        pane_id: start_pane_id,
+        response_file: Some(start_close_reply),
+    });
+    h.hidden_frame();
+    assert!(h.app.find_pane_in_any_window(start_pane_id).is_none());
+    let start_closed_wait = read_json_response(&start_close_wait);
+    assert_eq!(start_closed_wait["ok"], true);
+    assert_eq!(start_closed_wait["results"][0]["pane_id"], start_pane_id);
+    assert_eq!(start_closed_wait["results"][0]["status"], "exited_unreported");
+    assert_eq!(
+        start_closed_wait["results"][0]["summary"],
+        "pane closed without agent done",
+        "a closed interactive pane without agent done must retain the synthesized exit reason"
+    );
+
+    // 10. A task-seeded interactive child whose harness reports a nonzero exit
+    // persists `failed` and resolves the same bounded wait with the failure.
+    let failed_spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        Some("Exercise nonzero lifecycle"),
+        None,
+        Some(false),
+        Some(claude_pane),
+        &stops,
+    )
+    .expect("resolve task-seeded spawn for failed lifecycle");
+    let failed_spawn_reply = temp_response(fake_home.path(), "spawn-failed-child");
+    let mut failed_request = failed_spawn_payload;
+    failed_request["command"] = serde_json::Value::String("sleep 30".to_string());
+    failed_request["response_file"] = serde_json::Value::String(failed_spawn_reply.clone());
+    h.inject_ipc(serde_json::from_value(failed_request).unwrap());
+    h.hidden_frame();
+    let failed_child_pane_id = read_json_response(&failed_spawn_reply)["pane_id"]
+        .as_u64()
+        .expect("failed child pane id");
+
+    let failed_wait = temp_response(fake_home.path(), "wait-failed-child");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![failed_child_pane_id],
+        timeout_secs: 30.0,
+        response_file: failed_wait.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&failed_wait).exists(),
+        "AgentWait must block until the failed child reports its harness exit"
+    );
+
+    h.inject_ipc(AppRequest::SetAgentState {
+        pane_id: failed_child_pane_id,
+        state: crate::protocol::AgentState::Failed,
+        agent: "pi".to_string(),
+        detail: Some("harness exited with code 7 without agent done".to_string()),
+        session_id: None,
+        event: Some("HarnessExit".to_string()),
+        blocked_reason: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+
+    let failed_wait_response = read_json_response(&failed_wait);
+    assert_eq!(failed_wait_response["ok"], true);
+    assert_eq!(failed_wait_response["results"][0]["pane_id"], failed_child_pane_id);
+    assert_eq!(failed_wait_response["results"][0]["status"], "failed");
+    assert!(
+        failed_wait_response["results"][0]["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("code 7")),
+        "failed result must retain the nonzero harness exit detail: {failed_wait_response}"
+    );
+    let failed_child = h.app.windows[0].panes[&failed_child_pane_id]
+        .as_terminal()
+        .expect("failed child terminal");
+    assert_eq!(
+        failed_child.agent.as_ref().map(|agent| agent.state.clone()),
+        Some(crate::protocol::AgentState::Failed),
+        "nonzero harness exit must persist Failed on the interactive task child"
+    );
 }
 
 #[test]
