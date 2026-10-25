@@ -355,6 +355,17 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(policy.PolicyError):
             policy.ledger_summary(Path(directory) / "missing")
 
+    def test_cheap_tier_fail_crosses_over_to_a_strong_non_gemini_tested_alias(self):
+        for size in "SM":
+            second = policy.route(self.settings, size, ["agyf"])
+            self.assertNotIn(second["worker"], ("agyf", "agyg"))
+            self.assertNotEqual(second["worker_vendor"], "gemini")
+            self.assertNotEqual(second["tester_vendor"], second["worker_vendor"])
+        large = policy.route(self.settings, "L", ["agyg"])
+        self.assertEqual(large["worker"], "col")
+        deep = policy.route(self.settings, "S", ["agyf", "cos", "cs"])
+        self.assertEqual(deep["worker"], "pi")
+
     def test_lane_start_stops_before_worktree_when_preflight_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
