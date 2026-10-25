@@ -111,6 +111,15 @@ impl PlexiApp {
             Err(e) => log::warn!("ui_scale: could not persist: {e}"),
         }
     }
+
+    /// Flush any pending debounced scale write immediately (e.g. at shutdown).
+    pub(crate) fn flush_ui_scale_persist_now(&mut self) {
+        if self.ui_scale_persist_at.is_none() {
+            return;
+        }
+        self.ui_scale_persist_at = Some(Instant::now());
+        self.flush_ui_scale_persist();
+    }
 }
 
 #[cfg(test)]

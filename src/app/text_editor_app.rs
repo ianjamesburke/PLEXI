@@ -2149,9 +2149,18 @@ impl App for TextEditorApp {
     }
 
     #[cfg(test)]
+    fn font_size(&self) -> Option<f32> {
+        Some(self.font_size)
+    }
+
     fn adjust_font_size(&mut self, delta: f32) {
         self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
         log::info!("notes_editor: font_size -> {}", self.font_size);
+    }
+
+    fn reset_font_size(&mut self) {
+        self.font_size = FONT_SIZE_DEFAULT;
+        log::info!("notes_editor: font_size reset -> {}", self.font_size);
     }
 
     fn ui(

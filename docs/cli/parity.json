@@ -178,6 +178,15 @@
   "ToggleCommandPalette": {
     "ui-only": "Displays a human command chooser; agents invoke the selected command directly."
   },
+  "IncreasePaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
+  "DecreasePaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
+  "ResetPaneFontSize": {
+    "ui-only": "Per-pane visual text size preference."
+  },
   "UiScaleUp": {
     "ui-only": "Steps the app-wide UI scale up; the persistent equivalent is the `ui_scale` config key."
   },

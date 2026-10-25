@@ -340,11 +340,18 @@ pub trait App: Send {
     /// Restore app state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 
-    /// Adjust the app's internal font size by `delta` points (positive = larger).
-    /// Test-only since per-pane font chords were folded into the global UI scale.
-    /// Only implemented by apps with their own font size, e.g. TextEditorApp.
+    /// The app's current internal font size in points, if supported.
     #[cfg(test)]
+    fn font_size(&self) -> Option<f32> {
+        None
+    }
+
+    /// Adjust the app's internal font size by `delta` points (positive = larger).
+    /// Only implemented by apps with their own font size, e.g. TextEditorApp, FileBrowserApp.
     fn adjust_font_size(&mut self, _delta: f32) {}
+
+    /// Reset the app's internal font size to its default value.
+    fn reset_font_size(&mut self) {}
 
     /// Seed text for the rename-pane overlay. `None` falls back to the pane's
     /// current name. TextEditorApp returns the note's frontmatter title so

@@ -26,6 +26,9 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `ToggleZoom` | `plexi pane zoom 42` |  |
 | `ToggleCommandPalette` | ui-only: Displays a human command chooser; agents invoke the selected command directly. |  |
 | `RenamePane` | `plexi pane name 42 name` |  |
+| `IncreasePaneFontSize` | ui-only: Per-pane visual text size preference. |  |
+| `DecreasePaneFontSize` | ui-only: Per-pane visual text size preference. |  |
+| `ResetPaneFontSize` | ui-only: Per-pane visual text size preference. |  |
 | `UiScaleUp` | ui-only: Steps the app-wide UI scale up; the persistent equivalent is the `ui_scale` config key. |  |
 | `UiScaleDown` | ui-only: Steps the app-wide UI scale down; the persistent equivalent is the `ui_scale` config key. |  |
 | `UiScaleReset` | ui-only: Resets the app-wide UI scale to 1.0; the persistent equivalent is the `ui_scale` config key. |  |

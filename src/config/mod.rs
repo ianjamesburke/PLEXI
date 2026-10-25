@@ -237,6 +237,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_down",
     "increase_font_size",
     "decrease_font_size",
+    "reset_font_size",
     "ui_scale_up",
     "ui_scale_down",
     "ui_scale_reset",
@@ -641,13 +642,15 @@ pub struct KeybindingsConfig {
     pub toggle_minimap: Option<String>,
     pub scroll_up: Option<String>,
     pub scroll_down: Option<String>,
-    /// Deprecated alias for `ui_scale_up`.
+    /// Increase the focused pane's text size (default Cmd+=).
     pub increase_font_size: Option<String>,
-    /// Deprecated alias for `ui_scale_down`.
+    /// Decrease the focused pane's text size (default Cmd+-).
     pub decrease_font_size: Option<String>,
-    /// Scale the whole UI up, terminal text included (default Cmd+=).
+    /// Reset the focused pane's text size (default Cmd+Alt+0).
+    pub reset_font_size: Option<String>,
+    /// Scale the whole UI up, terminal text included (default Cmd+Shift+=).
     pub ui_scale_up: Option<String>,
-    /// Scale the whole UI down, terminal text included (default Cmd+-).
+    /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
     pub ui_scale_down: Option<String>,
     /// Reset app-wide UI scale (default Cmd+Shift+0).
     pub ui_scale_reset: Option<String>,
@@ -725,6 +728,7 @@ impl KeybindingsConfig {
         overlay_field!(scroll_down);
         overlay_field!(increase_font_size);
         overlay_field!(decrease_font_size);
+        overlay_field!(reset_font_size);
         overlay_field!(ui_scale_up);
         overlay_field!(ui_scale_down);
         overlay_field!(ui_scale_reset);

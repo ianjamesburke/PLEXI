@@ -1786,23 +1786,7 @@ impl PlexiApp {
 
     #[cfg(test)]
     pub(crate) fn adjust_focused_pane_font_size(&mut self, delta: f32) {
-        let ctx = &mut self.windows[self.active_window];
-        let Some(focused_tile) = ctx.focused_pane else {
-            return;
-        };
-        let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused_tile) else {
-            return;
-        };
-        let pane_id = *pane_id;
-        if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-            if let Some(t) = pane.as_terminal_mut() {
-                t.font_size = (t.font_size + delta).clamp(8.0, 32.0);
-            } else if let Some(a) = pane.as_app_mut() {
-                if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
-                    app.adjust_font_size(delta);
-                }
-            }
-        }
+        self.adjust_active_or_remembered_pane_font_size(delta);
     }
 
     /// Asks the focused app whether a user-initiated close may proceed. An app
