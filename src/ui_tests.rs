@@ -8906,4 +8906,42 @@ mod tests {
             let _ = std::fs::remove_file(p);
         }
     }
+
+    #[test]
+    fn screenshot_attention_queue_realistic_asks_and_results() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "agent:coder".to_string(),
+                resource: "src/app/attention_queue.rs".to_string(),
+                summary: "Should we return to parent conversation on Enter?".to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+
+        h.with_app_mut(|app| {
+            app.record_child_agent_result(
+                None,
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: 1042,
+                    child_agent: "researcher".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Analyzed parent-first navigation patterns across codebase".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1000,
+                },
+            );
+            app.sync_attention_queue();
+            app.attention_queue.open = true;
+        });
+
+        h.run_steps(4);
+        let shot = evidence_png!();
+        h.save_screenshot(&shot).expect("render attention queue screenshot");
+        assert!(std::path::Path::new(&shot).exists(), "screenshot must exist at {shot}");
+        let _ = std::fs::remove_file(&shot);
+    }
 }
