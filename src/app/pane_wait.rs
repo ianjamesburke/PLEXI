@@ -1259,6 +1259,9 @@ impl PlexiApp {
             }),
         );
         self.child_result_events.insert(child_id, item.clone());
+        if let Some(parent_id) = parent_pane_id {
+            self.child_parent_panes.insert(child_id, parent_id);
+        }
 
         let has_blocking_waiter = self
             .pending_agent_waits

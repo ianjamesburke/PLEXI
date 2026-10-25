@@ -552,6 +552,15 @@ impl Pane {
         }
     }
 
+    /// True if this pane is an active agent pane (terminal agent or app agent).
+    pub fn is_agent_pane(&self) -> bool {
+        match self {
+            Pane::Terminal(t) => t.is_agent_pane(),
+            Pane::App(a) => a.agent.is_some(),
+            Pane::Portal(_) => false,
+        }
+    }
+
     /// The pane's agent state, from the shared detector's two signal sources:
     /// hook-reported state (`SetAgentState`, authoritative while fresh and
     /// whenever Working) plus the host-observed synthesis from

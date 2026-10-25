@@ -590,7 +590,7 @@ mod tests {
     use crate::app::permissions::AppPermissions;
     use crate::app::FocusKind;
     use crate::host::context::Window;
-    use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
+    use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane, TerminalPane};
     use egui_kittest::kittest::Queryable;
 
     #[test]
@@ -8905,5 +8905,165 @@ mod tests {
         for p in [&tiled_shot, &one_pane_shot, &multi_pane_shot, &restored_shot] {
             let _ = std::fs::remove_file(p);
         }
+    }
+
+    #[test]
+    fn screenshot_attention_queue_realistic_asks_and_results() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "agent:coder".to_string(),
+                resource: "src/app/attention_queue.rs".to_string(),
+                summary: "Should we return to parent conversation on Enter?".to_string(),
+                expires_at: None,
+                run_tag: None,
+            })
+            .unwrap();
+
+        h.with_app_mut(|app| {
+            app.record_child_agent_result(
+                None,
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: 1042,
+                    child_agent: "researcher".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Analyzed parent-first navigation patterns across codebase".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1000,
+                },
+            );
+            app.sync_attention_queue();
+            app.attention_queue.open = true;
+        });
+
+        h.run_steps(4);
+        let shot = evidence_png!();
+        h.save_screenshot(&shot).expect("render attention queue screenshot");
+        assert!(std::path::Path::new(&shot).exists(), "screenshot must exist at {shot}");
+        let _ = std::fs::remove_file(&shot);
+    }
+
+    fn add_attention_result_terminal(
+        app: &mut PlexiApp,
+        agent: Option<(&str, &str)>,
+        parent_pane_id: Option<PaneId>,
+        spawned_by: Option<&str>,
+    ) -> PaneId {
+        let pane_id = app.host.alloc_pane_id();
+        let mut terminal = TerminalPane::new(
+            pane_id,
+            app.ctx.clone(),
+            app.pty_event_tx.clone(),
+            egui_term::BackendSettings {
+                shell: "/bin/sh".into(),
+                ..Default::default()
+            },
+            14.0,
+        )
+        .expect("create attention-result terminal");
+        if let Some((harness, role)) = agent {
+            terminal.agent_harness = Some(harness.into());
+            terminal.agent_role = Some(role.into());
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id,
+                state: crate::protocol::AgentState::Idle,
+                agent: harness.into(),
+                detail: None,
+                session_id: None,
+            });
+        }
+        terminal.parent_pane_id = parent_pane_id;
+        terminal.spawned_by = spawned_by.map(str::to_owned);
+        let active_window = app.active_window;
+        let window = &mut app.windows[active_window];
+        window.panes.insert(pane_id, Pane::Terminal(Box::new(terminal)));
+        let tile = window.tree.tiles.insert_pane(pane_id);
+        if window.tree.root().is_none() {
+            window.tree.root = Some(tile);
+            window.focused_pane = Some(tile);
+        }
+        pane_id
+    }
+
+    #[test]
+    fn attention_result_enter_and_click_use_live_parent_activation_paths() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+        let (parent, child) = h.with_app_mut(|app| {
+            let parent = add_attention_result_terminal(app, Some(("claude", "lead")), None, None);
+            let child = add_attention_result_terminal(
+                app,
+                Some(("claude", "result-worker")),
+                Some(parent),
+                Some("agent:lead"),
+            );
+            app.record_child_agent_result(
+                Some(parent),
+                crate::workspace::QueuedChildResult {
+                    child_pane_id: child,
+                    child_agent: "result-worker".to_string(),
+                    status: "completed".to_string(),
+                    summary: Some("Finished the parent-first navigation review".to_string()),
+                    result_json: "{}".to_string(),
+                    finished_at_epoch_secs: 1_000,
+                },
+            );
+            app.close_pane_by_id(child);
+            app.sync_attention_queue();
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+            (parent, child)
+        });
+
+        // Keyboard Enter uses the host input path and resolves to the live parent.
+        h.run_steps(2);
+        h.harness().key_press(egui::Key::Enter);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.active_focused_pane_id(), Some(parent));
+            assert!(
+                app.attention_queue.items.iter().any(|bar| bar.pane_id == child),
+                "Enter must leave the child result reachable"
+            );
+        });
+
+        // Clear focus, then click the rendered queue row through kittest's pointer path.
+        h.with_app_mut(|app| {
+            app.windows[app.active_window].focused_pane = None;
+            app.toggle_attention_queue_list();
+        });
+        h.run_steps(2);
+        let row_click = h.with_app(|app| {
+            let panel = app
+                .ctx
+                .memory(|memory| memory.area_rect(egui::Id::new("attention_queue_panel")))
+                .expect("rendered attention queue panel");
+            egui::pos2(panel.center().x, panel.max.y - 28.0)
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(row_click),
+            egui::Event::PointerButton {
+                pos: row_click,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: row_click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert_eq!(app.active_focused_pane_id(), Some(parent));
+            assert!(
+                app.attention_queue.items.iter().any(|bar| bar.pane_id == child),
+                "click must leave the child result reachable"
+            );
+        });
     }
 }
