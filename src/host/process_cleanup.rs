@@ -8,6 +8,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     sync::Mutex,
 };
 
@@ -28,6 +29,8 @@ pub(crate) fn session_marker() -> &'static str {
 }
 
 const SESSION_RECORD: &str = "pane-session";
+#[cfg(unix)]
+const ROOTS_RECORD: &str = "pane-roots";
 
 /// Persist just enough identity for `host stop` to clean panes when its socket
 /// is already unavailable.  The PID check prevents a stale record from ever
@@ -36,6 +39,15 @@ pub(crate) fn record_session_marker(profile: &Path) {
     let path = profile.join(SESSION_RECORD);
     if let Err(error) = std::fs::write(&path, format!("{}\n{}\n", std::process::id(), session_marker())) {
         log::warn!("quit: could not record pane session marker at {path:?}: {error}");
+    }
+    #[cfg(unix)]
+    {
+        let roots = profile.join(ROOTS_RECORD);
+        if let Err(error) = std::fs::remove_file(&roots) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("quit: could not clear stale pane roots at {roots:?}: {error}");
+            }
+        }
     }
 }
 
@@ -52,13 +64,33 @@ pub(crate) fn recorded_session_marker(profile: &Path, host_pid: u32) -> Option<S
 pub(crate) struct PaneProcessGroup {
     #[cfg(unix)]
     pid: u32,
+    #[cfg(unix)]
+    profile: Option<PathBuf>,
 }
 impl PaneProcessGroup {
+    #[cfg(not(test))]
+    pub(crate) fn record(pid: u32) -> Self {
+        let profile = crate::config::config_dir();
+        Self::record_for_profile(pid, session_marker(), &profile)
+    }
+
+    #[cfg(test)]
     pub(crate) fn record(pid: u32) -> Self {
         Self::record_for(pid, session_marker())
     }
 
+    #[cfg(test)]
     fn record_for(pid: u32, marker: &str) -> Self {
+        Self::record_for_profile_inner(pid, marker, None)
+    }
+
+    pub(crate) fn record_for_profile(pid: u32, marker: &str, profile: &Path) -> Self {
+        Self::record_for_profile_inner(pid, marker, Some(profile))
+    }
+
+    fn record_for_profile_inner(pid: u32, marker: &str, profile: Option<&Path>) -> Self {
+        #[cfg(unix)]
+        let persisted_profile = profile.map(Path::to_path_buf);
         #[cfg(unix)]
         {
             let pgid = unsafe { libc::getpgid(pid as i32) };
@@ -70,14 +102,16 @@ impl PaneProcessGroup {
                     sysinfo::ProcessRefreshKind::new(),
                 );
                 if let Some(process) = system.process(sysinfo::Pid::from_u32(pid)) {
-                    ROOTS.lock().unwrap_or_else(|e| e.into_inner()).insert(
-                        pid,
-                        RootProcess {
-                            pgid,
-                            started: process.start_time(),
-                            marker: marker.into(),
-                        },
-                    );
+                    let root = RootProcess {
+                        pgid,
+                        started: process.start_time(),
+                        marker: marker.into(),
+                    };
+                    let mut roots = ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+                    roots.insert(pid, root.clone());
+                    if let Some(profile) = persisted_profile.as_deref() {
+                        persist_pane_root(profile, pid, &root);
+                    }
                 } else {
                     log::warn!("pane process identity unavailable pid={pid}");
                 }
@@ -87,21 +121,111 @@ impl PaneProcessGroup {
             }
         }
         #[cfg(not(unix))]
-        let _ = (pid, marker);
+        let _ = (pid, marker, profile);
         Self {
             #[cfg(unix)]
             pid,
+            #[cfg(unix)]
+            profile: persisted_profile,
         }
     }
 }
 #[cfg(unix)]
 impl Drop for PaneProcessGroup {
     fn drop(&mut self) {
-        ROOTS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.pid);
+        let mut roots = ROOTS.lock().unwrap_or_else(|e| e.into_inner());
+        let root = roots.remove(&self.pid);
+        if let (Some(profile), Some(root)) = (self.profile.as_deref(), root) {
+            remove_persisted_pane_root(profile, self.pid, &root);
+        }
     }
+}
+
+#[cfg(unix)]
+fn pane_roots_path(profile: &Path) -> PathBuf {
+    profile.join(ROOTS_RECORD)
+}
+
+#[cfg(unix)]
+fn read_persisted_pane_roots(profile: &Path) -> BTreeMap<u32, RootProcess> {
+    let path = pane_roots_path(profile);
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return BTreeMap::new();
+    };
+    contents
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let pid = fields.next()?.parse().ok()?;
+            let pgid = fields.next()?.parse().ok()?;
+            let started = fields.next()?.parse().ok()?;
+            let marker = fields.next()?.to_owned();
+            (fields.next().is_none() && !marker.is_empty()).then_some((
+                pid,
+                RootProcess {
+                    pgid,
+                    started,
+                    marker,
+                },
+            ))
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn write_persisted_pane_roots(profile: &Path, roots: &BTreeMap<u32, RootProcess>) {
+    let path = pane_roots_path(profile);
+    let contents = roots
+        .iter()
+        .map(|(pid, root)| format!("{pid}\t{}\t{}\t{}\n", root.pgid, root.started, root.marker))
+        .collect::<String>();
+    if let Err(error) = std::fs::write(&path, contents) {
+        log::warn!("quit: could not persist pane roots at {path:?}: {error}");
+    }
+}
+
+#[cfg(unix)]
+fn persist_pane_root(profile: &Path, pid: u32, root: &RootProcess) {
+    let mut roots = read_persisted_pane_roots(profile);
+    roots.insert(pid, root.clone());
+    write_persisted_pane_roots(profile, &roots);
+}
+
+#[cfg(unix)]
+fn remove_persisted_pane_root(profile: &Path, pid: u32, root: &RootProcess) {
+    let mut roots = read_persisted_pane_roots(profile);
+    if roots.get(&pid).is_some_and(|saved| {
+        saved.pgid == root.pgid && saved.started == root.started && saved.marker == root.marker
+    }) {
+        roots.remove(&pid);
+        write_persisted_pane_roots(profile, &roots);
+    }
+}
+
+/// Restore the roots recorded by the host so a separate `plexi host stop`
+/// process can identify panes when macOS hides their environment.
+#[cfg(unix)]
+pub(crate) fn restore_pane_roots(profile: &Path, marker: &str) -> usize {
+    let roots = read_persisted_pane_roots(profile)
+        .into_iter()
+        .filter(|(_, root)| root.marker == marker)
+        .collect::<BTreeMap<_, _>>();
+    let restored = roots.len();
+    ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend(roots);
+    restored
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn forget_pane_root_for_test(pid: u32) {
+    ROOTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&pid);
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restore_pane_roots(_profile: &Path, _marker: &str) -> usize {
+    0
 }
 
 /// Outcome and per-phase cost of one teardown, logged by `exit_host` so a

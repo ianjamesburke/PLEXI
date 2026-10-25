@@ -849,6 +849,12 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
     if dir.as_os_str().is_empty() {
         return Ok(());
     }
+    // Audit and Needs-you tips share this signed file.  Serialize the whole
+    // read/mutate/write transaction so one tip update cannot erase the other.
+    let state_lock = seal_state_lock_for(dir);
+    let _state_guard = state_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut state = match read_seal_state(dir) {
         SealStateStatus::Trusted(state) => state,
         SealStateStatus::Absent => SealState {
@@ -881,6 +887,17 @@ fn update_seal_state(dir: &Path, mutate: impl FnOnce(&mut SealState)) -> Result<
         return Ok(());
     }
     write_seal_state(dir, &state)
+}
+
+fn seal_state_lock_for(dir: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.entry(dir.to_path_buf()).or_default().clone()
 }
 
 fn tip_lookup(path: &Path) -> Result<Option<String>, String> {
@@ -1357,6 +1374,32 @@ mod tests {
         verify_audit(&path).unwrap();
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines, 61);
+    }
+
+    #[test]
+    fn concurrent_audit_and_needs_you_tip_updates_preserve_both_tips() {
+        let _lock = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let audit = dir.path().join("permission-audit.jsonl");
+        append_audit(&audit, &serde_json::json!({"kind": "seed"})).unwrap();
+
+        std::thread::scope(|scope| {
+            let audit = &audit;
+            scope.spawn(|| {
+                for n in 0..40 {
+                    append_audit(audit, &serde_json::json!({"kind": "audit", "n": n}))
+                        .unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for n in 0..40 {
+                    store_needs_you_tip(dir.path(), Some(&format!("needs-{n}"))).unwrap();
+                }
+            });
+        });
+
+        verify_audit(&audit).unwrap();
+        assert!(needs_you_tip_lookup(dir.path()).unwrap().is_some());
     }
 
     #[test]

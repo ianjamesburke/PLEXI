@@ -1141,12 +1141,13 @@ fn clean_panes_after_socket_failure(profile: &Path, pid: u32) {
     // alive long enough for the caller to reach `terminate_host_process`.
     let _fallback_signals = FallbackSignalGuard::ignore_hup_and_term();
     if let Some(marker) = crate::host::process_cleanup::recorded_session_marker(profile, pid) {
+        let restored_roots = crate::host::process_cleanup::restore_pane_roots(profile, &marker);
         let report = crate::host::process_cleanup::stop_pane_processes_for_marker(
             &marker,
             Duration::from_secs(2),
         );
         log::info!(
-            "host_stop: socket fallback cleaned groups={} escalated={} tmux_ms={} total_ms={}",
+            "host_stop: socket fallback restored_roots={restored_roots} cleaned groups={} escalated={} tmux_ms={} total_ms={}",
             report.groups,
             report.escalated,
             report.tmux.as_millis(),
@@ -1481,6 +1482,14 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        let _registration = crate::host::process_cleanup::PaneProcessGroup::record_for_profile(
+            child.id(),
+            &marker,
+            profile.path(),
+        );
+        // The fallback runs in a different CLI process, which has no in-host
+        // root registry. Keep only the durable registration for this seam.
+        crate::host::process_cleanup::forget_pane_root_for_test(child.id());
         super::clean_panes_after_socket_failure(profile.path(), std::process::id());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
