@@ -10669,6 +10669,7 @@ mod flight_recorder_session {
             &format!("pane:{caller}"),
         );
         let (tx, rx) = std::sync::mpsc::channel();
+        let tool_timeout = crate::testing::load_aware_timeout(Duration::from_secs(5));
         tool_dispatch::register(
             target,
             "flight-probe".into(),
@@ -10677,7 +10678,7 @@ mod flight_recorder_session {
                 description: "todo".into(),
                 input_schema: serde_json::json!({"type":"object"}),
                 output_schema: serde_json::json!({"type":"object"}),
-                timeout_ms: Some(1000),
+                timeout_ms: Some(tool_timeout.as_millis().try_into().unwrap()),
                 read_only: false,
             }],
             AppEventSender::Channel(tx),
@@ -10705,7 +10706,7 @@ mod flight_recorder_session {
         )
         .unwrap();
         let event: crate::protocol::PlexiEvent =
-            serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+            serde_json::from_str(&rx.recv_timeout(tool_timeout).unwrap()).unwrap();
         let crate::protocol::PlexiEvent::ToolCall { call_id, .. } = event else {
             panic!("expected tool call");
         };
