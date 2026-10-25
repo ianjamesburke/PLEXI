@@ -51,12 +51,43 @@ class PolicyTests(unittest.TestCase):
         large_fallback = policy.route(self.settings, "L", ["agyg", "col"])
         self.assertEqual((large_fallback["worker"], large_fallback["tester"]), ("agyl", "agy"))
         self.assertEqual(large_fallback["worker_vendor"], "claude")
-        with self.assertRaises(policy.PolicyError):
-            policy.route(self.settings, "S", ["agyf", "cos", "cs"])
-        with self.assertRaises(policy.PolicyError):
-            policy.route(self.settings, "L", ["agyg", "col", "agyl", "cl"])
+        for size, spent in (("S", ["agyf", "cos", "cs"]), ("M", ["agyf", "com", "cm"]),
+                            ("L", ["agyg", "col", "agyl", "cl"])):
+            last = policy.route(self.settings, size, spent)
+            self.assertEqual((last["worker"], last["worker_vendor"]), ("pi", "deepseek"))
+            self.assertNotEqual(last["tester_vendor"], "deepseek")
+            with self.assertRaises(policy.PolicyError):
+                policy.route(self.settings, size, spent + ["pi"])
         with self.assertRaises(policy.PolicyError):
             policy.route(self.settings, "M", worker_alias="unknown")
+
+    def test_pi_is_last_worker_entry_and_fully_configured(self):
+        engines = self.settings["engines"]
+        for role in ("worker_small", "worker_medium", "worker_large"):
+            self.assertEqual(self.settings["roles"][role][-1], "pi")
+        for role in ("tester", "head"):
+            self.assertNotIn("pi", self.settings["roles"][role])
+        self.assertEqual((engines["alias_vendor"]["pi"], engines["alias_model"]["pi"]),
+                         ("deepseek", "DeepSeek V4.1 Flash"))
+        prefixes = engines["alias_engine"]
+        for role in self.settings["roles"].values():
+            for alias in role:
+                engine = prefixes[max((p for p in prefixes if alias.startswith(p)), key=len)]
+                self.assertIn(engine, engines["launch"])
+                self.assertIn(engine, engines["working_footer"])
+        self.assertEqual(prefixes[max((p for p in prefixes if "pi".startswith(p)), key=len)], "pi")
+        self.assertIn("openrouter/deepseek/deepseek-v4.1-flash", engines["launch"]["pi"])
+
+    def test_pi_worker_cannot_be_validated_by_deepseek(self):
+        record = json.loads(json.dumps(self.record))
+        record.update(worker_alias="pi", tester_alias="agy")
+        record["validation"].update(worker_vendor="deepseek", tester_vendor="gemini")
+        self.assertEqual(policy.check_gate(self.settings, record, self.pr, self.checks,
+                                           self.base, "batch"), self.head)
+        record["validation"]["tester_vendor"] = "deepseek"
+        with self.assertRaisesRegex(policy.PolicyError, "self-validation"):
+            policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+        self.assertEqual(policy.route(self.settings, "S", ["agyf", "cos", "cs"])["tester"], "agy")
 
     def test_gemini_worker_is_never_validated_by_gemini(self):
         for size in "SML":

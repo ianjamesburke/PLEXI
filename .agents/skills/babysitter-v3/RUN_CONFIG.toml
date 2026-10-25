@@ -5,9 +5,9 @@
 # mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker_small  = ["agyf", "cos", "cs"]
-worker_medium = ["agyf", "com", "cm"]
-worker_large  = ["agyg", "col", "agyl", "cl"]
+worker_small  = ["agyf", "cos", "cs", "pi"]
+worker_medium = ["agyf", "com", "cm", "pi"]
+worker_large  = ["agyg", "col", "agyl", "cl", "pi"]
 tester        = ["agy", "cs", "agym", "cos"]
 
 [engines.alias_vendor]
@@ -22,6 +22,7 @@ agym = "claude"
 agyl = "claude"
 agyf = "gemini"
 agyg = "gemini"
+pi = "deepseek"
 
 [engines.alias_model]
 cos = "Luna"
@@ -35,6 +36,7 @@ agym = "Sonnet"
 agyl = "Opus"
 agyf = "Gemini 3.8 Flash"
 agyg = "Gemini 4 Argon High"
+pi = "DeepSeek V4.1 Flash"
 
 [topology]
 mode = "aggregate"
@@ -48,12 +50,14 @@ require_final_install = true
 claude = "{alias} {prompt}"
 codex  = "{alias} {prompt}"
 agy    = "{alias} -i {prompt}"
+pi     = "{alias} --model openrouter/deepseek/deepseek-v4.1-flash {prompt}"
 
 # Map alias prefix -> engine. Longest prefix wins.
 [engines.alias_engine]
 c   = "claude"
 co  = "codex"
 agy = "agy"
+pi  = "pi"
 
 # Footer text that means the agent is mid-turn. Absence on the last buffer lines
 # (with a prompt visible) means idle. `plexi pane status` does not recognise agy,
@@ -62,6 +66,7 @@ agy = "agy"
 claude = "esc to interrupt"
 codex  = "esc to interrupt"
 agy    = "esc to cancel"
+pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; absent when idle
 
 # Case-insensitive patterns in a pane capture that mean a usage/quota wall.
 [engines.usage_limit_patterns]
