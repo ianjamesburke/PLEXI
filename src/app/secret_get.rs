@@ -521,6 +521,99 @@ mod list_tests {
         assert_eq!(ask_reply["status"], "permission_required", "{ask_reply}");
         assert_eq!(monitor.list_pending().len(), 1);
 
+        let pending_id = ask_reply["pending_request_id"].as_str().unwrap();
+        monitor
+            .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Once)
+            .unwrap();
+        let val_reply = secret_get_request(&mut h, "FOO", &[ask_pid]);
+        assert_eq!(val_reply["status"], "value", "{val_reply}");
+        assert_eq!(val_reply["value"], "top-secret");
+
+        let audit_json = serde_json::to_string(&monitor.audit_records()).unwrap();
+        assert!(
+            !audit_json.contains("top-secret"),
+            "audit records must never retain real secret values: {audit_json}"
+        );
+        assert!(
+            audit_json.contains("FOO"),
+            "audit records must retain resource identifier FOO: {audit_json}"
+        );
+
+        secrets::system_store().delete(&account).unwrap();
+    }
+
+    #[test]
+    fn worker_missing_snapshot_fallback_and_boundary_qualification() {
+        let mut h = HostHarness::new();
+        let target_pane = h.add_focused_terminal();
+        let ws = h.workspace_root();
+        let cfg = secrets::init_workspace(&ws, &crate::config::workspace_channel_dir()).unwrap();
+        let account = secrets::keychain_workspace_name(&cfg.id, "QUAL");
+        secrets::system_store().set(&account, "qual-secret").unwrap();
+
+        // Spawn a worker without a settings.toml or valid role definition.
+        let (worker_pane, _) = h
+            .app
+            .spawn_agent_worker_pane(
+                "unconfigured-worker",
+                "pi",
+                "sleep 30",
+                "Fallback check",
+                None,
+                true,
+                None,
+                Some(ws.clone()),
+                None,
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let worker_pid = h.terminal_backend(worker_pane).child_pid();
+
+        // Missing posture snapshot: pane_permission_posture returns None.
+        assert!(
+            h.app.pane_permission_posture(worker_pane).is_none(),
+            "unconfigured worker must have no posture snapshot"
+        );
+
+        // 1. Missing-snapshot fallback on secret.get enters broker and requires approval (Decision::Ask).
+        let secret_reply = secret_get_request(&mut h, "QUAL", &[worker_pid]);
+        assert_eq!(
+            secret_reply["status"], "permission_required",
+            "missing-snapshot fallback on secret.get must enter broker gate and ask, never bypass: {secret_reply}"
+        );
+
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        assert_eq!(
+            monitor.list_pending().len(),
+            1,
+            "missing-snapshot secret.get must file an approval request"
+        );
+
+        // 2. Bound reproduction for missing-snapshot SendToPane:
+        // Because lifecycle.rs SendToPane gates only when pane_permission_posture is Some,
+        // a missing snapshot does not gate SendToPane.
+        let send_resp = crate::rpc::response_file("pane-send-fallback", "json");
+        let send_req = crate::protocol::AppRequest::SendToPane {
+            pane_id: target_pane,
+            text: "fallback message".into(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp.clone()),
+            peer_ancestry: None,
+        };
+        let send_line = serde_json::to_string(&send_req).unwrap();
+        crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[worker_pid]), &mut Vec::new());
+        h.hidden_frame();
+        let send_reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(send_resp).unwrap()).unwrap();
+        assert_eq!(
+            send_reply["ok"], true,
+            "recorded boundary: SendToPane currently proceeds without gate when posture snapshot is missing"
+        );
+
         secrets::system_store().delete(&account).unwrap();
     }
 
