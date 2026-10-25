@@ -1592,7 +1592,8 @@ pub fn poll_actions(
             egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
+            if input.consume_key_exact(egui::Modifiers::COMMAND, key) {
+                log::info!("keys: poll_actions admitted SwitchContext({i}) for {key:?}");
                 claimed_key_releases.insert(key);
                 actions.push(Action::SwitchContext(i));
             }

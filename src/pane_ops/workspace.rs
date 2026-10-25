@@ -1634,14 +1634,19 @@ impl PlexiApp {
 
         // Restore minimap state and last focused pane for the new context (R36).
         let new_ctx_id = self.router.active().context_id;
-        if let Some(&saved_pane_id) = self.zoom.context_last_pane.get(&new_ctx_id) {
-            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(saved_pane_id) {
+        if let Some(target_pid) = self.resolve_remembered_pane_for_context(new_ctx_id) {
+            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(target_pid) {
                 if self.windows[win_idx].context_id == new_ctx_id {
                     self.active_window = win_idx;
                     self.windows[win_idx].navigate_to(tile_id);
                 }
             }
+        } else if let Some(win) = self.windows.get_mut(self.active_window) {
+            if let Some(first_tile) = win.tree.root.and_then(|r| win.find_first_pane_in(r)) {
+                win.navigate_to(first_tile);
+            }
         }
+        self.record_focused_pane_memory();
         if let Some(active_pane_id) = self.active_focused_pane_id() {
             self.zoom
                 .context_last_pane
