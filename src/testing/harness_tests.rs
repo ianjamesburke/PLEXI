@@ -13627,6 +13627,241 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
 }
 
 #[test]
+fn v1_interactive_agent_start_and_task_seeded_spawn_with_human_and_claude_provenance_and_lifecycle() {
+    let fake_home = tempfile::tempdir().expect("fake home");
+    let profile_dir = fake_home.path().join(".plexi-alpha");
+    std::fs::create_dir_all(&profile_dir).unwrap();
+    let _profile_guard = crate::config::set_test_profile_dir(profile_dir.clone());
+
+    // 1. Seed global `researcher` agent definition with [harness] and [permissions].
+    let agent_dir = profile_dir.join("agents").join("researcher");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("AGENT.md"),
+        "You are an interactive researcher persona.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent_dir.join("settings.toml"),
+        r#"[agent]
+id = "researcher"
+display_name = "Researcher"
+
+[harness]
+cli = "pi"
+model = "openrouter/~z-ai/glm-flash-latest"
+
+[permissions]
+default_posture = "deny"
+allow = ["pane.send"]
+"#,
+    )
+    .unwrap();
+
+    let proj_dir = fake_home.path().join("workspace").join("project");
+    std::fs::create_dir_all(&proj_dir).unwrap();
+    let stops = vec![fake_home.path().to_path_buf()];
+
+    let mut h = HostHarness::new();
+    let human_shell = h.add_focused_terminal();
+
+    // 2. Start-without-message with human parent provenance:
+    // Calling `resolve_agent_start_in_stopping_at` with `message: None` from `proj_dir`.
+    let start_payload_no_msg = crate::cli::agent::resolve_agent_start_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        None,
+        Some(human_shell),
+        &stops,
+    )
+    .expect("resolve agent start without message");
+
+    // Command verification: interactive adapter launch with persona and worker contract,
+    // but no -p / --print and no initial prompt string.
+    let cmd = start_payload_no_msg["command"].as_str().unwrap();
+    assert!(
+        cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
+        "must append system prompt with persona and worker contract: {cmd}"
+    );
+    assert!(!cmd.contains(" -p"), "interactive start must not contain -p flag: {cmd}");
+    assert!(!cmd.contains(" --print"), "interactive start must not contain --print flag: {cmd}");
+    assert_eq!(start_payload_no_msg["task"], "");
+    assert_eq!(start_payload_no_msg["ephemeral"], false);
+    assert_eq!(start_payload_no_msg["role"], "researcher");
+
+    // Spawn the start-without-message pane.
+    let spawn_reply_1 = temp_response(fake_home.path(), "start-no-msg-spawn");
+    let mut req_1 = start_payload_no_msg.clone();
+    req_1["command"] = serde_json::Value::String("sleep 30".to_string());
+    req_1["response_file"] = serde_json::Value::String(spawn_reply_1.clone());
+    h.inject_ipc(serde_json::from_value(req_1).unwrap());
+    h.hidden_frame();
+
+    let spawn_resp_1 = read_json_response(&spawn_reply_1);
+    assert_eq!(spawn_resp_1["ok"], true);
+    let start_pane_id = spawn_resp_1["pane_id"].as_u64().unwrap();
+    assert_eq!(spawn_resp_1["spawned_by"], "human", "human parent must yield spawned_by=human");
+
+    let term_1 = h.app.windows[0].panes[&start_pane_id].as_terminal().unwrap();
+    assert_eq!(term_1.spawned_by.as_deref(), Some("human"));
+    assert_eq!(term_1.spawned_by_badge().as_deref(), Some("spawned by you"));
+    assert_eq!(term_1.agent_role.as_deref(), Some("researcher"));
+    assert_eq!(term_1.agent_harness.as_deref(), Some("pi"));
+    assert!(!term_1.ephemeral, "interactive start pane must not be ephemeral");
+
+    // 3. Claude parent provenance:
+    // Spawn a parent agent running Claude (`role: "claude-code"`).
+    let spawn_claude_reply = temp_response(fake_home.path(), "spawn-claude");
+    h.inject_ipc(AppRequest::AgentSpawn {
+        role: "claude-code".into(),
+        harness: "claude".into(),
+        command: "sleep 30".into(),
+        task: Some("Coordinate security audit".into()),
+        subcontext: None,
+        ephemeral: false,
+        parent_pane_id: Some(human_shell),
+        name: None,
+        cwd: Some(proj_dir.to_string_lossy().into_owned()),
+        worktree: None,
+        result_schema: None,
+        initial_slots: vec![],
+        no_focus: false,
+        response_file: spawn_claude_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let claude_resp = read_json_response(&spawn_claude_reply);
+    assert_eq!(claude_resp["ok"], true);
+    let claude_pane = claude_resp["pane_id"].as_u64().unwrap();
+    assert_eq!(claude_resp["spawned_by"], "human");
+
+    // Task-seeded interactive spawn from Claude parent:
+    let spawn_payload = crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+        "researcher",
+        &profile_dir,
+        &proj_dir,
+        Some("Audit token lifetimes"),
+        None,
+        Some(false),
+        Some(claude_pane),
+        &stops,
+    )
+    .expect("resolve agent spawn with task");
+
+    let spawn_cmd = spawn_payload["command"].as_str().unwrap();
+    assert!(
+        spawn_cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
+        "spawn must append system prompt with persona and worker contract: {spawn_cmd}"
+    );
+    assert!(spawn_cmd.contains("'Audit token lifetimes'"));
+    assert!(!spawn_cmd.contains(" -p"));
+    assert_eq!(spawn_payload["task"], "Audit token lifetimes");
+
+    let spawn_reply_2 = temp_response(fake_home.path(), "spawn-claude-child");
+    let mut req_2 = spawn_payload.clone();
+    req_2["command"] = serde_json::Value::String("sleep 30".to_string());
+    req_2["response_file"] = serde_json::Value::String(spawn_reply_2.clone());
+    h.inject_ipc(serde_json::from_value(req_2).unwrap());
+    h.hidden_frame();
+
+    let spawn_resp_2 = read_json_response(&spawn_reply_2);
+    assert_eq!(spawn_resp_2["ok"], true);
+    let child_pane_id = spawn_resp_2["pane_id"].as_u64().unwrap();
+    assert_eq!(
+        spawn_resp_2["spawned_by"], "agent:claude-code",
+        "Claude parent must yield spawned_by=agent:claude-code"
+    );
+
+    let term_2 = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    assert_eq!(term_2.spawned_by.as_deref(), Some("agent:claude-code"));
+    assert_eq!(term_2.spawned_by_badge().as_deref(), Some("spawned by claude-code"));
+    assert_eq!(term_2.parent_pane_id, Some(claude_pane));
+
+    // 4. One bounded wait before completion: blocks while child is running.
+    let wait_reply = temp_response(fake_home.path(), "wait-child");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![child_pane_id],
+        timeout_secs: 30.0,
+        response_file: wait_reply.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&wait_reply).exists(),
+        "AgentWait must block until child finishes"
+    );
+
+    // 5. Child calls `AgentDone` with structured result and summary:
+    let done_reply = temp_response(fake_home.path(), "child-done");
+    h.inject_ipc(AppRequest::AgentDone {
+        pane_id: child_pane_id,
+        result: Some(serde_json::json!({"status": "passed", "vulnerabilities": 0}).to_string()),
+        summary: Some("Token lifetime audit passed cleanly".to_string()),
+        peer_ancestry: None,
+        response_file: done_reply.clone(),
+    });
+    h.hidden_frame();
+
+    let done_resp = read_json_response(&done_reply);
+    assert_eq!(done_resp["ok"], true);
+
+    // Bounded wait unblocks and returns the result:
+    let wait_resp = read_json_response(&wait_reply);
+    assert_eq!(wait_resp["ok"], true);
+    let results = wait_resp["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["pane_id"], child_pane_id);
+    assert_eq!(results[0]["summary"], "Token lifetime audit passed cleanly");
+    assert_eq!(results[0]["result"]["status"], "passed");
+    assert_eq!(results[0]["result"]["vulnerabilities"], 0);
+
+    // 6. Verify result persistence on disk:
+    let result_md_path = std::path::PathBuf::from(done_resp["result_path"].as_str().expect("result_path"));
+    let result_json_path = std::path::PathBuf::from(done_resp["json_path"].as_str().expect("json_path"));
+    assert!(result_md_path.exists(), "RESULT.md must exist at {}", result_md_path.display());
+    assert!(result_json_path.exists(), "result.json must exist at {}", result_json_path.display());
+
+    let result_md = std::fs::read_to_string(&result_md_path).expect("read RESULT.md");
+    assert!(result_md.contains("Token lifetime audit passed cleanly"));
+    assert!(result_md.contains("\"status\": \"passed\""));
+
+    let result_json = std::fs::read_to_string(&result_json_path).expect("read result.json");
+    let json_val: serde_json::Value = serde_json::from_str(&result_json).expect("valid json in result.json");
+    assert_eq!(json_val["status"], "passed");
+    assert_eq!(json_val["vulnerabilities"], 0);
+
+    // 7. Interactive child transitions to Idle on done:
+    let term_child_after = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    assert_eq!(
+        term_child_after.agent.as_ref().map(|a| a.state.clone()),
+        Some(crate::protocol::AgentState::Idle),
+        "interactive agent pane transitions to Idle on done"
+    );
+
+    // 8. Closing child pane: result remains readable via AgentWait.
+    let close_reply = temp_response(fake_home.path(), "close-child");
+    h.inject_ipc(AppRequest::ClosePane {
+        pane_id: child_pane_id,
+        response_file: Some(close_reply),
+    });
+    h.hidden_frame();
+    assert!(h.app.find_pane_in_any_window(child_pane_id).is_none());
+
+    let wait_after_close = temp_response(fake_home.path(), "wait-after-close");
+    h.inject_ipc(AppRequest::AgentWait {
+        pane_ids: vec![child_pane_id],
+        timeout_secs: 5.0,
+        response_file: wait_after_close.clone(),
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let wait_closed_resp = read_json_response(&wait_after_close);
+    assert_eq!(wait_closed_resp["ok"], true);
+    assert_eq!(wait_closed_resp["results"][0]["result"]["status"], "passed");
+}
+
+#[test]
 fn restored_agent_pane_enforces_permission_posture_on_pane_send() {
     let profile_dir = tempfile::tempdir().expect("profile_dir");
     let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
