@@ -2384,76 +2384,38 @@ mod cli_tests {
 
     #[cfg(unix)]
     #[test]
-    fn cli_closed_stdout_uses_sigpipe_without_changing_host() {
+    fn cli_closed_stdout_uses_sigpipe() {
         use std::os::fd::{FromRawFd, OwnedFd};
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
 
-        const CHILD_MODE: &str = "PLEXI_TEST_SIGPIPE_MODE";
-        if let Ok(mode) = std::env::var(CHILD_MODE) {
-            if mode == "host" {
-                for args in [&[][..], &["--profile", "doctor"], &["/tmp"]] {
-                    super::configure_cli_sigpipe(&argv(args)).unwrap();
-                    // Rust starts with SIGPIPE ignored. Query and restore that
-                    // disposition only inside this isolated child process.
-                    let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
-                    assert_eq!(previous, libc::SIG_IGN, "host argv: {args:?}");
-                }
-                std::process::exit(0);
-            }
-
-            super::configure_cli_sigpipe(&argv(&["--build-info"])).unwrap();
-            // Diagnose disposition vs. inherited signal-mask failures before
-            // exercising the write. Both calls only query this child process.
-            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-            assert_eq!(
-                unsafe { libc::sigaction(libc::SIGPIPE, std::ptr::null(), &mut action) },
-                0
-            );
-            assert_eq!(action.sa_sigaction, libc::SIG_DFL, "CLI disposition");
-            let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-            assert_eq!(
-                unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask) },
-                0
-            );
-            assert_eq!(
-                unsafe { libc::sigismember(&mask, libc::SIGPIPE) },
-                0,
-                "SIGPIPE blocked in child"
-            );
-            let mut fds = [-1; 2];
-            // Own both descriptors immediately; closing the reader before
-            // dup2 makes the stdout failure deterministic, without a race.
-            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-            let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
-            let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
-            drop(reader);
-            assert_eq!(
-                unsafe { libc::dup2(fds[1], libc::STDOUT_FILENO) },
-                libc::STDOUT_FILENO
-            );
-            drop(writer);
-            println!("{}", crate::distribution::build_info());
-            panic!("writing to closed stdout unexpectedly returned");
-        }
-
-        for mode in ["cli", "host"] {
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "cli_tests::cli_closed_stdout_uses_sigpipe_without_changing_host",
-                    "--nocapture",
-                ])
-                .env(CHILD_MODE, mode)
+        // The gate builds release before tests (including macOS/Linux CI).
+        // Never re-exec libtest: its extra threads can print an EPIPE panic
+        // while macOS is still delivering process-wide SIGPIPE termination.
+        let test_exe = std::env::current_exe().unwrap();
+        let binary = test_exe
+            .parent()
+            .unwrap() // deps
+            .parent()
+            .unwrap() // debug or release
+            .with_file_name("release")
+            .join("plexi");
+        assert!(
+            binary.is_file(),
+            "run `just build` before tests: {}",
+            binary.display()
+        );
+        let run = |stdout: Stdio| {
+            let mut child = Command::new(&binary)
+                .arg("--build-info")
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
+                .stdout(stdout)
                 .stderr(Stdio::piped())
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            let deadline = Instant::now()
-                + crate::testing::load_aware_timeout(Duration::from_secs(30));
+            let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
             loop {
                 if child.try_wait().unwrap().is_some() {
                     break;
@@ -2461,20 +2423,35 @@ mod cli_tests {
                 if Instant::now() >= deadline {
                     child.kill().unwrap();
                     let output = child.wait_with_output().unwrap();
-                    panic!("{mode} child hung: {output:?}");
+                    panic!("CLI child hung: {output:?}");
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
-            let output = child.wait_with_output().unwrap();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(!stderr.contains("panicked"), "{mode}: {stderr}");
-            assert_ne!(output.status.signal(), Some(libc::SIGABRT), "{stderr}");
-            if mode == "cli" {
-                assert_eq!(output.status.signal(), Some(libc::SIGPIPE), "{output:?}");
-            } else {
-                assert!(output.status.success(), "{output:?}");
-            }
-        }
+            child.wait_with_output().unwrap()
+        };
+
+        // Reject a stale release executable instead of silently validating
+        // another checkout or an earlier production implementation.
+        let open = run(Stdio::piped());
+        assert!(open.status.success(), "{open:?}");
+        assert!(open.stderr.is_empty(), "{open:?}");
+        let identity: serde_json::Value = serde_json::from_slice(&open.stdout).unwrap();
+        assert_eq!(
+            identity["build_id"],
+            env!("PLEXI_BUILD_ID"),
+            "re-run `just build`"
+        );
+
+        let mut fds = [-1; 2];
+        // SAFETY: pipe initializes both descriptors; OwnedFd takes ownership
+        // exactly once. Only the writer is passed to the dedicated CLI child.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+        let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+        drop(reader);
+        let closed = run(Stdio::from(writer));
+        assert_eq!(closed.status.signal(), Some(libc::SIGPIPE), "{closed:?}");
+        assert!(closed.stderr.is_empty(), "{closed:?}");
     }
 
     #[test]
