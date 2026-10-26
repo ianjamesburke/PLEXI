@@ -102,6 +102,8 @@ Every new feature must be instrumented. No new capability, command, or user-visi
 
 **`just pr-install <N>` is cwd-independent.** The recipe resolves the PR's head via `gh`, selects a worktree that provably contains it (the PR's clean feature worktree when present, else a detached canonical build tree), and runs pre-install tests and the build from that tree — never the caller's cwd. Provenance (PR, head sha, worktree) is echoed and appended to the PR profile's `install.log`.
 
+**`linux` is an advisory observer, not a merge gate.** The job runs on every PR that targets `alpha`, but it carries `continue-on-error: true`, which keeps the workflow **run** green when the job fails, and `alpha` has no required status checks — so nothing on GitHub blocks a merge on it. It runs anyway because it is a second observer of the same Rust code, and it is what caught stint 1008's two Linux-only test failures, which macOS could not see. The job's own check still reports `failure`: treat that as a signal to investigate, never as a gate to re-litigate at merge time. Linux bring-up is paused and lives on `feature/linux-alpha-bringup`, never on `alpha`. A Linux-only failure that is not reproducible on macOS must be recorded before merge — in the PR body, and in `TRUTH.md` if it is a product defect.
+
 Test-first for host logic. Define done by the test, not the code. No partial merges.
 
 **Host UI changes: identify the screenshot-test surface before implementing, not after.** TESTING.md's visual-review step (render realistic seeded content, Read the PNG, delete it) is mandatory, not an optional postscript — a passing alignment/geometry assertion is not proof the pixels look right. Plan which harness test will prove the fix before writing the fix.

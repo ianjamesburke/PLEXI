@@ -60,6 +60,15 @@ jobs:
       - name: Lint host
         run: cargo clippy --bin plexi -- -D warnings
 
+  # Advisory observer, deliberately (PR #2814). `continue-on-error` keeps the
+  # WORKFLOW RUN green when this job fails, and `alpha` has no required status
+  # checks, so nothing here gates a merge to alpha. It still runs because it is a
+  # second observer of the same Rust code: macOS cannot see a platform-tuned
+  # assumption, and this job is what caught stint 1008's two Linux-only test
+  # failures. The job's own check still reports `failure` — treat that as a
+  # signal to investigate, not a gate to re-litigate. Linux bring-up is paused
+  # and lives on `feature/linux-alpha-bringup`, never on alpha. See root
+  # `AGENTS.md`, Testing.
   linux:
     name: linux
     runs-on: ubuntu-22.04
