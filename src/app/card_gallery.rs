@@ -345,13 +345,13 @@ mod tests {
         let ctx = egui::Context::default();
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
         crate::ui::theme::setup_fonts(&ctx);
-        let _ = ctx.run(Default::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
         for scale in [0.6_f32, 1.0, 2.0] {
             ctx.set_zoom_factor(scale);
-            let _ = ctx.run(Default::default(), |ctx| {
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let (w, h) = (1440.0 / scale, 900.0 / scale);
                 let canvas = Rect::from_min_size(Pos2::ZERO, Vec2::new(w, h));
-                let (_, layouts) = measure_all(ctx, &colors, w);
+                let (_, layouts) = measure_all(ui.ctx(), &colors, w);
                 let plan = plan(canvas, &layouts);
                 for rs in &plan.rects {
                     for r in rs {
@@ -370,11 +370,11 @@ mod tests {
         let ctx = egui::Context::default();
         let colors = crate::ui::theme::Colors::from_config(&crate::config::ThemeConfig::default());
         crate::ui::theme::setup_fonts(&ctx);
-        let _ = ctx.run(Default::default(), |_| {});
-        let _ = ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             for (w, h) in [(1370.0, 930.0), (1000.0, 700.0)] {
                 let canvas = Rect::from_min_size(Pos2::new(40.0, 20.0), Vec2::new(w, h));
-                let (_, layouts) = measure_all(ctx, &colors, w);
+                let (_, layouts) = measure_all(ui.ctx(), &colors, w);
                 let plan = plan(canvas, &layouts);
                 for (i, rs) in plan.rects.iter().enumerate() {
                     for r in rs {
