@@ -15,7 +15,7 @@ All commands run from the feature worktree.
 just build
 ```
 
-Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` and bare `cargo build` do not catch dead code left behind by removed callers or broken `cfg(not(test))` paths (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
+Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` omits `cfg(not(test))` paths; bare `cargo build` includes them but does not reject dead-code warnings under the justfile's `-D warnings` (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
 
 Then the CI lint job, verbatim:
 
@@ -63,18 +63,11 @@ A diff can hit multiple layers; produce evidence for each.
 
 ## Step 2 — Host Logic Evidence
 
-Run the test modules nearest the touched code, then the full bin suite:
+Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` stay mandatory on every push.
 
-```bash
-bash scripts/cargo-with-lease.sh cargo test --bin plexi <module_filter>
-bash scripts/cargo-with-lease.sh cargo test --bin plexi
-```
+Direct-to-alpha pushes require full `cargo test --bin plexi`: stint 0799 removed per-push host CI. The full local suite also remains required at lane integration / before merge and combined aggregate validation. PR CI still runs the full suite. A scoped local pass is not acceptance: CI's full suite and installed validation are, subject to the existing install-skip rules below. Absent CI is not a full-suite pass.
 
-Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
-Use `-- --exact` only with the fully-qualified test name; a basename plus
-`--exact` can succeed after running zero tests. The full bin suite must be green
-in the current attempt; do not substitute an earlier run without recording when
-and against which diff it ran.
+Record pass/fail counts and the selected filters. Verify each selected surface has actual matches; zero tests is not evidence. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test written first. Use `-- --exact` only with the fully-qualified test name. Evidence must identify the current attempt and diff; do not silently reuse an earlier full-suite run.
 
 ## Step 3 — UI & App Evidence: Scenes and AppHarness
 
