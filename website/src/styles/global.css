@@ -285,3 +285,14 @@ footer .links a:hover { color: var(--fg); }
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
   .btn:hover { transform: none; }
 }
+
+/* Article layout keeps long commands and reference tables locally scrollable. */
+.prose { line-height: 1.7; overflow-wrap: anywhere; }
+.prose h2 { font-size: clamp(27px, 2.7vw, 39px); line-height: 1.15; letter-spacing: -.04em; }
+.prose h3 { font-size: 24px; line-height: 1.25; }
+.prose :is(h2, h3, h4) { scroll-margin-top: 100px; }
+.prose a { color: var(--accent-light); text-decoration: underline; text-underline-offset: 3px; }
+.prose pre { border-radius: 0; padding: 22px 18px; font-size: 14px; overflow-x: auto; }
+.prose pre code { font-family: var(--mono); overflow-wrap: normal; }
+.prose table { display: block; overflow-x: auto; font-size: 14px; }
+.prose .callout { border-radius: 0; border-left: 3px solid var(--accent-light); }
