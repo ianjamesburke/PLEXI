@@ -148,11 +148,12 @@ def read_checks(pr_number):
 
 
 def preflight(settings, task_root, sprint_file, requested):
-    if settings["topology"] != {"mode": "aggregate", "branch": "feature/alpha-cleanup",
-                                 "final_base": "alpha", "require_final_install": True}:
+    required = {"mode": "aggregate", "branch": "feature/alpha-cleanup",
+                "final_base": "alpha", "require_final_install": True}
+    if any(settings["topology"].get(key) != value for key, value in required.items()):
         raise PolicyError("aggregate topology is unresolved or incomplete")
     members = re.findall(r"\[(\d{4})\]\(\.\./tasks/", sprint_file.read_text())
-    if not members or len(members) != len(set(members)) or "0991" not in members:
+    if not members or len(members) != len(set(members)):
         raise PolicyError("invalid Alpha cleanup sprint membership")
     task_data = {}
     for task_id in members:
@@ -170,13 +171,20 @@ def preflight(settings, task_root, sprint_file, requested):
                               "size": size.group(1).upper() if size else None,
                               "blocked_by": [f"{int(item):04d}" for item in
                                              re.findall(r"(?m)^  - (\d+)$", blockers.group(1) if blockers else "")],
-                              "done_when": "## Done-When" in body}
-    if task_data["0991"]["blocked_by"]:
+                              "done_when": bool(re.search(r"(?m)^## Done[- ]When\s*$", metadata[2]))}
+    gate_id = settings["topology"].get("preflight_task")
+    gate = task_data.get(gate_id)
+    if gate and gate["blocked_by"]:
         raise PolicyError("preflight task has a blocking dependency")
-    for task_id, task in task_data.items():
-        if not task["done_when"] or not task["size"] or (
-                task_id != "0991" and "0991" not in task["blocked_by"] and task_data["0991"]["status"] != "done"):
-            raise PolicyError(f"task {task_id} is missing Done-When or 0991 dependency")
+    selected = [f"{int(task_id):04d}" for task_id in requested]
+    if not selected or any(task_id == gate_id or task_id not in task_data for task_id in selected):
+        raise PolicyError("requested task is missing or not a product task")
+    for task_id in selected + ([gate_id] if gate else []):
+        task = task_data[task_id]
+        if not task["done_when"] or not task["size"]:
+            raise PolicyError(f"task {task_id} is missing Done-When or size")
+        if gate and gate["status"] != "done" and task_id != gate_id and gate_id not in task["blocked_by"]:
+            raise PolicyError(f"task {task_id} is missing {gate_id} dependency")
     visiting = set()
     visited = set()
 
@@ -194,11 +202,8 @@ def preflight(settings, task_root, sprint_file, requested):
 
     for task_id in task_data:
         visit(task_id)
-    if task_data["0991"]["status"] != "done":
-        raise PolicyError("0991 has not completed; product dispatch is blocked")
-    selected = [f"{int(task_id):04d}" for task_id in requested]
-    if not selected or any(task_id == "0991" or task_id not in task_data for task_id in selected):
-        raise PolicyError("requested task is missing or not a product task")
+    if gate and gate["status"] != "done":
+        raise PolicyError(f"{gate_id} has not completed; product dispatch is blocked")
     if any(task_data[task_id]["status"] not in ("todo", "in-progress") for task_id in selected):
         raise PolicyError("requested task is not claimable")
     for task_id in selected:
@@ -208,7 +213,7 @@ def preflight(settings, task_root, sprint_file, requested):
     return {"topology": settings["topology"], "tasks": selected,
             "size": max((task_data[task_id]["size"] for task_id in selected),
                         key=lambda item: {"S": 1, "M": 2, "L": 3}[item]),
-            "preflight": "0991", "preflight_status": "done"}
+            "preflight": gate_id, "preflight_status": "done" if gate else "skipped"}
 
 
 def verify_manifest(manifest, record, final_head, allow_unresolved=False):
@@ -249,10 +254,10 @@ def live_gate(settings, record, pr_number, phase, manifest=None, allow_unresolve
     if phase == "final":
         if manifest is None:
             raise PolicyError("final gate requires the aggregate manifest")
-        sprint_file = alpha_root() / ".stint/sprints/s03.md"
+        sprint_file = alpha_root() / settings["topology"]["sprint"]
         actual_queue = [task_id for task_id in re.findall(
             r"\[(\d{4})\]\(\.\./tasks/", sprint_file.read_text()
-        ) if task_id != "0991"]
+        ) if task_id != settings["topology"].get("preflight_task")]
         if sorted(manifest.get("requested_stints", [])) != sorted(actual_queue):
             raise PolicyError("aggregate manifest omits sprint tasks")
         verify_manifest(manifest, record, head, allow_unresolved)
@@ -313,16 +318,16 @@ def integrate_locked(settings, record, pr_number, manifest_path):
     if not record.get("stints") or not all(re.fullmatch(r"\d{4}", task_id) for task_id in record["stints"]):
         raise PolicyError("batch record has no valid stint IDs")
     root = alpha_root()
-    plan = preflight(settings, root / ".stint/tasks", root / ".stint/sprints/s03.md", record["stints"])
+    plan = preflight(settings, root / ".stint/tasks", root / settings["topology"]["sprint"], record["stints"])
     if record.get("size") != plan["size"]:
         raise PolicyError("record size does not match the largest stint")
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
     else:
         members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
-                             (root / ".stint/sprints/s03.md").read_text())
+                             (root / settings["topology"]["sprint"]).read_text())
         manifest = {"topology": "aggregate", "requested_stints":
-                    [task_id for task_id in members if task_id != "0991"],
+                    [task_id for task_id in members if task_id != settings["topology"].get("preflight_task")],
                     "batches": [], "parked": []}
     if manifest.get("topology") != "aggregate" or any(
         item.get("pr") == pr_number for item in manifest.get("batches", [])
@@ -423,7 +428,7 @@ def main():
         elif args.action == "preflight":
             root = alpha_root()
             print(json.dumps(preflight(settings, root / ".stint/tasks",
-                                       root / ".stint/sprints/s03.md", args.tasks)))
+                                       root / settings["topology"]["sprint"], args.tasks)))
         elif args.action == "gate":
             record = json.loads(args.record.read_text())
             manifest = json.loads(args.manifest.read_text()) if args.manifest else None
@@ -434,7 +439,7 @@ def main():
         else:
             record = json.loads(args.record.read_text())
             print(recover_base_race(settings, record, args.pr, args.manifest))
-    except (PolicyError, KeyError, IndexError, subprocess.CalledProcessError) as error:
+    except (PolicyError, KeyError, IndexError, OSError, subprocess.CalledProcessError) as error:
         print(f"babysitter-policy: {error}", file=sys.stderr)
         return 1
     return 0

@@ -39,6 +39,8 @@ agyg = "Gemini 4 Argon High"
 pi = "DeepSeek V4.1 Flash"
 
 [topology]
+sprint = ".stint/sprints/s04.md"
+preflight_task = "0991"
 mode = "aggregate"
 branch = "feature/alpha-cleanup"
 final_base = "alpha"
