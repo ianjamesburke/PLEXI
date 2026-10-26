@@ -2699,7 +2699,7 @@ fn agent_state_script(binary: &str) -> String {
     format!(
         r#"#!/bin/sh
 if [ -z "${{PLEXI_SOCKET:-}}" ] || [ -z "${{PLEXI_PANE_ID:-}}" ]; then
-    cat >/dev/null
+    [ -t 0 ] || cat >/dev/null
     exit 0
 fi
 exec "{binary}" agent hook-event --agent "${{PLEXI_AGENT_NAME:-claude-code}}"
@@ -3600,6 +3600,80 @@ mod agent_tests {
 
     #[cfg(unix)]
     #[test]
+    fn agent_state_script_exits_with_tty_and_drains_pipe() {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        // Keep the master open without sending EOF: cat would wait forever.
+        let (_master, slave) = unsafe {
+            let (mut master, mut slave) = (0, 0);
+            assert_eq!(
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ),
+                0,
+                "openpty: {}",
+                std::io::Error::last_os_error()
+            );
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        };
+        for (label, stdin) in [("TTY", Stdio::from(slave)), ("pipe", Stdio::piped())] {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", &super::agent_state_script("plexi")])
+                .env_remove("PLEXI_SOCKET")
+                .env_remove("PLEXI_PANE_ID")
+                .stdin(stdin)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            // More than a pipe buffer: exiting without draining must break this write.
+            let writer = child.stdin.take().map(|mut pipe| {
+                std::thread::spawn(move || pipe.write_all(&vec![b'x'; 1024 * 1024]))
+            });
+            let timeout = crate::testing::load_aware_timeout(Duration::from_secs(2));
+            let started = Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break Some(status);
+                }
+                if started.elapsed() >= timeout {
+                    // Kill the isolated shell AND its cat before reaping or joining.
+                    assert_eq!(
+                        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) },
+                        0
+                    );
+                    child.wait().unwrap();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            if let Some(writer) = writer {
+                writer
+                    .join()
+                    .unwrap()
+                    .expect("hook must drain the entire piped payload");
+            }
+            assert!(
+                status.is_some_and(|status| status.success()),
+                "{label} hook did not exit successfully within {timeout:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn startup_repairs_missing_shared_hook_without_replacing_existing_scripts() {
         use std::os::unix::fs::PermissionsExt;
         let shared = tempfile::tempdir().unwrap();
@@ -3618,6 +3692,7 @@ mod agent_tests {
             0o755
         );
         assert!(std::process::Command::new(&path)
+            .stdin(std::process::Stdio::null())
             .env_remove("PLEXI_SOCKET")
             .env_remove("PLEXI_PANE_ID")
             .status()
