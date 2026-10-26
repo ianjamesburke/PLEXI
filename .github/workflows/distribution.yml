@@ -87,6 +87,10 @@ jobs:
         run: |
           suffix=''; [[ '${{ runner.os }}' != Windows ]] || suffix=.exe
           uv run --no-project python scripts/test-distribution.py --installer "target/release/plexi-installer$suffix" --platform '${{ matrix.platform }}'
+      - name: Build the release host
+        shell: bash
+        run: |
+          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
       # Release tags only: on PRs and alpha pushes the Rust host workflow already
       # runs this exact test + clippy, so repeating it here just doubles the wait.
       - name: Test and lint the host
@@ -104,10 +108,6 @@ jobs:
             cargo test --bin plexi
           fi
           cargo clippy --bin plexi -- -D warnings
-      - name: Build the release host
-        shell: bash
-        run: |
-          RUSTFLAGS="-D warnings" cargo build --release --bin plexi
       - name: Install Linux display dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb xauth
