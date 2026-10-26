@@ -46,7 +46,8 @@ TEST_SETTINGS = {
                            "agy": "working", "pi": "working"},
     },
     "topology": {"mode": "aggregate", "branch": "feature/alpha-cleanup",
-                 "final_base": "alpha", "require_final_install": True},
+                 "final_base": "alpha", "require_final_install": True,
+                 "sprint": ".stint/sprints/custom.md", "preflight_task": "0991"},
 }
 
 
@@ -221,6 +222,22 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaisesRegex(policy.PolicyError, "changed during final gate"):
                 policy.live_gate(self.settings, self.record, 100, "batch")
 
+    def test_final_gate_uses_configured_sprint_and_gate(self):
+        root = Path(tempfile.mkdtemp(prefix="policy-final-1068-"))
+        sprint = root / self.settings["topology"]["sprint"]
+        sprint.parent.mkdir(parents=True)
+        self.settings["topology"]["preflight_task"] = "1236"
+        sprint.write_text("- [1236](../tasks/1236-gate.md)\n- [0986](../tasks/0986-product.md)\n")
+        pr = {"baseRefName": "alpha", "headRefOid": self.head, "state": "OPEN"}
+        record = dict(self.record, aggregate_head=self.head, integrated_batches=[100])
+        manifest = {"topology": "aggregate", "requested_stints": ["0986"],
+                    "batches": [{"pr": 100, "aggregate_head": self.head, "stints": ["0986"]}]}
+        responses = [json.dumps(pr), self.base, self.head, json.dumps(pr), self.base]
+        with patch.object(policy, "alpha_root", return_value=root), patch.object(
+            policy, "command", side_effect=responses
+        ), patch.object(policy, "read_checks", return_value=self.checks):
+            self.assertEqual(policy.live_gate(self.settings, record, 101, "final", manifest), self.head)
+
     def test_aggregate_integration_records_result_without_alpha_mutation(self):
         first = {**self.pr, "state": "OPEN"}
         commands = []
@@ -263,7 +280,7 @@ class PolicyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            sprint = root / ".stint/sprints/s03.md"
+            sprint = root / self.settings["topology"]["sprint"]
             sprint.parent.mkdir(parents=True)
             sprint.write_text("- [0991](../tasks/0991-gate.md)\n- [0986](../tasks/0986-zoom.md)\n")
             manifest = root / "aggregate.json"
@@ -273,8 +290,10 @@ class PolicyTests(unittest.TestCase):
                 policy, "read_checks", return_value=self.checks
             ), patch.object(policy, "alpha_root", return_value=root), patch.object(
                 policy, "preflight", return_value={"size": "S"}
-            ):
+            ) as preflight_mock:
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
+                preflight_mock.assert_called_once_with(
+                    self.settings, root / ".stint/tasks", sprint, self.record["stints"])
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
                 self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
@@ -401,6 +420,41 @@ class PolicyTests(unittest.TestCase):
             product.write_text(product.read_text().replace("## Done-When\n", ""))
             with self.assertRaisesRegex(policy.PolicyError, "Done-When"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
+
+    def test_configured_sprint_headings_and_optional_gate(self):
+        # Retain fixtures for inspection; this worker does not delete files.
+        root = Path(tempfile.mkdtemp(prefix="policy-1068-"))
+        tasks = root / ".stint/tasks"
+        tasks.mkdir(parents=True)
+        sprint = root / self.settings["topology"]["sprint"]
+        sprint.parent.mkdir(parents=True)
+        sprint.write_text("- [1234](../tasks/1234-product.md)\n- [1235](../tasks/1235-other.md)\n")
+        product = tasks / "1234-product.md"
+        product.write_text("---\nstatus: todo\nsize: m\nblocked_by: []\n---\n## Done When\n")
+        (tasks / "1235-other.md").write_text("---\nstatus: todo\nsize: s\nblocked_by: []\n---\n")
+        with patch.object(policy, "config", return_value=self.settings), patch.object(
+            policy, "alpha_root", return_value=root
+        ), patch("sys.argv", [str(SCRIPT), "preflight", "1234"]), patch(
+            "sys.stdout", new_callable=io.StringIO
+        ) as output:
+            self.assertEqual(policy.main(), 0)
+            plan = json.loads(output.getvalue())
+        self.assertEqual(plan["tasks"], ["1234"])
+        self.assertEqual(plan["size"], "M")
+        self.assertEqual(plan["preflight_status"], "skipped")
+        with self.assertRaisesRegex(policy.PolicyError, "Done-When"):
+            policy.preflight(self.settings, tasks, sprint, ["1235"])
+        self.settings["topology"]["preflight_task"] = "1236"
+        sprint.write_text(sprint.read_text() + "- [1236](../tasks/1236-gate.md)\n")
+        gate = tasks / "1236-gate.md"
+        gate.write_text("---\nstatus: todo\nsize: s\nblocked_by: []\n---\n## Done-When\n")
+        with self.assertRaisesRegex(policy.PolicyError, "1236"):
+            policy.preflight(self.settings, tasks, sprint, ["1234"])
+        gate.write_text(gate.read_text().replace("status: todo", "status: done"))
+        plan = policy.preflight(self.settings, tasks, sprint, ["1234"])
+        self.assertEqual((plan["preflight"], plan["preflight_status"]), ("1236", "done"))
+        self.settings["topology"].pop("preflight_task")
+        self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["1234"])["preflight_status"], "skipped")
 
     def test_ledger_summary_matches_real_trial_ledger(self):
         fixture = SCRIPT.with_name("testdata") / "babysitter-ledger"
