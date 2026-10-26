@@ -779,6 +779,27 @@ mod tests {
         }
     }
 
+    /// The narrower case reproduces font-driven grid overflow on macOS too.
+    /// Keep the original gallery/modal scale matrix unchanged.
+    #[test]
+    fn ui_scale_shortcuts_fit_narrow_window() {
+        for (width, scale) in [(1440.0, 1.0), (1440.0, 2.0), (1200.0, 2.0)] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| app.show_shortcuts = true);
+            h.run_steps(4);
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            let rect = ui_scale_area_rect(&h, "shortcuts");
+            eprintln!("shortcuts {rect:?}, screen {screen:?} at scale {scale}");
+            if std::env::var_os("PLEXI_SHORTCUTS_SCREENSHOTS").is_some() {
+                let path = evidence_png!(&format!("_{width}_{scale}"));
+                h.save_screenshot(&path).unwrap();
+                eprintln!("shortcuts screenshot: {path}");
+            }
+            assert_inside("shortcuts", scale, rect, screen);
+        }
+    }
+
     /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
     /// terminal pane's effective pixel font size grows with it.
     #[test]

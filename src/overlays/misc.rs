@@ -51,14 +51,25 @@ impl PlexiApp {
                     let colors = &self.colors;
 
                     ui.horizontal(|ui| {
+                        // Keep both columns inside the shell's content budget. Grid
+                        // minimums and unwrapped chip rows otherwise expand the Area.
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let column_width = (ui.available_width() - 2.0 * style::SPACE_MD) / 2.0;
+                        // Long chords may use up to 60%; descriptions wrap in
+                        // the remaining space (or use more for shorter chords).
+                        let cell_width = (column_width - style::SPACE_SM) * 0.6;
+                        if ui.is_sizing_pass() {
+                            log::info!("shortcuts layout: column_width={column_width:.1} cell_width={cell_width:.1}");
+                        }
                         // ── Left column ──────────────────────────────
                         ui.vertical(|ui| {
-                            ui.set_width(288.0);
+                            ui.set_width(column_width);
 
                             section_label(ui, "LAYOUT", colors);
                             egui::Grid::new("shortcuts_layout")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -85,7 +96,8 @@ impl PlexiApp {
                             section_label(ui, "NAVIGATION", colors);
                             egui::Grid::new("shortcuts_nav")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     crate::ui::shortcuts::key_combo_list(
@@ -183,15 +195,17 @@ impl PlexiApp {
 
                         // ── Vertical divider ──────────────────────────
                         ui.add_space(style::SPACE_MD);
-                        ui.separator();
+                        ui.add(egui::Separator::default().vertical().spacing(0.0));
                         ui.add_space(style::SPACE_MD);
 
                         // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
+                            ui.set_width(column_width);
                             section_label(ui, "APPS & TOOLS", colors);
                             egui::Grid::new("shortcuts_apps")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -216,7 +230,8 @@ impl PlexiApp {
                             section_label(ui, "TERMINAL", colors);
                             egui::Grid::new("shortcuts_terminal")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     crate::ui::shortcuts::key_combo_list(
@@ -263,7 +278,8 @@ impl PlexiApp {
                             section_label(ui, "SETTINGS", colors);
                             egui::Grid::new("shortcuts_settings")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
