@@ -14,24 +14,6 @@ fn shortcut_description(ui: &mut egui::Ui, desc: &str, colors: &Colors) {
     crate::ui::typography::caption(ui, desc, colors);
 }
 
-// Grid cells have a finite width: wrap chips as well as descriptions so
-// platform key spellings (Ctrl/Shift versus glyphs) cannot enlarge the modal.
-fn shortcut_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
-    shortcut_combo_list(ui, &[keys], None, colors);
-}
-
-fn shortcut_combo_list(
-    ui: &mut egui::Ui,
-    combos: &[&[&str]],
-    trailing: Option<&str>,
-    colors: &Colors,
-) {
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        crate::ui::shortcuts::key_combo_list_inline(ui, combos, trailing, colors);
-    });
-}
-
 fn should_show_changelog_line(line: &str) -> bool {
     let Some(entry) = line
         .trim_start()
@@ -103,7 +85,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
-                                        shortcut_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
@@ -118,7 +100,7 @@ impl PlexiApp {
                                 .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
                                         None,
@@ -131,7 +113,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "L"],
@@ -143,7 +125,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Next / prev tab", colors);
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "K"],
@@ -155,7 +137,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "First / last tab", colors);
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "["], &["\u{2318}", "]"]],
                                         None,
@@ -168,7 +150,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
@@ -177,7 +159,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Switch context 1–9", colors);
                                     ui.end_row();
 
-                                    shortcut_combo(
+                                    crate::ui::shortcuts::key_combo(
                                         ui,
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
@@ -189,7 +171,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
                                         None,
@@ -198,7 +180,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Swap pane (focus follows)", colors);
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&[
                                             "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
@@ -237,7 +219,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
                                     ];
                                     for (keys, desc) in rows {
-                                        shortcut_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
@@ -252,7 +234,7 @@ impl PlexiApp {
                                 .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
                                         None,
@@ -261,7 +243,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Scroll terminal", colors);
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "="], &["\u{2318}", "-"]],
                                         None,
@@ -270,7 +252,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Text size +/−", colors);
                                     ui.end_row();
 
-                                    shortcut_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "="],
@@ -282,7 +264,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "UI scale +/−", colors);
                                     ui.end_row();
 
-                                    shortcut_combo(
+                                    crate::ui::shortcuts::key_combo(
                                         ui,
                                         &["\u{2318}", "\u{21E7}", "0"],
                                         colors,
@@ -312,7 +294,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
                                     for (keys, desc) in rows {
-                                        shortcut_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }

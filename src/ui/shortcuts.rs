@@ -204,11 +204,9 @@ pub(crate) fn key_chip(
     response
 }
 
+// Wrap at the caller's width so platform spellings cannot widen a grid cell.
 pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        key_combo_list_inline(ui, &[keys], None, colors);
-    });
+    key_combo_list(ui, &[keys], None, colors);
 }
 
 pub(crate) fn key_combo_list(
@@ -217,13 +215,9 @@ pub(crate) fn key_combo_list(
     trailing: Option<&str>,
     colors: &Colors,
 ) {
-    key_combo_list_with_body(ui, combos, colors, |ui| {
-        if let Some(text) = trailing {
-            ui.add(
-                egui::Label::new(shortcut_hint_label(text, colors))
-                    .wrap_mode(egui::TextWrapMode::Extend),
-            );
-        }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        key_combo_list_inline(ui, combos, trailing, colors);
     });
 }
 
