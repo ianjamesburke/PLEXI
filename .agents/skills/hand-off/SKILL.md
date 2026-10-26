@@ -2,6 +2,7 @@
 name: hand-off
 description: Split the current pane, launch a command in the new pane, confirm it started, then close self. Use when explicitly transferring work to a different agent or pane — e.g. escalating a hard reject, handing off to a human, or launching a parallel task. Not for the standard ship pipeline (those chain inline). Requires PLEXI_PANE_ID.
 source: local
+disable-model-invocation: true
 ---
 
 # Hand-Off
