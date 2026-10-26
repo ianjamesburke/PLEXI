@@ -3,7 +3,7 @@ name: Rust host
 on:
   workflow_call:
   pull_request:
-    branches: [alpha]
+    branches: [alpha, feature/alpha-cleanup]
     paths-ignore:
       - '**/*.md'
       - '.agents/**'
