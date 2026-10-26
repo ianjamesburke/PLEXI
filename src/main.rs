@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// `delete_context` drops windows on a worker thread. Proving `Window: Send`
+//  `delete_context` drops windows on a worker thread. Proving `Window: Send`
 // walks the wgpu resource graph, and the combined phone + ledger assistant
 // state overflows rustc's default recursion limit in test builds.
 #![recursion_limit = "256"]
