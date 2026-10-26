@@ -14,6 +14,24 @@ fn shortcut_description(ui: &mut egui::Ui, desc: &str, colors: &Colors) {
     crate::ui::typography::caption(ui, desc, colors);
 }
 
+// Grid cells have a finite width: wrap chips as well as descriptions so
+// platform key spellings (Ctrl/Shift versus glyphs) cannot enlarge the modal.
+fn shortcut_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
+    shortcut_combo_list(ui, &[keys], None, colors);
+}
+
+fn shortcut_combo_list(
+    ui: &mut egui::Ui,
+    combos: &[&[&str]],
+    trailing: Option<&str>,
+    colors: &Colors,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        crate::ui::shortcuts::key_combo_list_inline(ui, combos, trailing, colors);
+    });
+}
+
 fn should_show_changelog_line(line: &str) -> bool {
     let Some(entry) = line
         .trim_start()
@@ -51,14 +69,25 @@ impl PlexiApp {
                     let colors = &self.colors;
 
                     ui.horizontal(|ui| {
+                        // Keep both columns inside the shell's content budget. Grid
+                        // minimums and unwrapped chip rows otherwise expand the Area.
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let column_width = (ui.available_width() - 2.0 * style::SPACE_MD) / 2.0;
+                        // Long chords may use up to 60%; descriptions wrap in
+                        // the remaining space (or use more for shorter chords).
+                        let cell_width = (column_width - style::SPACE_SM) * 0.6;
+                        if ui.is_sizing_pass() {
+                            log::info!("shortcuts layout: column_width={column_width:.1} cell_width={cell_width:.1}");
+                        }
                         // ── Left column ──────────────────────────────
                         ui.vertical(|ui| {
-                            ui.set_width(288.0);
+                            ui.set_width(column_width);
 
                             section_label(ui, "LAYOUT", colors);
                             egui::Grid::new("shortcuts_layout")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -74,7 +103,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
+                                        shortcut_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
@@ -85,10 +114,11 @@ impl PlexiApp {
                             section_label(ui, "NAVIGATION", colors);
                             egui::Grid::new("shortcuts_nav")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
                                         None,
@@ -101,7 +131,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "L"],
@@ -113,7 +143,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Next / prev tab", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "K"],
@@ -125,7 +155,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "First / last tab", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}", "["], &["\u{2318}", "]"]],
                                         None,
@@ -138,7 +168,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
@@ -147,7 +177,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Switch context 1–9", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo(
+                                    shortcut_combo(
                                         ui,
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
@@ -159,7 +189,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
                                         None,
@@ -168,7 +198,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Swap pane (focus follows)", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&[
                                             "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
@@ -183,15 +213,17 @@ impl PlexiApp {
 
                         // ── Vertical divider ──────────────────────────
                         ui.add_space(style::SPACE_MD);
-                        ui.separator();
+                        ui.add(egui::Separator::default().vertical().spacing(0.0));
                         ui.add_space(style::SPACE_MD);
 
                         // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
+                            ui.set_width(column_width);
                             section_label(ui, "APPS & TOOLS", colors);
                             egui::Grid::new("shortcuts_apps")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -205,7 +237,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
+                                        shortcut_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
@@ -216,10 +248,11 @@ impl PlexiApp {
                             section_label(ui, "TERMINAL", colors);
                             egui::Grid::new("shortcuts_terminal")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
                                         None,
@@ -228,7 +261,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Scroll terminal", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[&["\u{2318}", "="], &["\u{2318}", "-"]],
                                         None,
@@ -237,7 +270,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "Text size +/−", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo_list(
+                                    shortcut_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "="],
@@ -249,7 +282,7 @@ impl PlexiApp {
                                     shortcut_description(ui, "UI scale +/−", colors);
                                     ui.end_row();
 
-                                    crate::ui::shortcuts::key_combo(
+                                    shortcut_combo(
                                         ui,
                                         &["\u{2318}", "\u{21E7}", "0"],
                                         colors,
@@ -263,7 +296,8 @@ impl PlexiApp {
                             section_label(ui, "SETTINGS", colors);
                             egui::Grid::new("shortcuts_settings")
                                 .num_columns(2)
-                                .min_col_width(80.0)
+                                .min_col_width(0.0)
+                                .max_col_width(cell_width)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
                                     let rows: &[(&[&str], &str)] = &[
@@ -278,7 +312,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
+                                        shortcut_combo(ui, keys, colors);
                                         shortcut_description(ui, desc, colors);
                                         ui.end_row();
                                     }
