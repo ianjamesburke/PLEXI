@@ -1,5 +1,6 @@
 """Offline proof for babysitter routing, graph and exact-head gates."""
 
+import copy
 import importlib.util
 import io
 import json
@@ -17,9 +18,41 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 
 
+# Synthetic routing is fixed so operational preference changes cannot alter gate evidence.
+TEST_SETTINGS = {
+    "authorization": {"auto_merge": True},
+    "roles": {
+        "head": ["agy", "col", "cm", "agym"],
+        "worker_small": ["agyf", "cos", "cs", "pi"],
+        "worker_medium": ["agyf", "com", "cm", "pi"],
+        "worker_large": ["agyg", "col", "agyl", "cl", "pi"],
+        "tester": ["agy", "cs", "agym", "cos"],
+    },
+    "engines": {
+        "alias_vendor": {"cos": "codex", "com": "codex", "col": "codex",
+                         "cs": "claude", "cm": "claude", "cl": "claude",
+                         "agy": "gemini", "agym": "claude", "agyl": "claude",
+                         "agyf": "gemini", "agyg": "gemini", "pi": "deepseek"},
+        "alias_model": {"cos": "Luna", "com": "Terra", "col": "Astra",
+                        "cs": "Sonnet", "cm": "Opus", "cl": "Opus",
+                        "agy": "Gemini", "agym": "Sonnet", "agyl": "Opus",
+                        "agyf": "Gemini Flash", "agyg": "Gemini High",
+                        "pi": "DeepSeek V4.1 Flash"},
+        "alias_engine": {"c": "claude", "co": "codex", "agy": "agy", "pi": "pi"},
+        "launch": {"claude": "{alias} {prompt}", "codex": "{alias} {prompt}",
+                   "agy": "{alias} -i {prompt}",
+                   "pi": "{alias} --model openrouter/deepseek/deepseek-v4.1-flash {prompt}"},
+        "working_footer": {"claude": "working", "codex": "working",
+                           "agy": "working", "pi": "working"},
+    },
+    "topology": {"mode": "aggregate", "branch": "feature/alpha-cleanup",
+                 "final_base": "alpha", "require_final_install": True},
+}
+
+
 class PolicyTests(unittest.TestCase):
     def setUp(self):
-        self.settings = policy.config()
+        self.settings = copy.deepcopy(TEST_SETTINGS)
         self.head = "a" * 40
         self.base = "b" * 40
         self.record = {
@@ -33,6 +66,25 @@ class PolicyTests(unittest.TestCase):
         }
         self.pr = {"baseRefName": "feature/alpha-cleanup", "headRefOid": self.head}
         self.checks = [{"name": "required", "bucket": "pass"}]
+
+    def test_live_config_has_configured_aliases_and_independent_routes(self):
+        settings = policy.config()
+        engines = settings["engines"]
+        for role, aliases in settings["roles"].items():
+            self.assertTrue(aliases, role)
+            for alias in aliases:
+                with self.subTest(role=role, alias=alias):
+                    for mapping in ("alias_vendor", "alias_model"):
+                        self.assertTrue(engines[mapping].get(alias), (mapping, alias))
+                    prefixes = [p for p in engines["alias_engine"] if alias.startswith(p)]
+                    self.assertTrue(prefixes, alias)
+                    engine = engines["alias_engine"][max(prefixes, key=len)]
+                    self.assertTrue(engines["launch"].get(engine), engine)
+                    self.assertTrue(engines["working_footer"].get(engine), engine)
+        for size in "SML":
+            with self.subTest(size=size):
+                selected = policy.route(settings, size)
+                self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
 
     def test_sizes_route_distinct_models_and_independent_vendors(self):
         for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
@@ -170,10 +222,6 @@ class PolicyTests(unittest.TestCase):
                 policy.live_gate(self.settings, self.record, 100, "batch")
 
     def test_aggregate_integration_records_result_without_alpha_mutation(self):
-        selected = policy.route(self.settings, "S")
-        self.record.update(worker_alias=selected["worker"], tester_alias=selected["tester"])
-        self.record["validation"].update(worker_vendor=selected["worker_vendor"],
-                                          tester_vendor=selected["tester_vendor"])
         first = {**self.pr, "state": "OPEN"}
         commands = []
         parent = [self.base]
