@@ -20,7 +20,7 @@ select_filters() {
             src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
             src/ui/*|src/render/*|src/ui_tests.rs|src/scenes.rs|tests/scenes/*)
                 printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
-            src/cli/*) printf '%s\n' cli:: testing:: ;;
+            src/cli/*) printf '%s\n' cli:: cli_tests:: testing:: ;;
             src/editor/*|src/app/text_editor_app.rs)
                 printf '%s\n' editor:: editor_gate ui_tests:: scene_suite ;;
             src/config/*|src/workspace/*)
@@ -62,19 +62,24 @@ if [[ $# -gt 0 ]]; then
     select_filters "$@"
 else
     root=$(git rev-parse --show-toplevel) &&
-        base=$(git merge-base "${SCOPED_TEST_BASE:-origin/alpha}" HEAD) &&
-        tracked=$(git -C "$root" diff --name-only --no-renames "$base" --) &&
-        untracked=$(git -C "$root" ls-files --others --exclude-standard)
+        base=$(git merge-base "${SCOPED_TEST_BASE:-origin/alpha}" HEAD)
     if [[ $? -ne 0 ]]; then
-        printf 'scoped-tests: cannot detect diff; selecting all test paths\n' >&2
+        printf 'scoped-tests: cannot detect base; selecting all test paths\n' >&2
         printf '%s\n' ::
     else
         paths=()
-        while IFS= read -r path; do
-            [[ -z "$path" ]] || paths+=("$path")
-        done <<< "$tracked
-$untracked"
+        # NUL delimiters preserve spaces, Unicode, newlines and Git-quoted names.
+        # A failed producer emits an unknown src path, forcing the broad fallback.
+        while IFS= read -r -d '' path; do
+            paths+=("$path")
+        done < <(
+            git -C "$root" diff --name-only --no-renames -z "$base" -- ||
+                printf 'src/__detection_failed__\0'
+            git -C "$root" ls-files --others --exclude-standard -z ||
+                printf 'src/__detection_failed__\0'
+        )
         select_filters "${paths[@]}"
     fi
+
 fi
 exit 0
