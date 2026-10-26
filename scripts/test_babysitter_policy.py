@@ -1,6 +1,7 @@
 """Offline proof for babysitter routing, graph and exact-head gates."""
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -169,13 +170,26 @@ class PolicyTests(unittest.TestCase):
                 policy.live_gate(self.settings, self.record, 100, "batch")
 
     def test_aggregate_integration_records_result_without_alpha_mutation(self):
+        selected = policy.route(self.settings, "S")
+        self.record.update(worker_alias=selected["worker"], tester_alias=selected["tester"])
+        self.record["validation"].update(worker_vendor=selected["worker_vendor"],
+                                          tester_vendor=selected["tester_vendor"])
         first = {**self.pr, "state": "OPEN"}
         commands = []
         parent = [self.base]
         already_merged = [False]
+        cleanup_error = [None]
+        active_manifest = [None]
+        cleanup_names = ("reap-merged-worktrees.sh", "clean-stale-targets.sh", "channel-clean-merged.sh")
 
         def fake_command(*args):
             commands.append(args)
+            if args[0] == "bash":
+                self.assertTrue(active_manifest[0].exists())
+                self.assertEqual(json.loads(active_manifest[0].read_text())["batches"][0]["aggregate_head"], "d" * 40)
+                if Path(args[1]).name == cleanup_names[0] and cleanup_error[0]:
+                    raise cleanup_error[0]
+                return ""
             if args[:3] == ("git", "worktree", "list"):
                 return "worktree /tmp/aggregate\nbranch refs/heads/feature/alpha-cleanup"
             if args[:4] == ("git", "-C", "/tmp/aggregate", "status"):
@@ -205,6 +219,8 @@ class PolicyTests(unittest.TestCase):
             sprint.parent.mkdir(parents=True)
             sprint.write_text("- [0991](../tasks/0991-gate.md)\n- [0986](../tasks/0986-zoom.md)\n")
             manifest = root / "aggregate.json"
+            active_manifest[0] = manifest
+            cleanup_commands = [("bash", str(root / "scripts" / name)) for name in cleanup_names]
             with patch.object(policy, "command", side_effect=fake_command), patch.object(
                 policy, "read_checks", return_value=self.checks
             ), patch.object(policy, "alpha_root", return_value=root), patch.object(
@@ -212,11 +228,25 @@ class PolicyTests(unittest.TestCase):
             ):
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
+                self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
+                for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
+                    with self.subTest(cleanup_error=type(error).__name__):
+                        commands.clear()
+                        cleanup_error[0] = error
+                        active_manifest[0] = root / f"cleanup-{type(error).__name__}.json"
+                        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                            self.assertEqual(policy.integrate(self.settings, self.record, 100, active_manifest[0]), "d" * 40)
+                        self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
+                        self.assertEqual(stderr.getvalue().count("warn: cleanup reap-merged-worktrees.sh failed:"), 1)
+                        self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+                cleanup_error[0] = None
                 commands.clear()
                 parent[0] = "e" * 40
                 raced = root / "race.json"
+                active_manifest[0] = raced
                 with self.assertRaisesRegex(policy.PolicyError, "recorded for recovery"):
                     policy.integrate(self.settings, self.record, 100, raced)
+                self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 self.assertTrue(json.loads(raced.read_text())["batches"][0]["base_race"])
                 with self.assertRaises(policy.PolicyError):
                     policy.verify_manifest(json.loads(raced.read_text()),
@@ -225,6 +255,7 @@ class PolicyTests(unittest.TestCase):
                 parent[0] = self.base
                 already_merged[0] = True
                 recovered = root / "recovered.json"
+                active_manifest[0] = recovered
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, recovered), "d" * 40)
                 self.assertFalse(any(command[:3] == ("gh", "pr", "merge") for command in commands))
             saved = json.loads(manifest.read_text())
