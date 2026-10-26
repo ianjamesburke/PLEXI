@@ -1,16 +1,10 @@
 name: Rust host
 
+# Hosted host verification is post-landing via nightly.yml. Local full-suite
+# and independent validation gate Alpha landing; PRs do not start this workflow.
+
 on:
   workflow_call:
-  pull_request:
-    branches: [alpha, feature/alpha-cleanup]
-    paths-ignore:
-      - '**/*.md'
-      - '.agents/**'
-      - '.claude/**'
-      - 'docs/**'
-      - 'website/**'
-      - '.stint/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

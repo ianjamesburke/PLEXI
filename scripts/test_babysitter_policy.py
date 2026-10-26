@@ -185,6 +185,52 @@ class PolicyTests(unittest.TestCase):
             policy.check_gate(self.settings, self.record, self.pr,
                               [{"bucket": "pending"}], self.base, "batch")
 
+    def test_after_alpha_host_ci_defers_only_identified_rust_workflow(self):
+        self.settings["ci"] = {"rust_host": "after_alpha"}
+        self.record["local"]["test_scope"] = "full"
+        for checks in ([], [{"workflow": "Rust host", "name": "test", "bucket": "pending"}],
+                       [{"workflow": "Rust host", "name": "linux", "bucket": "fail"}]):
+            self.assertEqual(policy.check_gate(self.settings, self.record, self.pr, checks,
+                                               self.base, "batch"), self.head)
+        for checks in ([{"workflow": "Distribution", "name": "test", "bucket": "pending"}],
+                       [{"name": "test", "bucket": "fail"}],
+                       [{"workflow": "Rust host", "name": "test", "bucket": "pending"},
+                        {"workflow": "Schema", "name": "schema", "bucket": "fail"}]):
+            with self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, self.record, self.pr, checks, self.base, "batch")
+
+    def test_after_alpha_host_ci_still_requires_full_local_and_independent_evidence(self):
+        self.settings["ci"] = {"rust_host": "after_alpha"}
+        self.record["local"]["test_scope"] = "full"
+        for key, value in (("test_scope", "scoped"), ("test", False), ("build", False),
+                           ("clippy", False), ("head", "stale")):
+            record = copy.deepcopy(self.record)
+            record["local"][key] = value
+            with self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, record, self.pr, [], self.base, "batch")
+        for key, value in (("install_head", "stale"), ("tester_vendor", "gemini"),
+                           ("verdict", "FAIL")):
+            record = copy.deepcopy(self.record)
+            record["validation"][key] = value
+            with self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, record, self.pr, [], self.base, "batch")
+
+    def test_missing_or_unknown_ci_policy_does_not_waive_checks(self):
+        for mode in (None, "typo"):
+            if mode is not None:
+                self.settings["ci"] = {"rust_host": mode}
+            with self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, self.record, self.pr, [], self.base, "batch")
+
+    def test_rust_host_runs_only_via_post_landing_reusable_workflow(self):
+        root = SCRIPT.parent.parent
+        host = (root / ".github/workflows/rust-host.yml").read_text()
+        trigger = host.split("on:\n", 1)[1].split("\nconcurrency:", 1)[0]
+        self.assertEqual(trigger.strip(), "workflow_call:")
+        nightly = (root / ".github/workflows/nightly.yml").read_text()
+        self.assertIn("uses: ./.github/workflows/rust-host.yml", nightly)
+        self.assertIn("schedule:", nightly)
+
     def test_waivers_cannot_be_self_attested_to_automated_merge(self):
         record = json.loads(json.dumps(self.record))
         record["waivers"] = [{"kind": "pre_existing_alpha", "evidence": "run/alpha.log",

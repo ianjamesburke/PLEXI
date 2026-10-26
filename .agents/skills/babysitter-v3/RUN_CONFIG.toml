@@ -74,8 +74,11 @@ pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; ab
 [engines.usage_limit_patterns]
 all = ["usage limit", "limit reached", "rate limit", "quota", "resets at", "try again later"]
 
+[ci]
+rust_host = "after_alpha"          # nightly verification; local full suite gates landing
+
 [authorization]
-auto_merge = true                 # tester PASS + green PR checks -> merge without asking
+auto_merge = true                 # tester PASS + configured checks -> merge without asking
 
 [reservations]
 attended_only = ["0601", "0439"]  # never queued unattended

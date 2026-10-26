@@ -91,8 +91,8 @@ jobs:
         shell: bash
         run: |
           RUSTFLAGS="-D warnings" cargo build --release --bin plexi
-      # Release tags only: on PRs and alpha pushes the Rust host workflow already
-      # runs this exact test + clippy, so repeating it here just doubles the wait.
+      # Release tags only: pre-landing host acceptance is local; nightly.yml
+      # runs hosted Rust verification after Alpha landing.
       - name: Test and lint the host
         if: inputs.tag != ''
         shell: bash
