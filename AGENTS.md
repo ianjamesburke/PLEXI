@@ -98,9 +98,11 @@ Every new feature must be instrumented. No new capability, command, or user-visi
 
 ## Testing
 
-**Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Every coding agent follows it before push. Observable state → TOML scene. Return value or invariant → Rust `#[test]`. Before any push, all three must pass: `just build` (release, `-D warnings`, the exact path `pr-install` and every install take), `cargo test --bin plexi`, and `cargo clippy --bin plexi -- -D warnings` (what CI's clippy job runs). Neither `cargo test` nor bare `cargo build` runs with `-D warnings` or compiles `cfg(not(test))` paths, and `just build` does not run clippy, so a green test suite proves nothing about the installable binary or the CI lint job.
+**Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Every coding agent follows it before push. Observable state → TOML scene. Return value or invariant → Rust `#[test]`. Before every push, `just build` (release, `-D warnings`, the exact install path) and `cargo clippy --bin plexi -- -D warnings` remain mandatory. PR pushes run scoped `cargo test --bin plexi -- <filters...>` selected by `scripts/scoped-tests.sh`; direct-to-alpha pushes require the full `cargo test --bin plexi` because stint 0799 removed per-push host CI. The full local suite remains required at lane integration / before merge and for the combined aggregate gate. A scoped local pass is not acceptance: the full local integration suite and independent installed validation are, subject to the documented docs-only/install-skip rules. Hosted Rust CI is deferred until after Alpha landing through nightly verification; do not wait on it before PR handoff or merge. See TESTING.md for execution and evidence. `cargo test` does not compile `cfg(not(test))` paths; bare `cargo build` does, but neither command enforces the justfile's `-D warnings`. `just build` does not run Clippy, so passing tests alone do not prove the installable binary or lint gate passes.
 
 **`just pr-install <N>` is cwd-independent.** The recipe resolves the PR's head via `gh`, selects a worktree that provably contains it (the PR's clean feature worktree when present, else a detached canonical build tree), and runs pre-install tests and the build from that tree — never the caller's cwd. Provenance (PR, head sha, worktree) is echoed and appended to the PR profile's `install.log`.
+
+**`linux` is an advisory observer, not a merge gate.** The job runs in post-landing hosted verification, and carries `continue-on-error: true`, which keeps the workflow **run** green when the job fails, and `alpha` has no required status checks — so nothing on GitHub blocks a merge on it. It runs anyway because it is a second observer of the same Rust code, and it is what caught stint 1008's two Linux-only test failures, which macOS could not see. The job's own check still reports `failure`: treat that as a signal to investigate, never as a gate to re-litigate at merge time. Linux bring-up is paused and lives on `feature/linux-alpha-bringup`, never on `alpha`. A Linux-only failure that is not reproducible on macOS must be recorded before merge — in the PR body, and in `TRUTH.md` if it is a product defect.
 
 Test-first for host logic. Define done by the test, not the code. No partial merges.
 
@@ -200,5 +202,5 @@ Later consolidation candidates (left untouched by 0327, not yet unified): notifi
 - When the user reports a bug, fix what they asked for first.
 - App/host state is reached through SDK tools or CLI, never a `~/.plexi*` path.
 - Never use `#[allow(dead_code)]` or `#[allow(unused)]`. Delete or wire up.
-- Always run `cargo build` after work.
+- Follow the mandatory self-validation contract above after work; bare `cargo build` is not an installable-build gate.
 - **Failed PR reset:** close the PR, revert worktree, comment on the issue, re-label `ready`, start fresh.

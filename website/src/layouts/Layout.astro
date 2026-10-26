@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import Texture from '../components/Texture.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 
@@ -23,6 +24,7 @@ const imageURL = new URL(image, Astro.site).toString();
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="theme-color" content="#16161e" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- Primary -->
@@ -49,14 +51,10 @@ const imageURL = new URL(image, Astro.site).toString();
   <meta name="twitter:image" content={imageURL} />
 </head>
 <body>
-  <div class="atmosphere">
-    <div class="glow-hero"></div>
-    <div class="glow-funding"></div>
-    <div class="glow-mission"></div>
-    <div class="grain"></div>
-  </div>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <Texture />
   <Nav />
-  <main>
+  <main id="main" tabindex="-1">
     <slot />
   </main>
   <Footer />

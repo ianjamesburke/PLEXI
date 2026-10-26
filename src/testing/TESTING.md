@@ -10,11 +10,23 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 Before any push, in this order:
 
-1. `just build` — release build under the justfile's `-D warnings`. This is the path `just pr-install` and every install take. It is the only step that compiles `cfg(not(test))` code and the only one that fails on an item whose callers are all `#[cfg(test)]`; `cargo test` and bare `cargo build` see neither (root `AGENTS.md` Traps).
-2. `cargo test --bin plexi` — correctness.
+1. `just build` — release build under the justfile's `-D warnings`. This is the path `just pr-install` and every install take. It compiles `cfg(not(test))` code and rejects dead code whose callers are all `#[cfg(test)]`. Tests omit those production paths; bare `cargo build` includes them but does not enforce the justfile's `-D warnings` (root `AGENTS.md` Traps).
+2. **PR push:** scoped `cargo test --bin plexi -- <filters...>` selected by `scripts/scoped-tests.sh` using the testing skill's layer table. **Direct-to-alpha push:** full `cargo test --bin plexi`. Stint 0799 removed per-push Rust host CI, so the full local suite is the only full-suite gate before a direct push lands; nightly is too late.
 3. `cargo clippy --bin plexi -- -D warnings` — exactly what CI's `clippy` job runs (`.github/workflows/rust-host.yml`). `just build` does not run clippy, so `too_many_arguments`, `type_complexity`, and `needless_borrow` sail through the first two steps and turn alpha red after merge.
 
-All three green, or no push. Lane integrators run both after every merge, not once at the end.
+All required gates green, or no push. The full local `cargo test --bin plexi` remains required at lane integration / before merge; integrators rerun the full gate on the combined tree after each integration and at final aggregate validation. Hosted Rust verification runs after Alpha landing through `nightly.yml`, not on PRs. Do not poll or wait for hosted Rust checks before handing off or landing. A scoped local pass is not acceptance: the full local suite at the exact integration head and independent installed validation are, subject to the existing docs-only/install-skip rules in the testing workflow. Record hosted Rust checks as deferred, never passed. Unrelated PR checks retain their gates.
+
+Run the selector from the worktree. It includes committed, staged, unstaged and untracked paths against the merge base with `origin/alpha`; set `SCOPED_TEST_BASE` to the actual PR base for aggregate lanes. Explicit path arguments are also supported. Run the filters together as libtest arguments (OR matching), not as multiple Cargo positional arguments:
+
+```bash
+filters=()
+while IFS= read -r filter; do filters+=("$filter"); done < <(bash scripts/scoped-tests.sh)
+if (( ${#filters[@]} )); then
+    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi -- "${filters[@]}"
+fi
+```
+
+No filters means no local Rust test run, not permission to skip build, Clippy, script-specific checks, PGAP evidence, or specialized release gates below. Unknown source relationships select broadly. Record selected filters, matching test counts and results; zero matched tests for a selected layer is a gate gap. Filtering saves test execution and cargo-lease time, not test-binary compilation or release-build time. Cross-module regressions must be caught by the full local integration suite before landing.
 
 ## Wall-clock budgets
 
@@ -272,7 +284,7 @@ exactly that seed with `PLEXI_DAW_GATE_SEED=<seed>`.
 
 ## Conventions
 
-- `cargo test --bin plexi` must be green before any push; the justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
+- Follow The Gate above for the push path and integration. The justfile exports `RUSTFLAGS="-D warnings"`, so warnings are build failures under `just test`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
 - Test-first for host logic: a new `AppRequest`/`HostEffect` gets a failing `HostHarness` test before implementation.
 - New host UI component or overlay → a scene in `tests/scenes/` (open → act → assert → shot).

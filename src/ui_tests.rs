@@ -2382,6 +2382,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn needs_you_failed_audit_error_is_visible_in_decision_overlay() {
+        let mut h = PlexiUiHarness::new_sized(1100.0, 760.0);
+        let pane_id = add_focused_pane(&mut h);
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let id = monitor
+            .file_needs_you(crate::broker::gate::NeedsYouFile {
+                kind: crate::broker::gate::NeedsYouKind::Question,
+                actor: "codex".into(),
+                resource: format!("pane:{pane_id}"),
+                summary: "Ready to continue the attention-cue repair on Alpha".into(),
+                expires_at: None,
+                run_tag: Some(format!("pane:{pane_id}")),
+            })
+            .unwrap();
+        h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
+        monitor.fail_audit(true);
+        h.with_app_mut(|app| {
+            assert!(!app.pick_decision_overlay_option(0));
+        });
+        h.run_steps(3);
+        let message = format!(
+            "Decision failed: Could not complete decision overlay: needs-you item {id} could not be audited"
+        );
+        assert!(
+            h.host_has_label(&message),
+            "audit error must be painted in the retained overlay"
+        );
+        h.save_screenshot(&crate::ui_tests::evidence_png!())
+            .unwrap();
+        monitor.fail_audit(false);
+    }
+
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         let active_window = h.with_app(|app| app.active_window);
         add_focused_pane_to_window(h, active_window)

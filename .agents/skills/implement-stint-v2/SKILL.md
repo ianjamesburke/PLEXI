@@ -78,7 +78,7 @@ Before pushing, run every required gate in the foreground from your worktree:
    ```bash
    just build
    ```
-3. **Full binary test suite** (with inherited pane env vars stripped so tests stay isolated):
+3. **Tests by push path:** PR pushes run `cargo test --bin plexi -- <filters...>` from `scripts/scoped-tests.sh`, using the array invocation and environment isolation in TESTING.md. Direct-to-alpha pushes require the full command below because stint 0799 removed per-push host CI. The full local suite remains required at lane integration / before merge and at combined aggregate validation. A scoped local pass is not acceptance: the full local integration suite and independent installed validation are, subject to existing docs-only/install-skip rules. Hosted Rust CI is post-Alpha; do not wait for it before publishing pr:done or merging. Unrelated PR checks still gate.
    ```bash
    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi
    ```
@@ -156,7 +156,7 @@ TESTING:
    ```bash
    plexi pane slot write status merge:working --pane-id $PLEXI_PANE_ID --replace
    ```
-2. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
+2. Confirm the full local integration gate, independent validation and non-deferred PR checks are green for the head being merged (TESTING.md); a scoped worker pass alone is insufficient. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
    ```bash
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```

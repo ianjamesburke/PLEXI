@@ -115,7 +115,15 @@ def check_gate(settings, record, pr, checks, base_head, phase):
         raise PolicyError("CI record does not match head")
     if record.get("waivers"):
         raise PolicyError("automated merge cannot authenticate a human waiver; park for explicit ruling")
-    if not checks:
+    host_ci = settings.get("ci", {}).get("rust_host", "pr")
+    if host_ci not in ("pr", "after_alpha"):
+        raise PolicyError("unknown Rust host CI policy")
+    if host_ci == "after_alpha":
+        if record.get("local", {}).get("test_scope") != "full":
+            raise PolicyError("post-Alpha host CI requires full local suite evidence")
+        # Only the identified workflow is deferred, never a similarly named job.
+        checks = [check for check in checks if check.get("workflow") != "Rust host"]
+    elif not checks:
         raise PolicyError("PR checks are missing")
     for check in checks:
         if check.get("bucket") != "pass":
@@ -140,7 +148,7 @@ def alpha_root():
 
 def read_checks(pr_number):
     # `gh pr checks` exits nonzero for red checks, even though its JSON is valid.
-    result = subprocess.run(("gh", "pr", "checks", str(pr_number), "--json", "name,bucket"),
+    result = subprocess.run(("gh", "pr", "checks", str(pr_number), "--json", "name,bucket,workflow"),
                             check=False, capture_output=True, text=True)
     if not result.stdout.strip():
         raise PolicyError(f"cannot read PR checks: {result.stderr.strip()}")

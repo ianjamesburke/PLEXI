@@ -1,7 +1,7 @@
 ---
 import Logo from './Logo.astro';
 ---
-<nav class="top">
+<nav class="top" aria-label="Main navigation">
   <div class="wrap row">
     <a class="brand" href="/">
       <Logo />
@@ -17,12 +17,12 @@ import Logo from './Logo.astro';
     <div class="cta">
       <a class="btn nav-download" href="/download">Download alpha</a>
     </div>
-    <button class="mobile-menu-btn" aria-label="Menu" aria-expanded="false">
+    <button class="mobile-menu-btn" aria-label="Menu" aria-expanded="false" aria-controls="mobile-menu">
       <span class="bar"></span>
       <span class="bar"></span>
     </button>
   </div>
-  <div class="mobile-menu">
+  <div class="mobile-menu" id="mobile-menu">
     <a href="/#product">Product</a>
     <a href="/docs/apps">Apps</a>
     <a href="/blog">Blog</a>
@@ -38,7 +38,10 @@ import Logo from './Logo.astro';
     background: none;
     border: none;
     cursor: pointer;
-    padding: 8px;
+    padding: 12px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
     flex-direction: column;
     gap: 5px;
   }
@@ -82,6 +85,13 @@ import Logo from './Logo.astro';
   btn?.addEventListener('click', () => {
     nav?.classList.toggle('open');
     btn.setAttribute('aria-expanded', nav?.classList.contains('open') ? 'true' : 'false');
+  });
+  nav?.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Escape') {
+      nav.classList.remove('open');
+      btn?.setAttribute('aria-expanded', 'false');
+      (btn as HTMLElement)?.focus();
+    }
   });
   document.querySelectorAll('.mobile-menu a').forEach(a => {
     a.addEventListener('click', () => {

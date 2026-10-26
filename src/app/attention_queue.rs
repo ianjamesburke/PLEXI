@@ -1510,13 +1510,28 @@ impl PlexiApp {
             } => {
                 if option.key == "acknowledge" {
                     self.acknowledge_notice(request_id);
-                } else if *is_question {
-                    let _ = self.answer_from_desktop(request_id, &option.label, "decision overlay");
                 } else {
-                    let approve = option.key != "deny"
-                        && !option.label.eq_ignore_ascii_case("deny")
-                        && !option.label.eq_ignore_ascii_case("dismiss");
-                    let _ = self.resolve_from_desktop(request_id, approve, "decision overlay");
+                    let result = if *is_question {
+                        self.answer_from_desktop(request_id, &option.label, "decision overlay")
+                    } else {
+                        let approve = option.key != "deny"
+                            && !option.label.eq_ignore_ascii_case("deny")
+                            && !option.label.eq_ignore_ascii_case("dismiss");
+                        self.resolve_from_desktop(request_id, approve, "decision overlay")
+                    };
+                    match result {
+                        Ok(()) => self.approval_keyboard.last_error = None,
+                        Err(error) => {
+                            log::info!(
+                                "decision_overlay: needs_you decision failed id={request_id}; retaining ask for retry: {error}"
+                            );
+                            self.approval_keyboard.last_error = Some((request_id.clone(), error));
+                            self.attention_queue
+                                .answered_ask_ids
+                                .remove(&overlay.ask_id);
+                            return false;
+                        }
+                    }
                 }
             }
             QueueSource::Notification { notify_id } => {
@@ -2078,15 +2093,13 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.set_width(modal_w);
 
-                        if let QueueSource::BrokerPending { request_id } = &overlay.source {
-                            if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
-                                if err_id == request_id {
-                                    ui.label(
-                                        RichText::new(format!("Decision failed: {err_msg}"))
-                                            .color(colors.danger)
-                                            .size(style::TEXT_HINT),
-                                    );
-                                }
+                        if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
+                            if err_id == &overlay.ask_id {
+                                ui.label(
+                                    RichText::new(format!("Decision failed: {err_msg}"))
+                                        .color(colors.danger)
+                                        .size(style::TEXT_HINT),
+                                );
                             }
                         }
 
@@ -2381,6 +2394,132 @@ mod tests {
     use super::*;
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
+
+    fn report_attention(h: &mut HostHarness, pane_id: u64) {
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id,
+            state: crate::protocol::AgentState::NeedsYou,
+            agent: "test-agent".into(),
+            detail: Some("Which branch should I use?".into()),
+            session_id: None,
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        h.app.sync_attention_queue();
+    }
+
+    fn needs_you_failed_audit_is_retryable(with_choices: bool) {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        if with_choices {
+            // Rich asks use the answer branch; agent reports reuse the same run tag.
+            monitor
+                .file_needs_you_with_details(
+                    NeedsYouFile {
+                        kind: NeedsYouKind::Question,
+                        actor: "test-agent".into(),
+                        resource: format!("pane:{pane_id}"),
+                        summary: "Which branch should I use?".into(),
+                        expires_at: None,
+                        run_tag: Some(format!("pane:{pane_id}")),
+                    },
+                    Some(crate::broker::gate::NeedsYouDetails {
+                        choices: vec!["Alpha".into(), "Beta".into()],
+                        pane_id: Some(pane_id),
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
+        }
+        report_attention(&mut h, pane_id);
+        let id = monitor.open_needs_you()[0].id.clone();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == id)
+            .unwrap();
+        assert!(
+            matches!(bar.source, QueueSource::NeedsYou { is_question, .. } if is_question == with_choices)
+        );
+        assert!(h.app.open_decision_overlay_for_ask(&id));
+
+        monitor.fail_audit(true);
+        let accepted = h.app.pick_decision_overlay_option(0);
+        // Prove the failure reached audit, rather than a desktop-origin refusal.
+        assert!(monitor.get_needs_you(&id).unwrap().resolution.is_none());
+        assert!(
+            !accepted,
+            "failed audit must not report a successful decision"
+        );
+        assert!(!h.app.attention_queue.answered_ask_ids.contains(&id));
+        assert!(h.app.attention_queue.verdicts.is_empty());
+        assert_eq!(
+            h.app
+                .attention_queue
+                .decision_overlay
+                .as_ref()
+                .unwrap()
+                .ask_id,
+            id
+        );
+        let (error_id, message) = h.app.approval_keyboard.last_error.as_ref().unwrap();
+        assert_eq!(error_id, &id);
+        assert!(
+            message.contains("audited"),
+            "expected audit error, got {message}"
+        );
+
+        // Same report must keep the unresolved broker id visible, not just a fallback.
+        report_attention(&mut h, pane_id);
+        assert_eq!(monitor.open_needs_you()[0].id, id);
+        assert!(h.app.attention_queue.items.iter().any(|bar| bar.id == id));
+        monitor.fail_audit(false);
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert!(monitor.get_needs_you(&id).unwrap().resolution.is_some());
+        if with_choices {
+            assert_eq!(
+                monitor.get_needs_you(&id).unwrap().answer.as_deref(),
+                Some("Alpha")
+            );
+        }
+        assert!(h.app.approval_keyboard.last_error.is_none());
+        assert!(h.app.attention_queue.decision_overlay.is_none());
+        assert_eq!(h.app.attention_queue.verdicts.len(), 1);
+
+        // Resolve the agent-state fallback, as Ian did, then report again.
+        let fallback_id = format!("agent-ask-{pane_id}");
+        assert!(h.app.open_decision_overlay_for_ask(&fallback_id));
+        assert!(h.app.pick_decision_overlay_option(0));
+        report_attention(&mut h, pane_id);
+        let next = monitor.open_needs_you();
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0].id, id);
+        assert!(h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .any(|bar| bar.id == next[0].id));
+        assert!(h.app.open_decision_overlay_for_ask(&next[0].id));
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert!(monitor.open_needs_you().is_empty());
+        assert_eq!(h.app.attention_queue.verdicts.len(), 3);
+    }
+
+    #[test]
+    fn needs_you_resolve_failed_audit_remains_retryable() {
+        needs_you_failed_audit_is_retryable(false);
+    }
+
+    #[test]
+    fn needs_you_answer_failed_audit_remains_retryable() {
+        needs_you_failed_audit_is_retryable(true);
+    }
 
     #[test]
     fn per_context_ask_count_matches_queue_labels_and_sidebar_badge() {

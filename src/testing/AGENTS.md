@@ -15,7 +15,7 @@ Test infrastructure for the Plexi host. `HostHarness` (headless egui test harnes
 - **If you'd assert on observable state** (pane tree, app UI, pixels) → write a TOML scene in `tests/scenes/`. If you'd assert on a return value or internal invariant → write a Rust `#[test]`.
 - **Test-first for host logic.** A new `AppRequest` or `HostEffect` gets a failing `HostHarness` test before implementation.
 - **New host UI component or overlay** → add a scene in `tests/scenes/` (open → act → assert → shot).
-- `cargo test --bin plexi` must be green before any push.
+- Follow [TESTING.md — The Gate](TESTING.md#the-gate) for PR pushes, direct-to-alpha pushes, and integration; do not substitute one path's test requirement for another.
 - Every `HostHarness::new()` creates a fresh tempdir for profile isolation. Tests never touch `$HOME`.
 - PTY-dependent tests are tagged `#[ignore = "requires-pty"]`.
 
