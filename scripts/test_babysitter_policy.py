@@ -290,8 +290,10 @@ class PolicyTests(unittest.TestCase):
                 policy, "read_checks", return_value=self.checks
             ), patch.object(policy, "alpha_root", return_value=root), patch.object(
                 policy, "preflight", return_value={"size": "S"}
-            ):
+            ) as preflight_mock:
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
+                preflight_mock.assert_called_once_with(
+                    self.settings, root / ".stint/tasks", sprint, self.record["stints"])
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
                 self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
