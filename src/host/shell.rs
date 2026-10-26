@@ -272,7 +272,7 @@ pub fn install_login_shell_env() {
 /// `Command::output()` reads stdout/stderr through pipes over a null stdin — so
 /// the launching session can never be polluted. Captured stderr is routed to
 /// the channel log, never silently discarded.
-fn run_login_shell_probe(shell: &str, args: &[&str]) -> Option<std::process::Output> {
+pub(crate) fn run_login_shell_probe(shell: &str, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = Command::new(shell);
     cmd.args(args).stdin(std::process::Stdio::null());
     // SAFETY: pre_exec runs only libc::setsid() between fork and exec — an

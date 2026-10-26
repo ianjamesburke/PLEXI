@@ -5247,10 +5247,12 @@ description = "test anchor project"
     let mut shell_startup = Vec::new();
     for _ in 0..5 {
         let start = std::time::Instant::now();
-        let output = std::process::Command::new("/bin/zsh")
-            .args(["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"])
-            .output()
-            .expect("interactive login shell must start for latency measurement");
+        let shell = crate::host::shell::detect_shell();
+        let output = crate::host::shell::run_login_shell_probe(
+            &shell,
+            &["-l", "-i", "-c", "printf '__PLEXI_SHELL_READY__\\n'"],
+        )
+        .expect("login shell probe must start for latency measurement");
         let elapsed = start.elapsed();
         assert!(output.status.success(), "login shell failed: {output:?}");
         assert!(String::from_utf8_lossy(&output.stdout).contains("__PLEXI_SHELL_READY__"));
