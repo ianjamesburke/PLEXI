@@ -1,6 +1,8 @@
 """Offline proof for babysitter routing, graph and exact-head gates."""
 
+import copy
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -16,9 +18,41 @@ policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
 
 
+# Synthetic routing is fixed so operational preference changes cannot alter gate evidence.
+TEST_SETTINGS = {
+    "authorization": {"auto_merge": True},
+    "roles": {
+        "head": ["agy", "col", "cm", "agym"],
+        "worker_small": ["agyf", "cos", "cs", "pi"],
+        "worker_medium": ["agyf", "com", "cm", "pi"],
+        "worker_large": ["agyg", "col", "agyl", "cl", "pi"],
+        "tester": ["agy", "cs", "agym", "cos"],
+    },
+    "engines": {
+        "alias_vendor": {"cos": "codex", "com": "codex", "col": "codex",
+                         "cs": "claude", "cm": "claude", "cl": "claude",
+                         "agy": "gemini", "agym": "claude", "agyl": "claude",
+                         "agyf": "gemini", "agyg": "gemini", "pi": "deepseek"},
+        "alias_model": {"cos": "Luna", "com": "Terra", "col": "Astra",
+                        "cs": "Sonnet", "cm": "Opus", "cl": "Opus",
+                        "agy": "Gemini", "agym": "Sonnet", "agyl": "Opus",
+                        "agyf": "Gemini Flash", "agyg": "Gemini High",
+                        "pi": "DeepSeek V4.1 Flash"},
+        "alias_engine": {"c": "claude", "co": "codex", "agy": "agy", "pi": "pi"},
+        "launch": {"claude": "{alias} {prompt}", "codex": "{alias} {prompt}",
+                   "agy": "{alias} -i {prompt}",
+                   "pi": "{alias} --model openrouter/deepseek/deepseek-v4.1-flash {prompt}"},
+        "working_footer": {"claude": "working", "codex": "working",
+                           "agy": "working", "pi": "working"},
+    },
+    "topology": {"mode": "aggregate", "branch": "feature/alpha-cleanup",
+                 "final_base": "alpha", "require_final_install": True},
+}
+
+
 class PolicyTests(unittest.TestCase):
     def setUp(self):
-        self.settings = policy.config()
+        self.settings = copy.deepcopy(TEST_SETTINGS)
         self.head = "a" * 40
         self.base = "b" * 40
         self.record = {
@@ -32,6 +66,25 @@ class PolicyTests(unittest.TestCase):
         }
         self.pr = {"baseRefName": "feature/alpha-cleanup", "headRefOid": self.head}
         self.checks = [{"name": "required", "bucket": "pass"}]
+
+    def test_live_config_has_configured_aliases_and_independent_routes(self):
+        settings = policy.config()
+        engines = settings["engines"]
+        for role, aliases in settings["roles"].items():
+            self.assertTrue(aliases, role)
+            for alias in aliases:
+                with self.subTest(role=role, alias=alias):
+                    for mapping in ("alias_vendor", "alias_model"):
+                        self.assertTrue(engines[mapping].get(alias), (mapping, alias))
+                    prefixes = [p for p in engines["alias_engine"] if alias.startswith(p)]
+                    self.assertTrue(prefixes, alias)
+                    engine = engines["alias_engine"][max(prefixes, key=len)]
+                    self.assertTrue(engines["launch"].get(engine), engine)
+                    self.assertTrue(engines["working_footer"].get(engine), engine)
+        for size in "SML":
+            with self.subTest(size=size):
+                selected = policy.route(settings, size)
+                self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
 
     def test_sizes_route_distinct_models_and_independent_vendors(self):
         for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
@@ -173,9 +226,18 @@ class PolicyTests(unittest.TestCase):
         commands = []
         parent = [self.base]
         already_merged = [False]
+        cleanup_error = [None]
+        active_manifest = [None]
+        cleanup_names = ("reap-merged-worktrees.sh", "clean-stale-targets.sh", "channel-clean-merged.sh")
 
         def fake_command(*args):
             commands.append(args)
+            if args[0] == "bash":
+                self.assertTrue(active_manifest[0].exists())
+                self.assertEqual(json.loads(active_manifest[0].read_text())["batches"][0]["aggregate_head"], "d" * 40)
+                if Path(args[1]).name == cleanup_names[0] and cleanup_error[0]:
+                    raise cleanup_error[0]
+                return ""
             if args[:3] == ("git", "worktree", "list"):
                 return "worktree /tmp/aggregate\nbranch refs/heads/feature/alpha-cleanup"
             if args[:4] == ("git", "-C", "/tmp/aggregate", "status"):
@@ -205,6 +267,8 @@ class PolicyTests(unittest.TestCase):
             sprint.parent.mkdir(parents=True)
             sprint.write_text("- [0991](../tasks/0991-gate.md)\n- [0986](../tasks/0986-zoom.md)\n")
             manifest = root / "aggregate.json"
+            active_manifest[0] = manifest
+            cleanup_commands = [("bash", str(root / "scripts" / name)) for name in cleanup_names]
             with patch.object(policy, "command", side_effect=fake_command), patch.object(
                 policy, "read_checks", return_value=self.checks
             ), patch.object(policy, "alpha_root", return_value=root), patch.object(
@@ -212,11 +276,25 @@ class PolicyTests(unittest.TestCase):
             ):
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
+                self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
+                for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
+                    with self.subTest(cleanup_error=type(error).__name__):
+                        commands.clear()
+                        cleanup_error[0] = error
+                        active_manifest[0] = root / f"cleanup-{type(error).__name__}.json"
+                        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                            self.assertEqual(policy.integrate(self.settings, self.record, 100, active_manifest[0]), "d" * 40)
+                        self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
+                        self.assertEqual(stderr.getvalue().count("warn: cleanup reap-merged-worktrees.sh failed:"), 1)
+                        self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+                cleanup_error[0] = None
                 commands.clear()
                 parent[0] = "e" * 40
                 raced = root / "race.json"
+                active_manifest[0] = raced
                 with self.assertRaisesRegex(policy.PolicyError, "recorded for recovery"):
                     policy.integrate(self.settings, self.record, 100, raced)
+                self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 self.assertTrue(json.loads(raced.read_text())["batches"][0]["base_race"])
                 with self.assertRaises(policy.PolicyError):
                     policy.verify_manifest(json.loads(raced.read_text()),
@@ -225,6 +303,7 @@ class PolicyTests(unittest.TestCase):
                 parent[0] = self.base
                 already_merged[0] = True
                 recovered = root / "recovered.json"
+                active_manifest[0] = recovered
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, recovered), "d" * 40)
                 self.assertFalse(any(command[:3] == ("gh", "pr", "merge") for command in commands))
             saved = json.loads(manifest.read_text())

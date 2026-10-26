@@ -296,6 +296,18 @@ def recover_base_race(settings, record, pr_number, manifest_path):
         return head
 
 
+REAP_SCRIPTS = ("reap-merged-worktrees.sh", "clean-stale-targets.sh", "channel-clean-merged.sh")
+
+
+def reap_after_merge(root):
+    """Retire merged artifacts without failing an already-recorded integration."""
+    for script in REAP_SCRIPTS:
+        try:
+            command("bash", str(root / "scripts" / script))
+        except (subprocess.CalledProcessError, OSError) as error:
+            print(f"warn: cleanup {script} failed: {error}", file=sys.stderr)
+
+
 def integrate_locked(settings, record, pr_number, manifest_path):
     """Squash one validated batch into the aggregate branch, never alpha."""
     if not record.get("stints") or not all(re.fullmatch(r"\d{4}", task_id) for task_id in record["stints"]):
@@ -371,6 +383,7 @@ def integrate_locked(settings, record, pr_number, manifest_path):
     temporary = manifest_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(manifest, indent=2) + "\n")
     temporary.replace(manifest_path)
+    reap_after_merge(root)
     if parent_head != remote_before or external_advance:
         raise PolicyError("PR merged after the base moved; integration recorded for recovery")
     return aggregate_head
