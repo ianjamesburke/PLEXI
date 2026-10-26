@@ -29,6 +29,7 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
           <input
             type="email"
             name="email"
+            aria-label="Email address"
             placeholder="you@example.com"
             required
             autocomplete="email"
@@ -47,9 +48,7 @@ const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compac
     padding: 76px 0;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    background:
-      linear-gradient(90deg, rgba(52, 211, 153, 0.08), transparent 34%),
-      linear-gradient(180deg, rgba(255,255,255,0.035), rgba(139, 92, 246, 0.08), rgba(0,0,0,0.08));
+    background: var(--bg-2);
   }
   .newsletter.compact {
     padding: 48px 0;
