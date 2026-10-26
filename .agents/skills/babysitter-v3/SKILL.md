@@ -53,11 +53,18 @@ Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date 
 
 ## Before the first spawn
 
-1. `git status --porcelain` on the alpha root is empty (run `git update-index --refresh` first). Dirty → stop and tell Ian.
-2. Drop any stint in `[reservations].attended_only`, any `blocked`, and any whose body has no `## Done-When`. Exception: a stint Ian names explicitly. Rule its Done-When from its Scope/Testing sections, on the record in `LOG.md` and in the brief.
-3. **Batch the queue.** Related small stints that touch the same area ship as one PR. Batches that touch overlapping files never run at the same time. Write the batch plan and `parent` (or `none`) into `RUN_STATE.md`.
-4. Check the command channel: `plexi pane list` must return, then `plexi pane slot write channel_preflight ready --pane-id $PLEXI_PANE_ID --replace` and `plexi pane slot read channel_preflight $PLEXI_PANE_ID` must round-trip `ready`. Create a disposable probe pane; use `plexi pane send <probe-pane> 'echo channel-preflight-ok' --submit` and confirm its output, then `plexi pane close <probe-pane>` and confirm it disappears from `pane list`. On failure, report the command and error loudly and retry all checks with the running host's own executable, resolved from `ps -o command -p <host_pid>` (for example `/Applications/Plexi Beta.app/Contents/MacOS/plexi-beta`). A channel-named shim may still point to an incompatible CLI. Stop if the host executable fails; never silently degrade.
-5. Run `caffeinate -dimsu` in its own pane (`plexi pane new "caffeinate -dimsu" -n caffeinate --no-focus`).
+1. **Aggregate mode only — bootstrap the base.** `[topology].branch` (`feature/alpha-cleanup`) must exist as a **worktree** at the current alpha head, clean and exactly synced with origin. Otherwise `bs-start --base` refuses with `no worktree for base …` or a behind/ahead error, and `integrate` refuses a missing or dirty aggregate worktree. A branch left behind by a previous run is the normal case, not an error: its work is already in alpha as a squash, so reset it.
+   ```bash
+   git push --force-with-lease=refs/heads/feature/alpha-cleanup:<previous-remote-sha> \
+     origin <alpha-head-sha>:refs/heads/feature/alpha-cleanup
+   git worktree add worktrees/feature/alpha-cleanup feature/alpha-cleanup
+   ```
+   Then run every `bs-start` from inside that worktree — aggregate mode hard-errors if the helper is invoked from any other checkout.
+2. `git status --porcelain` on the alpha root is empty (run `git update-index --refresh` first). Dirty → stop and tell Ian.
+3. Drop any stint in `[reservations].attended_only`, any `blocked`, and any whose body has no `## Done-When` heading. Both `## Done-When` and `## Done When` are accepted. Exception: a stint Ian names explicitly. Rule its Done-When from its Scope/Testing sections, on the record in `LOG.md` and in the brief.
+4. **Batch the queue.** Related small stints that touch the same area ship as one PR. Batches that touch overlapping files never run at the same time. Write the batch plan and `parent` (or `none`) into `RUN_STATE.md`.
+5. Check the command channel: `plexi pane list` must return, then `plexi pane slot write channel_preflight ready --pane-id $PLEXI_PANE_ID --replace` and `plexi pane slot read channel_preflight $PLEXI_PANE_ID` must round-trip `ready`. Create a disposable probe pane; use `plexi pane send <probe-pane> 'echo channel-preflight-ok' --submit` and confirm its output, then `plexi pane close <probe-pane>` and confirm it disappears from `pane list`. On failure, report the command and error loudly and retry all checks with the running host's own executable, resolved from `ps -o command -p <host_pid>` (for example `/Applications/Plexi Beta.app/Contents/MacOS/plexi-beta`). A channel-named shim may still point to an incompatible CLI. Stop if the host executable fails; never silently degrade.
+6. Run `caffeinate -dimsu` in its own pane (`plexi pane new "caffeinate -dimsu" -n caffeinate --no-focus`).
 
 ## Spawning a pane (every role, every engine)
 
