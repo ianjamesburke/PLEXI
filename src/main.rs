@@ -50,6 +50,12 @@ mod ui_tests;
 mod workspace;
 
 fn main() -> eframe::Result {
+    let raw_args: Vec<String> = std::env::args().collect();
+    #[cfg(unix)]
+    if let Err(error) = configure_cli_sigpipe(&raw_args) {
+        eprintln!("CLI SIGPIPE setup failed: {error}");
+        cli::trace::exit(1);
+    }
     if let Some(flag) = std::env::args().nth(1) {
         if flag == "--build-info" || flag == "--distribution-check" {
             if flag == "--distribution-check" {
@@ -80,7 +86,6 @@ fn main() -> eframe::Result {
     }
     // Parse --profile <name> early so config_dir() resolves correctly for
     // both logging and all downstream I/O.
-    let raw_args: Vec<String> = std::env::args().collect();
     let is_app_prune_command = raw_args
         .windows(2)
         .any(|args| args[0] == "app" && args[1] == "prune");
@@ -240,6 +245,8 @@ fn main() -> eframe::Result {
     // Host startup only. A CLI invocation must not prune local history as a
     // side effect of printing JSON, and its stderr must stay a clean payload.
     if cli_mode {
+        #[cfg(unix)]
+        log::info!("cli: default SIGPIPE handling enabled for closed output pipes");
         log::info!("retention: skipped, argv does not start a host");
     } else {
         if let Err(error) = crate::cloud::retention::run_at_startup(
@@ -2249,6 +2256,21 @@ fn strip_profile_args(raw_args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Rust ignores SIGPIPE by default, so println! panics on a closed pipe.
+/// Restore Unix pipeline behavior before any CLI output, including early
+/// help/build-info paths. Never change the long-lived host's disposition.
+#[cfg(unix)]
+fn configure_cli_sigpipe(raw_args: &[String]) -> std::io::Result<()> {
+    if !is_host_startup(raw_args) {
+        // SAFETY: SIG_DFL is a valid disposition; no Rust signal handler is
+        // installed. This runs at startup before application threads exist.
+        if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// True only when argv resolves to launching the GUI host: it parses cleanly
 /// and names no subcommand. `--version`, `--help`, parse errors and every CLI
 /// subcommand are not host startup, so host-only side effects (history
@@ -2358,6 +2380,83 @@ mod cli_tests {
             .chain(parts.iter().copied())
             .map(str::to_string)
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_closed_stdout_uses_sigpipe_without_changing_host() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_MODE: &str = "PLEXI_TEST_SIGPIPE_MODE";
+        if let Ok(mode) = std::env::var(CHILD_MODE) {
+            if mode == "host" {
+                for args in [&[][..], &["--profile", "doctor"], &["/tmp"]] {
+                    super::configure_cli_sigpipe(&argv(args)).unwrap();
+                    // Rust starts with SIGPIPE ignored. Query and restore that
+                    // disposition only inside this isolated child process.
+                    let previous = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+                    assert_eq!(previous, libc::SIG_IGN, "host argv: {args:?}");
+                }
+                std::process::exit(0);
+            }
+
+            super::configure_cli_sigpipe(&argv(&["--build-info"])).unwrap();
+            let mut fds = [-1; 2];
+            // Own both descriptors immediately; closing the reader before
+            // dup2 makes the stdout failure deterministic, without a race.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+            let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            drop(reader);
+            assert_eq!(
+                unsafe { libc::dup2(fds[1], libc::STDOUT_FILENO) },
+                libc::STDOUT_FILENO
+            );
+            drop(writer);
+            println!("{}", crate::distribution::build_info());
+            panic!("writing to closed stdout unexpectedly returned");
+        }
+
+        for mode in ["cli", "host"] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "cli_tests::cli_closed_stdout_uses_sigpipe_without_changing_host",
+                    "--nocapture",
+                ])
+                .env(CHILD_MODE, mode)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(30));
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    let output = child.wait_with_output().unwrap();
+                    panic!("{mode} child hung: {output:?}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!stderr.contains("panicked"), "{mode}: {stderr}");
+            assert_ne!(output.status.signal(), Some(libc::SIGABRT), "{stderr}");
+            if mode == "cli" {
+                assert_eq!(output.status.signal(), Some(libc::SIGPIPE), "{output:?}");
+            } else {
+                assert!(output.status.success(), "{output:?}");
+            }
+        }
     }
 
     #[test]
