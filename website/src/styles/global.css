@@ -296,3 +296,5 @@ footer .links a:hover { color: var(--fg); }
 .prose pre code { font-family: var(--mono); overflow-wrap: normal; }
 .prose table { display: block; overflow-x: auto; font-size: 14px; }
 .prose .callout { border-radius: 0; border-left: 3px solid var(--accent-light); }
+.prose table { overflow-wrap: normal; }
+.prose th { white-space: nowrap; }
