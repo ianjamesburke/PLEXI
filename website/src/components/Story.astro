@@ -1,167 +1,51 @@
 ---
+const features = [
+  ['Tile your terminals', 'Keep multiple sessions in view and move between them quickly.'],
+  ['Add local apps', 'Run small local apps alongside your terminals.'],
+  ['Bring your agents', 'Run the coding agents you already use in the same workspace.'],
+];
 ---
-<section id="product" class="story">
-  <div class="wrap">
-    <div class="story-intro">
-      <h2>Keep the work you can see in one place.</h2>
-      <p>Plexi gives terminals, local apps, and workspace controls a shared tiled host. The CLI makes that same surface scriptable.</p>
-    </div>
-
-    <div class="story-grid">
-      <div class="story-block">
-        <div class="story-label">01</div>
-        <h3>A terminal host, not another tab strip.</h3>
-        <p>Split panes, move through a layout, and keep the shell work you are actively watching together.</p>
-      </div>
-
-      <div class="story-block">
-        <div class="story-label">02</div>
-        <h3>Script the same workspace.</h3>
-        <p>Use the CLI to create panes, inspect host state, work with subcontexts, report status, and keep repeatable work out of manual clicks.</p>
-      </div>
-
-      <div class="story-block">
-        <div class="story-label">03</div>
-        <h3>Build the tools you need locally.</h3>
-        <p>The app runtime and Python SDK let you author pane apps, test them against the host, and keep their capabilities explicit.</p>
-      </div>
-
-      <div class="story-block action-block">
-        <div class="story-label">04</div>
-        <h3>One host, built for macOS first.</h3>
-        <p>Use Plexi on macOS today (Linux and Windows coming soon), with channel-aware CLI binaries that keep alpha, beta, and stable work separate.</p>
-        <a class="btn lg" href="/download">Download alpha <span class="arrow">→</span></a>
-        <div class="meta-under">Start with <code>plexi host start</code></div>
-      </div>
-    </div>
-
+<div class="product-strip">Terminals / Local apps / Coding agents</div>
+<section class="intro wrap" id="product" aria-labelledby="product-title">
+  <div><p class="eyebrow">Features</p><h2 id="product-title">What Plexi includes.</h2></div>
+  <div><p class="intro-lede">Open the tools you use in one desktop window.</p>
+    {features.map(([title, copy], i) => <div class="detail"><span class="num">0{i + 1}</span><div><h3>{title}</h3><p>{copy}</p></div></div>)}
   </div>
 </section>
-
+<section class="statement" aria-labelledby="local-title"><div class="wrap"><p class="eyebrow">Local software</p><h2 id="local-title">Runs<br />on your<br />computer.</h2><div class="statement-bottom"><p>Plexi runs locally. Work with files on your computer in formats you can inspect.</p><a href="/docs">Read the documentation ↗</a></div></div></section>
+<section class="founder wrap" id="about" aria-labelledby="founder-title">
+  <div><p class="eyebrow">From the founder</p><h2 id="founder-title">Ian Burke</h2><p class="founder-role">Founder of Plexi</p></div>
+  <div><blockquote>“Plexi takes the speed limit off your computer. I can have four terminals researching different things, turn that work into reports and dashboards, make a decision, and act on it without leaving the app.”</blockquote><p class="origin">I wanted to move between agents and apps as fast as I wanted to move. I'd pushed macOS as far as I could and tried Linux. Plexi came out of that: one Rust app, with the goal of giving me nearly the same workspace on Mac, Windows, and Linux.</p></div>
+</section>
+<section class="docs-preview wrap" aria-labelledby="reference-title"><div><p class="eyebrow">Reference</p><h2 id="reference-title">Docs.</h2></div><div><p>Installation, setup, and reference for Plexi.</p><a href="/docs">Read the docs ↗</a></div></section>
 <style>
-  .story {
-    padding: 110px 0 120px;
-  }
-
-  .story-intro {
-    display: grid;
-    grid-template-columns: minmax(0, 0.95fr) minmax(280px, 0.7fr);
-    gap: 72px;
-    align-items: end;
-    margin-bottom: 46px;
-  }
-
-  .story-intro h2 {
-    font-size: 42px;
-    line-height: 1.12;
-    letter-spacing: 0;
-    font-weight: 600;
-    color: var(--fg);
-    max-width: 760px;
-  }
-
-  .story-intro p {
-    color: var(--fg-2);
-    font-size: 15px;
-    line-height: 1.75;
-    max-width: 440px;
-  }
-
-  .story-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    border: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(18, 20, 22, 0.92), rgba(10, 11, 13, 0.96));
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
-  }
-
-  .story-block {
-    min-height: 330px;
-    padding: 30px;
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-  }
-
-  .story-block:last-child {
-    border-right: 0;
-  }
-
-  .story-block.action-block {
-    background:
-      linear-gradient(180deg, rgba(99, 102, 241, 0.08), transparent 56%),
-      linear-gradient(135deg, rgba(32, 211, 153, 0.10), transparent 48%);
-  }
-
-  .story-label {
-    font-size: 11px;
-    color: var(--accent-light);
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    font-weight: 500;
-    margin-bottom: 20px;
-    font-family: var(--mono);
-  }
-
-  .story-block h3 {
-    font-size: 24px;
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1.22;
-    margin-bottom: 18px;
-    color: var(--fg);
-  }
-
-  .story-block p {
-    color: var(--fg-2);
-    font-size: 14px;
-    line-height: 1.7;
-  }
-
-  .story-block .btn {
-    margin-top: auto;
-    width: fit-content;
-  }
-
-  .story-block .meta-under {
-    margin-top: 14px;
-    color: var(--fg-3);
-    font-size: 12px;
-  }
-
-  .story-block code {
-    color: var(--good);
-    background: rgba(52, 211, 153, 0.08);
-    border: 1px solid rgba(52, 211, 153, 0.18);
-    border-radius: 4px;
-    padding: 2px 5px;
-  }
-
-  @media (max-width: 980px) {
-    .story { padding: 80px 0; }
-    .story-intro { grid-template-columns: 1fr; gap: 20px; }
-    .story-intro h2 { font-size: 30px; }
-    .story-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .story-block { border-bottom: 1px solid var(--border); }
-    .story-block:nth-child(2n) { border-right: 0; }
-    .story-block:nth-last-child(-n + 2) { border-bottom: 0; }
-  }
-
-  @media (max-width: 480px) {
-    .story { padding: 58px 0; }
-    .story-intro h2 { font-size: 25px; }
-    .story-grid { grid-template-columns: 1fr; }
-    .story-block {
-      min-height: 0;
-      padding: 24px;
-      border-right: 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .story-block:nth-last-child(-n + 2) { border-bottom: 1px solid var(--border); }
-    .story-block:last-child { border-bottom: 0; }
-    .story-block h3 { font-size: 22px; }
-    .story-block.action-block .btn { margin-top: 22px; }
-    .story-block .btn.lg { width: 100%; text-align: center; justify-content: center; }
+  section { padding-block: var(--space-section); }
+  .product-strip { padding: 22px 36px; background: var(--accent-light); color: var(--bg); font: 900 clamp(22px, 3.8vw, 62px)/1.1 var(--display); letter-spacing: -.055em; text-transform: uppercase; }
+  .intro, .founder, .docs-preview { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 8vw; }
+  h2 { margin-top: 22px; max-width: 11ch; font-size: clamp(49px, 6.5vw, 102px); line-height: .94; letter-spacing: -.075em; }
+  .intro-lede { margin-bottom: 58px; max-width: 35ch; font-size: clamp(24px, 2.6vw, 39px); line-height: 1.15; letter-spacing: -.045em; }
+  .detail { display: grid; grid-template-columns: 60px 1fr; gap: 25px; padding: 24px 0; border-top: 1px solid var(--border); }
+  .num { color: var(--accent-light); font: 700 13px var(--mono); }
+  h3 { font-size: clamp(22px, 2vw, 30px); line-height: 1.1; letter-spacing: -.045em; margin-bottom: 8px; }
+  .detail p { color: var(--fg-2); font-size: 16px; max-width: 47ch; }
+  .statement { background: var(--accent-light); color: var(--bg); }
+  .statement .eyebrow { color: var(--bg); }
+  .statement h2 { font: 900 clamp(64px, 10.8vw, 173px)/.85 var(--display); letter-spacing: -.09em; text-transform: uppercase; }
+  .statement-bottom { display: flex; justify-content: space-between; align-items: end; gap: 35px; margin-top: 55px; padding-top: 25px; border-top: 1px solid currentColor; }
+  .statement-bottom p { max-width: 40ch; font-size: 20px; }
+  .statement-bottom a, .docs-preview a { display: inline-block; padding-block: 12px; border-bottom: 1px solid currentColor; font-weight: 700; }
+  .founder h2 { font-size: clamp(44px, 4.6vw, 70px); }
+  .founder-role { margin-top: 16px; color: var(--fg-2); font: 13px var(--mono); }
+  blockquote { font-size: clamp(27px, 3vw, 46px); font-weight: 650; line-height: 1.17; letter-spacing: -.05em; }
+  .origin { margin-top: 44px; padding-top: 26px; border-top: 1px solid var(--border); color: var(--fg-2); font-size: 18px; }
+  .docs-preview h2 { font-family: var(--display); text-transform: uppercase; }
+  .docs-preview p:not(.eyebrow) { font-size: clamp(22px, 2.3vw, 34px); max-width: 32ch; line-height: 1.18; margin-bottom: 35px; }
+  @media (max-width: 700px) {
+    .intro, .founder, .docs-preview { grid-template-columns: 1fr; gap: 50px; }
+    .detail { grid-template-columns: 32px 1fr; gap: 14px; }
+    .statement h2 { font-size: 11vw; }
+    .statement-bottom { display: block; }
+    .statement-bottom a { margin-top: 22px; }
+    .product-strip { padding-inline: 18px; }
   }
 </style>
