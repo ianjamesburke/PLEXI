@@ -2404,6 +2404,24 @@ mod cli_tests {
             }
 
             super::configure_cli_sigpipe(&argv(&["--build-info"])).unwrap();
+            // Diagnose disposition vs. inherited signal-mask failures before
+            // exercising the write. Both calls only query this child process.
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGPIPE, std::ptr::null(), &mut action) },
+                0
+            );
+            assert_eq!(action.sa_sigaction, libc::SIG_DFL, "CLI disposition");
+            let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask) },
+                0
+            );
+            assert_eq!(
+                unsafe { libc::sigismember(&mask, libc::SIGPIPE) },
+                0,
+                "SIGPIPE blocked in child"
+            );
             let mut fds = [-1; 2];
             // Own both descriptors immediately; closing the reader before
             // dup2 makes the stdout failure deterministic, without a race.
