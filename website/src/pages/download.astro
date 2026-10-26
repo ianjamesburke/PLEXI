@@ -145,7 +145,7 @@ const WINDOWS_INSTALL_CMD = 'irm https://plexiapp.com/install.ps1 | iex';
   }
   .install-intro > p:last-child { color: var(--fg-2); font-size: 14px; }
 
-  .install-list { max-width: 860px; display: grid; gap: 14px; }
+  .install-list { max-width: 860px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 
   .install-block {
     background: var(--bg-2);

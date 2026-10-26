@@ -85,6 +85,14 @@ const canonicalURL = new URL(Astro.url.pathname, Astro.site).toString();
   const syncMenu = () => { if (menu) menu.open = !narrow.matches; };
   syncMenu();
   narrow.addEventListener('change', syncMenu);
+  const syncScrollStops = () => {
+    document.querySelectorAll<HTMLElement>('.prose pre, .prose table').forEach(el => {
+      if (el.scrollWidth > el.clientWidth) el.tabIndex = 0;
+      else el.removeAttribute('tabindex');
+    });
+  };
+  syncScrollStops();
+  window.addEventListener('resize', syncScrollStops);
 </script>
 <style>
   .docs-masthead { padding-block: 48px; border-bottom: 6px solid var(--accent-light); }
