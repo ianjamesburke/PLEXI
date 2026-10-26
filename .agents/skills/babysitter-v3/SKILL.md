@@ -65,6 +65,7 @@ Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date 
 4. **Batch the queue.** Related small stints that touch the same area ship as one PR. Batches that touch overlapping files never run at the same time. Write the batch plan and `parent` (or `none`) into `RUN_STATE.md`.
 5. Check the command channel: `plexi pane list` must return, then `plexi pane slot write channel_preflight ready --pane-id $PLEXI_PANE_ID --replace` and `plexi pane slot read channel_preflight $PLEXI_PANE_ID` must round-trip `ready`. Create a disposable probe pane; use `plexi pane send <probe-pane> 'echo channel-preflight-ok' --submit` and confirm its output, then `plexi pane close <probe-pane>` and confirm it disappears from `pane list`. On failure, report the command and error loudly and retry all checks with the running host's own executable, resolved from `ps -o command -p <host_pid>` (for example `/Applications/Plexi Beta.app/Contents/MacOS/plexi-beta`). A channel-named shim may still point to an incompatible CLI. Stop if the host executable fails; never silently degrade.
 6. Run `caffeinate -dimsu` in its own pane (`plexi pane new "caffeinate -dimsu" -n caffeinate --no-focus`).
+7. Read the previous run's `REPORT.md` **Friction** section (newest run dir other than this one). Check each line against the task graph (`stint list | grep`). A line with no stint id and no `non-actionable` mark is unfiled: file it with `/create-stint` before the first spawn.
 
 ## Spawning a pane (every role, every engine)
 
@@ -78,6 +79,7 @@ Every run writes to exactly one `<run_root>/<YYYYMMDD-HHMM>/`, named from `date 
    # e.g. agym -i '/validate-pr 2601 — read your brief first: .stint/runs/20261016-0300/briefs/tester-2601-r1.md'
    ```
 4. Confirm it started: within 60 s the `status` slot is non-empty, or the footer shows the engine's working text. If neither, read the capture once and diagnose; never send the same prompt again.
+5. A pane that is alive with no agent (shell prompt, no slot, no working footer) is a **failed launch**, not a slow start. Read one capture and check for an argv or usage error (for example `agy` without `-i`: "Prompts are read only from -p/--print, -i/--prompt-interactive, or stdin"). Close the pane and respawn with the `[engines.launch]` form copied verbatim.
 
 Labels: `worker-<batch>`, `tester-<batch>-r<round>`.
 
@@ -90,7 +92,7 @@ Labels: `worker-<batch>`, `tester-<batch>-r<round>`.
 | `verdict` | Tester only: `PASS` or `FAIL` |
 | `last_error` | One line when `blocked`/`failed`: the question or the reason |
 
-Write: `plexi pane slot write <name> <value> --pane-id $PLEXI_PANE_ID --replace`. Every pane writes `plexi pane slot write status <step>:working --pane-id $PLEXI_PANE_ID --replace` immediately on starting, and every later slot write keeps both `--pane-id $PLEXI_PANE_ID` and `--replace`. This targets the caller's own pane even when `PLEXI_SOCKET` is overridden. Workers' steps: `impl` → `pr` (PR open, local gate green, waiting for a verdict) → `merge`. Testers' steps: `test`. Write `status` only at these step boundaries, never for sub-steps. A question is `blocked` plus `last_error`, never prose at an idle prompt.
+Write: `plexi pane slot write <name> <value> --pane-id $PLEXI_PANE_ID --replace`. Every pane writes `plexi pane slot write status <step>:working --pane-id $PLEXI_PANE_ID --replace` immediately on starting, and every later slot write keeps both `--pane-id $PLEXI_PANE_ID` and `--replace`. This targets the caller's own pane even when `PLEXI_SOCKET` is overridden. Workers' steps: `impl` → `pr` (PR open, local gate green, waiting for a verdict) → `merge`. Testers' steps: `test`. Write `status` only at these step boundaries, never for sub-steps. The first write after start is `impl:working` (tester: `test:working`); `start:done` is not a step, and `bs-start` writing it does not replace the first write. A lane that never leaves its first non-terminal value is a stall candidate. A question is `blocked` plus `last_error`, never prose at an idle prompt.
 
 ## The loop (per batch, up to `max_concurrent_lanes` at once)
 
@@ -103,10 +105,11 @@ Wait (note `<id>` is positional on `slot wait`, `slot read`, and `slot list`; on
 
 **2. Tester.** As soon as `pr` is set, spawn a fresh `tester` pane. Do not spawn a tester for one lane while another lane is between PASS and `merge:done`; wait for that merge to finish so validation uses the resulting base. Choose the brief by `gh pr diff <PR> --name-only`:
 
-- **Docs, skills or scripts only:** review the diff against the Done-When. No install.
+- **Docs, skills or scripts only:** review the diff against the Done-When. No install, except in aggregate mode (below).
+- **Aggregate batch, any diff:** always install. `integrate` requires `validation.install_head == head`, even for a test-only diff, so the tester brief always includes `just pr-install <PR>` and records the installed head.
 - **Everything else:** install and drive. Brief:
 
-> Validate PR #<PR> against the Done-When of stints <ids> (`stint show <id>`) and nothing else. Do not edit code. Run `just pr-install <PR>` (a full release build, 10–20 min; wait for the exit code in the foreground). Check the head sha in the PR profile's `install.log` matches `gh pr view <PR> --json headRefOid`. Start and drive the host per `/drive-host`; the channel-named `plexi-pr-<PR>` shim ignores inherited `PLEXI_SOCKET`, while a bare `plexi` may adopt it. Drive the feature (`pane state`, `pane capture`, `host screenshot`, `app render --png`) and confirm its new info log line in `~/.plexi-pr-<PR>/plexi.log`. If the PR adds a guard or assertion, prove it can fail: break it in a scratch copy under `$TMPDIR` (leave it there; never delete it), watch the test fail. Don't re-run suites the worker already ran. Never use `screencapture` or anything that raises an OS permission dialog. Stop the host when done. Write `verdict` PASS or FAIL; on FAIL put a numbered repro list in your final reply and the count in `last_error`; then write `status=test:done`. <hard-to-drive surface + the fallback proof you accept>
+> Validate PR #<PR> against the Done-When of stints <ids> (`stint show <id>`) and nothing else. Do not edit code. Run `just pr-install <PR>` (a full release build, 10–20 min; wait for the exit code in the foreground). Check the head sha in the PR profile's `install.log` (8-character form) is the prefix of `gh pr view <PR> --json headRefOid`. Start and drive the host per `/drive-host`; the channel-named `plexi-pr-<PR>` shim ignores inherited `PLEXI_SOCKET`, while a bare `plexi` may adopt it. Drive the feature (`pane state`, `pane capture`, `host screenshot`, `app render --png`) and confirm its new info log line in `~/.plexi-pr-<PR>/plexi.log`. If the PR adds a guard or assertion, prove it can fail: break it in a scratch copy under `$TMPDIR` (leave it there; never delete it), watch the test fail. Don't re-run suites the worker already ran. Never use `screencapture` or anything that raises an OS permission dialog. Stop the host when done. Write `verdict` PASS or FAIL; on FAIL put a numbered repro list in your final reply and the count in `last_error`; then write `status=test:done`. <hard-to-drive surface + the fallback proof you accept>
 
 If the stints touch the assistant or `ai.query`, use the existing test-key setup in `/drive-host` before starting the host; never echo the key.
 
@@ -129,6 +132,7 @@ If the stints touch the assistant or `ai.query`, use the existing test-key setup
 - **Idle with a non-terminal slot** (footer idle, `status` still `…:working`) is a stall at once, whatever `stall_minutes` says: Codex ends its turn while a job runs in the background and never wakes. Tell it to rerun that job in the foreground and continue.
 - **Network error** (capture ends with "network issue connecting to the server", idle footer): not a usage limit, so do not respawn or switch alias. It leaves the pane idle with no slot change, so a heartbeat that only watches slots misses it. Check connectivity once (`curl -s -m 8 -o /dev/null -w "%{http_code}" https://api.github.com/zen`); if it answers, send that pane one `continue from where you stopped` message. If the network is still down, wait one heartbeat and retry; park nothing for it. Log each occurrence.
 - **Usage limit** (capture matches `[engines.usage_limit_patterns]`): mark that alias exhausted for the run in `RUN_STATE.md`. Close the pane, then respawn the same role on the next alias. Its brief is the original brief plus: worktree path, branch, PR number, last slot value, and "continue from here; don't restart". The worktree and PR survive the close. If every alias in a role is exhausted, park the role's lanes and say so in `LOG.md`.
+- **Confirm a signal's format before looping on it.** Before polling a file, slot, or log pattern, read one real example and confirm the exact format you will match. `install.log` records the 8-character short sha, not the 40-character one; a loop on the long form never matches. Never loop on a pattern whose format you have not seen.
 - Memory: if a lane sits in a build for more than 15 min, check `top -l 1 -o mem -n 5 -stats mem,pid,command`. If you kill a runaway, tell the worker before it misreads the failure.
 - End each wake with a three-line progress block (`date +%H:%M` local): done/total, lanes in flight, next check.
 
@@ -145,7 +149,7 @@ The head rots too. After every **two** merges, or whenever your own context feel
      - **Not landed / gaps:** parked batches and why; Done-When items overruled or carried into follow-up stints (by id).
      - **State left behind:** alpha head sha, open PRs from this run, panes still open (should be none), kept worktrees and why.
      - **Filed:** each follow-up stint id with the batch it came from, and evidence added to existing ones.
-     - **Friction:** skill or CLI edits worth making. One line each, at most 5, the highest-leverage first.
+     - **Friction:** skill or CLI edits worth making. One line each, at most 5, the highest-leverage first. Every line names a filed stint id (file it with `/create-stint` first) or is marked `non-actionable`. An unfiled friction line recurs.
      - **Needs Ian:** the `HUMAN_CHECKS.md` items, plus any decision only he can make. Write remaining aggregate steps as an exact copy-pasteable command block, including `gh pr create` if the aggregate PR is not open, `just pr-install <PR>`, and `uv run --no-project python scripts/babysitter-policy.py gate final <PR> <final-record.json> --manifest <run-dir>/aggregate.json`. Fill in the actual branch, PR number (or capture it from creation), and paths; state the required final evidence and acceptance before the commands that consume them.
   3. Append the run to `TRUTH.md`, pointing at `REPORT.md`.
   4. **With a `parent`:** `plexi pane send <parent> "BABYSITTER DONE: <run dir>/REPORT.md" --submit`, then close your own pane (`plexi pane close`). The parent relays the report to Ian, so your pane has nothing left to read. **Without a `parent`:** print `REPORT.md` as your final reply and stay open.
@@ -156,6 +160,7 @@ The head rots too. After every **two** merges, or whenever your own context feel
 - Never code, run git, build or merge. Route.
 - One worker per batch, for the whole batch. Testers are single-use: one per round.
 - Pass criteria come only from the stint's Done-When.
+- The head verifies evidence; it never re-runs a gate a lane already ran. If evidence is missing, ask the lane for it or run the minimum targeted check.
 - Name the exact skill in every brief (`/implement-stint-v2`, never "implement it").
 - No sounds, no dialogs, no `security` Keychain commands, no file deletion (`rm -rf` or any other spelling) in any brief.
 - Every `plexi pane slot write` you run passes `--pane-id $PLEXI_PANE_ID --replace`, including the initial `status=<step>:working` write; this keeps the write on the caller pane even when its target socket is overridden. `plexi pane slot wait`, `read`, and `list` take `<pane_id>` positionally.
