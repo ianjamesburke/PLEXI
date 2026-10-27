@@ -98,6 +98,89 @@ fn conjoined_navigation_fixture(h: &mut HostHarness) -> (u64, egui_tiles::TileId
 }
 
 #[test]
+fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = parent_context + 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Agent tools".into(),
+        root: crate::testing::scratch_context_root("agent-tools"),
+        description: None,
+        context_id: child_context,
+        parent_id: Some(parent_context),
+        depth: 1,
+        parked: false,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    let (tile, top) = h.app.add_app_pane_in_window(1, "top");
+    h.app.windows[1].focused_pane = Some(tile);
+    h.run_frames(2);
+    let child = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("child terminal");
+    h.app.conjoined_contexts.insert(child_context, parent);
+    h.app.focus_pane_in_strip(child);
+    h.run_frames(2);
+    assert!(h
+        .app
+        .strip_for_context(child_context)
+        .columns
+        .iter()
+        .any(|column| column.panes == vec![top, child]));
+    assert!(h.app.dive_into_agent_children(parent));
+    h.run_frames(2);
+    let command = egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND;
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    h.press_key(egui::Key::L, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    assert_eq!(h.app.visual_owner_pane(), Some(child));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    backend.enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    assert_eq!(backend.take_input_tap(), b"\x09");
+    assert!(h.app.switch_to_context_restoring_last_pane(parent_context));
+    assert!(h.app.switch_to_context_restoring_last_pane(child_context));
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    h.press_key(egui::Key::H, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    assert_eq!(h.app.visual_owner_pane(), Some(parent));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    h.terminal_backend(parent).enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(h.terminal_backend(parent).take_input_tap(), b"\x09");
+    assert_eq!(h.app.windows[0].context_id, parent_context);
+    assert_eq!(h.app.windows[1].context_id, child_context);
+    assert!(h.app.windows[0].panes.contains_key(&parent));
+    assert!(h.app.windows[1].panes.contains_key(&child));
+}
+
+#[test]
 fn navigate_right_moves_from_conjoined_parent_to_last_focused_child() {
     let mut h = HostHarness::new();
     let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
