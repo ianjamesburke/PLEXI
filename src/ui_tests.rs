@@ -9915,11 +9915,14 @@ mod tests {
         });
         h.run_steps(3);
         let (before, pos) = h.with_app(|app| (app.active_strip_layout().scroll_offset_px, app.active_strip_layout().canvas_rect.center()));
+        h.with_app_mut(|app| app.workspace_dirty = false);
         h.harness().input_mut().events.extend([
             egui::Event::PointerMoved(pos),
             egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(900.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
         ]);
-        h.run_steps(8);
+        h.step();
+        assert!(h.with_app(|app| app.workspace_dirty), "scroll must schedule workspace persistence");
+        h.run_steps(7);
         h.with_app(|app| {
             let layout = app.active_strip_layout();
             assert!(layout.scroll_offset_px < before - 100.0, "wheel must scroll: {before} -> {}", layout.scroll_offset_px);

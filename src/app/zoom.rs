@@ -2239,6 +2239,7 @@ impl PlexiApp {
                 }
             }
         }
+        self.mark_workspace_dirty();
         log::info!("strip: committed divider shares context={context_id}");
     }
 
@@ -2268,6 +2269,7 @@ impl PlexiApp {
                 }
             }
         }
+        self.mark_workspace_dirty();
         log::info!("strip: reset divider context={context} vertical={}", divider.is_vertical);
     }
 
