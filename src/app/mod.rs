@@ -376,6 +376,9 @@ pub struct PlexiApp {
     /// Notes collection only when the user saves, so discard never leaves
     /// unattached assets behind.
     pub(crate) quick_note_attachments: Vec<PathBuf>,
+    /// Decoded-texture cache for the QuickNote composer's staged-attachment
+    /// previews. Shares the editor's inline-image decoder (0478).
+    pub(crate) quick_note_image_cache: crate::editor::widget::ImageCache,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
     /// Cleared after the one-shot notes migration off the pre-tier store has
@@ -1754,6 +1757,7 @@ impl PlexiApp {
                     notification_input_drafts: HashMap::new(),
                     quick_note_text: String::new(),
                     quick_note_attachments: Vec::new(),
+                    quick_note_image_cache: crate::editor::widget::ImageCache::default(),
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_migration_pending: true,
                     notes_picker_entries: Vec::new(),
@@ -2025,6 +2029,7 @@ impl PlexiApp {
             notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
+            quick_note_image_cache: crate::editor::widget::ImageCache::default(),
             quick_note_ctx: QuickNoteCtx::default(),
             notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
@@ -2990,6 +2995,7 @@ impl PlexiApp {
             notification_input_drafts: HashMap::new(),
             quick_note_text: String::new(),
             quick_note_attachments: Vec::new(),
+            quick_note_image_cache: crate::editor::widget::ImageCache::default(),
             quick_note_ctx: QuickNoteCtx::default(),
             notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
