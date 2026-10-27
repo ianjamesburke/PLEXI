@@ -4365,7 +4365,7 @@ mod agent_tests {
             fs::write(dir.join("settings.toml"), format!("[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\ndescription = \"{description}\"\n[harness]\ncli = \"script\"\n")).unwrap();
         }
         let list: serde_json::Value = serde_json::from_str(&super::agent_list_in(&profile, Some(&root), true).unwrap()).unwrap();
-        let row = list.as_array().unwrap().iter().find(|row| row["name"] == "worker").unwrap();
+        let row = list["agents"].as_array().unwrap().iter().find(|row| row["name"] == "worker").unwrap();
         assert_eq!(row["description"], "workspace definition");
         let show: serde_json::Value = serde_json::from_str(&super::agent_show_in("worker", &profile, Some(&root), true).unwrap()).unwrap();
         assert_eq!(show["description"], "workspace definition");
@@ -4477,7 +4477,7 @@ mod agent_tests {
             &super::agent_list_in(profile.path(), Some(ws.path()), true).unwrap(),
         )
         .unwrap();
-        let arr = list_json.as_array().unwrap();
+        let arr = list_json["agents"].as_array().unwrap();
         // The two authored agents plus the built-in `default` (stint 1035).
         assert_eq!(arr.len(), 3);
         let builtin_default = arr.iter().find(|v| v["name"] == "default").unwrap();
@@ -4547,6 +4547,118 @@ mod agent_tests {
         assert!(
             legacy.join("agent.json").is_file(),
             "the list migrates the legacy authority record rather than only reporting it"
+        );
+    }
+
+    /// One workspace agent and one user-tier agent, both recognised
+    /// (`AGENT.md` + `settings.toml`), so `agent list --json` has a non-trivial
+    /// agent array and nothing to report as unrecognised.
+    fn seed_recognised_agent_workspace(profile: &std::path::Path, ws: &std::path::Path) {
+        for (dir, display_name, description) in [
+            (profile.join("agents/reviewer"), "Reviewer", "Global reviewer"),
+            (
+                crate::agent::workspace_agents_dir(ws).join("worker"),
+                "Worker",
+                "Workspace worker",
+            ),
+        ] {
+            let id = dir.file_name().unwrap().to_string_lossy().into_owned();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("AGENT.md"), format!("{description} persona\n")).unwrap();
+            fs::write(
+                dir.join("settings.toml"),
+                format!(
+                    "[agent]\nid = \"{id}\"\ndisplay_name = \"{display_name}\"\ndescription = \"{description}\"\n[harness]\ncli = \"script\"\n"
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    /// The captured base-commit output carries absolute temp paths; the fixture
+    /// stores them as `<PROFILE>` / `<WS>` so the comparison survives a rerun.
+    fn normalise_agent_paths(
+        text: &str,
+        profile: &std::path::Path,
+        ws: &std::path::Path,
+    ) -> String {
+        text.replace(&profile.to_string_lossy().into_owned(), "<PROFILE>")
+            .replace(&ws.to_string_lossy().into_owned(), "<WS>")
+    }
+
+    /// Stint 1098: the machine surface names the directories it will not load,
+    /// each with its own reason — a `head.json`-only directory is a legacy
+    /// filename, an `AGENT.md`-only directory is missing a required file. A JSON
+    /// consumer must be able to tell those apart, not merely see a shorter list.
+    #[test]
+    fn agent_list_json_reports_unrecognised_directories_with_distinct_reasons() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let legacy = ws.path().join(".plexi/agents/lead-120cadfb");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let incomplete = ws.path().join(".plexi/agents/writer");
+        fs::create_dir_all(&incomplete).unwrap();
+        fs::write(incomplete.join("AGENT.md"), "incomplete-writer-marker\n").unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(
+            &super::agent_list_in(profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+
+        let reported = json["unrecognised_agent_directories"]
+            .as_array()
+            .expect("the report is a top-level array, present even when empty");
+        assert_eq!(reported.len(), 2, "{json}");
+        let legacy_row = reported
+            .iter()
+            .find(|row| row["path"].as_str().is_some_and(|p| p.ends_with("lead-120cadfb")))
+            .expect("the legacy directory is reported");
+        let incomplete_row = reported
+            .iter()
+            .find(|row| row["path"].as_str().is_some_and(|p| p.ends_with("writer")))
+            .expect("the incomplete directory is reported");
+        let legacy_reason = legacy_row["reason"].as_str().expect("a reason");
+        let incomplete_reason = incomplete_row["reason"].as_str().expect("a reason");
+        assert!(legacy_reason.contains("head.json"), "{legacy_reason}");
+        assert!(
+            incomplete_reason.contains("settings.toml"),
+            "{incomplete_reason}"
+        );
+        assert_ne!(
+            legacy_reason, incomplete_reason,
+            "a legacy filename and a missing required file must not read alike"
+        );
+    }
+
+    /// Stint 1098: adding the report must not touch the agent array. The
+    /// expected array is the pre-change output captured from the base commit
+    /// (`testdata/agent_list_json_base_agents.json`), not a retyped literal.
+    #[test]
+    fn agent_list_json_keeps_the_agent_array_unchanged_for_a_recognised_workspace() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        seed_recognised_agent_workspace(profile.path(), ws.path());
+
+        let json: serde_json::Value = serde_json::from_str(
+            &super::agent_list_in(profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json["unrecognised_agent_directories"],
+            serde_json::json!([]),
+            "a recognised workspace reports an empty list rather than dropping the key"
+        );
+        assert_eq!(
+            normalise_agent_paths(
+                &serde_json::to_string_pretty(&json["agents"]).unwrap(),
+                profile.path(),
+                ws.path()
+            ),
+            include_str!("testdata/agent_list_json_base_agents.json").trim_end(),
+            "the agent array must be byte-identical to the base-commit output"
         );
     }
 
