@@ -4350,6 +4350,52 @@ mod agent_tests {
     }
 
     #[test]
+    fn workspace_definition_flows_through_spawn_fleet_next_and_runs() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_focused_terminal();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let profile = h.profile_dir().to_path_buf();
+        for (dir, description) in [
+            (profile.join("agents/worker"), "user definition"),
+            (crate::agent::workspace_agents_dir(&root).join("worker"), "workspace definition"),
+        ] {
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("AGENT.md"), "Worker persona").unwrap();
+            fs::write(dir.join("settings.toml"), format!("[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\ndescription = \"{description}\"\n[harness]\ncli = \"script\"\n")).unwrap();
+        }
+        let list: serde_json::Value = serde_json::from_str(&super::agent_list_in(&profile, Some(&root), true).unwrap()).unwrap();
+        let row = list.as_array().unwrap().iter().find(|row| row["name"] == "worker").unwrap();
+        assert_eq!(row["description"], "workspace definition");
+        let show: serde_json::Value = serde_json::from_str(&super::agent_show_in("worker", &profile, Some(&root), true).unwrap()).unwrap();
+        assert_eq!(show["description"], "workspace definition");
+        let mut payload = super::resolve_agent_spawn_in_stopping_at("worker", &profile, &root, Some("sleep 30"), None, None, None, &[]).unwrap();
+        assert_eq!(payload["role"], "worker");
+        let reply_dir = tempfile::tempdir().unwrap();
+        let spawn_reply = reply_dir.path().join("spawn.json");
+        payload["response_file"] = serde_json::json!(spawn_reply);
+        h.inject_ipc(serde_json::from_value(payload).unwrap());
+        h.hidden_frame();
+        let spawned: serde_json::Value = serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();
+        assert_eq!(spawned["ok"], true, "{spawned}");
+        let pane_id = spawned["pane_id"].as_u64().unwrap();
+        let (win, _) = h.app.find_pane_in_any_window(pane_id).unwrap();
+        h.app.windows[win].panes.get_mut(&pane_id).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id, state: crate::protocol::AgentState::Blocked, agent: "script".into(), detail: None, session_id: None,
+        }));
+        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(fleet.tasks.iter().flat_map(|task| &task.rows).any(|row| row.pane_id == pane_id && row.role == "worker"));
+        let next_reply = reply_dir.path().join("next.json");
+        h.app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentNext { response_file: next_reply.to_string_lossy().into_owned() });
+        let next: serde_json::Value = serde_json::from_slice(&fs::read(next_reply).unwrap()).unwrap();
+        assert_eq!(next["pane_id"], pane_id);
+        let run = crate::agent::runs::handle_request("spawn_run", &serde_json::json!({"workspace": root, "agent": "worker"}));
+        assert_eq!(run["ok"], true, "{run}");
+        assert_eq!(run["run"]["agent_id"], "worker");
+        assert_eq!(run["run"]["grants"], serde_json::json!([]));
+    }
+
+    #[test]
     fn agent_list_and_show_report_tiers_shadowing_and_spawn_command() {
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
