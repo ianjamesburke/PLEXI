@@ -814,6 +814,8 @@ impl HarnessAdapter {
         if self.harness == AgentHarness::Pi {
             parts.push("--no-extensions".to_string());
             parts.push("--no-mcp".to_string());
+            parts.push("--models".to_string());
+            parts.push("'*'".to_string());
         }
         for f in flags {
             parts.push(shell_quote_arg(f));
@@ -903,6 +905,8 @@ impl HarnessAdapter {
         if self.harness == AgentHarness::Pi {
             parts.push("--no-extensions".to_string());
             parts.push("--no-mcp".to_string());
+            parts.push("--models".to_string());
+            parts.push("'*'".to_string());
         }
         let redacted_flags = redact_harness_flags(flags);
         for f in redacted_flags {
@@ -2358,8 +2362,6 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
 /// Report print-mode worker exit even when the interactive pane shell stays alive.
 /// Repository checks, sandbox settings, and approval flags remain harness-owned.
 pub(crate) fn supervised_worker_command(command: &str, reporter: &str, harness: &str) -> String {
-    // Keep worker model scopes explicit here when pi gains a supported flag. Do not inherit or edit
-    // the user's ~/.pi model patterns: the harness owns that configuration.
     let body = format!("( {command}\n); plexi_worker_exit=$?; if [ $plexi_worker_exit -eq 0 ]; then plexi_worker_state=exited_unreported; else plexi_worker_state=failed; fi; {reporter} agent report --state $plexi_worker_state --agent {} --event HarnessExit --detail \"harness exited with code $plexi_worker_exit without agent done\"", shell_quote_arg(harness));
     format!("/bin/sh -c {}", shell_quote_arg(&body))
 }
@@ -3971,6 +3973,15 @@ mod agent_tests {
     }
 
     #[test]
+    fn pi_worker_uses_explicit_model_scope_without_changing_selected_model() {
+        let adapter = super::harness_adapter("pi").unwrap();
+        let command = adapter.spawn_command("task", Some("openai/gpt-4o"), None);
+        assert!(command.contains("--models '*'"), "{command}");
+        assert!(command.contains("--model openai/gpt-4o"), "{command}");
+        assert!(!command.contains(" -p"), "{command}");
+    }
+
+    #[test]
     fn supervised_worker_reports_nonzero_and_clean_exit_without_completion() {
         for (command, code) in [("exit 1", 1), ("true", 0), ("printf 'output\\n'; exit 7", 7)] {
             let wrapped = super::supervised_worker_command(command, "printf '%s\\n'", "script");
@@ -4042,7 +4053,7 @@ mod agent_tests {
         );
         assert_eq!(
             pi.spawn_command("audit module", None, None),
-            "pi --no-extensions --no-mcp 'audit module'"
+            "pi --no-extensions --no-mcp --models '*' 'audit module'"
         );
         assert_eq!(
             pi.capture_session_id(&serde_json::json!({"sessionId": "pi-7"})),
@@ -4100,7 +4111,7 @@ mod agent_tests {
                 .unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
             ),
             "unexpected pi command: {pi_cmd}"
         );
@@ -4197,7 +4208,7 @@ mod agent_tests {
             super::build_agent_spawn_command(&default_def, pi_adapter, "do task").unwrap();
         assert!(
             default_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
             ),
             "unexpected default pi command: {default_cmd}"
         );
@@ -4209,7 +4220,7 @@ mod agent_tests {
         );
         assert_eq!(
             default_flags,
-            "--no-extensions --no-mcp --model sonnet --append-system-prompt <AGENT.md>"
+            "--no-extensions --no-mcp --models '*' --model sonnet --append-system-prompt <AGENT.md>"
         );
         assert!(!default_flags.contains("Secret persona text"));
 
@@ -4221,7 +4232,7 @@ mod agent_tests {
         let ext_cmd = super::build_agent_spawn_command(&ext_def, pi_adapter, "do task").unwrap();
         assert!(
             ext_cmd.starts_with(
-                "pi --no-extensions --no-mcp -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
             ),
             "unexpected explicit-extension pi command: {ext_cmd}"
         );
@@ -4432,7 +4443,7 @@ mod agent_tests {
         assert_eq!(show_json["tier"], "workspace");
         assert_eq!(show_json["shadows_global"], true);
         let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
-        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
+        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
         assert!(!spawn_cmd.contains(" -p"));
         assert!(spawn_cmd.contains("<TASK>"));
     }
@@ -4663,7 +4674,7 @@ mod agent_tests {
         let pi_cmd = super::build_agent_start_command(&pi_def, pi_adapter, None).unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
+                "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
             ),
             "unexpected pi start command: {pi_cmd}"
         );
