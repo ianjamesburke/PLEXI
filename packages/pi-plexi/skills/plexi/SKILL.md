@@ -1,6 +1,6 @@
 ---
 name: plexi
-description: "Operate a live Plexi workspace from Pi: inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you."
+description: "Operate a live Plexi workspace from Pi: resolve registered agents by name — talk to paul means an agent, not an app — inspect contexts and panes, discover and call app tools with exact resource permissions, subscribe to app event streams, and coordinate creative questions or approvals through Needs you."
 ---
 
 # Plexi Workspace Skill for Pi
@@ -14,7 +14,8 @@ app operations. Print-mode workers may have extensions disabled; follow the
 CLI workflows in `plexi-cli` in that case.
 
 1. **Orient first**:
-   - Call `plexi_workspace_overview` to see the active context, sibling panes, running apps, and any pending `Needs you` items or durable continuations.
+   - Call `plexi_workspace_overview` to see the active context, sibling panes, registered agents, running apps, and any pending `Needs you` items or durable continuations.
+   - Its `agents` list is the agent registry: a bare name — "talk to paul", "ask the researcher" — means an agent defined under `.plexi/agents/`, not an app or a person in Contacts. Read one with `plexi agent show <name>` (or the `plexi-cli` skill) before reaching for anything outside Plexi.
    - Use `plexi_pane_inspect` to read another pane's state or terminal output (`capture: true`).
 
 2. **App tool discovery and invocation**:

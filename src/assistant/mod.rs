@@ -103,6 +103,12 @@ use crate::app::assistant_host_tools::HOST_TOOL_NET_FETCH;
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
 const ASSISTANT_ACTOR_ID: &str = "assistant";
 
+/// The Assistant's own persona. It used to be the agent registry's built-in
+/// `default`; that name now resolves to the workspace's launchable Pi agent, so
+/// the persona lives with the paused Assistant surface it belongs to
+/// (stint 1035).
+pub const ASSISTANT_AGENT_PROMPT: &str = include_str!("AGENT.md");
+
 /// Shown on the desktop permission sheet when the ask came from a phone or CLI turn.
 const PHONE_TURN_SOURCE: &str = "phone/CLI";
 
@@ -1955,7 +1961,13 @@ impl AssistantApp {
         let is_app_build_turn = selected_skill
             .as_ref()
             .is_some_and(|skill| skill.name == skills::APP_BUILD_SKILL_NAME);
-        let mut system = agent.prompt;
+        // The registry's built-in `default` is the workspace's launchable Pi
+        // agent; the Assistant keeps its own persona for that slot.
+        let mut system = if agent.source == AgentSource::BuiltIn {
+            ASSISTANT_AGENT_PROMPT.to_string()
+        } else {
+            agent.prompt
+        };
         push_grounding(&mut system);
         system.push_str("\n\nCompaction status: ");
         system.push_str(&self.model.compaction_status());

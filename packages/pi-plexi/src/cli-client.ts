@@ -44,6 +44,13 @@ const defaultRunner: ExecRunner = (bin, args, options) =>
     );
   });
 
+/** One resolvable agent, as the orient call reports it: name, tier, harness. */
+export interface WorkspaceAgentSummary {
+  name: string;
+  tier: string;
+  harness: string;
+}
+
 export interface WorkspaceOverviewSnapshot {
   attached: boolean;
   status: string;
@@ -54,9 +61,44 @@ export interface WorkspaceOverviewSnapshot {
   contextName?: string;
   contexts: any[];
   panes: any[];
+  agents: WorkspaceAgentSummary[];
   appTools: any[];
   needsYou: any[];
   continuations: any[];
+}
+
+const AGENT_TIER_RANK: Record<string, number> = {
+  workspace: 3,
+  global: 2,
+  "built-in": 1,
+};
+
+/**
+ * Minimal orient payload from `agent list --json`: name, tier, harness, one row
+ * per name. A workspace definition shadows a global one of the same name; the
+ * built-in `default` is always present until a workspace definition replaces it.
+ */
+function summarizeAgents(rows: unknown): WorkspaceAgentSummary[] {
+  const byName = new Map<string, WorkspaceAgentSummary>();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const name = typeof row?.name === "string" ? row.name : undefined;
+    if (!name) continue;
+    const tier = typeof row.tier === "string" ? row.tier : "built-in";
+    const harness =
+      typeof row.harness === "string"
+        ? row.harness
+        : typeof row.cli === "string"
+          ? row.cli
+          : "assistant";
+    const held = byName.get(name);
+    if (
+      !held ||
+      (AGENT_TIER_RANK[tier] ?? 0) > (AGENT_TIER_RANK[held.tier] ?? 0)
+    ) {
+      byName.set(name, { name, tier, harness });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export class PlexiCliClient {
@@ -165,6 +207,10 @@ export class PlexiCliClient {
 
   async listContexts(): Promise<CliResult<any[]>> {
     return this.runJson<any[]>(["context", "list"]);
+  }
+
+  async listAgents(): Promise<CliResult<any[]>> {
+    return this.runJson<any[]>(["agent", "list", "--json"]);
   }
 
   async getPaneInfo(): Promise<CliResult<any>> {
@@ -374,22 +420,25 @@ export class PlexiCliClient {
         contextId: this.config.contextId,
         contexts: [],
         panes: [],
+        agents: [],
         appTools: [],
         needsYou: [],
         continuations: [],
       };
     }
 
-    const [panesRes, contextsRes, toolsRes, reconcileRes] = await Promise.all([
-      this.listPanes(),
-      this.listContexts(),
-      this.listAppTools({ contextId: this.config.contextId }),
-      this.reconcileNeedsYou({
-        sessionId,
-        paneId: this.config.paneId,
-        contextId: this.config.contextId,
-      }),
-    ]);
+    const [panesRes, contextsRes, agentsRes, toolsRes, reconcileRes] =
+      await Promise.all([
+        this.listPanes(),
+        this.listContexts(),
+        this.listAgents(),
+        this.listAppTools({ contextId: this.config.contextId }),
+        this.reconcileNeedsYou({
+          sessionId,
+          paneId: this.config.paneId,
+          contextId: this.config.contextId,
+        }),
+      ]);
 
     const allPanes = Array.isArray(panesRes.data) ? panesRes.data : [];
     const contexts = Array.isArray(contextsRes.data) ? contextsRes.data : [];
@@ -413,6 +462,7 @@ export class PlexiCliClient {
       contextName: selfPane?.context_name ?? contextObj?.name,
       contexts,
       panes: contextPanes,
+      agents: summarizeAgents(agentsRes.data),
       appTools: Array.isArray(toolsRes.data?.tools) ? toolsRes.data.tools : [],
       needsYou: Array.isArray(reconcileRes.data?.items)
         ? reconcileRes.data.items.filter((i: any) => !i.resolution)
