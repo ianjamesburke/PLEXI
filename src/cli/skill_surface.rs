@@ -447,6 +447,7 @@ fn plexi_cli_skill_has_exactly_one_canonical_root() {
         let text = std::fs::read_to_string(&skill).unwrap_or_default();
         let name = text
             .lines()
+            .skip(1)
             .take_while(|line| *line != "---")
             .find_map(|line| line.strip_prefix("name:"))
             .map(|name| name.trim().trim_matches('"').to_string());
