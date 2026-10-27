@@ -906,6 +906,164 @@ pub fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> 
         .collect()
 }
 
+// ── Agent directory scan ─────────────────────────────────────────────────────
+
+/// Why a scanned agent directory will not be presented as a live agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentDirIssue {
+    /// The card sits under the pre-rename filename. `head.json` was renamed to
+    /// `agent.json` in code but never migrated on disk, so a legacy card was
+    /// unreachable and looked exactly like a missing agent.
+    LegacyCardFilename {
+        found: &'static str,
+        expected: &'static str,
+        migrated: bool,
+    },
+    /// The directory lacks a file an agent definition requires.
+    MissingRequiredFile { missing: &'static str },
+}
+
+impl AgentDirIssue {
+    /// One line naming the file that is missing or legacy.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::LegacyCardFilename {
+                found,
+                expected,
+                migrated,
+            } => {
+                if *migrated {
+                    format!("legacy {found} - migrated to {expected}")
+                } else {
+                    format!("legacy {found} - could not be migrated to {expected}")
+                }
+            }
+            Self::MissingRequiredFile { missing } => format!("missing {missing}"),
+        }
+    }
+}
+
+/// One scanned directory the loader will not present as an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognisedAgentDir {
+    pub path: PathBuf,
+    pub issue: AgentDirIssue,
+}
+
+/// The card file for a directory, renaming a legacy `head.json` in place.
+///
+/// The rename *is* the migration: reading `head.json` under its old name would
+/// keep the old name alive forever, and skipping it is what made a real agent
+/// invisible. A failed rename returns `None` so the caller reports it.
+pub(crate) fn card_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
+    let canonical = dir.join("agent.json");
+    if canonical.is_file() {
+        return Some(canonical);
+    }
+    let legacy = dir.join("head.json");
+    if !legacy.is_file() {
+        return None;
+    }
+    match std::fs::rename(&legacy, &canonical) {
+        Ok(()) => {
+            log::info!(
+                "agents: migrated legacy card {} to {}",
+                legacy.display(),
+                canonical.display()
+            );
+            Some(canonical)
+        }
+        Err(error) => {
+            log::error!(
+                "agents: could not migrate legacy card {} to {}: {error}",
+                legacy.display(),
+                canonical.display()
+            );
+            None
+        }
+    }
+}
+
+/// Classify one directory: `None` when it is a usable agent, `Some(issue)`
+/// when it is not. Migrates a legacy card filename on the way.
+fn classify_agent_dir(dir: &Path) -> Option<AgentDirIssue> {
+    if dir.join("agent.json").is_file() {
+        return None;
+    }
+    if dir.join("head.json").is_file() {
+        let migrated = card_file_migrating_legacy(dir).is_some();
+        return Some(AgentDirIssue::LegacyCardFilename {
+            found: "head.json",
+            expected: "agent.json",
+            migrated,
+        });
+    }
+    let has_persona = agent_persona_path(dir).is_some();
+    if has_persona && dir.join("settings.toml").is_file() {
+        return None;
+    }
+    let missing = if has_persona {
+        "settings.toml"
+    } else {
+        "AGENT.md"
+    };
+    Some(AgentDirIssue::MissingRequiredFile { missing })
+}
+
+/// Classify one directory by path, naming the path that was scanned.
+///
+/// `None` when the directory does not exist or is a usable agent.
+pub fn unrecognised_agent_dir(dir: &Path) -> Option<UnrecognisedAgentDir> {
+    if !dir.is_dir() {
+        return None;
+    }
+    classify_agent_dir(dir).map(|issue| {
+        log::info!(
+            "assistant: agent directory {} is unrecognised: {}",
+            dir.display(),
+            issue.describe()
+        );
+        UnrecognisedAgentDir {
+            path: dir.to_path_buf(),
+            issue,
+        }
+    })
+}
+
+/// Every directory under `root` that is not a usable agent, in sorted path
+/// order, each with the reason it is not one. A missing root means no agents.
+///
+/// Never fails: a legitimate layout this build does not understand is reported,
+/// not treated as an error.
+pub fn scan_agent_dirs(root: &Path) -> Vec<UnrecognisedAgentDir> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            log::error!(
+                "assistant: failed to read agent directory {}: {error}",
+                root.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(error) => log::error!(
+                "assistant: failed to read entry in agent directory {}: {error}",
+                root.display()
+            ),
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| unrecognised_agent_dir(&path))
+        .collect()
+}
+
 // ── Transcript ───────────────────────────────────────────────────────────────
 
 /// One user-visible line in an agent's conversation record. The Phase D

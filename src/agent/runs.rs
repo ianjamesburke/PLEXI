@@ -271,7 +271,7 @@ fn record_scope_allow(
 pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
     let agent_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
     let agent_dir = agents_root(workspace).join(agent_id);
-    if agent_dir.join("agent.json").is_file() {
+    if crate::agent::card_file_migrating_legacy(&agent_dir).is_some() {
         if let Ok(mut card) = read_agent(&agent_dir) {
             let mut changed = false;
             for grant in &mut card.grants {
@@ -386,8 +386,10 @@ fn write_definition(workspace: &Path, card: &AgentCard) -> Result<(), String> {
 }
 
 fn read_agent(dir: &Path) -> Result<AgentCard, String> {
-    let raw = fs::read_to_string(dir.join("agent.json"))
-        .map_err(|error| format!("read {}: {error}", dir.display()))?;
+    let path = crate::agent::card_file_migrating_legacy(dir)
+        .ok_or_else(|| format!("no agent.json in {}", dir.display()))?;
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
     serde_json::from_str(&raw).map_err(|error| format!("agent.json in {}: {error}", dir.display()))
 }
 
@@ -402,7 +404,7 @@ fn list_agent_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<Age
     for entry in entries {
         let entry = entry.map_err(|error| format!("read agent entry: {error}"))?;
         let path = entry.path();
-        if !path.is_dir() || !path.join("agent.json").is_file() {
+        if !path.is_dir() || crate::agent::card_file_migrating_legacy(&path).is_none() {
             continue;
         }
         let card = read_agent(&path)?;
@@ -583,7 +585,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if dir.join("agent.json").is_file() {
+    if crate::agent::card_file_migrating_legacy(&dir).is_some() {
         return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
     }
     let now = gate.now_secs();
@@ -782,10 +784,25 @@ fn issue_run(req: IssueRun<'_>) -> Value {
 
 fn find_agent(workspace: &Path, id: &str) -> Result<AgentCard, Value> {
     let dir = agents_root(workspace).join(id);
-    if !dir.join("agent.json").is_file() {
-        return Err(
-            json!({"ok": false, "error_code": "agent_not_found", "error": format!("no agent '{id}'")}),
-        );
+    if crate::agent::card_file_migrating_legacy(&dir).is_none() {
+        // Distinguish "no such agent" from "there is something here I do not
+        // understand" — a silent skip is what made a real agent invisible.
+        return Err(match crate::agent::unrecognised_agent_dir(&dir) {
+            Some(issue) => json!({
+                "ok": false,
+                "error_code": "agent_unrecognised",
+                "error": format!(
+                    "agent directory {} is unrecognised: {}",
+                    dir.display(),
+                    issue.issue.describe()
+                ),
+            }),
+            None => json!({
+                "ok": false,
+                "error_code": "agent_not_found",
+                "error": format!("no agent '{id}'"),
+            }),
+        });
     }
     read_agent(&dir).map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
 }

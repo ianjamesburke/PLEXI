@@ -1577,6 +1577,14 @@ pub fn agent_list_in(
 ) -> Result<String, String> {
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
+    // Directories neither tier will present as an agent, named with the file
+    // that is missing or legacy, so a real agent is never silently invisible.
+    let mut unrecognised = crate::agent::scan_agent_dirs(&profile_dir.join("agents"));
+    if let Some(root) = workspace_root {
+        unrecognised.extend(crate::agent::scan_agent_dirs(&crate::agent::workspace_agents_dir(
+            root,
+        )));
+    }
     // The built-in `default` is listed too: it is a launchable Pi agent, and
     // `spawn`/`start default` resolve exactly this row until the workspace has
     // its own seeded copy (stint 1035).
@@ -1632,22 +1640,33 @@ pub fn agent_list_in(
         return serde_json::to_string_pretty(&json_rows).map_err(|e| e.to_string());
     }
 
-    if rows.is_empty() {
-        return Ok("No agents found in workspace or global registry.".to_string());
-    }
-
-    let mut lines = Vec::with_capacity(rows.len());
-    for (def, tier, shadows_global, harness_label, _) in rows {
-        let mut line = format!("{:<18} {:<10} {:<32}", def.id, tier, harness_label);
-        if !def.description.is_empty() {
-            line.push_str(&format!(" {}", def.description));
+    let mut out = if rows.is_empty() {
+        "No agents found in workspace or global registry.".to_string()
+    } else {
+        let mut lines = Vec::with_capacity(rows.len());
+        for (def, tier, shadows_global, harness_label, _) in rows {
+            let mut line = format!("{:<18} {:<10} {:<32}", def.id, tier, harness_label);
+            if !def.description.is_empty() {
+                line.push_str(&format!(" {}", def.description));
+            }
+            if shadows_global {
+                line.push_str(" [shadows global]");
+            }
+            lines.push(line.trim_end().to_string());
         }
-        if shadows_global {
-            line.push_str(" [shadows global]");
+        lines.join("\n")
+    };
+    if !unrecognised.is_empty() {
+        out.push_str("\n\nunrecognised agent directories (not loaded):");
+        for item in &unrecognised {
+            out.push_str(&format!(
+                "\n  {}  {}",
+                item.path.display(),
+                item.issue.describe()
+            ));
         }
-        lines.push(line.trim_end().to_string());
     }
-    Ok(lines.join("\n"))
+    Ok(out)
 }
 
 pub fn agent_list_cli(cwd: Option<&str>, json: bool) -> i32 {
