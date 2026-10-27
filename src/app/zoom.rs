@@ -2245,6 +2245,35 @@ impl PlexiApp {
         log::info!("strip: committed divider shares context={context_id}");
     }
 
+    pub(crate) fn reset_strip_divider(
+        &mut self,
+        divider: crate::strip::layout::DividerLayout,
+        layout: &crate::strip::StripLayout,
+    ) {
+        let context = self.router.active().context_id;
+        let strip = self.ensure_authoritative_strip(context);
+        if divider.is_vertical {
+            for id in [divider.left_col, divider.right_col].into_iter().flatten() {
+                if let Some(index) = strip.columns.iter().position(|col| col.id == id) {
+                    let preset = if index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 };
+                    strip.columns[index].width = crate::strip::ColumnWidth::Preset(preset);
+                }
+            }
+        } else if let Some(id) = divider.left_col {
+            if let Some(col) = strip.columns.iter_mut().find(|col| col.id == id) {
+                let above = layout.panes.iter().find(|pane| pane.column_id == id && (pane.outer_rect.max.y - divider.rect.min.y).abs() < 1.0);
+                if let Some(row) = above.and_then(|pane| col.panes.iter().position(|id| *id == pane.pane_id)) {
+                    if row + 1 < col.heights.len() {
+                        let mean = (col.heights[row] + col.heights[row + 1]) * 0.5;
+                        col.heights[row] = mean;
+                        col.heights[row + 1] = mean;
+                    }
+                }
+            }
+        }
+        log::info!("strip: reset divider context={context} vertical={}", divider.is_vertical);
+    }
+
     /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
     /// accounting for multi-window pages and off-screen columns across the context.
     #[cfg(test)]
@@ -2327,6 +2356,7 @@ impl PlexiApp {
     }
 
     /// Reset column widths in `context_id` back to default presets.
+    #[cfg(test)]
     pub fn reset_column_widths(&mut self, context_id: u64) {
         let strip = self.ensure_authoritative_strip(context_id);
         strip.reset_column_widths();

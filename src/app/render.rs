@@ -798,7 +798,7 @@ impl PlexiApp {
                     }
                 }
 
-                let mut reset_dividers: bool = false;
+                let mut reset_divider = None;
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     child_agent_strips,
@@ -907,12 +907,9 @@ impl PlexiApp {
                     }
                     if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                            if strip_layout
-                                .as_ref()
-                                .is_some_and(|l| l.dividers.iter().any(|d| d.rect.contains(pos)))
-                            {
-                                reset_dividers = true;
-                            }
+                            reset_divider = strip_layout.as_ref().and_then(|layout| {
+                                layout.dividers.iter().find(|divider| divider.rect.contains(pos)).copied()
+                            });
                         }
                     }
                 }
@@ -1197,11 +1194,10 @@ impl PlexiApp {
                 if let Some(pid) = clicked_pane_id {
                     self.focus_pane_in_strip(pid);
                 }
-                if resized && !reset_dividers {
+                if let (Some(divider), Some(layout)) = (reset_divider, strip_layout.as_ref()) {
+                    self.reset_strip_divider(divider, layout);
+                } else if resized {
                     self.commit_strip_tree_resize(canvas_full_rect.width());
-                }
-                if reset_dividers {
-                    self.reset_column_widths(self.router.active().context_id);
                 }
 
                 // ── Pane swap animation overlays ────────────────────────────────────────

@@ -591,6 +591,7 @@ impl Strip {
     }
 
     /// Reset all column widths in the strip to their default presets (col 0: 35%, others: 65%).
+    #[cfg(test)]
     pub fn reset_column_widths(&mut self) {
         for (idx, col) in self.columns.iter_mut().enumerate() {
             let preset = if idx == 0 {
