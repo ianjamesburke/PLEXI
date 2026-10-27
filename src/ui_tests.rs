@@ -832,6 +832,59 @@ mod tests {
         );
     }
 
+    /// A staged QuickNote attachment renders an inline preview (stint 1047):
+    /// the card grows to fit a decodable image, and a staged file that fails
+    /// to decode falls back to the shared placeholder instead of an empty gap.
+    #[test]
+    fn quick_note_staged_attachment_renders_preview_or_placeholder() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            app.open_quick_note_modal();
+            app.quick_note_text = "look at this".to_string();
+        });
+        h.run_steps(3);
+        let baseline = ui_scale_area_rect(&h, "quick_note_modal");
+
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/notes-drop.png");
+        h.with_app_mut(|app| {
+            app.stage_quick_note_image(fixture.clone())
+                .expect("fixture must decode")
+        });
+        h.run_steps(3);
+        let with_preview = ui_scale_area_rect(&h, "quick_note_modal");
+        assert!(
+            with_preview.height() > baseline.height() + 40.0,
+            "a staged attachment must render a preview taller than the placeholder: \
+             {baseline:?} -> {with_preview:?}"
+        );
+
+        // The same path, corrupted after staging: the shared placeholder must
+        // still paint (grow the card) rather than the full image or a gap.
+        let broken = std::env::temp_dir().join(format!("plexi-1047-{}.png", std::process::id()));
+        std::fs::copy(&fixture, &broken).expect("copy fixture");
+        h.with_app_mut(|app| {
+            app.quick_note_attachments.clear();
+            app.stage_quick_note_image(broken.clone())
+                .expect("staged before corruption")
+        });
+        std::fs::write(&broken, b"not an image").expect("corrupt staged file");
+        h.run_steps(3);
+        let with_placeholder = ui_scale_area_rect(&h, "quick_note_modal");
+        let _ = std::fs::remove_file(&broken);
+        assert!(
+            with_placeholder.height() > baseline.height(),
+            "an undecodable staged attachment must paint its placeholder: \
+             {baseline:?} -> {with_placeholder:?}"
+        );
+        assert!(
+            with_placeholder.height() < with_preview.height(),
+            "the placeholder must be shorter than the decoded preview: \
+             {with_placeholder:?} vs {with_preview:?}"
+        );
+    }
+
     /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
     /// terminal pane's effective pixel font size grows with it.
     #[test]
