@@ -165,7 +165,7 @@ AI diff review happens **once**, pre-push, in `/implement-stint-v2` Phase 4. Thi
 
 Carry the implementation phase's verdict into the testing block as `AI_FINDINGS` (the Ship Log's `Codex verdict:` line). If that line is missing, set `AI_FINDINGS="no pre-push review recorded"` and say so plainly rather than running a review here to fill the gap.
 
-Surface the testing block as soon as the install and mergeable check are done. Do not launch the PR app, browse logs, or run broad full-suite tests unless the install or build shows a real blocker.
+Surface the testing block as soon as the install and mergeable check are done. Do not launch the PR app or browse logs unless the install or build shows a real blocker. Investigate blockers with relevant focused checks; reserve the full host suite for the final combined candidate per TESTING.md.
 
 ---
 

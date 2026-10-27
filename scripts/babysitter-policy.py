@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -79,6 +80,53 @@ def ledger_summary(run_dir):
     return summary
 
 
+def check_test_scope(record, phase):
+    """Bind batch selections to their base; reserve full-suite evidence for final."""
+    local = record.get("local", {})
+    scope = local.get("test_scope")
+    if phase == "final" and scope != "full":
+        raise PolicyError("final candidate requires full local suite evidence")
+    if scope == "full":
+        return scope
+    if scope != "scoped" or local.get("test_base") != record.get("base_head"):
+        raise PolicyError("missing or stale scoped test evidence")
+    paths, evidence = local.get("test_paths"), local.get("test_evidence")
+    if (not isinstance(paths, list) or not paths or len(paths) != len(set(paths))
+            or any(not isinstance(path, str) or not path or Path(path).is_absolute()
+                   or ".." in Path(path).parts for path in paths)
+            or not isinstance(evidence, list) or not evidence):
+        raise PolicyError("scoped evidence must identify changed paths and passing commands")
+    covered = set()
+    for item in evidence:
+        if (not isinstance(item, dict) or item.get("passed") is not True
+                or not isinstance(item.get("command"), str) or not item["command"].strip()
+                or not isinstance(item.get("covers"), list) or not item["covers"]
+                or any(not isinstance(path, str) for path in item["covers"])):
+            raise PolicyError("scoped command evidence is incomplete")
+        tokens = shlex.split(item["command"])
+        if re.search(r"\bcargo\s+test\b", item["command"]):
+            filters = tokens[tokens.index("--") + 1:] if "--" in tokens else []
+            if (not filters or "::" in filters or not any(not f.startswith("-") and re.search(r"[A-Za-z_]", f) for f in filters)
+                    or type(item.get("matched")) is not int or item["matched"] <= 0):
+                raise PolicyError("scoped Rust evidence requires filters and positive matches")
+        covered.update(item["covers"])
+    if covered != set(paths):
+        raise PolicyError("scoped command coverage differs from changed paths")
+    behavior = record.get("validation", {}).get("affected_behavior")
+    if not isinstance(behavior, str) or not behavior.strip():
+        raise PolicyError("scoped batch requires independent installed affected-behavior evidence")
+    return scope
+
+
+def verify_scoped_paths(record, worktree):
+    if record.get("local", {}).get("test_scope") != "scoped":
+        return
+    changed = command("git", "-C", str(worktree), "diff", "--name-only", "--no-renames", "-z",
+                      f"{record['base_head']}...{record['head']}")
+    if set(changed.rstrip("\0").split("\0")) != set(record["local"]["test_paths"]):
+        raise PolicyError("scoped evidence differs from the actual PR diff")
+
+
 def check_gate(settings, record, pr, checks, base_head, phase):
     if settings["topology"]["mode"] != "aggregate" or not settings["authorization"]["auto_merge"]:
         raise PolicyError("aggregate merge-all policy is not configured")
@@ -103,6 +151,7 @@ def check_gate(settings, record, pr, checks, base_head, phase):
         {key for key, value in record.get("local", {}).items() if value is True}
     ):
         raise PolicyError("local build, test, and clippy must pass at PR head")
+    check_test_scope(record, phase)
     tested = record.get("validation", {})
     if tested.get("head") != head or tested.get("verdict") != "PASS":
         raise PolicyError("independent validator did not pass PR head")
@@ -120,8 +169,6 @@ def check_gate(settings, record, pr, checks, base_head, phase):
         raise PolicyError("unknown Rust host CI policy")
     checks = [check for check in checks if check.get("app_slug") != "coderabbitai"]
     if host_ci == "after_alpha":
-        if record.get("local", {}).get("test_scope") != "full":
-            raise PolicyError("post-Alpha host CI requires full local suite evidence")
         # Only the identified workflow is deferred, never a similarly named job.
         checks = [check for check in checks if check.get("workflow") != "Rust host"]
     elif not checks:
@@ -228,10 +275,11 @@ def integrated_prerequisites(settings, manifest_path, expected_tip=None, merged_
         if len(matches) != 1:
             raise PolicyError("missing or ambiguous preserved batch evidence")
         record = matches[0]
+        check_test_scope(record, "batch")
+        verify_scoped_paths(record, worktree)
         validation = record["validation"]
         if (record.get("checks_head") != record["head"] or record.get("waivers")
                 or record["local"].get("head") != record["head"]
-                or record["local"].get("test_scope") != "full"
                 or any(record["local"].get(key) is not True for key in REQUIRED_LOCAL)
                 or validation.get("head") != record["head"]
                 or validation.get("install_head") != record["head"]
@@ -353,6 +401,8 @@ def live_gate(settings, record, pr_number, phase, manifest=None, allow_unresolve
     base_head = command("git", "ls-remote", "origin", f"refs/heads/{before['baseRefName']}").split()[0]
     checks = read_checks(pr_number, before["headRefOid"])
     head = check_gate(settings, record, before, checks, base_head, phase)
+    if record.get("local", {}).get("test_scope") == "scoped":
+        verify_scoped_paths(record, alpha_root())
     if phase == "final":
         if manifest is None:
             raise PolicyError("final gate requires the aggregate manifest")
@@ -464,6 +514,7 @@ def integrate_locked(settings, record, pr_number, manifest_path):
         # Recover a merge that succeeded before the caller could write its manifest.
         remote_before = record["base_head"]
         head = check_gate(settings, record, snapshot, read_checks(pr_number, snapshot["headRefOid"]), remote_before, "batch")
+        verify_scoped_paths(record, worktree)
         merged = snapshot
     elif snapshot.get("state") == "OPEN":
         remote_before = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]

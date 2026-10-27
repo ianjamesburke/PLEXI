@@ -75,7 +75,7 @@ pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; ab
 all = ["usage limit", "limit reached", "rate limit", "quota", "resets at", "try again later"]
 
 [ci]
-rust_host = "after_alpha"          # nightly verification; local full suite gates landing
+rust_host = "after_alpha"          # nightly verification; phase-aware local gates in TESTING.md
 
 [authorization]
 auto_merge = true                 # tester PASS + configured checks -> merge without asking

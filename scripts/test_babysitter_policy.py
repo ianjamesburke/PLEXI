@@ -59,7 +59,7 @@ class PolicyTests(unittest.TestCase):
         self.record = {
             "size": "S", "head": self.head, "base_head": self.base, "stints": ["0986"],
             "worker_alias": "agyf", "tester_alias": "cs", "exhausted": [],
-            "local": {"head": self.head, "build": True, "test": True, "clippy": True},
+            "local": {"head": self.head, "build": True, "test": True, "clippy": True, "test_scope": "full"},
             "checks_head": self.head,
             "validation": {"head": self.head, "verdict": "PASS", "install_head": self.head,
                            "worker_vendor": "gemini", "tester_vendor": "claude"},
@@ -243,10 +243,10 @@ class PolicyTests(unittest.TestCase):
         ):
             self.assertNotIn("app_slug", policy.read_checks(123, self.head)[0])
 
-    def test_after_alpha_host_ci_still_requires_full_local_and_independent_evidence(self):
+    def test_after_alpha_host_ci_still_requires_local_and_independent_evidence(self):
         self.settings["ci"] = {"rust_host": "after_alpha"}
         self.record["local"]["test_scope"] = "full"
-        for key, value in (("test_scope", "scoped"), ("test", False), ("build", False),
+        for key, value in (("test_scope", "unknown"), ("test", False), ("build", False),
                            ("clippy", False), ("head", "stale")):
             record = copy.deepcopy(self.record)
             record["local"][key] = value
@@ -258,6 +258,75 @@ class PolicyTests(unittest.TestCase):
             record["validation"][key] = value
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, record, self.pr, [], self.base, "batch")
+
+    def scoped_record(self):
+        record = copy.deepcopy(self.record)
+        record["local"].update(test_scope="scoped", test_base=self.base,
+            test_paths=["src/cli/mod.rs"], test_evidence=[{
+                "command": "cargo test --bin plexi -- cli::tests::affected_command",
+                "covers": ["src/cli/mod.rs"], "passed": True, "matched": 1}])
+        record["validation"]["affected_behavior"] = "Installed CLI affected-command round trip passed"
+        return record
+
+    def test_batch_accepts_scoped_evidence_but_final_requires_full(self):
+        for host_ci in ("pr", "after_alpha"):
+            with self.subTest(host_ci=host_ci):
+                settings = copy.deepcopy(self.settings)
+                settings["ci"] = {"rust_host": host_ci}
+                record = self.scoped_record()
+                self.assertEqual(policy.check_gate(settings, record, self.pr, self.checks,
+                                                   self.base, "batch"), self.head)
+                final = {**record, "aggregate_head": self.head, "integrated_batches": [100]}
+                with self.assertRaisesRegex(policy.PolicyError, "final.*full"):
+                    policy.check_gate(settings, final, {**self.pr, "baseRefName": "alpha"},
+                                      self.checks, self.base, "final")
+                final["local"]["test_scope"] = "full"
+                self.assertEqual(policy.check_gate(settings, final, {**self.pr, "baseRefName": "alpha"},
+                                                   self.checks, self.base, "final"), self.head)
+
+    def test_scoped_evidence_rejects_missing_stale_empty_and_unrelated_proof(self):
+        for change in (
+            lambda r: r["local"].pop("test_scope"),
+            lambda r: r["local"].update(test_base="stale"),
+            lambda r: r["local"].update(test_evidence=[]),
+            lambda r: r["local"]["test_evidence"][0].update(passed=False),
+            lambda r: r["local"]["test_evidence"][0].update(matched=0),
+            lambda r: r["local"]["test_evidence"][0].update(covers=["src/unrelated.rs"]),
+            lambda r: r["local"]["test_evidence"][0].update(command="cargo test --bin plexi -- ::"),
+            lambda r: r["validation"].pop("affected_behavior"),
+            lambda r: r["validation"].update(install_head="stale"),
+        ):
+            record = self.scoped_record()
+            change(record)
+            with self.subTest(record=record), self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+
+    def test_scoped_paths_are_bound_to_actual_diff(self):
+        record = self.scoped_record()
+        with patch.object(policy, "command", return_value="src/cli/mod.rs\0"):
+            policy.verify_scoped_paths(record, "/tmp/aggregate")
+        for paths in ("src/cli/mod.rs\0src/host/model.rs\0", "src/unrelated.rs\0", ""):
+            with patch.object(policy, "command", return_value=paths), self.assertRaises(policy.PolicyError):
+                policy.verify_scoped_paths(record, "/tmp/aggregate")
+
+    def test_live_batch_gate_checks_scoped_diff_before_accepting(self):
+        record = self.scoped_record()
+        changed = ["src/cli/mod.rs\0"]
+        def command(*args):
+            if args[0] == "gh":
+                return json.dumps({**self.pr, "state": "OPEN"})
+            if args[:3] == ("git", "ls-remote", "origin"):
+                return self.base
+            if "diff" in args:
+                return changed[0]
+            raise AssertionError(args)
+        with patch.object(policy, "command", side_effect=command), patch.object(
+            policy, "read_checks", return_value=self.checks
+        ), patch.object(policy, "alpha_root", return_value=Path("/tmp/aggregate")):
+            self.assertEqual(policy.live_gate(self.settings, record, 100, "batch"), self.head)
+            changed[0] += "src/host/model.rs\0"
+            with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+                policy.live_gate(self.settings, record, 100, "batch")
 
     def test_missing_or_unknown_ci_policy_does_not_waive_checks(self):
         for mode in (None, "typo"):
@@ -515,6 +584,8 @@ class PolicyTests(unittest.TestCase):
                     return "worktree /tmp/aggregate\nbranch refs/heads/feature/alpha-cleanup"
                 if args[:3] == ("git", "ls-remote", "origin"):
                     return "d" * 40
+                if "diff" in args:
+                    return "src/cli/mod.rs\0"
                 if args[0] == "gh":
                     return json.dumps(live)
                 if args[-1] == "HEAD":
@@ -532,6 +603,13 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)["tasks"], ["0987"])
                 with self.assertRaises(policy.PolicyError):
                     policy.preflight(self.settings, tasks, sprint, ["0987"])
+                scoped = self.scoped_record()
+                (root / "record-0986-r1.json").write_text(json.dumps(scoped))
+                self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
+                with patch.object(policy, "verify_scoped_paths", side_effect=policy.PolicyError("stale actual PR diff")):
+                    with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+                        policy.integrated_prerequisites(self.settings, path)
+                (root / "record-0986-r1.json").write_text(json.dumps(record))
                 blocker = tasks / "0986-one.md"
                 original_task = blocker.read_text()
                 for status in ("todo", "blocked"):
@@ -546,6 +624,9 @@ class PolicyTests(unittest.TestCase):
                                        checks_head="f" * 40)
                 recovery_record["local"]["head"] = "f" * 40
                 recovery_record["validation"].update(head="f" * 40, install_head="f" * 40)
+                recovery_record["local"].update(test_scope="scoped", test_base="d" * 40,
+                    test_paths=scoped["local"]["test_paths"], test_evidence=scoped["local"]["test_evidence"])
+                recovery_record["validation"]["affected_behavior"] = "Installed affected command passed"
                 recovery_snapshot = {**live, "headRefOid": "f" * 40,
                                      "mergeCommit": {"oid": "e" * 40}}
                 current_tip = ["d" * 40]
