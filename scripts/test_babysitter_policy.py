@@ -525,9 +525,42 @@ class PolicyTests(unittest.TestCase):
             with patch.object(policy, "command", side_effect=command), patch.object(policy, "alpha_root", return_value=root):
                 path.write_text(json.dumps(manifest))
                 integrated = policy.integrated_prerequisites(self.settings, path)
+                grown = copy.deepcopy(manifest)
+                grown["requested_stints"] = ["0986"]
+                path.write_text(json.dumps(grown))
+                self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
                 self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)["tasks"], ["0987"])
                 with self.assertRaises(policy.PolicyError):
                     policy.preflight(self.settings, tasks, sprint, ["0987"])
+                # A merged PR may advance the remote before its manifest is written.
+                recovery_record = copy.deepcopy(record)
+                recovery_record.update(stints=["0987"], base_head="d" * 40)
+                recovery_snapshot = {**live, "headRefOid": "f" * 40,
+                                     "mergeCommit": {"oid": "e" * 40}}
+                current_tip = ["d" * 40]
+                def recovery_command(*args):
+                    if args[:4] == ("gh", "pr", "view", "101"):
+                        return json.dumps(recovery_snapshot)
+                    if args[:3] == ("git", "ls-remote", "origin"):
+                        return "e" * 40
+                    if args[-1] == "HEAD":
+                        return current_tip[0]
+                    if args[-1] == "e" * 40 + "^":
+                        return "d" * 40
+                    if "merge" in args:
+                        current_tip[0] = "e" * 40
+                        return ""
+                    return command(*args)
+                path.write_text(json.dumps(grown))
+                with patch.object(policy, "command", side_effect=recovery_command), patch.object(
+                    policy, "preflight", return_value={"size": "S"}
+                ), patch.object(policy, "check_gate", return_value="f" * 40), patch.object(
+                    policy, "read_checks", return_value=[]
+                ), patch.object(policy, "reap_after_merge"):
+                    self.assertEqual(policy.integrate_locked(self.settings, recovery_record, 101, path), "e" * 40)
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved["requested_stints"], ["0986", "0987"])
+                self.assertFalse(saved["batches"][-1]["base_race"])
                 variants = []
                 for field, value in (("base_race", True), ("actual_parent", "e" * 40),
                                      ("aggregate_head", "e" * 40), ("stints", ["0987"])):
@@ -538,7 +571,13 @@ class PolicyTests(unittest.TestCase):
                 bad["parked"] = [{"stint": "0986", "reason": "blocked"}]
                 variants.append(bad)
                 bad = copy.deepcopy(manifest)
-                bad["requested_stints"] = ["0986"]
+                bad["requested_stints"] = ["0986", "9999"]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0986", "0986"]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["parked"] = [{"stint": "0999", "reason": "blocked"}]
                 variants.append(bad)
                 for bad in variants:
                     path.write_text(json.dumps(bad))

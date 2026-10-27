@@ -168,7 +168,7 @@ def read_checks(pr_number, head):
     return checks
 
 
-def integrated_prerequisites(settings, manifest_path):
+def integrated_prerequisites(settings, manifest_path, expected_tip=None, merged_tip=None):
     """Verify the live aggregate and preserved evidence before using its tasks."""
     manifest = json.loads(manifest_path.read_text())
     batches = manifest["batches"]
@@ -179,7 +179,7 @@ def integrated_prerequisites(settings, manifest_path):
     members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
                          (alpha_root() / settings["topology"]["sprint"]).read_text())
     expected = [task for task in members if task != settings["topology"].get("preflight_task")]
-    if len(requested) != len(set(requested)) or sorted(requested) != sorted(expected):
+    if len(requested) != len(set(requested)) or not set(requested).issubset(expected):
         raise PolicyError("aggregate manifest has a foreign queue")
     branch = settings["topology"]["branch"]
     locations = command("git", "worktree", "list", "--porcelain").splitlines()
@@ -194,7 +194,12 @@ def integrated_prerequisites(settings, manifest_path):
         raise PolicyError("aggregate worktree is missing or dirty")
     tip = command("git", "-C", worktree, "rev-parse", "HEAD")
     remote = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
-    if tip != remote or batches[-1]["aggregate_head"] != tip:
+    if expected_tip is None:
+        valid_tip = tip == remote == batches[-1]["aggregate_head"]
+    else:
+        valid_tip = (batches[-1]["aggregate_head"] == expected_tip
+                     and remote == merged_tip and tip in (expected_tip, merged_tip))
+    if not valid_tip:
         raise PolicyError("aggregate manifest tip differs from live branch")
     integrated = set()
     seen_prs = set()
@@ -237,7 +242,7 @@ def integrated_prerequisites(settings, manifest_path):
                 or validation["worker_vendor"] == validation["tester_vendor"]):
             raise PolicyError("preserved batch evidence is incomplete")
         integrated.update(stints)
-    if any(item["stint"] in integrated for item in parked):
+    if any(item["stint"] not in requested or item["stint"] in integrated for item in parked):
         raise PolicyError("integrated prerequisite is parked")
     return integrated
 
@@ -413,12 +418,24 @@ def integrate_locked(settings, record, pr_number, manifest_path):
     if not record.get("stints") or not all(re.fullmatch(r"\d{4}", task_id) for task_id in record["stints"]):
         raise PolicyError("batch record has no valid stint IDs")
     root = alpha_root()
-    integrated = integrated_prerequisites(settings, manifest_path) if manifest_path.exists() else ()
+    snapshot = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
+                                  "state,baseRefName,headRefOid,mergeCommit"))
+    if manifest_path.exists() and snapshot.get("state") == "MERGED":
+        integrated = integrated_prerequisites(settings, manifest_path, record["base_head"],
+                                              snapshot.get("mergeCommit", {}).get("oid"))
+    else:
+        integrated = integrated_prerequisites(settings, manifest_path) if manifest_path.exists() else ()
     plan = preflight(settings, root / ".stint/tasks", root / settings["topology"]["sprint"], record["stints"], integrated)
     if record.get("size") != plan["size"]:
         raise PolicyError("record size does not match the largest stint")
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
+        members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
+                             (root / settings["topology"]["sprint"]).read_text())
+        expected = [task for task in members if task != settings["topology"].get("preflight_task")]
+        if not set(manifest.get("requested_stints", [])).issubset(expected):
+            raise PolicyError("aggregate manifest has a foreign queue")
+        manifest["requested_stints"] = expected
     else:
         members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
                              (root / settings["topology"]["sprint"]).read_text())
@@ -441,8 +458,6 @@ def integrate_locked(settings, record, pr_number, manifest_path):
             break
     if not worktree or command("git", "-C", worktree, "status", "--porcelain"):
         raise PolicyError("aggregate worktree is missing or dirty")
-    snapshot = json.loads(command("gh", "pr", "view", str(pr_number), "--json",
-                                  "state,baseRefName,headRefOid,mergeCommit"))
     if snapshot.get("state") == "MERGED":
         # Recover a merge that succeeded before the caller could write its manifest.
         remote_before = record["base_head"]
