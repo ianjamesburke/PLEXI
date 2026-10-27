@@ -9961,4 +9961,96 @@ mod tests {
         });
     }
 
+    #[derive(Default)]
+    struct StripWheelSnapshot { offset: egui::Vec2, raw_y: f32, keys: usize }
+    struct StripWheelFixture { horizontal: bool, state: Arc<std::sync::Mutex<StripWheelSnapshot>> }
+    impl crate::app::app_trait::App for StripWheelFixture {
+        fn type_id(&self) -> &'static str { "strip_wheel_fixture" }
+        fn display_name(&self) -> String { "Scroll fixture".into() }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> crate::app::app_trait::KeyDisposition {
+            if input.key_pressed(egui::Key::X) {
+                self.state.lock().unwrap().keys += 1;
+                return crate::app::app_trait::KeyDisposition::Consumed;
+            }
+            crate::app::app_trait::KeyDisposition::Passthrough
+        }
+        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::app_trait::AppRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
+            let raw_y = ui.input(|input| input.events.iter().filter_map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => Some(delta.y), _ => None,
+            }).sum::<f32>());
+            let area = if self.horizontal { egui::ScrollArea::horizontal() } else { egui::ScrollArea::vertical() };
+            let output = area.max_width(300.0).max_height(300.0).show(ui, |ui| {
+                ui.allocate_space(egui::vec2(2000.0, 2000.0));
+            });
+            let mut state = self.state.lock().unwrap();
+            state.offset = output.state.offset;
+            state.raw_y += raw_y;
+        }
+    }
+
+    #[test]
+    fn strip_nested_scroll_controls_keep_their_wheel() {
+        for horizontal in [false, true] {
+            let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+            h.step();
+            let first = add_focused_pane(&mut h);
+            let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+            h.with_app_mut(|app| {
+                let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+                pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal, state: state.clone() }));
+            });
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+            h.run_steps(3);
+            let (before, pos) = h.with_app(|app| {
+                let layout = app.active_strip_layout();
+                (layout.scroll_offset_px, layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0))
+            });
+            let delta = if horizontal { egui::vec2(-200.0, 0.0) } else { egui::vec2(0.0, -200.0) };
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+            ]);
+            h.run_steps(8);
+            let offset = state.lock().unwrap().offset;
+            assert!(if horizontal { offset.x > 1.0 } else { offset.y > 1.0 }, "pane did not scroll: {offset:?}");
+            assert!((h.with_app(|app| app.active_strip_layout().scroll_offset_px) - before).abs() < 0.5, "pane control must consume its gesture");
+        }
+    }
+
+    #[test]
+    fn strip_scrolled_out_app_receives_key_after_reveal() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+        h.with_app_mut(|app| {
+            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().clip_rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-1800.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(12);
+        assert!(!h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_visible));
+        h.harness().input_mut().events.push(egui::Event::Key { key: egui::Key::X, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(state.lock().unwrap().keys, 1);
+        assert!(h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_on_screen));
+    }
+
 }
