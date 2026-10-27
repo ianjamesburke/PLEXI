@@ -1,5 +1,23 @@
 use super::*;
 
+/// Rows the QuickNote editor reserves for an empty or one-line note, so the
+/// capture card opens at content height instead of a screen fraction.
+const QUICK_NOTE_MIN_ROWS: usize = 3;
+/// Row ceiling: the editor grows with the note up to this many rows, then
+/// caps and scrolls.
+const QUICK_NOTE_MAX_ROWS: usize = 12;
+/// Vertical `TextEdit` margin, matching `TextArea`'s default `symmetric(8, 5)`.
+const QUICK_NOTE_EDITOR_PAD_V: f32 = 5.0;
+
+/// Editor rows for a note, derived from the note's own line count rather than
+/// the screen height.
+pub(crate) fn quick_note_editor_rows(text: &str) -> usize {
+    text.lines()
+        .count()
+        .max(1)
+        .clamp(QUICK_NOTE_MIN_ROWS, QUICK_NOTE_MAX_ROWS)
+}
+
 impl PlexiApp {
     /// Quick note compose phase: full-screen scrim + centered text input.
     pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
@@ -109,68 +127,59 @@ impl PlexiApp {
 
         let screen_rect = ctx.content_rect();
 
-        // Modal — grows from ~25% to ~80% of screen height as the user types.
+        // Modal — sized to the note's content, not the screen; only a note
+        // past the row ceiling gets a capped, scrollable editor.
         let modal_w = (screen_rect.width() * 0.72).clamp(480.0, 864.0);
-        let max_text_h = (screen_rect.height() * 0.8).max(80.0);
         let font = self.quick_note_font();
-        let line_h = font.size + 4.0;
-        let initial_rows = ((screen_rect.height() * 0.25) / line_h).round() as usize;
-        let initial_rows = initial_rows.max(3);
         let colors = self.colors;
         let response = crate::ui::overlay::ModalShell::centered("quick_note_modal")
             .width(modal_w)
+            .own_scroll()
             .show(ctx, &colors, |ui| {
-                {
-                    {
-                        // Hint
-                        ui.label(
-                            RichText::new(format!(
-                                "{} to save  ·  {} for new line  ·  {} to discard",
-                                crate::ui::shortcuts::key_text(&["Enter"]),
-                                crate::ui::shortcuts::key_text(&["Shift", "Enter"]),
-                                crate::ui::shortcuts::key_text(&["Esc"]),
-                            ))
-                            .color(self.colors.text_dim.linear_multiply(0.5))
-                            .font(font.clone()),
-                        );
-                        ui.add_space(style::SPACE_SM);
-
-                        if !self.quick_note_attachments.is_empty() {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} image{} attached",
-                                    self.quick_note_attachments.len(),
-                                    if self.quick_note_attachments.len() == 1 {
-                                        ""
-                                    } else {
-                                        "s"
-                                    }
-                                ))
-                                .color(self.colors.text_dim.linear_multiply(0.7))
-                                .font(font.clone()),
-                            );
-                            ui.add_space(style::SPACE_SM);
-                        }
-
-                        crate::ui::text_field::TextArea::multiline(
-                            egui::Id::new("quick_note_text"),
-                            RichText::new("What's on your mind?").font(font.clone()),
-                        )
-                        .surface(crate::ui::focus::SurfaceKey::Overlay(
-                            crate::app::input_owner::OverlaySurface::Layer(
-                                crate::app::FocusKind::QuickNote,
-                            ),
+                if !self.quick_note_attachments.is_empty() {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} image{} attached",
+                            self.quick_note_attachments.len(),
+                            if self.quick_note_attachments.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
                         ))
-                        .font(font.clone())
-                        .text_color(self.colors.text_primary)
-                        .hint_color(self.colors.text_dim.linear_multiply(0.3))
-                        .rows(initial_rows)
-                        .max_height(max_text_h)
-                        .frame(false)
-                        .log_name("quick_note")
-                        .show(ui, &mut self.quick_note_text, &self.colors);
-                    }
+                        .color(self.colors.text_dim.linear_multiply(0.7))
+                        .font(font.clone()),
+                    );
+                    ui.add_space(style::SPACE_SM);
                 }
+
+                let row_height = ui.fonts_mut(|f| f.row_height(&font));
+                let editor = crate::ui::text_field::TextArea::multiline(
+                    egui::Id::new("quick_note_text"),
+                    RichText::new("What's on your mind?").font(font.clone()),
+                )
+                .surface(crate::ui::focus::SurfaceKey::Overlay(
+                    crate::app::input_owner::OverlaySurface::Layer(
+                        crate::app::FocusKind::QuickNote,
+                    ),
+                ))
+                .font(font.clone())
+                .text_color(self.colors.text_primary)
+                .hint_color(self.colors.text_dim.linear_multiply(0.3))
+                .rows(quick_note_editor_rows(&self.quick_note_text))
+                .frame(false)
+                .log_name("quick_note");
+                let editor = editor.max_height(
+                    QUICK_NOTE_MAX_ROWS as f32 * row_height + QUICK_NOTE_EDITOR_PAD_V * 2.0,
+                );
+                editor.show(ui, &mut self.quick_note_text, &self.colors);
+
+                let hints = [
+                    crate::ui::hints::HintGroup::new(&["Enter"], "save"),
+                    crate::ui::hints::HintGroup::new(&["Shift", "Enter"], "new line"),
+                    crate::ui::hints::HintGroup::new(&["Esc"], "discard"),
+                ];
+                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
             });
         if response.dismissed {
             self.pop_focus_layer(&crate::app::FocusKind::QuickNote);

@@ -800,6 +800,38 @@ mod tests {
         }
     }
 
+    /// The QuickNote capture card is content-sized: an empty or one-line note
+    /// opens short (no screen-fraction reservation), and a tall note grows the
+    /// card while it stays inside the window.
+    #[test]
+    fn quick_note_card_is_content_sized_and_grows_with_content() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.open_quick_note_modal());
+        h.run_steps(3);
+        let screen = h.with_app(|app| app.ctx.content_rect());
+        let empty = ui_scale_area_rect(&h, "quick_note_modal");
+        assert_inside("quick note", 1.0, empty, screen);
+        assert!(
+            empty.height() < 200.0,
+            "empty quick-note card must be content-sized, not a screen fraction: {empty:?} of {screen:?}"
+        );
+
+        h.with_app_mut(|app| {
+            app.quick_note_text = (1..=40)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        });
+        h.run_steps(3);
+        let long = ui_scale_area_rect(&h, "quick_note_modal");
+        assert!(long.height() > empty.height(), "long note must grow the card");
+        assert!(
+            long.height() <= screen.height(),
+            "long quick-note card leaves the window: {long:?}"
+        );
+    }
+
     /// Cmd+= steps the one global scale: egui's zoom factor follows, and a
     /// terminal pane's effective pixel font size grows with it.
     #[test]

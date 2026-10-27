@@ -1,6 +1,33 @@
-# Cmd+0 QuickNote with a realistic multi-line capture. This is the visual
-# regression surface for its configured FontId and attachment status text.
-size = [1168.0, 720.0]
+# Cmd+0 QuickNote: content-sized card, app-convention shortcut footer, and the
+# scroll ceiling for long captures. One scene covers the narrow and wide review.
+sizes = [[520.0, 640.0], [1280.0, 800.0]]
+
+[[steps]]
+key = { target = "host", value = "cmd+0" }
+
+[[steps]]
+run_steps = 2
+
+# Empty note: the card opens at content height, no stray scrollbar.
+[[steps]]
+shot = "quick-note-empty.png"
+
+# One-line note: still content height, no scrollbar.
+[[steps]]
+text = { target = "host", value = "Call the vet." }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+shot = "quick-note-short.png"
+
+# Long note: editor scrolls only once it passes the row ceiling.
+[[steps]]
+key = { target = "host", value = "esc" }
+
+[[steps]]
+run_steps = 2
 
 [[steps]]
 key = { target = "host", value = "cmd+0" }
@@ -9,13 +36,20 @@ key = { target = "host", value = "cmd+0" }
 run_steps = 2
 
 [[steps]]
-text = { target = "host", value = "Follow up with the design team about the image-drop flow.\n\nInclude the screenshots and persistence notes in tomorrow's review." }
+paste = { target = "host", value = "01 follow up with design\n02 confirm image-drop flow\n03 review persistence notes\n04 stage the screenshots\n05 check the inbox copy\n06 verify font size\n07 re-run the scene\n08 review at narrow width\n09 review at wide width\n10 confirm no scrollbar\n11 confirm the footer\n12 confirm the padding\n13 add a thirteenth line\n14 add a fourteenth line\n15 add a fifteenth line\n16 add a sixteenth line\n17 add a seventeenth line\n18 add an eighteenth line\n19 add a nineteenth line\n20 add a twentieth line\n21 add a twenty-first line\n22 add a twenty-second line\n23 add a twenty-third line\n24 add a twenty-fourth line" }
 
 [[steps]]
 run_steps = 2
 
 [[steps]]
-assert_label = { target = "host", label = "Enter to save  ·  Shift+Enter for new line  ·  Esc to discard", macos_label = "↵ to save  ·  ⇧↵ for new line  ·  Esc to discard" }
+shot = "quick-note-long.png"
+
+# The footer is the app-convention hint bar: three labelled groups.
+[[steps]]
+assert_label = { target = "host", label = "save" }
 
 [[steps]]
-shot = "quick-note.png"
+assert_label = { target = "host", label = "new line" }
+
+[[steps]]
+assert_label = { target = "host", label = "discard" }
