@@ -576,19 +576,20 @@ impl PlexiApp {
     }
 
     /// The one single-line rename modal: a top-hung, scrim-less popover over
-    /// `self.rename_buffer` whose Enter/Escape are consumed caller-side (before
+    /// the supplied buffer whose Enter/Escape are consumed caller-side (before
     /// the Area) so they cannot bleed into the focused pane this frame. The
     /// overlay owns its own commit/cancel keys — it pairs with `focus_kind`,
     /// which also names the input surface. `id` prefixes the shell and text
     /// field ids and doubles as the field's log name. Returns
     /// `(commit, cancel)`; the caller owns what committing means.
     fn draw_single_line_rename_overlay(
-        &mut self,
         ctx: &egui::Context,
         id: &str,
         title: &str,
         placeholder: &str,
         focus_kind: crate::app::FocusKind,
+        buffer: &mut String,
+        colors: &Colors,
     ) -> (bool, bool) {
         let (commit, cancel) = ctx.input_mut(|i| {
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -596,13 +597,12 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        let colors = self.colors;
         crate::ui::overlay::ModalShell::centered(format!("{id}_overlay"))
             .title(title)
             .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
-            .show(ctx, &colors, |ui| {
+            .show(ctx, colors, |ui| {
                 let te_id = egui::Id::new(format!("{id}_input"));
                 crate::ui::text_field::TextField::singleline(te_id, placeholder)
                     .surface(crate::ui::focus::SurfaceKey::Overlay(
@@ -610,7 +610,7 @@ impl PlexiApp {
                     ))
                     .select_all_on_focus(true)
                     .log_name(id)
-                    .show(ui, &mut self.rename_buffer, &self.colors);
+                    .show(ui, buffer, colors);
             });
 
         (commit, cancel)
@@ -622,12 +622,14 @@ impl PlexiApp {
             None => return,
         };
 
-        let (commit, cancel) = self.draw_single_line_rename_overlay(
+        let (commit, cancel) = Self::draw_single_line_rename_overlay(
             ctx,
             "rename_pane",
             "Rename Pane",
             "Pane name...",
             crate::app::FocusKind::RenamePane,
+            &mut self.rename_buffer,
+            &self.colors,
         );
 
         if cancel {
@@ -670,28 +672,26 @@ impl PlexiApp {
         }
     }
 
-    /// Modal for naming a newly-created context when the sidebar is hidden.
-    /// Mirrors the inline sidebar rename but as a centred overlay so the
-    /// terminal becomes immediately usable after the user hits Enter or Escape.
+    /// Context rename overlay; Enter commits and Escape cancels.
     pub(crate) fn draw_rename_context_overlay(&mut self, ctx: &egui::Context) {
-        let ctx_idx = match self.renaming_window {
-            Some(idx) => idx,
-            None => return,
+        let Some(edit) = self.context_rename.as_mut() else {
+            return;
         };
 
-        let (commit, cancel) = self.draw_single_line_rename_overlay(
+        let (commit, cancel) = Self::draw_single_line_rename_overlay(
             ctx,
             "rename_context",
             "Name this context",
             "Context name...",
             crate::app::FocusKind::ContextRename,
+            &mut edit.buffer,
+            &self.colors,
         );
 
         if cancel {
-            self.renaming_window = None;
+            self.cancel_context_rename("escape");
         } else if commit {
-            self.rename_context(ctx_idx, &self.rename_buffer.clone());
-            self.renaming_window = None;
+            self.commit_context_rename();
         }
     }
 

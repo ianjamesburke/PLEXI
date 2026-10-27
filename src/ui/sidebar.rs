@@ -2,7 +2,6 @@ use crate::host::context::WindowMenuAction;
 use crate::ui::button;
 use crate::ui::list::ListDropdownHeader;
 use crate::ui::sidebar_row::{PaneDots, SidebarAction, SidebarRow};
-use crate::ui::style;
 use crate::workspace::router::ContextMove;
 use egui::{Align, Layout, Rect, RichText, Stroke};
 use egui_tiles::Tile;
@@ -402,64 +401,11 @@ impl PlexiApp {
                 let active_count = active_order.len();
                 for (display_idx, &i) in active_order.iter().enumerate() {
                     let is_active = i == self.router.active_idx();
-                    let is_renaming = self.renaming_window == Some(i);
                     let is_dragging = self.drag_context == Some(i);
                     let any_dragging = self.drag_context.is_some();
 
                     let ctx_id = self.router.get(i).context_id;
                     let pane_dots = self.sidebar_pane_dots(ctx_id, is_active);
-
-                    // --- Renaming: special-cased before the SidebarRow path ---
-                    if is_renaming {
-                        let fill = if is_active {
-                            self.colors.bg_active
-                        } else {
-                            self.colors.bg_sidebar_hover
-                        };
-                        let bg_idx = ui.painter().add(egui::Shape::Noop);
-                        let te_id = egui::Id::new(("rename_ctx", i));
-                        let sidebar_w = sidebar_width;
-                        let scope = ui.scope(|ui| {
-                            ui.set_width(ui.available_width());
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.add_space(20.0);
-                                let te = ui
-                                    .scope(|ui| {
-                                        ui.set_max_width(sidebar_w - 56.0);
-                                        crate::ui::text_field::TextField::singleline(te_id, "")
-                                    .surface(crate::ui::focus::SurfaceKey::Overlay(
-                                        crate::app::input_owner::OverlaySurface::SidebarRename,
-                                    ))
-                                    .select_all_on_focus(true)
-                                    .log_name("sidebar_rename")
-                                    .show(ui, &mut self.rename_buffer, &self.colors)
-                                    })
-                                    .inner;
-                                if te.lost_focus() {
-                                    if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
-                                        self.renaming_window = None;
-                                    } else {
-                                        self.rename_context(i, &self.rename_buffer.clone());
-                                        self.renaming_window = None;
-                                    }
-                                    ui.input_mut(|inp| {
-                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                                        inp.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                                    });
-                                }
-                            });
-                            ui.add_space(4.0);
-                        });
-                        let row_rect = scope.response.rect;
-                        active_rects.push(row_rect);
-                        let row_card = SidebarRow::card_rect(row_rect);
-                        ui.painter().set(
-                            bg_idx,
-                            egui::Shape::rect_filled(row_card, style::RADIUS_SM, fill),
-                        );
-                        continue;
-                    }
 
                     // --- Normal row via SidebarRow ---
                     let ctx_name = self.router.get(i).name.to_string();
@@ -742,7 +688,7 @@ impl PlexiApp {
                 // and the subcontexts travel with their parent.
                 let new_order = self.router.expand_subtrees(&new_order);
                 self.router.apply_order(&new_order);
-                self.renaming_window = None;
+                self.cancel_context_rename("sidebar reorder");
 
                 let new_src_idx = self
                     .router
@@ -793,19 +739,19 @@ impl PlexiApp {
                     self.push_focus_layer(crate::app::FocusKind::ContextDescription);
                 }
                 WindowMenuAction::MoveToTop => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Top);
                 }
                 WindowMenuAction::MoveUp => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Up);
                 }
                 WindowMenuAction::MoveDown => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Down);
                 }
                 WindowMenuAction::MoveToBottom => {
-                    self.renaming_window = None;
+                    self.cancel_context_rename("sidebar reorder");
                     self.router.reorder_top_level(i, ContextMove::Bottom);
                 }
                 WindowMenuAction::SetRoot(path) => {

@@ -349,54 +349,7 @@ impl PlexiApp {
                 }
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
-                    if self.router.len() > 1 {
-                        let delete_pressed = ctx.input_mut(|input| {
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                                || input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                        });
-                        if delete_pressed {
-                            let now = std::time::Instant::now();
-                            let elapsed = self
-                                .welcome_delete_last_press
-                                .and_then(|t| now.checked_duration_since(t))
-                                .unwrap_or(std::time::Duration::MAX);
-                            if elapsed > std::time::Duration::from_millis(1500) {
-                                self.welcome_delete_press_count = 0;
-                            }
-                            self.welcome_delete_press_count += 1;
-                            self.welcome_delete_last_press = Some(now);
-                            if self.welcome_delete_press_count >= 3 {
-                                let ctx_idx = self.router.active_idx();
-                                log::info!(
-                                    "welcome_delete: triple-tap delete context idx={ctx_idx} name={:?}",
-                                    self.router.active().name
-                                );
-                                self.welcome_delete_press_count = 0;
-                                self.welcome_delete_last_press = None;
-                                self.delete_context(ctx_idx);
-                                self.mark_workspace_dirty();
-                                return;
-                            }
-                        }
-                    }
                     self.draw_welcome_screen(ui);
-                    if self.welcome_delete_press_count > 0 {
-                        let timed_out = self
-                            .welcome_delete_last_press
-                            .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
-                            .unwrap_or(false);
-                        if timed_out {
-                            self.welcome_delete_press_count = 0;
-                            self.welcome_delete_last_press = None;
-                        } else {
-                            self.draw_welcome_delete_overlay(&ctx);
-                            // Same 100ms confirm-timeout poll as the quit overlay.
-                            crate::platform::frame_diag::note(
-                                crate::platform::frame_diag::RepaintCause::QuitConfirm,
-                            );
-                            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                        }
-                    }
                     return;
                 }
 

@@ -4291,7 +4291,7 @@ mod tests {
             let before = app.router.len();
             app.new_context();
             assert_eq!(app.router.len(), before + 1, "new context created");
-            assert_eq!(app.renaming_window, None, "rename overlay stays closed");
+            assert_eq!(app.context_rename, None, "rename overlay stays closed");
         });
         h.run_steps(6);
         h.save_screenshot(&evidence_png!()).expect("render failed");
@@ -6823,9 +6823,8 @@ mod tests {
         // Simulate what Action::RenameContext does: populate rename state and push focus layer.
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "My Project".to_string();
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "My Project".to_string();
         });
 
         // Queue Enter for the next frame — processed by draw_rename_context_overlay.
@@ -6833,12 +6832,24 @@ mod tests {
         h.step();
 
         let (name, still_renaming) =
-            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
+            h.with_app(|app| (app.router.active().name.clone(), app.context_rename.is_some()));
         assert_eq!(name, "My Project");
         assert!(
-            still_renaming.is_none(),
-            "renaming_window must be cleared after commit"
+            !still_renaming,
+            "context rename must be cleared after commit"
         );
+    }
+
+    #[test]
+    fn screenshot_context_1041_rename_with_sidebar() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.rename_context(0, "Project workspace");
+            app.open_context_rename(0);
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!()).expect("render context rename");
     }
 
     /// Escape discards the rename buffer; the context name must be unchanged.
@@ -6851,20 +6862,19 @@ mod tests {
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "Discarded Name".to_string();
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "Discarded Name".to_string();
         });
 
         h.harness().key_press(egui::Key::Escape);
         h.step();
 
         let (name, still_renaming) =
-            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
+            h.with_app(|app| (app.router.active().name.clone(), app.context_rename.is_some()));
         assert_eq!(name, original_name, "name must be unchanged after Escape");
         assert!(
-            still_renaming.is_none(),
-            "renaming_window must be cleared after Escape"
+            !still_renaming,
+            "context rename must be cleared after Escape"
         );
     }
 
@@ -6876,9 +6886,8 @@ mod tests {
 
         h.with_app_mut(|app| {
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer = "   ".to_string(); // whitespace-only trims to empty
-            app.renaming_window = Some(ctx_idx);
-            app.focus_stack.push(FocusKind::ContextRename);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer = "   ".to_string();
         });
 
         h.harness().key_press(egui::Key::Enter);
@@ -6891,17 +6900,9 @@ mod tests {
         );
     }
 
-    /// Regression (stint 0387 follow-up): the inline sidebar context-rename
-    /// TextEdit must receive typed characters even while a terminal pane is the
-    /// focused tile. The terminal-input ownership transfer
-    /// (`take_focused_terminal_input`) runs before the render pass and, before
-    /// the fix, stole every Key/Text event out of `ctx` whenever the focused
-    /// tile was a terminal — starving the sidebar rename box (which is not a
-    /// focus layer when the sidebar is visible). With the fix, the steal is
-    /// gated on egui keyboard focus, so the box (which holds egui focus) keeps
-    /// its keystrokes.
+    /// Context rename receives text while a terminal is focused.
     #[test]
-    fn sidebar_inline_rename_receives_text_with_focused_terminal() {
+    fn context_rename_receives_text_with_focused_terminal() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
 
@@ -6927,18 +6928,14 @@ mod tests {
             "focused pane must be a real terminal for this regression to be meaningful"
         );
 
-        // Enter inline sidebar rename: sidebar visible → sync_context_rename_focus
-        // leaves should_own=false, so NO ContextRename focus layer is pushed and
-        // the inline TextEdit (not an overlay) owns keyboard input.
+        // Open the context rename overlay with the sidebar visible.
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let ctx_idx = app.router.active_idx();
-            app.rename_buffer.clear();
-            app.renaming_window = Some(ctx_idx);
+            app.open_context_rename(ctx_idx);
+            app.context_rename.as_mut().unwrap().buffer.clear();
         });
-        // Let the TextEdit mount and gain egui focus: the reconciler (stint
-        // 0429) derives InputOwner::Overlay(SidebarRename) and grants the
-        // rename box focus, surrendering the terminal's surface.
+        // Let the field mount and gain focus.
         h.run_steps(3);
 
         // Type into the rename box.
@@ -6953,10 +6950,10 @@ mod tests {
             .push(egui::Event::Text("y".to_string()));
         h.step();
 
-        let buffer = h.with_app(|app| app.rename_buffer.clone());
+        let buffer = h.with_app(|app| app.context_rename.as_ref().unwrap().buffer.clone());
         assert_eq!(
             buffer, "xy",
-            "inline sidebar rename box must receive typed characters even while a terminal is the focused tile"
+            "context rename field must receive typed characters even while a terminal is the focused tile"
         );
     }
 

@@ -1275,6 +1275,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
+        self.cancel_context_rename("context removal");
         if self.router.len() <= 1 {
             return;
         }
@@ -1614,13 +1615,7 @@ impl PlexiApp {
             self.active_window -= 1;
         }
 
-        if self.renaming_window == Some(index) {
-            self.renaming_window = None;
-        } else if let Some(r) = self.renaming_window {
-            if r > index {
-                self.renaming_window = Some(r - 1);
-            }
-        }
+        self.sync_context_rename_focus();
 
         // ── Compact the grid: shift columns left if a column becomes empty ──
         self.compact_workspace_grid(removed_ws_id);
@@ -1698,6 +1693,9 @@ impl PlexiApp {
     /// This is the standard path for context navigation. Focus-history traversal
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        if new_ctx_idx != self.router.active_idx() {
+            self.cancel_context_rename("context switch");
+        }
         // Record the outgoing focus so Cmd+[ can return here from any context.
         if let Some(w) = self.windows.get(self.active_window) {
             let old_window_id = w.window_id;
@@ -1796,6 +1794,7 @@ impl PlexiApp {
 
     /// Park a specific context by index, moving focus to the nearest unparked neighbor.
     pub(crate) fn park_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context parked");
         if self.router.get(idx).parked {
             return;
         }
@@ -1817,6 +1816,7 @@ impl PlexiApp {
 
     /// Unpark a specific context by index and switch focus to it.
     pub(crate) fn unpark_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context unparked");
         self.router.get_mut(idx).parked = false;
         log::info!(
             "context: unparked '{}' (idx={idx})",
