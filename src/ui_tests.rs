@@ -9824,4 +9824,30 @@ mod tests {
         assert!(after > before + 30.0, "drag must persist: {before} -> {after}; second={second}");
     }
 
+    #[test]
+    fn strip_stack_drag_survives_repaint() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.pane(first).unwrap().outer_rect.height(), layout.dividers.iter().find(|d| !d.is_vertical).unwrap().rect.center())
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(0.0, 80.0);
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        let after = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().outer_rect.height());
+        assert!(after > before + 30.0, "stack drag must persist: {before} -> {after}");
+    }
+
 }

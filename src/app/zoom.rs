@@ -322,6 +322,27 @@ pub(crate) fn collect_leaf_panes_in_tile(
     }
 }
 
+fn vertical_stack_shares(
+    tree: &egui_tiles::Tree<PaneId>,
+    panes: &HashMap<PaneId, crate::host::pane::Pane>,
+) -> Vec<(TileId, Vec<(TileId, PaneId, f32)>)> {
+    let Some(root) = tree.root() else { return Vec::new(); };
+    let candidates = match tree.tiles.get(root) {
+        Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => linear.children.clone(),
+        _ => vec![root],
+    };
+    candidates.into_iter().filter_map(|tile| {
+        let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get(tile) else { return None; };
+        if linear.dir != LinearDir::Vertical { return None; }
+        let rows = linear.children.iter().filter_map(|child| {
+            let mut leaves = Vec::new();
+            collect_leaf_panes_in_tile(tree, panes, *child, &mut leaves);
+            (leaves.len() == 1).then(|| (*child, leaves[0], linear.shares[*child]))
+        }).collect::<Vec<_>>();
+        (rows.len() == linear.children.len()).then_some((tile, rows))
+    }).collect()
+}
+
 impl PlexiApp {
     /// Record an edge attempt in `dir` without changing layout or starting an animation.
     pub fn record_edge_bump(&mut self, dir: Direction) {
@@ -2110,6 +2131,19 @@ impl PlexiApp {
         let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
         self.host.set_strip_layout(ctx_id, layout.clone());
 
+        let stack_shares = {
+            let win = &self.windows[self.active_window];
+            vertical_stack_shares(&win.tree, &win.panes)
+        };
+        for (tile, rows) in stack_shares {
+            let updates: Vec<_> = rows.into_iter().filter_map(|(child, pane, _)| {
+                let (col, row) = authoritative_strip.find_pane_position(pane)?;
+                Some((child, *authoritative_strip.columns[col].heights.get(row)?))
+            }).collect();
+            if let Some(Tile::Container(Container::Linear(linear))) = self.windows[self.active_window].tree.tiles.get_mut(tile) {
+                for (child, share) in updates { linear.shares.set_share(child, share); }
+            }
+        }
         let Some(w_strip) = self.active_window_strip() else {
             self.zoom.last_strip_sig = None;
             return;
@@ -2173,19 +2207,22 @@ impl PlexiApp {
     /// Commit egui_tiles' divider changes to the strip before the next projection.
     pub(crate) fn commit_strip_tree_resize(&mut self, canvas_width: f32) {
         let context_id = self.router.active().context_id;
-        let Some(window_strip) = self.active_window_strip() else { return; };
+        let window_strip = self.active_window_strip();
         let win = &self.windows[self.active_window];
-        let Some(root) = win.tree.root() else { return; };
-        let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) else { return; };
+        let stack_shares = vertical_stack_shares(&win.tree, &win.panes);
         let mut changes = Vec::new();
-        if linear.dir == LinearDir::Horizontal {
-            let available = (window_strip.total_width_px.max(canvas_width)
-                - self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0) * window_strip.children.len().saturating_sub(1) as f32).max(1.0);
-            let sizes = linear.shares.split(&window_strip.children, available);
-            for (tile, size) in window_strip.children.iter().zip(sizes) {
-                let mut panes = Vec::new();
-                collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
-                if let Some(pane) = panes.first() { changes.push((*pane, size)); }
+        if let (Some(window_strip), Some(root)) = (window_strip, win.tree.root()) {
+            if let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) {
+                if linear.dir == LinearDir::Horizontal {
+                    let available = (window_strip.total_width_px.max(canvas_width)
+                        - self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0) * window_strip.children.len().saturating_sub(1) as f32).max(1.0);
+                    let sizes = linear.shares.split(&window_strip.children, available);
+                    for (tile, size) in window_strip.children.iter().zip(sizes) {
+                        let mut panes = Vec::new();
+                        collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
+                        if let Some(pane) = panes.first() { changes.push((*pane, size)); }
+                    }
+                }
             }
         }
         let strip = self.ensure_authoritative_strip(context_id);
@@ -2198,6 +2235,14 @@ impl PlexiApp {
                 }
             }
         }
+        for (_, rows) in stack_shares {
+            for (_, pane, share) in rows {
+                if let Some((col, row)) = strip.find_pane_position(pane) {
+                    if let Some(height) = strip.columns[col].heights.get_mut(row) { *height = share; }
+                }
+            }
+        }
+        log::info!("strip: committed divider shares context={context_id}");
     }
 
     /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
