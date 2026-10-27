@@ -4418,6 +4418,32 @@ mod agent_tests {
         assert!(spawn_cmd.contains("<TASK>"));
     }
 
+    /// Stint 1036: `agent list` names the directories it will not load, each
+    /// with its path and the file that is missing or legacy, instead of
+    /// returning a shorter list with no explanation.
+    #[test]
+    fn agent_list_reports_unrecognised_agent_directories() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let legacy = ws.path().join(".plexi").join("agents").join("lead-120cadfb");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let pane = ws.path().join(".plexi").join("agents").join("writer");
+        fs::create_dir_all(&pane).unwrap();
+        fs::write(pane.join("AGENT.md"), "legacy-writer-marker\n").unwrap();
+
+        let out = super::agent_list_in(profile.path(), Some(ws.path()), false).unwrap();
+        assert!(out.contains(&legacy.display().to_string()), "{out}");
+        assert!(out.contains("head.json"), "{out}");
+        assert!(out.contains(&pane.display().to_string()), "{out}");
+        assert!(out.contains("settings.toml"), "{out}");
+        assert!(
+            legacy.join("agent.json").is_file(),
+            "the list migrates the legacy card rather than only reporting it"
+        );
+    }
+
     /// Stint 1035: `agent show default` used to refuse with the Assistant-persona
     /// error; it must print a concrete Pi spawn command and hand the user the
     /// workspace definition it seeds.

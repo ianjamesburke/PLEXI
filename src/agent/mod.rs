@@ -1546,6 +1546,75 @@ default = "ask"
         assert_eq!(definition.prompt, "persona from persona.md\n");
     }
 
+    /// Stint 1036: a scan names every directory it will not present as an
+    /// agent, and a legacy `head.json` is migrated rather than skipped.
+    #[test]
+    fn scan_reports_legacy_card_and_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("lead-120cadfb");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let pane = root.path().join("writer");
+        std::fs::create_dir_all(&pane).unwrap();
+        std::fs::write(pane.join("AGENT.md"), "legacy-writer-marker\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        let legacy_issue = issues.iter().find(|i| i.path == legacy).expect("legacy dir");
+        assert!(
+            legacy_issue.issue.describe().contains("head.json")
+                && legacy_issue.issue.describe().contains("agent.json"),
+            "{}",
+            legacy_issue.issue.describe()
+        );
+        assert!(
+            legacy.join("agent.json").is_file() && !legacy.join("head.json").exists(),
+            "a rename that lands as a data migration"
+        );
+        let pane_issue = issues.iter().find(|i| i.path == pane).expect("AGENT.md-only dir");
+        assert!(
+            pane_issue.issue.describe().contains("settings.toml"),
+            "{}",
+            pane_issue.issue.describe()
+        );
+    }
+
+    /// Stint 1036: a legacy filename and a missing required file are distinct
+    /// reasons, not one "unrecognised" bucket.
+    #[test]
+    fn scan_distinguishes_a_legacy_filename_from_a_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{}").unwrap();
+        let incomplete = root.path().join("incomplete");
+        std::fs::create_dir_all(&incomplete).unwrap();
+        std::fs::write(incomplete.join("AGENT.md"), "prose\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        let legacy_issue = issues.iter().find(|i| i.path == legacy).unwrap();
+        let incomplete_issue = issues.iter().find(|i| i.path == incomplete).unwrap();
+        assert!(matches!(legacy_issue.issue, AgentDirIssue::LegacyCardFilename { .. }));
+        assert!(matches!(incomplete_issue.issue, AgentDirIssue::MissingRequiredFile { .. }));
+    }
+
+    /// Stint 1036: a legitimate layout is not an error, so a complete
+    /// definition and a root that does not exist report nothing.
+    #[test]
+    fn scan_reports_nothing_for_a_complete_definition_or_a_missing_root() {
+        let root = tempfile::tempdir().unwrap();
+        let good = root.path().join("good");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join("AGENT.md"), "prose\n").unwrap();
+        std::fs::write(
+            good.join("settings.toml"),
+            "[agent]\nid = \"good\"\ndisplay_name = \"Good\"\n",
+        )
+        .unwrap();
+        assert_eq!(scan_agent_dirs(root.path()), Vec::new());
+        assert_eq!(scan_agent_dirs(&root.path().join("absent")), Vec::new());
+    }
+
     #[test]
     fn transcript_info_log_omits_turn_text() {
         let sentinel = "SENTINEL_SECRET_DO_NOT_LOG";

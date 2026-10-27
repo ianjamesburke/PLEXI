@@ -2209,4 +2209,49 @@ mod tests {
         assert_eq!(soft_after["decision"], "ask");
         assert!(soft_after["expires_at"].is_null());
     }
+
+    /// Stint 1036: `head.json` was renamed to `agent.json` in code but never on
+    /// disk, which made every pre-rename card — `~/.plexi/agents/lead-120cadfb`
+    /// is the live one — unreachable with `no agent '<id>'`.
+    #[test]
+    fn legacy_head_json_card_is_migrated_then_found() {
+        let fix = Fixture::new();
+        create(&fix, "lead-120cadfb", &["agents.ping=allow"]);
+        let dir = agents_root(fix.ws()).join("lead-120cadfb");
+        fs::rename(dir.join("agent.json"), dir.join("head.json")).unwrap();
+
+        let card = find_agent(fix.ws(), "lead-120cadfb").expect("the legacy card resolves");
+        assert_eq!(card.id, "lead-120cadfb");
+        assert_eq!(card.grants[0].tool, "agents.ping");
+        assert!(
+            dir.join("agent.json").is_file() && !dir.join("head.json").exists(),
+            "head.json is migrated in place, not read under its old name"
+        );
+        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        assert_eq!(listed["agents"][0]["id"], "lead-120cadfb", "{listed}");
+    }
+
+    /// Stint 1036: a directory the loader does not understand is named, not
+    /// answered with the same `no agent` as a directory that is not there.
+    #[test]
+    fn find_agent_reports_an_unrecognised_directory_by_path() {
+        let fix = Fixture::new();
+        let dir = agents_root(fix.ws()).join("writer");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AGENT.md"), "pane-agent prose\n").unwrap();
+
+        let error = find_agent(fix.ws(), "writer").unwrap_err();
+        assert_eq!(error["error_code"], "agent_unrecognised", "{error}");
+        let message = error["error"].as_str().unwrap();
+        assert!(message.contains("settings.toml"), "{error}");
+    }
+
+    /// Stint 1036: a name with no directory at all keeps the old answer.
+    #[test]
+    fn find_agent_still_reports_a_missing_directory_as_not_found() {
+        let fix = Fixture::new();
+        let error = find_agent(fix.ws(), "nobody").unwrap_err();
+        assert_eq!(error["error_code"], "agent_not_found", "{error}");
+        assert_eq!(error["error"], "no agent 'nobody'");
+    }
 }
