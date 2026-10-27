@@ -322,10 +322,13 @@ pub(crate) fn collect_leaf_panes_in_tile(
     }
 }
 
+type StackShare = (TileId, PaneId, f32);
+type StackShares = (TileId, Vec<StackShare>);
+
 fn vertical_stack_shares(
     tree: &egui_tiles::Tree<PaneId>,
     panes: &HashMap<PaneId, crate::host::pane::Pane>,
-) -> Vec<(TileId, Vec<(TileId, PaneId, f32)>)> {
+) -> Vec<StackShares> {
     let Some(root) = tree.root() else { return Vec::new(); };
     let candidates = match tree.tiles.get(root) {
         Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => linear.children.clone(),
