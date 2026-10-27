@@ -2170,6 +2170,36 @@ impl PlexiApp {
         }
     }
 
+    /// Commit egui_tiles' divider changes to the strip before the next projection.
+    pub(crate) fn commit_strip_tree_resize(&mut self, canvas_width: f32) {
+        let context_id = self.router.active().context_id;
+        let Some(window_strip) = self.active_window_strip() else { return; };
+        let win = &self.windows[self.active_window];
+        let Some(root) = win.tree.root() else { return; };
+        let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) else { return; };
+        let mut changes = Vec::new();
+        if linear.dir == LinearDir::Horizontal {
+            let available = (window_strip.total_width_px.max(canvas_width)
+                - self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0) * window_strip.children.len().saturating_sub(1) as f32).max(1.0);
+            let sizes = linear.shares.split(&window_strip.children, available);
+            for (tile, size) in window_strip.children.iter().zip(sizes) {
+                let mut panes = Vec::new();
+                collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
+                if let Some(pane) = panes.first() { changes.push((*pane, size)); }
+            }
+        }
+        let strip = self.ensure_authoritative_strip(context_id);
+        let old = strip.intrinsic_column_widths(canvas_width, strip.reference_gap_px);
+        for (pane, width) in changes {
+            if let Some(idx) = strip.find_column_for_pane(pane) {
+                if (old[idx] - width).abs() > 0.5 {
+                    strip.columns[idx].width = crate::strip::ColumnWidth::CustomPixels(width);
+                    log::info!("strip: resized context={context_id} column={idx} width={width:.1}");
+                }
+            }
+        }
+    }
+
     /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
     /// accounting for multi-window pages and off-screen columns across the context.
     #[cfg(test)]

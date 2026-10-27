@@ -447,9 +447,16 @@ pub struct PlexiBehavior<'a> {
     pub strip_layout_jump: bool,
     /// Presentation snapshot for the active strip (`StripLayout`).
     pub strip_layout: Option<crate::strip::StripLayout>,
+    pub resized: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
+    fn on_edit(&mut self, action: egui_tiles::EditAction) {
+        if matches!(action, egui_tiles::EditAction::TileResized) {
+            self.resized = true;
+        }
+    }
+
     fn pane_ui(&mut self, ui: &mut egui::Ui, tile_id: TileId, pane_id: &mut PaneId) -> UiResponse {
         // While any pane is zoomed, paint background panes as dark placeholders
         // and skip all input detection — the zoom overlay owns focus and drop

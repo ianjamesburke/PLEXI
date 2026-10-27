@@ -831,6 +831,7 @@ impl PlexiApp {
                     off_strip_panes,
                     strip_layout_jump,
                     strip_layout: strip_layout.clone(),
+                    resized: false,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -926,6 +927,7 @@ impl PlexiApp {
                 // Extract new_focused before the zoom overlay block so we can
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
+                let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
                 if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
@@ -1194,6 +1196,9 @@ impl PlexiApp {
 
                 if let Some(pid) = clicked_pane_id {
                     self.focus_pane_in_strip(pid);
+                }
+                if resized && !reset_dividers {
+                    self.commit_strip_tree_resize(canvas_full_rect.width());
                 }
                 if reset_dividers {
                     self.reset_column_widths(self.router.active().context_id);
