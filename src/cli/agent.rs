@@ -1189,7 +1189,7 @@ pub fn validate_agent_slug(name: &str) -> Result<(), String> {
     }
     if trimmed == "default" {
         return Err(
-            "invalid agent name 'default': 'default' is reserved for the built-in assistant"
+            "invalid agent name 'default': 'default' is the built-in agent — edit its seeded definition under <workspace>/.plexi/agents/default/ instead of creating it"
                 .to_string(),
         );
     }
@@ -1226,6 +1226,19 @@ pub fn resolve_agent_definition_in(
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("agent name cannot be empty".to_string());
+    }
+    // First use of the built-in `default` seeds the workspace copy the user owns
+    // (stint 1035). An existing `default` directory is never touched, so a user's
+    // own definition always wins.
+    if trimmed == "default" {
+        if let Some(ws) = workspace_root {
+            if let Err(error) = crate::agent::ensure_workspace_default_agent(ws) {
+                log::error!(
+                    "agent default: could not seed {}: {error}",
+                    crate::agent::workspace_agents_dir(ws).join("default").display()
+                );
+            }
+        }
     }
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
@@ -1564,11 +1577,11 @@ pub fn agent_list_in(
 ) -> Result<String, String> {
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
+    // The built-in `default` is listed too: it is a launchable Pi agent, and
+    // `spawn`/`start default` resolve exactly this row until the workspace has
+    // its own seeded copy (stint 1035).
     let mut rows = Vec::new();
     for def in registry.agents() {
-        if def.source == crate::agent::AgentSource::BuiltIn {
-            continue;
-        }
         let tier = tier_display_label(def.source);
         let shadows_global = registry
             .shadowed(&def.id)
@@ -1768,9 +1781,13 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
     let effective_cwd = cwd
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let workspace_root = effective_cwd
-        .as_deref()
-        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    let workspace_root = effective_cwd.as_deref().and_then(|cwd| {
+        resolve_agent_workspace_root_for(
+            name,
+            cwd,
+            &crate::app::registry::workspace_walk_stops(),
+        )
+    });
     match agent_show_in(
         name,
         &crate::config::config_dir(),
@@ -1946,6 +1963,25 @@ fn display_agent_flags(def: &crate::agent::AgentDefinition, json: bool) -> i32 {
     0
 }
 
+/// Workspace root to resolve `name` in.
+///
+/// The definition-lookup walk only accepts a directory that already holds
+/// `.plexi/agents/`, so a fresh checkout with a `.git` and nothing else would
+/// never get its own `default`. The seed walk (`agent create`'s) accepts `.git`
+/// and `.plexi` as well, which is exactly that case (stint 1035).
+fn resolve_agent_workspace_root_for(
+    name: &str,
+    start_cwd: &Path,
+    stops: &[PathBuf],
+) -> Option<PathBuf> {
+    let lookup =
+        crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
+    if lookup.is_some() || name.trim() != "default" {
+        return lookup;
+    }
+    crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
+}
+
 /// Unified resolver for `plexi agent start <name>` and `plexi agent spawn <name>` from
 /// `start_cwd` (walking up to the project root stopping at `stops`, then falling back to
 /// `profile_dir`, then built-in) that assembles the `agent_spawn` IPC payload.
@@ -1960,8 +1996,7 @@ pub fn resolve_agent_spawn_in_stopping_at(
     parent_pane_id: Option<u64>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
-    let workspace_root =
-        crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
+    let workspace_root = resolve_agent_workspace_root_for(agent_name, start_cwd, stops);
     let (def, _) =
         resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
     let Some(ref harness_cfg) = def.harness else {
@@ -4346,6 +4381,11 @@ mod agent_tests {
         .unwrap();
 
         let list_text = super::agent_list_in(profile.path(), Some(ws.path()), false).unwrap();
+        assert!(
+            !list_text.contains("Plexi Assistant"),
+            "the paused Assistant persona must leave the agent registry: {list_text}"
+        );
+        assert!(list_text.contains("default") && list_text.contains("built-in"));
         assert!(list_text.contains("researcher") && list_text.contains("workspace"));
         assert!(list_text.contains("pi (openrouter/~z-ai/glm-flash-latest)"));
         assert!(list_text.contains("[shadows global]"));
@@ -4356,7 +4396,11 @@ mod agent_tests {
         )
         .unwrap();
         let arr = list_json.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        // The two authored agents plus the built-in `default` (stint 1035).
+        assert_eq!(arr.len(), 3);
+        let builtin_default = arr.iter().find(|v| v["name"] == "default").unwrap();
+        assert_eq!(builtin_default["tier"], "built-in");
+        assert_eq!(builtin_default["cli"], "pi");
         let r = arr.iter().find(|v| v["name"] == "researcher").unwrap();
         assert_eq!(r["tier"], "workspace");
         assert_eq!(r["shadows_global"], true);
@@ -4372,6 +4416,76 @@ mod agent_tests {
         assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
         assert!(!spawn_cmd.contains(" -p"));
         assert!(spawn_cmd.contains("<TASK>"));
+    }
+
+    /// Stint 1035: `agent show default` used to refuse with the Assistant-persona
+    /// error; it must print a concrete Pi spawn command and hand the user the
+    /// workspace definition it seeds.
+    #[test]
+    fn agent_show_default_prints_a_pi_spawn_command_and_seeds_the_workspace_copy() {
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ws.path().join(".git")).unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(
+            &super::agent_show_in("default", profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["harness"]["cli"], "pi");
+        let spawn = json["spawn_command"]
+            .as_str()
+            .expect("a concrete spawn command, not the Assistant-persona refusal");
+        assert!(
+            spawn.starts_with("pi "),
+            "unexpected default spawn command: {spawn}"
+        );
+
+        let seeded = ws.path().join(".plexi").join("agents").join("default");
+        assert!(seeded.join("settings.toml").is_file());
+        assert!(seeded.join("persona.md").is_file());
+
+        // The human surface agrees with the JSON one.
+        let text = super::agent_show_in("default", profile.path(), Some(ws.path()), false).unwrap();
+        assert!(text.contains("CLI:           pi"), "{text}");
+        assert!(text.contains("Spawn command: pi "), "{text}");
+        assert!(!text.contains("Plexi Assistant"), "{text}");
+    }
+
+    /// Stint 1035: `spawn`/`start default` composes a Pi command and seeds the
+    /// workspace definition, including in a fresh checkout that has a `.git` but
+    /// no `.plexi/agents/` at all.
+    #[test]
+    fn agent_start_default_seeds_the_workspace_copy_and_composes_a_pi_command() {
+        let fake_home = tempfile::tempdir().unwrap();
+        let profile = fake_home.path().join(".plexi-alpha");
+        fs::create_dir_all(&profile).unwrap();
+        let repo = fake_home.path().join("src").join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let stops = vec![fake_home.path().to_path_buf()];
+
+        let payload = super::resolve_agent_start_in_stopping_at(
+            "default",
+            &profile,
+            &repo,
+            None,
+            None,
+            &stops,
+        )
+        .expect("default resolves in a fresh checkout");
+        assert_eq!(payload["role"], "default");
+        assert_eq!(payload["harness"], "pi");
+        let cmd = payload["command"].as_str().unwrap();
+        assert!(cmd.starts_with("pi "), "unexpected default start command: {cmd}");
+        assert!(!cmd.contains(" -p"));
+        assert_eq!(payload["cwd"], repo.to_string_lossy().as_ref());
+
+        let seeded = repo.join(".plexi").join("agents").join("default");
+        assert!(
+            seeded.join("settings.toml").is_file(),
+            "spawn/start must seed {}",
+            seeded.display()
+        );
+        assert!(seeded.join("persona.md").is_file());
     }
 
     #[test]
@@ -4695,8 +4809,8 @@ mod agent_tests {
         )
         .unwrap_err();
         assert!(
-            err.contains("available agents: researcher, reviewer"),
-            "unknown agent error must list available agents: {err}"
+            err.contains("available agents: default, researcher, reviewer"),
+            "unknown agent error must list available agents (including the launchable built-in `default`, stint 1035): {err}"
         );
         assert!(
             super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, None, &stops)

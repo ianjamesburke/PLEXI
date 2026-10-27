@@ -49,12 +49,34 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-/// System prompt for the built-in `default` agent.
+/// The built-in `default` agent's template, embedded at compile time.
 ///
-/// Every other agent reads its prose from an `AGENT.md` in its own directory;
-/// the built-in one has no directory, so its `AGENT.md` ships beside this
-/// module and is embedded at compile time.
-pub const DEFAULT_AGENT_PROMPT: &str = include_str!("AGENT.md");
+/// Every other agent reads its prose from a persona file in its own directory;
+/// the built-in one has no directory, so its definition ships beside this
+/// module and is seeded into `<workspace>/.plexi/agents/default/` on first use
+/// (`ensure_workspace_default_agent`) so the user owns and can edit the file.
+/// The registry's built-in and the seeded copy parse the same template, so they
+/// cannot drift.
+pub const DEFAULT_AGENT_SETTINGS: &str = include_str!("default/settings.toml");
+pub const DEFAULT_AGENT_PERSONA: &str = include_str!("default/persona.md");
+
+/// Parse the embedded built-in `default`. `None` only if the compiled-in
+/// template is invalid, which `builtin_default_agent_is_a_launchable_pi_agent`
+/// keeps from shipping.
+fn builtin_default_agent() -> Option<AgentDefinition> {
+    match AgentDefinition::parse_from(
+        DEFAULT_AGENT_PERSONA,
+        DEFAULT_AGENT_SETTINGS,
+        AgentSource::BuiltIn,
+        None,
+    ) {
+        Ok(definition) => Some(definition),
+        Err(error) => {
+            log::error!("assistant: embedded default agent template is invalid: {error}");
+            None
+        }
+    }
+}
 
 // ── Agent definition ─────────────────────────────────────────────────────────
 
@@ -459,11 +481,16 @@ impl AgentDefinition {
         })
     }
 
-    /// Load one agent directory (`AGENT.md` + `settings.toml`) as belonging to
+    /// Load one agent directory (persona file + `settings.toml`) as belonging to
     /// `source` — the tier it was discovered in, which the caller knows and the
     /// files themselves do not record.
     pub fn load_dir(dir: &Path, source: AgentSource) -> Result<Self, String> {
-        let prompt_path = dir.join("AGENT.md");
+        let prompt_path = agent_persona_path(dir).ok_or_else(|| {
+            format!(
+                "{} has no persona file — expected AGENT.md or persona.md (it is the agent's system prompt)",
+                dir.display()
+            )
+        })?;
         let settings_path = dir.join("settings.toml");
         let prompt = std::fs::read_to_string(&prompt_path)
             .map_err(|e| format!("failed to read {}: {e}", prompt_path.display()))?;
@@ -488,43 +515,19 @@ impl AgentRegistry {
         profile_dir: &Path,
         workspace_root: Option<&Path>,
     ) -> Self {
-        let default = AgentDefinition {
-            id: "default".to_string(),
-            display_name: "Plexi Assistant".to_string(),
-            default_tier: ModelTier::Medium,
-            prompt: DEFAULT_AGENT_PROMPT.to_string(),
-            posture: PermissionPosture {
-                default_posture: Decision::Ask,
-                allow: Vec::new(),
-                ask: Vec::new(),
-                deny: Vec::new(),
-            },
-            subscriptions: Vec::new(),
-            source: AgentSource::BuiltIn,
-            path: None,
-            description: "General workspace assistant".to_string(),
-            model_routes: AgentModelRoutes::default(),
-            effort: None,
-            tools: Vec::new(),
-            skills: Vec::new(),
-            hooks: Vec::new(),
-            client: None,
-            kind: None,
-            harness: None,
-            can_call: Vec::new(),
-            can_handoff: Vec::new(),
-        };
+        let builtin_default = builtin_default_agent();
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
         let workspace_agents = workspace_root
             .map(load_workspace_agent_definitions)
             .unwrap_or_default();
         log::info!(
-            "assistant: agent registry sources built-in=1 user={} workspace={}",
+            "assistant: agent registry sources built-in={} user={} workspace={}",
+            usize::from(builtin_default.is_some()),
             user_agents.len(),
             workspace_agents.len()
         );
-        let mut definitions = vec![default];
+        let mut definitions: Vec<AgentDefinition> = builtin_default.into_iter().collect();
         definitions.extend(user_agents);
         definitions.extend(workspace_agents);
         let mut active = BTreeMap::new();
@@ -555,6 +558,60 @@ impl AgentRegistry {
     pub fn shadowed(&self, id: &str) -> &[AgentDefinition] {
         self.shadowed.get(id).map(Vec::as_slice).unwrap_or(&[])
     }
+}
+
+/// An agent directory's persona file: `AGENT.md` (every agent written so far),
+/// else `persona.md` (what the built-in default's template seeds).
+fn agent_persona_path(dir: &Path) -> Option<PathBuf> {
+    let agent_md = dir.join("AGENT.md");
+    if agent_md.is_file() {
+        return Some(agent_md);
+    }
+    let persona_md = dir.join("persona.md");
+    persona_md.is_file().then_some(persona_md)
+}
+
+/// Write the built-in `default` into `<workspace>/.plexi/agents/default/` on
+/// first use, as a definition the user owns, versions, and can edit.
+///
+/// A directory that already exists is left exactly as it is — a user's own
+/// `default` always wins over the template. Partial-write cleanup only ever
+/// removes the directory this call created.
+pub fn ensure_workspace_default_agent(workspace_root: &Path) -> Result<PathBuf, String> {
+    let parent = workspace_agents_dir(workspace_root);
+    let dir = parent.join("default");
+    if dir.exists() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    if let Err(error) = std::fs::create_dir(&dir) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            // Another first use won the race; that definition is the user's now.
+            return Ok(dir);
+        }
+        return Err(format!("create {}: {error}", dir.display()));
+    }
+    for (name, contents) in [
+        ("settings.toml", DEFAULT_AGENT_SETTINGS),
+        ("persona.md", DEFAULT_AGENT_PERSONA),
+    ] {
+        let path = dir.join(name);
+        if let Err(error) = std::fs::write(&path, contents) {
+            if let Err(cleanup) = std::fs::remove_dir_all(&dir) {
+                log::error!(
+                    "agent definitions: failed to remove partial default agent {}: {cleanup}",
+                    dir.display()
+                );
+            }
+            return Err(format!("write {}: {error}", path.display()));
+        }
+    }
+    log::info!(
+        "agent definitions: seeded the workspace default agent at {}",
+        dir.display()
+    );
+    Ok(dir)
 }
 
 /// `<workspace>/.plexi/agents` — the only workspace agent-definition tier.
@@ -615,7 +672,7 @@ pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
         match entry {
             Ok(entry) => {
                 let path = entry.path();
-                if path.is_dir() && path.join("AGENT.md").is_file() {
+                if path.is_dir() && agent_persona_path(&path).is_some() {
                     if let Some(name) = entry.file_name().to_str() {
                         names.push(name.to_string());
                     }
@@ -715,7 +772,7 @@ pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
 }
 
 fn definition_files_match(left: &Path, right: &Path) -> bool {
-    for name in ["AGENT.md", "settings.toml"] {
+    for name in ["AGENT.md", "persona.md", "settings.toml"] {
         let a = left.join(name);
         let b = right.join(name);
         match (std::fs::read(&a), std::fs::read(&b)) {
@@ -1413,6 +1470,81 @@ payload = "full"
 trigger = "conversation"
 default = "ask"
 "#;
+
+    /// Stint 1035: `default` must be a launchable agent, not the paused
+    /// Assistant's `harness: None` persona.
+    #[test]
+    fn builtin_default_agent_is_a_launchable_pi_agent() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::load(profile.path(), ws.path());
+
+        let default = registry.active("default").expect("built-in default exists");
+        assert_eq!(default.source, AgentSource::BuiltIn);
+        assert_eq!(
+            default.harness.as_ref().map(|h| h.cli.as_str()),
+            Some("pi"),
+            "the built-in default must launch on a harness"
+        );
+        assert_ne!(default.display_name, "Plexi Assistant");
+        assert!(!default.prompt.contains("Plexi Assistant"));
+        for def in registry.agents().chain(registry.shadowed("default")) {
+            if def.id == "default" {
+                assert!(
+                    def.harness.is_some(),
+                    "no entry named `default` may carry harness: None"
+                );
+            }
+        }
+    }
+
+    /// Stint 1035: first use seeds `<workspace>/.plexi/agents/default/` — a file
+    /// the user owns, which a later first use must not overwrite.
+    #[test]
+    fn workspace_default_agent_seeds_once_and_stays_the_users_file() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+
+        let dir = ensure_workspace_default_agent(ws.path()).unwrap();
+        assert_eq!(dir, workspace_agents_dir(ws.path()).join("default"));
+        assert!(dir.join("settings.toml").is_file());
+        assert!(dir.join("persona.md").is_file());
+
+        let definitions = load_workspace_agent_definitions(ws.path());
+        let default = definitions
+            .iter()
+            .find(|d| d.id == "default")
+            .expect("the seeded default loads as a workspace agent");
+        assert_eq!(default.source, AgentSource::Workspace);
+        assert_eq!(default.harness.as_ref().map(|h| h.cli.as_str()), Some("pi"));
+
+        std::fs::write(dir.join("persona.md"), "my own persona\n").unwrap();
+        assert_eq!(ensure_workspace_default_agent(ws.path()).unwrap(), dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("persona.md")).unwrap(),
+            "my own persona\n",
+            "seeding must never overwrite the user's definition"
+        );
+    }
+
+    /// The seeded template's persona file name, which `load_dir` accepts
+    /// alongside the older `AGENT.md`.
+    #[test]
+    fn persona_md_loads_when_agent_md_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("default");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("persona.md"), "persona from persona.md\n").unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            "[agent]\nid = \"default\"\ndisplay_name = \"Default\"\n\n[harness]\ncli = \"pi\"\n",
+        )
+        .unwrap();
+
+        let definition = AgentDefinition::load_dir(&dir, AgentSource::Workspace).unwrap();
+        assert_eq!(definition.prompt, "persona from persona.md\n");
+    }
 
     #[test]
     fn transcript_info_log_omits_turn_text() {

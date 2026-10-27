@@ -10,6 +10,7 @@ export {
   PlexiCliClient,
   type CliResult,
   type ExecRunner,
+  type WorkspaceAgentSummary,
   type WorkspaceOverviewSnapshot,
 } from "./src/cli-client.ts";
 export { PlexiEventSubscriber, type PlexiEventRecord } from "./src/events.ts";
