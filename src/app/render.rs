@@ -647,7 +647,11 @@ impl PlexiApp {
                         available_canvas.max,
                     );
                     let mut offset = strip.scroll_offset_px.clamp(0.0, max_scroll);
-                    if ui.put(bar_rect, egui::Slider::new(&mut offset, 0.0..=max_scroll).show_value(false)).changed() {
+                    let response = ui.scope(|ui| {
+                        ui.spacing_mut().slider_width = bar_rect.width();
+                        ui.put(bar_rect, egui::Slider::new(&mut offset, 0.0..=max_scroll).show_value(false))
+                    }).inner;
+                    if response.changed() {
                         self.ensure_authoritative_strip(context_id).set_scroll_offset_px(offset, Some(canvas_full_rect.width()));
                         log::info!("strip: scrollbar context={context_id} offset={offset:.1}");
                     }

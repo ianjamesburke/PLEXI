@@ -10053,4 +10053,54 @@ mod tests {
         assert!(h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_on_screen));
     }
 
+    #[test]
+    fn strip_shift_wheel_scrolls_without_vertical_delivery() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+        h.with_app_mut(|app| {
+            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.scroll_offset_px, layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0))
+        });
+        let modifiers = egui::Modifiers { shift: true, ..egui::Modifiers::NONE };
+        h.harness().input_mut().modifiers = modifiers;
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -200.0), modifiers, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        assert!(h.with_app(|app| app.active_strip_layout().scroll_offset_px) > before + 20.0);
+        assert_eq!(state.lock().unwrap().raw_y, 0.0, "shift-wheel must not also reach pane as vertical wheel");
+        assert_eq!(h.with_app(|app| app.focused_pane_id()), Some(first));
+    }
+
+    #[test]
+    fn screenshot_populated_strip_overflow() {
+        for (width, height, scale, suffix) in [(1200.0, 700.0, 1.0, "_wide"), (900.0, 700.0, 1.5, "_narrow")] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
+            for index in 0..3 {
+                let path = h.workspace.path().join(format!("note-{index}.md"));
+                std::fs::write(&path, format!("# Project {index}\n\nA populated workspace pane with notes and useful context.\n\n- Review the plan\n- Follow up on the next step\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).expect("open note");
+                });
+                h.run_steps(3);
+            }
+            h.run_steps(4);
+            h.save_screenshot(&evidence_png!(suffix)).expect("render strip");
+        }
+    }
+
 }

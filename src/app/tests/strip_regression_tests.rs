@@ -601,3 +601,31 @@ fn oversized_custom_split_preserves_unrelated_width_through_host() {
     assert!(layout.pane(source).unwrap().is_on_screen);
     assert!(layout.pane(new).unwrap().is_on_screen);
 }
+
+#[test]
+fn custom_width_survives_focus_split_close_and_zoom() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let second = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first], vec![second]]);
+    h.app.focus_pane_in_strip(second);
+    h.run_frames(2);
+    h.app.ensure_authoritative_strip(context).columns[0].width = ColumnWidth::CustomPixels(333.0);
+    h.run_frames(3);
+    h.app.focus_pane_in_strip(first);
+    h.run_frames(2);
+    h.app.focus_pane_in_strip(second);
+    let inserted = h.app.split_focused(false, None, false, false, None).expect("split");
+    h.run_frames(2);
+    assert_eq!(h.app.focused_pane_id(), Some(inserted));
+    h.app.close_focused();
+    h.run_frames(2);
+    h.app.focus_pane_in_strip(first);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    let strip = h.app.strip_for_context(context);
+    assert_eq!(strip.columns[strip.find_column_for_pane(first).unwrap()].width, ColumnWidth::CustomPixels(333.0));
+}
