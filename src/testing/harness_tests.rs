@@ -14479,7 +14479,7 @@ ask = ["pane.send"]
         version: 2,
         strips: Default::default(),
         conjoined_contexts: Default::default(),
-        active_context: 1,
+        active_context: 0,
         sidebar_visible: false,
         next_pane_id: 20,
         contexts: vec![crate::host::context::Context {

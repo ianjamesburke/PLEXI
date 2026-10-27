@@ -2240,16 +2240,29 @@ mod tests {
     fn screenshot_agent_conjoined_strip_and_parent_pin() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
-        let parent = h.with_app_mut(|app| {
+        let (parent, children) = h.with_app_mut(|app| {
             let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review implementation and testing\\n'; sleep 120", "Coordinate review", None, false, None, None, None, None, false, None).unwrap();
             let (_, tile) = app.find_pane_in_any_window(parent).unwrap();
             app.windows[app.active_window].focused_pane = Some(tile);
+            let mut children = Vec::new();
             for role in ["implementer", "tester"] {
                 let (child, _) = app.spawn_agent_worker_pane(role, "pi", "printf 'Worker: checking the requested changes\\n'; sleep 120", "Verify child call", Some("agent-tools-preview"), true, Some(parent), None, None, None, true, None).unwrap();
                 app.agent_tool_children.insert(child, Some(parent));
+                children.push(child);
             }
-            parent
+            (parent, children)
         });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| std::iter::once(parent).chain(children.iter().copied()).all(|id| {
+                let (window, _) = app.find_pane_in_any_window(id).unwrap();
+                app.windows[window].panes.get_mut(&id).unwrap().as_terminal_mut().unwrap().backend.capture_lines(30).iter().any(|line| line.contains("Lead:") || line.contains("Worker:"))
+            }));
+            if ready { break; }
+            assert!(Instant::now() < deadline, "conjoined terminals did not print fixture output");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         h.run_steps(4);
         h.save_screenshot(&evidence_png!("_strip")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowDown);
