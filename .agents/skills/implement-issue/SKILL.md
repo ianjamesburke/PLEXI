@@ -316,7 +316,7 @@ pipeline_slots_set implement <n> "" pushed "" ""
 - Subagents stage only — orchestrator owns the commit
 - Never dispatch subagent without the Phase 3 spec
 - Every implementation needs a logging plan
-- CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md` in same PR
+- CLI changes must update `skills/plexi-cli/` in the same PR: edit `intro.md`, regenerate `SKILL.md` (`just gen-skill-docs`), and bump `skill_version` in `tools/gen_cli_docs/src/skill.rs`
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
 - Start linked stint tasks here; never mark them done here. `/merge-pr` owns completion timing.
 - After pushing, always invoke `/open-pr` inline before considering this skill complete.

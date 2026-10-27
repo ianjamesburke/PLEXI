@@ -27,6 +27,7 @@ export function buildContainerContext(attachConfig: AttachConfig): string | unde
     "- `plexi app open text-editor <path>` — text/markdown/code (.md gets live preview); no path opens a scratch note",
     "- `plexi app open image-viewer <path>` / `video-player <path>` / `audio-player <path>`",
     "- `plexi app open file_browser` — browse the pane's directory",
+    "- `plexi note open` — the built-in notes editor; `plexi note \"<text>\"` captures one, `plexi note list` then `plexi note show <path>` reads them, `plexi note rm <path>` retires one",
     "Built-in pane types do not appear in `plexi app list` (installed apps only). Read an open app pane with `plexi pane state <id>`; `pane capture` is terminal-only. Prefer the `plexi_*` tools and the `plexi` skill; the `plexi-cli` skill covers the rest.",
   ].join("\n");
 }
