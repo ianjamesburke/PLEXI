@@ -366,7 +366,7 @@ class PolicyTests(unittest.TestCase):
             ) as preflight_mock:
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
                 preflight_mock.assert_called_once_with(
-                    self.settings, root / ".stint/tasks", sprint, self.record["stints"])
+                    self.settings, root / ".stint/tasks", sprint, self.record["stints"], ())
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
                 self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
@@ -465,15 +465,68 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
             gate.write_text(gate.read_text().replace("status: todo", "status: done"))
-            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
-                             ["0986"])
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"], ["0986"])
             product.write_text(product.read_text().replace("status: todo", "status: in-progress"))
-            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
-                             ["0986"])
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"], ["0986"])
             product.write_text(product.read_text().replace("blocked_by:\n", "blocked_by:\n  - 986\n"))
             with self.assertRaisesRegex(policy.PolicyError, "cycle"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
 
+    def test_integrated_prerequisite_evidence_and_rejections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sprint = root / self.settings["topology"]["sprint"]
+            sprint.parent.mkdir(parents=True)
+            sprint.write_text("- [0986](../tasks/0986.md)\n- [0987](../tasks/0987.md)\n")
+            tasks = root / "tasks"
+            tasks.mkdir()
+            (tasks / "0986-one.md").write_text("---\nstatus: in-progress\nsize: s\nblocked_by: []\n---\n## Done-When\n")
+            (tasks / "0987-two.md").write_text("---\nstatus: todo\nsize: s\nblocked_by:\n  - 986\n---\n## Done-When\n")
+            record = copy.deepcopy(self.record)
+            record["local"]["test_scope"] = "full"
+            (root / "record-0986-r1.json").write_text(json.dumps(record))
+            batch = {"pr": 100, "source_head": self.head, "base_before": self.base,
+                     "aggregate_head": "d" * 40, "actual_parent": self.base,
+                     "base_race": False, "stints": ["0986"]}
+            manifest = {"topology": "aggregate", "requested_stints": ["0986", "0987"],
+                        "batches": [batch], "parked": []}
+            path = root / "aggregate.json"
+            live = {"state": "MERGED", "baseRefName": "feature/alpha-cleanup",
+                    "headRefOid": self.head, "mergeCommit": {"oid": "d" * 40}}
+            def command(*args):
+                if args[:3] == ("git", "worktree", "list"):
+                    return "worktree /tmp/aggregate\nbranch refs/heads/feature/alpha-cleanup"
+                if args[:3] == ("git", "ls-remote", "origin"):
+                    return "d" * 40
+                if args[0] == "gh":
+                    return json.dumps(live)
+                if args[-1] == "HEAD":
+                    return "d" * 40
+                if args[-1].endswith("^"):
+                    return self.base
+                return ""
+            with patch.object(policy, "command", side_effect=command), patch.object(policy, "alpha_root", return_value=root):
+                path.write_text(json.dumps(manifest))
+                integrated = policy.integrated_prerequisites(self.settings, path)
+                self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)["tasks"], ["0987"])
+                with self.assertRaises(policy.PolicyError):
+                    policy.preflight(self.settings, tasks, sprint, ["0987"])
+                variants = []
+                for field, value in (("base_race", True), ("actual_parent", "e" * 40),
+                                     ("aggregate_head", "e" * 40), ("stints", ["0987"])):
+                    bad = copy.deepcopy(manifest)
+                    bad["batches"][0][field] = value
+                    variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["parked"] = [{"stint": "0986", "reason": "blocked"}]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0986"]
+                variants.append(bad)
+                for bad in variants:
+                    path.write_text(json.dumps(bad))
+                    with self.assertRaises((policy.PolicyError, KeyError)):
+                        policy.integrated_prerequisites(self.settings, path)
     def test_preflight_accepts_pruned_0991_edge_only_once_0991_done(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

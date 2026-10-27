@@ -168,7 +168,81 @@ def read_checks(pr_number, head):
     return checks
 
 
-def preflight(settings, task_root, sprint_file, requested):
+def integrated_prerequisites(settings, manifest_path):
+    """Verify the live aggregate and preserved evidence before using its tasks."""
+    manifest = json.loads(manifest_path.read_text())
+    batches = manifest["batches"]
+    requested = manifest["requested_stints"]
+    parked = manifest["parked"]
+    if manifest["topology"] != "aggregate" or not batches or not requested:
+        raise PolicyError("invalid aggregate manifest")
+    members = re.findall(r"\[(\d{4})\]\(\.\./tasks/",
+                         (alpha_root() / settings["topology"]["sprint"]).read_text())
+    expected = [task for task in members if task != settings["topology"].get("preflight_task")]
+    if len(requested) != len(set(requested)) or sorted(requested) != sorted(expected):
+        raise PolicyError("aggregate manifest has a foreign queue")
+    branch = settings["topology"]["branch"]
+    locations = command("git", "worktree", "list", "--porcelain").splitlines()
+    worktree = None
+    current = None
+    for line in locations:
+        if line.startswith("worktree "):
+            current = line[len("worktree "):]
+        elif line == f"branch refs/heads/{branch}":
+            worktree = current
+    if not worktree or command("git", "-C", worktree, "status", "--porcelain"):
+        raise PolicyError("aggregate worktree is missing or dirty")
+    tip = command("git", "-C", worktree, "rev-parse", "HEAD")
+    remote = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
+    if tip != remote or batches[-1]["aggregate_head"] != tip:
+        raise PolicyError("aggregate manifest tip differs from live branch")
+    integrated = set()
+    seen_prs = set()
+    for index, batch in enumerate(batches):
+        pr, head, parent = batch["pr"], batch["aggregate_head"], batch["base_before"]
+        if (not isinstance(pr, int) or pr in seen_prs or batch["base_race"] is not False
+                or batch["actual_parent"] != parent
+                or index and batches[index - 1]["aggregate_head"] != parent
+                or command("git", "-C", worktree, "rev-parse", f"{head}^") != parent):
+            raise PolicyError("aggregate manifest has invalid ancestry or base race")
+        seen_prs.add(pr)
+        live = json.loads(command("gh", "pr", "view", str(pr), "--json",
+                                  "state,baseRefName,headRefOid,mergeCommit"))
+        if (live["state"] != "MERGED" or live["baseRefName"] != branch
+                or live["headRefOid"] != batch["source_head"]
+                or live["mergeCommit"]["oid"] != head):
+            raise PolicyError("aggregate PR provenance differs from manifest")
+        stints = batch["stints"]
+        if (not stints or any(not isinstance(task, str) or not re.fullmatch(r"\d{4}", task)
+                              or task not in requested or task in integrated for task in stints)
+                or len(stints) != len(set(stints))):
+            raise PolicyError("invalid integrated stint attribution")
+        records = [json.loads(path.read_text()) for path in manifest_path.parent.glob("record-*.json")]
+        matches = [record for record in records if record.get("head") == batch["source_head"]
+                   and record.get("base_head") == parent and record.get("stints") == stints]
+        if len(matches) != 1:
+            raise PolicyError("missing or ambiguous preserved batch evidence")
+        record = matches[0]
+        validation = record["validation"]
+        if (record.get("checks_head") != record["head"] or record.get("waivers")
+                or record["local"].get("head") != record["head"]
+                or record["local"].get("test_scope") != "full"
+                or any(record["local"].get(key) is not True for key in REQUIRED_LOCAL)
+                or validation.get("head") != record["head"]
+                or validation.get("install_head") != record["head"]
+                or validation.get("verdict") != "PASS"
+                or not validation.get("worker_vendor") or not validation.get("tester_vendor")
+                or settings["engines"]["alias_vendor"].get(record.get("worker_alias")) != validation.get("worker_vendor")
+                or settings["engines"]["alias_vendor"].get(record.get("tester_alias")) != validation.get("tester_vendor")
+                or validation["worker_vendor"] == validation["tester_vendor"]):
+            raise PolicyError("preserved batch evidence is incomplete")
+        integrated.update(stints)
+    if any(item["stint"] in integrated for item in parked):
+        raise PolicyError("integrated prerequisite is parked")
+    return integrated
+
+
+def preflight(settings, task_root, sprint_file, requested, integrated=()):
     required = {"mode": "aggregate", "branch": "feature/alpha-cleanup",
                 "final_base": "alpha", "require_final_install": True}
     if any(settings["topology"].get(key) != value for key, value in required.items()):
@@ -229,7 +303,7 @@ def preflight(settings, task_root, sprint_file, requested):
         raise PolicyError("requested task is not claimable")
     for task_id in selected:
         for blocker in task_data[task_id]["blocked_by"]:
-            if blocker in task_data and task_data[blocker]["status"] != "done":
+            if blocker in task_data and task_data[blocker]["status"] != "done" and blocker not in integrated:
                 raise PolicyError(f"task {task_id} is blocked by {blocker}")
     return {"topology": settings["topology"], "tasks": selected,
             "size": max((task_data[task_id]["size"] for task_id in selected),
@@ -339,7 +413,8 @@ def integrate_locked(settings, record, pr_number, manifest_path):
     if not record.get("stints") or not all(re.fullmatch(r"\d{4}", task_id) for task_id in record["stints"]):
         raise PolicyError("batch record has no valid stint IDs")
     root = alpha_root()
-    plan = preflight(settings, root / ".stint/tasks", root / settings["topology"]["sprint"], record["stints"])
+    integrated = integrated_prerequisites(settings, manifest_path) if manifest_path.exists() else ()
+    plan = preflight(settings, root / ".stint/tasks", root / settings["topology"]["sprint"], record["stints"], integrated)
     if record.get("size") != plan["size"]:
         raise PolicyError("record size does not match the largest stint")
     if manifest_path.exists():
@@ -431,6 +506,7 @@ def main():
     ledger_parser.add_argument("run_dir", type=Path)
     preflight_parser = sub.add_parser("preflight")
     preflight_parser.add_argument("tasks", nargs="+")
+    preflight_parser.add_argument("--manifest", type=Path)
     merge_parser = sub.add_parser("integrate")
     merge_parser.add_argument("pr", type=int)
     merge_parser.add_argument("record", type=Path)
@@ -448,8 +524,9 @@ def main():
             print(json.dumps(ledger_summary(args.run_dir), indent=2))
         elif args.action == "preflight":
             root = alpha_root()
+            integrated = integrated_prerequisites(settings, args.manifest) if args.manifest else ()
             print(json.dumps(preflight(settings, root / ".stint/tasks",
-                                       root / settings["topology"]["sprint"], args.tasks)))
+                                       root / settings["topology"]["sprint"], args.tasks, integrated)))
         elif args.action == "gate":
             record = json.loads(args.record.read_text())
             manifest = json.loads(args.manifest.read_text()) if args.manifest else None
@@ -460,7 +537,7 @@ def main():
         else:
             record = json.loads(args.record.read_text())
             print(recover_base_race(settings, record, args.pr, args.manifest))
-    except (PolicyError, KeyError, IndexError, OSError, subprocess.CalledProcessError) as error:
+    except (PolicyError, KeyError, IndexError, TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"babysitter-policy: {error}", file=sys.stderr)
         return 1
     return 0

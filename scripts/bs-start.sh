@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bs-start.sh — deterministic start of a stint lane (bs- pipeline).
 #
-# Usage: bs-start.sh [--base feature/alpha-cleanup] <stint-id> [<stint-id> ...]
+# Usage: bs-start.sh [--base feature/alpha-cleanup] [--manifest path] <stint-id> [<stint-id> ...]
 #
 # Asserts the selected base is clean and synced with origin (hard error naming what and
 # where otherwise), mints the wtp worktree feature/stint-<id>[-<id>...]-<slug>
@@ -21,6 +21,15 @@ if [[ "${1:-}" == "--base" ]]; then
     echo "bs-start: --base only accepts feature/alpha-cleanup" >&2
     exit 1
   fi
+fi
+manifest_args=()
+if [[ "${1:-}" == "--manifest" ]]; then
+  if [[ -z "${2:-}" || "$base_branch" != "feature/alpha-cleanup" ]]; then
+    echo "bs-start: --manifest requires a path and aggregate base" >&2
+    exit 1
+  fi
+  manifest_args=(--manifest "$2")
+  shift 2
 fi
 if [[ $# -lt 1 ]]; then
   echo "bs-start: missing stint id. Usage: just bs-start <stint-id> [<stint-id> ...]" >&2
@@ -53,7 +62,7 @@ if [[ "$base_branch" == "feature/alpha-cleanup" ]]; then
     exit 1
   fi
   # Refuse blocked product dispatch before worktree creation or stint claim.
-  uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" >/dev/null
+  uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" "${manifest_args[@]}" >/dev/null
 fi
 
 # The selected base must be clean.
