@@ -216,8 +216,7 @@ impl PlexiApp {
     /// Returns `None` (leaving `ctx` untouched) unless the frame's derived
     /// [`crate::app::input_owner::InputOwner`] is a terminal pane. The single
     /// derivation covers every case the old ad-hoc gates covered: overlays on
-    /// the focus stack, the inline sidebar rename editor (the stint 0387
-    /// regression — now `InputOwner::Overlay(ContextRename)`), an unfocused OS
+    /// the focus stack, including context rename, an unfocused OS
     /// window, and a non-terminal focused pane.
     ///
     /// This is a read of focus state only; it never mutates `active_window` or

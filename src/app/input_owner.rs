@@ -23,8 +23,7 @@ use egui::Id;
 pub(crate) enum InputOwner {
     /// The OS window is unfocused; no surface receives keys.
     OsUnfocused,
-    /// A host overlay surface owns input (modal focus stack or an inline
-    /// sidebar editor).
+    /// A host overlay surface owns input.
     Overlay(OverlaySurface),
     /// The focused pane of the active window owns input.
     Pane(PaneId),
