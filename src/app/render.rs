@@ -778,6 +778,12 @@ impl PlexiApp {
                 }
 
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+                let pane_radius_log = egui::Id::new("pane_corner_radius_logged");
+                let pane_radius_setting = self.config.pane_corner_radius.unwrap_or(crate::ui::style::RADIUS_PANE.nw);
+                if ui.ctx().data(|d| d.get_temp::<u8>(pane_radius_log)) != Some(pane_radius_setting) {
+                    log::info!("pane corner radius: {pane_radius_setting} points");
+                    ui.ctx().data_mut(|d| d.insert_temp(pane_radius_log, pane_radius_setting));
+                }
                 {
                     let overlay_log_id = egui::Id::new("pane_id_overlay_on");
                     let was_held: bool =
@@ -816,6 +822,7 @@ impl PlexiApp {
                     owner_pane,
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
+                    pane_corner_radius: self.config.pane_corner_radius,
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
                     focused_terminal_input: focused_terminal_input.take(),
@@ -866,20 +873,12 @@ impl PlexiApp {
                 });
                 log::debug!("[DRAG] tiling: done");
 
-                // Paint the active pane focus outline using the parent painter which
-                // has the full window clip rect. paint_on_top_of_tile cannot do this —
-                // its painter is clipped to the tile rect, making Outside strokes invisible.
+                // Paint after the tile contents and their corner masks, clipping to
+                // the viewport rather than manufacturing corners at a scroll edge.
                 if zoomed_pane.is_none() {
                     if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
-                        let focus_rect = ctx.tree.tiles.rect(tile_id).map(|r| {
-                            if canvas_full_rect.expand(0.5).contains_rect(r) {
-                                r
-                            } else {
-                                r.intersect(canvas_full_rect)
-                            }
-                        });
+                        let focus_rect = ctx.tree.tiles.rect(tile_id);
                         if let Some(rect) = focus_rect.filter(|r| r.width() > 0.5 && r.height() > 0.5) {
-                            let gap = behavior.pane_gap;
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -896,12 +895,12 @@ impl PlexiApp {
                             } else {
                                 self.colors.accent
                             };
-                            let stroke = egui::Stroke::new(gap, stroke_color);
-                            focus_painter.rect_stroke(
+                            let stroke = egui::Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, stroke_color);
+                            focus_painter.with_clip_rect(canvas_full_rect).rect_stroke(
                                 rect,
-                                crate::ui::style::RADIUS_MOTORWAYS,
+                                crate::ui::style::pane_radius(behavior.pane_corner_radius, rect),
                                 stroke,
-                                egui::StrokeKind::Outside,
+                                egui::StrokeKind::Inside,
                             );
                         }
                     }

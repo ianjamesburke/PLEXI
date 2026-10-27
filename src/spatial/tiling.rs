@@ -423,6 +423,7 @@ pub struct PlexiBehavior<'a> {
     pub portal_zoom_request: Option<u64>,
     /// Resolved inter-pane gap width (from config, default 4.0).
     pub pane_gap: f32,
+    pub pane_corner_radius: Option<u8>,
     /// Resolved pane title bar font size (from config, default 11.0).
     pub pane_title_font_size: f32,
     /// Keyboard input the host took from `ctx` before the render pass, destined
@@ -806,7 +807,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                     ui.painter().rect_stroke(
                         pane_rect,
-                        0.0,
+                        style::pane_radius(self.pane_corner_radius, pane_rect),
                         egui::Stroke::new(1.5_f32, border_col),
                         egui::StrokeKind::Inside,
                     );
@@ -842,6 +843,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             );
         }
 
+        let outer = ui.max_rect();
+        style::mask_pane_corners(
+            ui.painter(),
+            outer,
+            style::pane_radius(self.pane_corner_radius, outer),
+            self.colors.bg_darkest,
+        );
         UiResponse::None
     }
 

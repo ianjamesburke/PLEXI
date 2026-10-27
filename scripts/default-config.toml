@@ -6,6 +6,7 @@ config_version = 1
 font_size = 14.0
 # ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
+# pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
 
 confirm_quit  = true
