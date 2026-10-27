@@ -1660,6 +1660,7 @@ impl PlexiApp {
             ) {
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(restored.next_pane_id);
+                host.strips = restored.strips.clone();
                 let mut app = Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
@@ -2155,6 +2156,7 @@ impl PlexiApp {
         self.minimap = crate::render::minimap::MinimapState::with_visible(restored.minimap_visible);
         self.next_window_id = restored.next_window_id;
         self.host.seed_next_pane_id(restored.next_pane_id);
+        self.host.strips = restored.strips;
         self.apply_context_transition_effects();
     }
 
@@ -5505,6 +5507,7 @@ pub(crate) struct WorkspaceRestoreCollaborators<'a> {
 
 /// Reconstructed workspace state returned by [`restore_workspace`].
 pub(crate) struct RestoredWorkspace {
+    pub strips: HashMap<u64, crate::strip::Strip>,
     pub router: crate::workspace::router::WorkspaceRouter,
     pub windows: Vec<Window>,
     pub active_window: usize,
@@ -6201,6 +6204,7 @@ pub(crate) fn restore_workspace(
     );
 
     Some(RestoredWorkspace {
+        strips: ws.strips,
         router,
         windows,
         active_window: active,

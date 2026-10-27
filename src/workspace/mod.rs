@@ -23,6 +23,8 @@ pub struct WorkspaceFile {
     pub next_pane_id: u64,
     pub contexts: Vec<Context>,
     pub windows: Vec<SavedWindow>,
+    #[serde(default)]
+    pub strips: HashMap<u64, crate::strip::Strip>,
     /// context_id → last active window_id for that context.
     #[serde(default)]
     pub context_active_window: HashMap<u64, u64>,
@@ -357,6 +359,7 @@ impl WorkspaceFile {
     }
 
     pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
+        self.validate()?;
         let path = workspace_path_in(profile_dir);
         let temp_path = unique_temp_path(&path);
         let started = Instant::now();
@@ -378,11 +381,18 @@ impl WorkspaceFile {
                             format!("refusing to overwrite invalid workspace {}: {error}", path.display()),
                         )
                     })?;
-                    if existing.version != 2 {
+                    if !matches!(existing.version, 2 | 3) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
                         ));
+                    }
+                    existing.validate()?;
+                    if existing.version == 2 && self.version == 3 {
+                        preserve_v2_rollback(&path, &data)?;
+                    }
+                    if existing.version == 3 && self.version == 2 {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "refusing to downgrade a version 3 workspace"));
                     }
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -436,15 +446,93 @@ impl WorkspaceFile {
                 return None;
             }
         };
-        if ws.version != 2 {
+        if !matches!(ws.version, 2 | 3) {
             log::info!(
                 "Unsupported workspace file version {}; preserving original",
                 ws.version
             );
             return None;
         }
+        if let Err(error) = ws.validate() {
+            log::error!("workspace_load: invalid workspace {}: {error}; preserving original", path.display());
+            return None;
+        }
         Some(ws)
     }
+
+    fn validate(&self) -> io::Result<()> {
+        if self.version != 3 {
+            return Ok(());
+        }
+        let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+        let context_ids: std::collections::HashSet<_> = self.contexts.iter().map(|c| c.context_id).collect();
+        if context_ids.len() != self.contexts.len() {
+            return Err(invalid("duplicate context identity".into()));
+        }
+        let mut owners = HashMap::new();
+        for window in &self.windows {
+            for pane in &window.panes {
+                if owners.insert(pane.id, window.context_id).is_some() {
+                    return Err(invalid(format!("duplicate pane identity {}", pane.id)));
+                }
+            }
+        }
+        let mut membership = std::collections::HashSet::new();
+        for (context, strip) in &self.strips {
+            if !context_ids.contains(context) || strip.context_id != *context {
+                return Err(invalid(format!("strip references invalid context {context}")));
+            }
+            if !strip.scroll_offset_px.is_finite() || strip.scroll_offset_px < 0.0 {
+                return Err(invalid(format!("strip {context} has invalid scroll offset")));
+            }
+            let mut column_ids = std::collections::HashSet::new();
+            for column in &strip.columns {
+                if !column_ids.insert(column.id) || column.panes.is_empty() || column.panes.len() != column.heights.len() {
+                    return Err(invalid(format!("strip {context} has invalid column {:?}", column.id)));
+                }
+                if column.heights.iter().any(|h| !h.is_finite() || *h <= 0.0) {
+                    return Err(invalid(format!("strip {context} has invalid stack shares")));
+                }
+                if column.last_focused.is_some_and(|pane| !column.panes.contains(&pane)) {
+                    return Err(invalid(format!("strip {context} has invalid column focus")));
+                }
+                for pane in &column.panes {
+                    if owners.get(pane) != Some(context) || !membership.insert(*pane) {
+                        return Err(invalid(format!("strip {context} has invalid or duplicate pane {pane}")));
+                    }
+                }
+            }
+            if strip.focused_pane.is_some_and(|pane| !strip.contains_pane(pane)) {
+                return Err(invalid(format!("strip {context} has invalid focus")));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn preserve_v2_rollback(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let backup = path.with_extension("v2.rollback.json");
+    let temp = unique_temp_path(&backup);
+    let result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        match std::fs::hard_link(&temp, &backup) {
+            Ok(()) => {
+                File::open(path.parent().ok_or_else(|| io::Error::other("workspace has no parent"))?)?.sync_all()?;
+                log::info!("workspace migration: preserved version 2 rollback copy at {}", backup.display());
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if std::fs::read(&backup)? != bytes {
+                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "existing version 2 rollback copy differs; refusing migration"));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temp);
+    result
 }
 
 fn atomic_save<F>(path: &Path, temp_path: &Path, bytes: &[u8], write_temp: F) -> io::Result<()>
@@ -617,6 +705,58 @@ mod tests {
         .unwrap();
         assert!(workspace.save_to(profile.path()).is_err());
         assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn migration_preserves_original_v2_and_refuses_stale_downgrade() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        let mut workspace: WorkspaceFile = serde_json::from_slice(original).unwrap();
+        workspace.version = 3;
+        workspace.save_to(profile.path()).unwrap();
+        let backup = path.with_extension("v2.rollback.json");
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        workspace.next_pane_id = 42;
+        workspace.save_to(profile.path()).unwrap();
+        let current = std::fs::read(&path).unwrap();
+        assert_eq!(std::fs::read(&backup).unwrap(), original);
+        workspace.version = 2;
+        assert!(workspace.save_to(profile.path()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), current);
+    }
+
+    #[test]
+    fn migration_rejects_a_stale_rollback_copy() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        std::fs::write(path.with_extension("v2.rollback.json"), b"stale").unwrap();
+        let mut workspace: WorkspaceFile = serde_json::from_slice(original).unwrap();
+        workspace.version = 3;
+        assert!(workspace.save_to(profile.path()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn invalid_v3_strip_does_not_load_or_get_overwritten() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut workspace: WorkspaceFile = serde_json::from_str(
+            r#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
+        ).unwrap();
+        workspace.strips.insert(42, crate::strip::Strip::new(42));
+        let original = serde_json::to_vec(&workspace).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        workspace.strips.clear();
+        assert!(workspace.save_to(profile.path()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]

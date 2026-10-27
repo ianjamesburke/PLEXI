@@ -660,3 +660,30 @@ fn stack_shares_survive_split_and_close_by_pane_identity() {
         assert_eq!(strip.columns[col].heights[row], expected, "share after close pane={pane}");
     }
 }
+
+#[test]
+fn saved_strip_restores_width_scroll_and_focus() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let second = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    for id in [first, second] {
+        h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    }
+    h.app.set_context_columns(context, vec![vec![first], vec![second]]);
+    h.app.focus_pane_in_strip(second);
+    {
+        let strip = h.app.ensure_authoritative_strip(context);
+        strip.columns[0].width = ColumnWidth::CustomPixels(500.0);
+        strip.columns[1].width = ColumnWidth::CustomPixels(700.0);
+        strip.set_scroll_offset_px(200.0, Some(600.0));
+    }
+    let expected = h.app.strip_for_context(context);
+    let profile = h.profile_dir().to_path_buf();
+    h.app.save_workspace_now();
+    let restored = HostHarness::from_profile_dir(profile);
+    let actual = restored.app.strip_for_context(context);
+    assert_eq!(actual.columns, expected.columns);
+    assert_eq!(actual.focused_pane, expected.focused_pane);
+    assert_eq!(actual.scroll_offset_px, expected.scroll_offset_px);
+}

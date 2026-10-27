@@ -915,6 +915,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
 
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
+        strips: Default::default(),
         active_context: 1,
         sidebar_visible: false,
         next_pane_id: 77,
@@ -12007,6 +12008,7 @@ mod agent_state_restoration_tests {
 
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 40,
@@ -12547,6 +12549,7 @@ mod agent_state_restoration_tests {
 
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,
@@ -14478,6 +14481,7 @@ ask = ["pane.send"]
 
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
+        strips: Default::default(),
         active_context: 1,
         sidebar_visible: false,
         next_pane_id: 20,
@@ -15096,6 +15100,7 @@ mod restore_followups_0983b {
         let tree = egui_tiles::Tree::new("script_tree", t30, tiles);
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,
