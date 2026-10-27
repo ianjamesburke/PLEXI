@@ -250,3 +250,42 @@ fn pure_stable_column_ids_and_swap_panes_preserve_focus_and_structure() {
     assert_eq!(strip.find_column_by_id(id_col2_before), Some(3));
 }
 
+
+#[test]
+fn oversized_custom_split_fits_pair_without_resizing_other_columns() {
+    let mut strip = Strip::new(1);
+    strip.reference_width_px = Some(800.0);
+    strip.push_column(Column::new(ColumnId(0), 1, ColumnWidth::CustomPixels(333.0)));
+    strip.push_column(Column::new(ColumnId(1), 2, ColumnWidth::CustomPixels(900.0)));
+    strip.focus_pane(2);
+    assert_eq!(strip.columns[1].width, ColumnWidth::CustomPixels(900.0));
+    strip.insert_column_right_of(1, 3, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    let widths = strip.intrinsic_column_widths(800.0, 4.0);
+    assert_eq!(widths[0], 333.0);
+    assert!(widths[1] + 4.0 + widths[2] <= 800.0);
+    let intervals = strip.column_intervals(800.0, 4.0);
+    assert!(intervals[1].0 >= strip.scroll_offset_px - 0.5);
+    assert!(intervals[2].0 + intervals[2].1 <= strip.scroll_offset_px + 800.5);
+    let before = strip.columns.iter().map(|c| c.width).collect::<Vec<_>>();
+    strip.focus_pane(1);
+    strip.focus_pane(2);
+    assert_eq!(before, strip.columns.iter().map(|c| c.width).collect::<Vec<_>>());
+}
+
+#[test]
+fn fitting_custom_split_and_navigation_preserve_widths() {
+    let mut strip = Strip::new(1);
+    strip.reference_width_px = Some(800.0);
+    strip.push_column(Column::new(ColumnId(0), 1, ColumnWidth::CustomPixels(200.0)));
+    strip.push_column(Column::new(ColumnId(1), 2, ColumnWidth::CustomPixels(1000.0)));
+    strip.focus_pane(2);
+    strip.focus_pane(1);
+    strip.focus_pane(2);
+    assert_eq!(strip.columns[1].width, ColumnWidth::CustomPixels(1000.0));
+    strip.insert_column_right_of(0, 3, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    assert_eq!(strip.columns[0].width, ColumnWidth::CustomPixels(200.0));
+    assert_eq!(strip.columns[2].width, ColumnWidth::CustomPixels(1000.0));
+    let layout = layout_strip(&strip, &StripViewport::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)), 4.0));
+    assert!(layout.pane(1).unwrap().is_on_screen);
+    assert!(layout.pane(3).unwrap().is_on_screen);
+}

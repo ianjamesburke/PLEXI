@@ -573,3 +573,90 @@ fn continuous_strip_legacy_context_visible_panes_accept_input() {
     });
 }
 
+
+#[test]
+fn oversized_custom_split_preserves_unrelated_width_through_host() {
+    let mut h = HostHarness::new();
+    let other = h.add_test_pane();
+    let source = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![other], vec![source]]);
+    h.app.focus_pane_in_strip(source);
+    h.run_frames(2);
+    let viewport = h.app.active_strip_viewport();
+    let width = viewport.canvas_rect.width();
+    let strip = h.app.ensure_authoritative_strip(context);
+    strip.columns[0].width = ColumnWidth::CustomPixels(250.0);
+    strip.columns[1].width = ColumnWidth::CustomPixels(width + 100.0);
+    h.app.focus_pane_in_strip(other);
+    assert!(h.app.navigate_at_current_zoom_level(crate::host::keys::Direction::Right));
+    assert_eq!(h.app.strip_for_context(context).columns[1].width, ColumnWidth::CustomPixels(width + 100.0));
+    let new = h.app.split_focused(false, None, false, false, None).expect("split");
+    h.run_frames(2);
+    let strip = h.app.strip_for_context(context);
+    assert_eq!(strip.columns.len(), 3);
+    assert_eq!(strip.columns[0].width, ColumnWidth::CustomPixels(250.0));
+    let source_idx = strip.find_column_for_pane(source).unwrap();
+    let new_idx = strip.find_column_for_pane(new).unwrap();
+    let widths = strip.intrinsic_column_widths(width, viewport.gap);
+    assert!(widths[source_idx] + viewport.gap + widths[new_idx] <= width + 0.5);
+    let layout = layout_strip(&strip, &viewport);
+    assert!(layout.pane(source).unwrap().is_on_screen);
+    assert!(layout.pane(new).unwrap().is_on_screen);
+}
+
+#[test]
+fn custom_width_survives_focus_split_close_and_zoom() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let second = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first], vec![second]]);
+    h.app.focus_pane_in_strip(second);
+    h.run_frames(2);
+    h.app.ensure_authoritative_strip(context).columns[0].width = ColumnWidth::CustomPixels(333.0);
+    h.run_frames(3);
+    h.app.focus_pane_in_strip(first);
+    h.run_frames(2);
+    h.app.focus_pane_in_strip(second);
+    let inserted = h.app.split_focused(false, None, false, false, None).expect("split");
+    h.run_frames(2);
+    assert_eq!(h.app.focused_pane_id(), Some(inserted));
+    h.app.close_focused();
+    h.run_frames(2);
+    h.app.focus_pane_in_strip(first);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    h.app.toggle_pane_zoom();
+    h.run_frames(2);
+    let strip = h.app.strip_for_context(context);
+    assert_eq!(strip.columns[strip.find_column_for_pane(first).unwrap()].width, ColumnWidth::CustomPixels(333.0));
+}
+
+#[test]
+fn stack_shares_survive_split_and_close_by_pane_identity() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let second = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first, second]]);
+    h.app.focus_pane_in_strip(second);
+    h.run_frames(2);
+    h.app.ensure_authoritative_strip(context).columns[0].heights = vec![2.0, 3.0];
+    h.run_frames(2);
+    let inserted = h.app.split_focused(true, None, false, false, None).expect("split stack");
+    h.run_frames(2);
+    let strip = h.app.strip_for_context(context);
+    for (pane, expected) in [(first, 2.0), (second, 3.0)] {
+        let (col, row) = strip.find_pane_position(pane).unwrap();
+        assert_eq!(strip.columns[col].heights[row], expected, "share after split pane={pane}");
+    }
+    assert_eq!(h.app.focused_pane_id(), Some(inserted));
+    h.app.close_focused();
+    h.run_frames(2);
+    let strip = h.app.strip_for_context(context);
+    for (pane, expected) in [(first, 2.0), (second, 3.0)] {
+        let (col, row) = strip.find_pane_position(pane).unwrap();
+        assert_eq!(strip.columns[col].heights[row], expected, "share after close pane={pane}");
+    }
+}

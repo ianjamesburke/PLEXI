@@ -322,6 +322,30 @@ pub(crate) fn collect_leaf_panes_in_tile(
     }
 }
 
+type StackShare = (TileId, PaneId, f32);
+type StackShares = (TileId, Vec<StackShare>);
+
+fn vertical_stack_shares(
+    tree: &egui_tiles::Tree<PaneId>,
+    panes: &HashMap<PaneId, crate::host::pane::Pane>,
+) -> Vec<StackShares> {
+    let Some(root) = tree.root() else { return Vec::new(); };
+    let candidates = match tree.tiles.get(root) {
+        Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => linear.children.clone(),
+        _ => vec![root],
+    };
+    candidates.into_iter().filter_map(|tile| {
+        let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get(tile) else { return None; };
+        if linear.dir != LinearDir::Vertical { return None; }
+        let rows = linear.children.iter().filter_map(|child| {
+            let mut leaves = Vec::new();
+            collect_leaf_panes_in_tile(tree, panes, *child, &mut leaves);
+            (leaves.len() == 1).then(|| (*child, leaves[0], linear.shares[*child]))
+        }).collect::<Vec<_>>();
+        (rows.len() == linear.children.len()).then_some((tile, rows))
+    }).collect()
+}
+
 impl PlexiApp {
     /// Record an edge attempt in `dir` without changing layout or starting an animation.
     pub fn record_edge_bump(&mut self, dir: Direction) {
@@ -627,8 +651,8 @@ impl PlexiApp {
         crate::strip::layout_strip(&strip, &vp)
     }
 
-    /// True if `pane_id` is in a column that is currently visible in the strip presentation
-    /// snapshot at `ZoomLevel::Columns` and no overlay/queue owns input (`SPEC.md` R40).
+    /// True if `pane_id` is the focused strip pane and no overlay owns input.
+    /// A manually scrolled-out pane keeps ownership until the next key reveals it.
     pub fn pane_qualifies_for_input(&self, pane_id: PaneId) -> bool {
         if self.zoom.level != ZoomLevel::Columns {
             return false;
@@ -646,8 +670,8 @@ impl PlexiApp {
             return true;
         }
         let layout = self.active_strip_layout();
-        if let Some(p) = layout.pane(pane_id) {
-            return p.is_visible;
+        if layout.pane(pane_id).is_some() {
+            return true;
         }
         self.windows
             .get(self.active_window)
@@ -2050,7 +2074,7 @@ impl PlexiApp {
             widths,
             lo,
             scroll_offset_px: local_scroll_px,
-            total_width_px: window_total_w.max(canvas_w),
+            total_width_px: window_total_w,
         })
     }
 
@@ -2088,19 +2112,9 @@ impl PlexiApp {
                         (strip.scroll_offset_px * (canvas_width / prev_w)).clamp(0.0, max_px);
                 }
             }
-            if let Some(focused_pid) = strip.focused_pane {
-                if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
-                    let intervals = strip.column_intervals(canvas_width, gap);
-                    if let Some(&(col_x, col_w)) = intervals.get(col_idx) {
-                        let visible_l = strip.scroll_offset_px;
-                        let visible_r = strip.scroll_offset_px + canvas_width;
-                        if viewport_changed
-                            || col_x + col_w <= visible_l + 0.5
-                            || col_x >= visible_r - 0.5
-                        {
-                            strip.reveal_column_with_viewport(col_idx, canvas_width, gap);
-                        }
-                    }
+            if viewport_changed {
+                if let Some(col_idx) = strip.focused_pane.and_then(|pane| strip.find_column_for_pane(pane)) {
+                    strip.reveal_column_with_viewport(col_idx, canvas_width, gap);
                 }
             }
         }
@@ -2110,6 +2124,23 @@ impl PlexiApp {
         let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
         self.host.set_strip_layout(ctx_id, layout.clone());
 
+        let stack_shares = {
+            let win = &self.windows[self.active_window];
+            vertical_stack_shares(&win.tree, &win.panes)
+        };
+        for (tile, rows) in stack_shares {
+            let updates: Vec<_> = rows.into_iter().filter_map(|(child, pane, _)| {
+                let (col, row) = authoritative_strip.find_pane_position(pane)?;
+                Some((child, *authoritative_strip.columns[col].heights.get(row)?))
+            }).collect();
+            if let Some(Tile::Container(Container::Linear(linear))) = self.windows[self.active_window].tree.tiles.get_mut(tile) {
+                for (child, share) in updates {
+                    if (linear.shares[child] - share).abs() > f32::EPSILON {
+                        linear.shares.set_share(child, share);
+                    }
+                }
+            }
+        }
         let Some(w_strip) = self.active_window_strip() else {
             self.zoom.last_strip_sig = None;
             return;
@@ -2165,9 +2196,79 @@ impl PlexiApp {
         };
         if let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get_mut(root_id) {
             for (child_id, share) in w_strip.children.iter().copied().zip(shares) {
-                lin.shares.set_share(child_id, share);
+                if (lin.shares[child_id] - share).abs() > f32::EPSILON {
+                    lin.shares.set_share(child_id, share);
+                }
             }
         }
+    }
+
+    /// Commit egui_tiles' divider changes to the strip before the next projection.
+    pub(crate) fn commit_strip_tree_resize(&mut self, canvas_width: f32) {
+        let context_id = self.router.active().context_id;
+        let window_strip = self.active_window_strip();
+        let win = &self.windows[self.active_window];
+        let stack_shares = vertical_stack_shares(&win.tree, &win.panes);
+        let mut changes = Vec::new();
+        if let (Some(window_strip), Some(root)) = (window_strip, win.tree.root()) {
+            if let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) {
+                if linear.dir == LinearDir::Horizontal {
+                    for tile in &window_strip.children {
+                        let size = linear.shares[*tile];
+                        let mut panes = Vec::new();
+                        collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
+                        if let Some(pane) = panes.first() { changes.push((*pane, size)); }
+                    }
+                }
+            }
+        }
+        let strip = self.ensure_authoritative_strip(context_id);
+        let old = strip.intrinsic_column_widths(canvas_width, strip.reference_gap_px);
+        for (pane, width) in changes {
+            if let Some(idx) = strip.find_column_for_pane(pane) {
+                if (old[idx] - width).abs() > 0.5 {
+                    strip.columns[idx].width = crate::strip::ColumnWidth::CustomPixels(width);
+                    log::info!("strip: resized context={context_id} column={idx} width={width:.1}");
+                }
+            }
+        }
+        for (_, rows) in stack_shares {
+            for (_, pane, share) in rows {
+                if let Some((col, row)) = strip.find_pane_position(pane) {
+                    if let Some(height) = strip.columns[col].heights.get_mut(row) { *height = share; }
+                }
+            }
+        }
+        log::info!("strip: committed divider shares context={context_id}");
+    }
+
+    pub(crate) fn reset_strip_divider(
+        &mut self,
+        divider: crate::strip::layout::DividerLayout,
+        layout: &crate::strip::StripLayout,
+    ) {
+        let context = self.router.active().context_id;
+        let strip = self.ensure_authoritative_strip(context);
+        if divider.is_vertical {
+            for id in [divider.left_col, divider.right_col].into_iter().flatten() {
+                if let Some(index) = strip.columns.iter().position(|col| col.id == id) {
+                    let preset = if index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 };
+                    strip.columns[index].width = crate::strip::ColumnWidth::Preset(preset);
+                }
+            }
+        } else if let Some(id) = divider.left_col {
+            if let Some(col) = strip.columns.iter_mut().find(|col| col.id == id) {
+                let above = layout.panes.iter().find(|pane| pane.column_id == id && (pane.outer_rect.max.y - divider.rect.min.y).abs() < 1.0);
+                if let Some(row) = above.and_then(|pane| col.panes.iter().position(|id| *id == pane.pane_id)) {
+                    if row + 1 < col.heights.len() {
+                        let mean = (col.heights[row] + col.heights[row + 1]) * 0.5;
+                        col.heights[row] = mean;
+                        col.heights[row + 1] = mean;
+                    }
+                }
+            }
+        }
+        log::info!("strip: reset divider context={context} vertical={}", divider.is_vertical);
     }
 
     /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
@@ -2252,6 +2353,7 @@ impl PlexiApp {
     }
 
     /// Reset column widths in `context_id` back to default presets.
+    #[cfg(test)]
     pub fn reset_column_widths(&mut self, context_id: u64) {
         let strip = self.ensure_authoritative_strip(context_id);
         strip.reset_column_widths();
@@ -2332,11 +2434,11 @@ impl PlexiApp {
                 {
                     width = crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
                 }
-                let resolved_heights = if old_col.heights.len() == panes.len() {
-                    old_col.heights
-                } else {
-                    heights
-                };
+                let resolved_heights = panes.iter().enumerate().map(|(row, pane)| {
+                    old_col.panes.iter().position(|old| old == pane)
+                        .and_then(|old_row| old_col.heights.get(old_row).copied())
+                        .unwrap_or_else(|| heights.get(row).copied().unwrap_or(1.0))
+                }).collect();
                 let last_focused = old_col
                     .last_focused
                     .filter(|p| panes.contains(p))

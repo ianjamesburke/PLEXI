@@ -9798,4 +9798,421 @@ mod tests {
             let _ = std::fs::remove_file(&shot);
         }
     }
+    #[test]
+    fn strip_divider_drag_survives_repaint() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.pane(first).unwrap().outer_rect.width(), layout.dividers.iter().find(|d| d.is_vertical).unwrap().rect.center())
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(80.0, 0.0);
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        let after = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().outer_rect.width());
+        assert!(after > before + 30.0, "drag must persist: {before} -> {after}; second={second}");
+    }
+
+    #[test]
+    fn strip_stack_drag_survives_repaint() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.pane(first).unwrap().outer_rect.height(), layout.dividers.iter().find(|d| !d.is_vertical).unwrap().rect.center())
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(0.0, 80.0);
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(4);
+        let after = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().outer_rect.height());
+        assert!(after > before + 30.0, "stack drag must persist: {before} -> {after}");
+    }
+
+    #[test]
+    fn strip_double_click_resets_only_adjacent_columns() {
+        use crate::strip::ColumnWidth;
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let third = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for (col, width) in strip.columns.iter_mut().zip([300.0, 400.0, 700.0]) { col.width = ColumnWidth::CustomPixels(width); }
+            app.focus_pane_in_strip(first);
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| d.is_vertical).unwrap().rect.center());
+        let mut time = h.with_app(|app| app.ctx.input(|input| input.time));
+        for click in 0..2 {
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            ]);
+            h.step();
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+            if click == 1 {
+                assert!(h.with_app(|app| app.ctx.input(|input| input.pointer.button_double_clicked(egui::PointerButton::Primary))), "fixture must produce a double click");
+            }
+        }
+        h.run_steps(3);
+        h.with_app(|app| {
+            let strip = app.strip_for_context(app.router.active().context_id);
+            assert!(!strip.columns[strip.find_column_for_pane(first).unwrap()].width.is_custom());
+            assert!(!strip.columns[strip.find_column_for_pane(second).unwrap()].width.is_custom());
+            assert_eq!(strip.columns[strip.find_column_for_pane(third).unwrap()].width, ColumnWidth::CustomPixels(700.0));
+        });
+    }
+
+    #[test]
+    fn strip_wheel_scroll_preserves_focus_and_key_reveals_it() {
+        use crate::app::input_owner::InputOwner;
+        use crate::strip::ColumnWidth;
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for col in &mut strip.columns { col.width = ColumnWidth::CustomPixels(700.0); }
+            strip.focus_pane(focused);
+        });
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| (app.active_strip_layout().scroll_offset_px, app.active_strip_layout().canvas_rect.center()));
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(900.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px < before - 100.0, "wheel must scroll: {before} -> {}", layout.scroll_offset_px);
+            assert_eq!(app.focused_pane_id(), Some(focused));
+            assert_eq!(app.host_input_owner(), InputOwner::Pane(focused));
+            assert!(!layout.pane(focused).unwrap().is_on_screen);
+        });
+        h.harness().input_mut().events.push(egui::Event::Text("x".into()));
+        h.run_steps(3);
+        h.with_app(|app| assert!(app.active_strip_layout().pane(focused).unwrap().is_on_screen));
+    }
+
+    #[test]
+    fn strip_overflow_control_scrolls_outside_pane_hits() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(3);
+        let (before, click) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.scroll_offset_px, egui::pos2(layout.canvas_rect.left() + 20.0, layout.canvas_rect.bottom() + 6.0))
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click),
+            egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px < before - 10.0, "overflow control did not scroll: {before} -> {}", layout.scroll_offset_px);
+            assert_eq!(app.focused_pane_id(), Some(focused));
+            assert!(layout.panes.iter().all(|pane| !pane.hit_rect.contains(click)));
+        });
+    }
+
+    #[derive(Default)]
+    struct StripWheelSnapshot { offset: egui::Vec2, raw_y: f32, keys: usize }
+    struct StripWheelFixture { horizontal: bool, state: Arc<std::sync::Mutex<StripWheelSnapshot>> }
+    impl crate::app::app_trait::App for StripWheelFixture {
+        fn type_id(&self) -> &'static str { "strip_wheel_fixture" }
+        fn display_name(&self) -> String { "Scroll fixture".into() }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+        fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> crate::app::app_trait::KeyDisposition {
+            if input.key_pressed(egui::Key::X) {
+                self.state.lock().unwrap().keys += 1;
+                return crate::app::app_trait::KeyDisposition::Consumed;
+            }
+            crate::app::app_trait::KeyDisposition::Passthrough
+        }
+        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::app_trait::AppRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
+            let raw_y = ui.input(|input| input.events.iter().filter_map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => Some(delta.y), _ => None,
+            }).sum::<f32>());
+            let area = if self.horizontal { egui::ScrollArea::horizontal() } else { egui::ScrollArea::vertical() };
+            let output = area.max_width(300.0).max_height(300.0).show(ui, |ui| {
+                ui.allocate_space(egui::vec2(2000.0, 2000.0));
+            });
+            let mut state = self.state.lock().unwrap();
+            state.offset = output.state.offset;
+            state.raw_y += raw_y;
+        }
+    }
+
+    #[test]
+    fn strip_nested_scroll_controls_keep_their_wheel() {
+        for horizontal in [false, true] {
+            let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+            h.step();
+            let first = add_focused_pane(&mut h);
+            let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+            h.with_app_mut(|app| {
+                let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+                pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal, state: state.clone() }));
+            });
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+            h.run_steps(2);
+            h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+            h.run_steps(3);
+            let (before, pos) = h.with_app(|app| {
+                let layout = app.active_strip_layout();
+                (layout.scroll_offset_px, layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0))
+            });
+            let delta = if horizontal { egui::vec2(-200.0, 0.0) } else { egui::vec2(0.0, -200.0) };
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+            ]);
+            h.run_steps(8);
+            let offset = state.lock().unwrap().offset;
+            assert!(if horizontal { offset.x > 1.0 } else { offset.y > 1.0 }, "pane did not scroll: {offset:?}");
+            assert!((h.with_app(|app| app.active_strip_layout().scroll_offset_px) - before).abs() < 0.5, "pane control must consume its gesture");
+        }
+    }
+
+    #[test]
+    fn strip_scrolled_out_app_receives_key_after_reveal() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+        h.with_app_mut(|app| {
+            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().clip_rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-1800.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(12);
+        assert!(!h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_visible));
+        h.harness().input_mut().events.push(egui::Event::Key { key: egui::Key::X, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(2);
+        assert_eq!(state.lock().unwrap().keys, 1);
+        assert!(h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_on_screen));
+    }
+
+    #[test]
+    fn strip_shift_wheel_scrolls_without_vertical_delivery() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
+        h.with_app_mut(|app| {
+            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
+        });
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.scroll_offset_px, layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0))
+        });
+        let modifiers = egui::Modifiers { shift: true, ..egui::Modifiers::NONE };
+        h.harness().input_mut().modifiers = modifiers;
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -200.0), modifiers, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        assert!(h.with_app(|app| app.active_strip_layout().scroll_offset_px) > before + 20.0);
+        assert_eq!(state.lock().unwrap().raw_y, 0.0, "shift-wheel must not also reach pane as vertical wheel");
+        assert_eq!(h.with_app(|app| app.focused_pane_id()), Some(first));
+    }
+
+    #[test]
+    fn screenshot_populated_strip_overflow() {
+        for (width, height, scale, suffix) in [(1200.0, 700.0, 1.0, "_wide"), (900.0, 700.0, 1.5, "_narrow")] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
+            for index in 0..3 {
+                let path = h.workspace.path().join(format!("note-{index}.md"));
+                std::fs::write(&path, format!("# Project {index}\n\nA populated workspace pane with notes and useful context.\n\n- Review the plan\n- Follow up on the next step\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).expect("open note");
+                });
+                h.run_steps(3);
+            }
+            h.run_steps(4);
+            h.save_screenshot(&evidence_png!(suffix)).expect("render strip");
+        }
+    }
+
+    #[test]
+    fn strip_stack_double_click_resets_only_adjacent_shares() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            let col = strip.find_column_for_pane(first).unwrap();
+            strip.columns[col].heights = vec![1.0, 2.0, 4.0];
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| !d.is_vertical).unwrap().rect.center());
+        let mut time = h.with_app(|app| app.ctx.input(|input| input.time));
+        for _ in 0..2 {
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            ]);
+            h.step();
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
+        let heights = h.with_app(|app| {
+            let strip = app.strip_for_context(app.router.active().context_id);
+            strip.columns[strip.find_column_for_pane(first).unwrap()].heights.clone()
+        });
+        assert_eq!(heights, vec![1.5, 1.5, 4.0]);
+    }
+
+    #[test]
+    fn strip_underfilled_custom_widths_match_rendered_tiles() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let third = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for (col, width) in strip.columns.iter_mut().zip([200.0, 300.0, 300.0]) { col.width = crate::strip::ColumnWidth::CustomPixels(width); }
+            app.focus_pane_in_strip(first);
+        });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            let win = &app.windows[app.active_window];
+            for pane in [first, second, third] {
+                let tile = win.tree.tiles.find_pane(&pane).unwrap();
+                let actual = win.tree.tiles.rect(tile).unwrap();
+                let expected = layout.pane(pane).unwrap().outer_rect;
+                assert!((actual.width() - expected.width()).abs() < 1.0, "pane {pane}: tile={actual:?} model={expected:?}");
+            }
+        });
+        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| d.is_vertical).unwrap().rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(50.0, 0.0);
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let strip = app.strip_for_context(app.router.active().context_id);
+            assert_eq!(strip.columns[strip.find_column_for_pane(third).unwrap()].width, crate::strip::ColumnWidth::CustomPixels(300.0));
+            assert!(strip.intrinsic_column_widths(app.active_strip_viewport().canvas_rect.width(), app.active_strip_viewport().gap)[strip.find_column_for_pane(first).unwrap()] > 230.0);
+        });
+    }
+
+    #[test]
+    fn strip_single_oversized_column_scrolls_rendered_content() {
+        let mut h = PlexiUiHarness::new_sized(800.0, 600.0);
+        h.step();
+        let pane = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            app.ensure_authoritative_strip(context).columns[0].width = crate::strip::ColumnWidth::CustomPixels(1400.0);
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().canvas_rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-300.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px > 50.0);
+            let win = &app.windows[app.active_window];
+            let actual = win.tree.tiles.rect(win.tree.tiles.find_pane(&pane).unwrap()).unwrap();
+            let expected = layout.pane(pane).unwrap().outer_rect;
+            assert!((actual.left() - expected.left()).abs() < 1.0 && (actual.width() - expected.width()).abs() < 1.0, "tile={actual:?} model={expected:?} root={:?} window_strip={:?}", win.tree.tiles.get(win.tree.root().unwrap()), app.active_window_strip());
+        });
+    }
+
 }
