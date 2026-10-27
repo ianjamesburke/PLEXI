@@ -495,8 +495,8 @@ class PolicyTests(unittest.TestCase):
             sprint = root / self.settings["topology"]["sprint"]
             sprint.parent.mkdir(parents=True)
             sprint.write_text("- [0986](../tasks/0986.md)\n- [0987](../tasks/0987.md)\n")
-            tasks = root / "tasks"
-            tasks.mkdir()
+            tasks = root / ".stint/tasks"
+            tasks.mkdir(parents=True)
             (tasks / "0986-one.md").write_text("---\nstatus: in-progress\nsize: s\nblocked_by: []\n---\n## Done-When\n")
             (tasks / "0987-two.md").write_text("---\nstatus: todo\nsize: s\nblocked_by:\n  - 986\n---\n## Done-When\n")
             record = copy.deepcopy(self.record)
@@ -534,7 +534,10 @@ class PolicyTests(unittest.TestCase):
                     policy.preflight(self.settings, tasks, sprint, ["0987"])
                 # A merged PR may advance the remote before its manifest is written.
                 recovery_record = copy.deepcopy(record)
-                recovery_record.update(stints=["0987"], base_head="d" * 40)
+                recovery_record.update(stints=["0987"], base_head="d" * 40, head="f" * 40,
+                                       checks_head="f" * 40)
+                recovery_record["local"]["head"] = "f" * 40
+                recovery_record["validation"].update(head="f" * 40, install_head="f" * 40)
                 recovery_snapshot = {**live, "headRefOid": "f" * 40,
                                      "mergeCommit": {"oid": "e" * 40}}
                 current_tip = ["d" * 40]
@@ -551,24 +554,32 @@ class PolicyTests(unittest.TestCase):
                         current_tip[0] = "e" * 40
                         return ""
                     return command(*args)
-                path.write_text(json.dumps(grown))
-                with patch.object(policy, "command", side_effect=recovery_command), patch.object(
-                    policy, "preflight", return_value={"size": "S"}
-                ), patch.object(policy, "check_gate", return_value="f" * 40), patch.object(
-                    policy, "read_checks", return_value=[]
-                ), patch.object(policy, "reap_after_merge"):
-                    self.assertEqual(policy.integrate_locked(self.settings, recovery_record, 101, path), "e" * 40)
-                saved = json.loads(path.read_text())
-                self.assertEqual(saved["requested_stints"], ["0986", "0987"])
-                self.assertFalse(saved["batches"][-1]["base_race"])
+                for local_tip in ("d" * 40, "e" * 40):
+                    with self.subTest(recovery_local_tip=local_tip):
+                        current_tip[0] = local_tip
+                        path.write_text(json.dumps(grown))
+                        with patch.object(policy, "command", side_effect=recovery_command), patch.object(
+                            policy, "read_checks", return_value=self.checks
+                        ), patch.object(policy, "reap_after_merge"):
+                            self.assertEqual(policy.integrate_locked(
+                                self.settings, recovery_record, 101, path), "e" * 40)
+                        saved = json.loads(path.read_text())
+                        self.assertEqual(saved["requested_stints"], ["0986", "0987"])
+                        self.assertFalse(saved["batches"][-1]["base_race"])
                 variants = []
-                for field, value in (("base_race", True), ("actual_parent", "e" * 40),
+                for field, value in (("base_race", True), ("base_race", None), ("actual_parent", "e" * 40),
                                      ("aggregate_head", "e" * 40), ("stints", ["0987"])):
                     bad = copy.deepcopy(manifest)
                     bad["batches"][0][field] = value
                     variants.append(bad)
                 bad = copy.deepcopy(manifest)
                 bad["parked"] = [{"stint": "0986", "reason": "blocked"}]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["batches"][0].update(base_race=True, recovery_head="e" * 40)
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0987"]
                 variants.append(bad)
                 bad = copy.deepcopy(manifest)
                 bad["requested_stints"] = ["0986", "9999"]
