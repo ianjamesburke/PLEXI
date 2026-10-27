@@ -667,8 +667,8 @@ impl PlexiApp {
             return true;
         }
         let layout = self.active_strip_layout();
-        if let Some(p) = layout.pane(pane_id) {
-            return p.is_visible;
+        if layout.pane(pane_id).is_some() {
+            return true;
         }
         self.windows
             .get(self.active_window)
@@ -2109,19 +2109,9 @@ impl PlexiApp {
                         (strip.scroll_offset_px * (canvas_width / prev_w)).clamp(0.0, max_px);
                 }
             }
-            if let Some(focused_pid) = strip.focused_pane {
-                if let Some(col_idx) = strip.find_column_for_pane(focused_pid) {
-                    let intervals = strip.column_intervals(canvas_width, gap);
-                    if let Some(&(col_x, col_w)) = intervals.get(col_idx) {
-                        let visible_l = strip.scroll_offset_px;
-                        let visible_r = strip.scroll_offset_px + canvas_width;
-                        if viewport_changed
-                            || col_x + col_w <= visible_l + 0.5
-                            || col_x >= visible_r - 0.5
-                        {
-                            strip.reveal_column_with_viewport(col_idx, canvas_width, gap);
-                        }
-                    }
+            if viewport_changed {
+                if let Some(col_idx) = strip.focused_pane.and_then(|pane| strip.find_column_for_pane(pane)) {
+                    strip.reveal_column_with_viewport(col_idx, canvas_width, gap);
                 }
             }
         }

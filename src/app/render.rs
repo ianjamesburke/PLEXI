@@ -633,6 +633,18 @@ impl PlexiApp {
                     &mut child_ui
                 } else { ui };
                 let canvas_full_rect = ui.available_rect_before_wrap();
+                // A shift-wheel belongs to horizontal scrolling. Prevent terminal raw-wheel
+                // handling from also turning it into vertical scrollback; egui's smooth
+                // horizontal delta remains available to a hovered pane control first.
+                if ui.input(|input| input.pointer.hover_pos().is_some_and(|pos| canvas_full_rect.contains(pos))) {
+                    ui.input_mut(|input| {
+                        for event in &mut input.events {
+                            if let egui::Event::MouseWheel { delta, modifiers, .. } = event {
+                                if modifiers.shift { delta.y = 0.0; }
+                            }
+                        }
+                    });
+                }
                 // After the conjoined parent has claimed its side, so the shares
                 // are sized against the width the tree actually gets.
                 self.sync_strip_tree_shares_with_rect(Some(canvas_full_rect));
@@ -1193,6 +1205,21 @@ impl PlexiApp {
 
                 if let Some(pid) = clicked_pane_id {
                     self.focus_pane_in_strip(pid);
+                }
+                // Nested pane scroll areas get first refusal on the horizontal delta.
+                let scroll_x = ui.input_mut(|input| {
+                    if input.pointer.hover_pos().is_some_and(|pos| canvas_full_rect.contains(pos)) {
+                        let delta = input.smooth_scroll_delta.x;
+                        input.smooth_scroll_delta.x = 0.0;
+                        delta
+                    } else { 0.0 }
+                });
+                if scroll_x != 0.0 && zoomed_pane.is_none() && self.overlay_surface().is_none() {
+                    let context = self.router.active().context_id;
+                    let strip = self.ensure_authoritative_strip(context);
+                    strip.set_scroll_offset_px(strip.scroll_offset_px - scroll_x, Some(canvas_full_rect.width()));
+                    log::info!("strip: wheel scroll context={context} offset={:.1}", strip.scroll_offset_px);
+                    ui.ctx().request_repaint();
                 }
                 if let (Some(divider), Some(layout)) = (reset_divider, strip_layout.as_ref()) {
                     self.reset_strip_divider(divider, layout);

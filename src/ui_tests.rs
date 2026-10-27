@@ -9895,4 +9895,41 @@ mod tests {
         });
     }
 
+    #[test]
+    fn strip_wheel_scroll_preserves_focus_and_key_reveals_it() {
+        use crate::app::input_owner::InputOwner;
+        use crate::strip::ColumnWidth;
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for col in &mut strip.columns { col.width = ColumnWidth::CustomPixels(700.0); }
+            strip.focus_pane(focused);
+        });
+        h.run_steps(3);
+        let (before, pos) = h.with_app(|app| (app.active_strip_layout().scroll_offset_px, app.active_strip_layout().canvas_rect.center()));
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(900.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px < before - 100.0, "wheel must scroll: {before} -> {}", layout.scroll_offset_px);
+            assert_eq!(app.focused_pane_id(), Some(focused));
+            assert_eq!(app.host_input_owner(), InputOwner::Pane(focused));
+            assert!(!layout.pane(focused).unwrap().is_on_screen);
+        });
+        h.harness().input_mut().events.push(egui::Event::Text("x".into()));
+        h.run_steps(3);
+        h.with_app(|app| assert!(app.active_strip_layout().pane(focused).unwrap().is_on_screen));
+    }
+
 }

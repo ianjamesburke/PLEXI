@@ -315,7 +315,6 @@ impl Strip {
     }
 
     /// Set continuous scroll offset in logical points, clamped to valid strip bounds.
-    #[cfg(test)]
     pub fn set_scroll_offset_px(&mut self, offset_px: f32, canvas_w: Option<f32>) {
         let cw = self.effective_viewport_width(canvas_w);
         let gap = self.reference_gap_px;
