@@ -533,6 +533,14 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
     assert_eq!(fleet.tasks[0].rows[0].display_state, crate::agent::fleet::DisplayState::Failed);
 
+    let terminal = h.app.windows[0].panes.get_mut(&terminal_pane).unwrap().as_terminal_mut().unwrap();
+    let failed_session = terminal.build_saved_agent_session().unwrap();
+    assert_eq!(failed_session.last_state, crate::protocol::AgentState::Failed);
+    terminal.standby_session = Some(failed_session);
+    terminal.agent_completed = true;
+    assert_eq!(terminal.build_saved_agent_session().unwrap().last_state, crate::protocol::AgentState::Completed);
+    assert_eq!(terminal.build_history_record(1, "test", std::path::PathBuf::new()).unwrap().last_state, crate::protocol::AgentState::Completed);
+
     let _ = std::fs::remove_file(&states_file);
 }
 
