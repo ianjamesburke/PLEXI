@@ -199,6 +199,33 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, self.record, self.pr, checks, self.base, "batch")
 
+    def test_coderabbit_provider_is_excluded_but_other_checks_are_not(self):
+        for bucket in ("fail", "pending", "skipping"):
+            rabbit = {"name": "CodeRabbit", "bucket": bucket, "app_slug": "coderabbitai"}
+            self.assertEqual(policy.check_gate(self.settings, self.record, self.pr,
+                                               self.checks + [rabbit], self.base, "batch"), self.head)
+            for slug in ("github-actions", None):
+                with self.subTest(bucket=bucket, slug=slug):
+                    with self.assertRaises(policy.PolicyError):
+                        policy.check_gate(self.settings, self.record, self.pr,
+                                          self.checks + [dict(rabbit, app_slug=slug)],
+                                          self.base, "batch")
+
+    def test_check_provider_matching_requires_unique_exact_head_identity(self):
+        checks = [{"name": "CodeRabbit", "link": "https://example.test", "bucket": "skipping"}]
+        run = {"name": "CodeRabbit", "details_url": "https://example.test",
+               "app": {"slug": "coderabbitai"}}
+        response = subprocess.CompletedProcess([], 1, stdout=json.dumps(checks), stderr="")
+        with patch.object(policy.subprocess, "run", return_value=response), patch.object(
+            policy, "command", return_value=json.dumps([{"check_runs": [run]}])
+        ) as api:
+            self.assertEqual(policy.read_checks(123, self.head)[0]["app_slug"], "coderabbitai")
+            self.assertIn(self.head, api.call_args.args[-1])
+        with patch.object(policy.subprocess, "run", return_value=response), patch.object(
+            policy, "command", return_value=json.dumps([{"check_runs": [run, run]}])
+        ):
+            self.assertNotIn("app_slug", policy.read_checks(123, self.head)[0])
+
     def test_after_alpha_host_ci_still_requires_full_local_and_independent_evidence(self):
         self.settings["ci"] = {"rust_host": "after_alpha"}
         self.record["local"]["test_scope"] = "full"

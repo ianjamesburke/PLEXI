@@ -22,8 +22,9 @@ scoped tests alone never authorize landing. Record `local.test_scope = "full"`
 in aggregate gate records. Never label deferred checks as passed.
 
 The policy reads workflow identity as well as check name and excludes only
-`Rust host` checks under this explicit setting. Missing hosted checks are expected;
-other PR checks still must pass. A stale head, missing local evidence, install
+`Rust host` checks under this explicit setting. It also excludes check runs
+identified by GitHub as the `coderabbitai` app; ambiguous identities remain gated.
+Missing hosted checks are expected; other PR checks still must pass. A stale head, missing local evidence, install
 mismatch or failed independent verdict still blocks integration. The setting is
 policy, not a self-attested waiver. Earlier in-flight Rust checks may finish but
 do not hold the queue. Do not disable unrelated workflows or trigger a release.

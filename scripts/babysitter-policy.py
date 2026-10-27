@@ -118,6 +118,7 @@ def check_gate(settings, record, pr, checks, base_head, phase):
     host_ci = settings.get("ci", {}).get("rust_host", "pr")
     if host_ci not in ("pr", "after_alpha"):
         raise PolicyError("unknown Rust host CI policy")
+    checks = [check for check in checks if check.get("app_slug") != "coderabbitai"]
     if host_ci == "after_alpha":
         if record.get("local", {}).get("test_scope") != "full":
             raise PolicyError("post-Alpha host CI requires full local suite evidence")
@@ -146,13 +147,25 @@ def alpha_root():
     raise PolicyError("alpha worktree not found")
 
 
-def read_checks(pr_number):
+def read_checks(pr_number, head):
     # `gh pr checks` exits nonzero for red checks, even though its JSON is valid.
-    result = subprocess.run(("gh", "pr", "checks", str(pr_number), "--json", "name,bucket,workflow"),
+    result = subprocess.run(("gh", "pr", "checks", str(pr_number), "--json", "name,bucket,workflow,link"),
                             check=False, capture_output=True, text=True)
     if not result.stdout.strip():
         raise PolicyError(f"cannot read PR checks: {result.stderr.strip()}")
-    return json.loads(result.stdout)
+    checks = json.loads(result.stdout)
+    pages = json.loads(command("gh", "api", "--paginate", "--slurp",
+                               f"repos/{{owner}}/{{repo}}/commits/{head}/check-runs?per_page=100"))
+    runs = [run for page in pages for run in page["check_runs"]]
+    # A unique name/URL match ties a gh check to the exact-head provider. Ambiguous
+    # matches retain the check and therefore cannot silently waive a failure.
+    for check in checks:
+        key = (check.get("name"), check.get("link"))
+        matching_checks = [item for item in checks if (item.get("name"), item.get("link")) == key]
+        matching_runs = [run for run in runs if (run.get("name"), run.get("details_url")) == key]
+        if len(matching_checks) == len(matching_runs) == 1:
+            check["app_slug"] = (matching_runs[0].get("app") or {}).get("slug")
+    return checks
 
 
 def preflight(settings, task_root, sprint_file, requested):
@@ -257,7 +270,7 @@ def live_gate(settings, record, pr_number, phase, manifest=None, allow_unresolve
     if before["state"] != "OPEN":
         raise PolicyError("PR is not open")
     base_head = command("git", "ls-remote", "origin", f"refs/heads/{before['baseRefName']}").split()[0]
-    checks = read_checks(pr_number)
+    checks = read_checks(pr_number, before["headRefOid"])
     head = check_gate(settings, record, before, checks, base_head, phase)
     if phase == "final":
         if manifest is None:
@@ -358,7 +371,7 @@ def integrate_locked(settings, record, pr_number, manifest_path):
     if snapshot.get("state") == "MERGED":
         # Recover a merge that succeeded before the caller could write its manifest.
         remote_before = record["base_head"]
-        head = check_gate(settings, record, snapshot, read_checks(pr_number), remote_before, "batch")
+        head = check_gate(settings, record, snapshot, read_checks(pr_number, snapshot["headRefOid"]), remote_before, "batch")
         merged = snapshot
     elif snapshot.get("state") == "OPEN":
         remote_before = command("git", "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
