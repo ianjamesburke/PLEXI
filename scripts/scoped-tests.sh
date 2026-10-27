@@ -11,13 +11,25 @@
 # SCOPED_TEST_BASE (default origin/alpha), using the merge base. Set this to the
 # actual PR base for aggregate lanes. Detection failure conservatively selects ::.
 # Selection always exits 0. --selftest is a diagnostic and exits 1 on failure.
+# --gate delegates to the sibling docs-gate-scope.py: a markdown-only diff may
+# skip the gate only when every path is provably not embedded via include_str!
+# and not under a #[cfg(test)] doc-sync assertion's directory. The embedded set
+# is computed from src/ on every call, never listed. Exits 0 for skip, 1 for
+# required, and prints the reason.
 
 select_filters() {
     local path
     for path in "$@"; do
         path=${path#./}
         case "$path" in
-            *.md|docs/*|.agents/*|.claude/*) ;;
+            *.md)
+                # Embedded markdown is compiled in or asserted on by a test.
+                # Treat it as code and force a reviewed filter selection.
+                if python3 "$(dirname "$0")/docs_gate_scope.py" --is-embedded "$path" 2>/dev/null; then
+                    printf '%s\n' ::
+                fi
+                ;;
+            docs/*|.agents/*|.claude/*) ;;
             src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
             src/ui/*|src/render/*|src/ui_tests.rs|src/scenes.rs|tests/scenes/*)
                 printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
@@ -36,9 +48,12 @@ select_filters() {
 
 selftest() {
     local got first second
-    got=$(select_filters docs/CONFIG.md AGENTS.md .agents/skills/testing/SKILL.md)
+    got=$(select_filters notes/guide.md AGENTS.md .agents/skills/testing/SKILL.md)
     [[ -z "$got" ]] || { printf 'FAIL docs-only selected: %s\n' "$got"; return 1; }
-    printf 'PASS docs-only: <empty>\n'
+    printf 'PASS non-embedded docs-only: <empty>\n'
+    got=$(select_filters docs/CONFIG.md)
+    [[ "$got" == :: ]] || { printf 'FAIL embedded markdown: %s\n' "$got"; return 1; }
+    printf 'PASS embedded markdown -> :: (code)\n'
     got=$(select_filters src/host/model.rs)
     [[ "$got" == *host::* && "$got" == *testing::* ]] || { printf 'FAIL host: %s\n' "$got"; return 1; }
     printf 'PASS host:\n%s\n' "$got"
@@ -55,6 +70,10 @@ selftest() {
     printf 'PASS unknown src: ::; scripts/PGAP: <empty>\n'
 }
 
+if [[ "${1:-}" == --gate ]]; then
+    shift
+    exec python3 "$(dirname "$0")/docs_gate_scope.py" "$@"
+fi
 if [[ "${1:-}" == --selftest ]]; then
     selftest
     exit $?

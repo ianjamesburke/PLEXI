@@ -36,7 +36,7 @@ if (( ${#filters[@]} )); then
 fi
 ```
 
-No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff. Render and inspect screenshots for visual changes as described below.
+No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the testing skill's path-specific `scripts/scoped-tests.sh --gate` decision, which is the single source of truth for the docs-only skip. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff. Render and inspect screenshots for visual changes as described below.
 
 ### Aggregate evidence
 
