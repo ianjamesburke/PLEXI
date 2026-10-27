@@ -2224,15 +2224,27 @@ impl PlexiApp {
                         }
                     })
                 });
+                // Resolve the caller independently of its posture. A non-agent
+                // human-owned pane keeps sending without broker gating. A
+                // non-human-owned caller with no snapshotted posture (an
+                // unconfigured or corrupted agent definition) still enters the
+                // broker with `None`, so the gate falls back to `Ask` instead of
+                // being skipped — missing posture must never mean un-gated.
                 let caller_and_posture = peer_ancestry
                     .as_deref()
                     .and_then(|ancestry| {
                         self.resolve_socket_peer_pane(ancestry)
                             .map(|(caller, _, _)| caller)
                     })
-                    .and_then(|caller| {
-                        self.pane_permission_posture(caller)
-                            .map(|posture| (caller, posture))
+                    .and_then(|caller| match self.pane_permission_posture(caller) {
+                        Some(posture) => Some((caller, Some(posture))),
+                        None if self.is_human_owned_pane(caller) => None,
+                        None => {
+                            log::info!(
+                                "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
+                            );
+                            Some((caller, None))
+                        }
                     });
                 if let Some((caller, _)) = &caller_and_posture {
                     let old = std::mem::take(&mut self.pending_send_approvals);
@@ -2286,7 +2298,7 @@ impl PlexiApp {
                                 .unwrap_or_default(),
                             target_type: crate::broker::TargetType::Capability,
                         },
-                        Some(&posture),
+                        posture.as_ref(),
                     );
                     (caller, adm)
                 });

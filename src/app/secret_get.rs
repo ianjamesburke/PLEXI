@@ -592,9 +592,9 @@ mod list_tests {
             "missing-snapshot secret.get must file an approval request"
         );
 
-        // 2. Bound reproduction for missing-snapshot SendToPane:
-        // Because lifecycle.rs SendToPane gates only when pane_permission_posture is Some,
-        // a missing snapshot does not gate SendToPane.
+        // 2. Missing-snapshot fallback on SendToPane must also enter the broker
+        //    (Decision::Ask) instead of bypassing the gate: a worker with no
+        //    snapshotted posture is still agent-owned, not human-owned.
         let send_resp = crate::rpc::response_file("pane-send-fallback", "json");
         let send_req = crate::protocol::AppRequest::SendToPane {
             pane_id: target_pane,
@@ -607,14 +607,75 @@ mod list_tests {
         let send_line = serde_json::to_string(&send_req).unwrap();
         crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[worker_pid]), &mut Vec::new());
         h.hidden_frame();
+        assert!(
+            !std::path::Path::new(&send_resp).exists(),
+            "missing-snapshot SendToPane must park on an approval instead of proceeding un-gated"
+        );
+        let send_pending = monitor
+            .list_pending()
+            .into_iter()
+            .find(|row| row.tool == "pane.send")
+            .expect("missing-snapshot pane.send must file an approval request");
+        assert_eq!(send_pending.actor_id, format!("pane:{worker_pane}"));
+
+        // Approving releases the parked send and writes the deferred reply.
+        monitor
+            .approve_pending(
+                &send_pending.pending_request_id,
+                crate::broker::gate::ApprovalChoice::Once,
+            )
+            .unwrap();
+        h.hidden_frame();
         let send_reply: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(send_resp).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(&send_resp).unwrap()).unwrap();
         assert_eq!(
             send_reply["ok"], true,
-            "recorded boundary: SendToPane currently proceeds without gate when posture snapshot is missing"
+            "approved missing-snapshot send must deliver: {send_reply}"
         );
 
         secrets::system_store().delete(&account).unwrap();
+    }
+
+    /// Boundary guard for the missing-snapshot fallback: a human-owned pane has
+    /// no posture snapshot either, and must keep sending without broker gating.
+    #[test]
+    fn human_owned_caller_pane_sends_without_broker_gating() {
+        let mut h = HostHarness::new();
+        let human_pane = h.add_focused_terminal();
+        let human_pid = h.terminal_backend(human_pane).child_pid();
+        assert!(
+            h.app.is_human_owned_pane(human_pane),
+            "fixture must be a human-owned terminal pane"
+        );
+        assert!(
+            h.app.pane_permission_posture(human_pane).is_none(),
+            "human-owned pane must have no posture snapshot"
+        );
+
+        let send_resp = crate::rpc::response_file("pane-send-human", "json");
+        let send_req = crate::protocol::AppRequest::SendToPane {
+            pane_id: human_pane,
+            text: "human message".into(),
+            submit: false,
+            paste: false,
+            response_file: Some(send_resp.clone()),
+            peer_ancestry: None,
+        };
+        let send_line = serde_json::to_string(&send_req).unwrap();
+        crate::app::handle_socket_line(&send_line, &h.ipc_tx, Some(&[human_pid]), &mut Vec::new());
+        h.hidden_frame();
+        let send_reply: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&send_resp).unwrap()).unwrap();
+        assert_eq!(
+            send_reply["ok"], true,
+            "human-owned pane must send without broker gating: {send_reply}"
+        );
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        assert!(
+            !monitor.list_pending().iter().any(|row| row.tool == "pane.send"),
+            "human-owned pane must not file a pane.send approval request"
+        );
     }
 
     #[test]
