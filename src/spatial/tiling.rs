@@ -439,13 +439,13 @@ pub struct PlexiBehavior<'a> {
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
     /// see `crate::host::pane::PendingPaneClick`.
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
-    /// Panes in columns clipped off the Niri strip. Their tiles are slivers
-    /// under the peek strip, so they paint a placeholder only: a live view would
-    /// resize the PTY to the sliver and reflow its scrollback.
+    /// Panes in columns clipped off the strip (`!is_on_screen`).
     pub off_strip_panes: HashSet<PaneId>,
     /// True on a frame the strip layout jumped: terminals commit their new grid
     /// at once instead of debouncing it like a drag.
     pub strip_layout_jump: bool,
+    /// Presentation snapshot for the active strip (`StripLayout`).
+    pub strip_layout: Option<crate::strip::StripLayout>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -461,7 +461,10 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             return UiResponse::None;
         }
 
-        if self.off_strip_panes.contains(pane_id) {
+        let snapshot_pane = self.strip_layout.as_ref().and_then(|l| l.pane(*pane_id));
+        if self.off_strip_panes.contains(pane_id)
+            || snapshot_pane.is_some_and(|p| !p.is_visible)
+        {
             let pane_rect = ui.available_rect_before_wrap();
             let fill = match self.panes.get(pane_id) {
                 Some(Pane::Terminal(_)) => self.colors.terminal_bg,
@@ -471,12 +474,19 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             return UiResponse::None;
         }
 
-        // Detect clicks or file drags for focus.
-        let is_click =
-            ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect());
+        let visible_rect = ui.max_rect().intersect(ui.clip_rect());
+        let hit_rect = snapshot_pane
+            .map(|p| p.hit_rect.intersect(visible_rect))
+            .unwrap_or(visible_rect);
+        let pointer_in_hit_rect = hit_rect.width() > 0.5
+            && hit_rect.height() > 0.5
+            && ui.input(|i| i.pointer.interact_pos().is_some_and(|pos| hit_rect.contains(pos)));
+
+        // Detect clicks or file drags for focus inside the visible hit_rect only.
+        let is_click = ui.input(|i| i.pointer.any_pressed()) && pointer_in_hit_rect;
         let is_drag_hovering = match self.drag_cursor_pos {
-            Some(pos) => ui.max_rect().contains(pos),
-            None => self.hovered_files && ui.rect_contains_pointer(ui.max_rect()),
+            Some(pos) => hit_rect.width() > 0.5 && hit_rect.height() > 0.5 && hit_rect.contains(pos),
+            None => self.hovered_files && pointer_in_hit_rect,
         };
         if is_click || is_drag_hovering {
             self.new_focused = Some(tile_id);
@@ -508,7 +518,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         if let Some(children) = self.child_agent_strips.get(pane_id) {
             ui.horizontal(|ui| {
-                ui.set_clip_rect(ui.max_rect());
+                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                 for child in children {
                     let text = format!("{} · {}", child.role, child.display_state.label());
                     let color = match child.display_state {
@@ -550,10 +560,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             return UiResponse::None;
         };
 
+        let clip_rect = snapshot_pane
+            .map(|p| p.clip_rect.intersect(visible_rect))
+            .unwrap_or(visible_rect);
+
         if let Some(app_pane) = pane.as_app_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            app_ui.set_clip_rect(clip_rect);
 
             let tab_group = self.tab_info.get(&tile_id);
             let has_tabs = tab_group.is_some();
@@ -601,6 +616,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+            terminal_ui.set_clip_rect(clip_rect);
             // The focused terminal consumes the host-supplied keyboard buffer;
             // every other terminal gets an empty one (pointer/wheel only).
             let terminal_input = if is_focused {

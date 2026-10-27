@@ -8157,24 +8157,29 @@ mod tests {
                     columns = children.len();
                     for child in children {
                         let rect = window.tree.tiles.rect(child).expect("painted column rect");
-                        assert!(
-                            viewport.expand(1.0).contains_rect(rect),
-                            "{step}: column rect {rect:?} escapes the viewport {viewport:?}"
-                        );
+                        let clipped = rect.intersect(viewport);
+                        if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                            assert!(
+                                viewport.expand(1.0).contains_rect(clipped),
+                                "{step}: clipped column rect {clipped:?} escapes the viewport {viewport:?}"
+                            );
+                        }
                         if rect.width() < MIN_COLUMN_WIDTH {
                             narrow += 1;
                         }
                     }
                 }
-                // Only the clipped neighbours of the strip may be narrow: with 3 columns
-                // exactly one is clipped, never two.
-                assert!(
-                    narrow <= columns.saturating_sub(2),
+                assert_eq!(
+                    narrow, 0,
                     "{step}: {narrow} of {columns} columns are narrower than {MIN_COLUMN_WIDTH}px"
                 );
                 let focused = app.active_focused_pane_id().expect("focused pane");
                 let tile = window.tree.tiles.find_pane(&focused).expect("focused tile");
                 let rect = window.tree.tiles.rect(tile).expect("focused rect");
+                assert!(
+                    viewport.expand(1.0).contains_rect(rect),
+                    "{step}: focused pane {rect:?} must be revealed inside viewport {viewport:?}"
+                );
                 assert!(
                     rect.width() >= 200.0 && rect.height() >= 200.0,
                     "{step}: focused pane squeezed to {rect:?}"

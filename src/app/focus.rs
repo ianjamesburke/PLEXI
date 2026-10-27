@@ -1186,19 +1186,12 @@ impl PlexiApp {
             );
         }
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
-        let cols = self.columns_for_context(ctx_id);
-        if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
-            self.zoom
-                .column_last_pane
-                .insert((ctx_id, col.index), pane_id);
-            let offset = self.zoom.strip_offset_for(ctx_id);
-            if col.index < offset {
-                self.zoom.strip_offsets.insert(ctx_id, col.index);
-            } else if col.index >= offset + 2 {
-                self.zoom
-                    .strip_offsets
-                    .insert(ctx_id, col.index.saturating_sub(1));
-            }
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.focus_pane(pane_id);
+        if let Some(col_idx) = strip.find_column_for_pane(pane_id) {
+            strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
         }
         self.sync_attention_queue();
         true

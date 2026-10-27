@@ -591,6 +591,7 @@ impl HostHarness {
         if tile_id.is_some() {
             win.focused_pane = tile_id.copied();
             self.app.resume_standby_pane(pane_id);
+            self.app.focus_pane_in_strip(pane_id);
         } else {
             win.focused_pane = None;
         }

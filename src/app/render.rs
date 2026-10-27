@@ -671,7 +671,6 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
@@ -683,7 +682,9 @@ impl PlexiApp {
                 let canvas_full_rect = ui.available_rect_before_wrap();
                 // After the conjoined parent has claimed its side, so the shares
                 // are sized against the width the tree actually gets.
-                self.sync_strip_tree_shares(Some(ui.available_width()));
+                self.sync_strip_tree_shares_with_rect(Some(canvas_full_rect));
+                let w_strip = self.active_window_strip();
+                let strip_layout = Some(self.active_strip_layout());
                 let off_strip_panes = self.zoom.off_strip_panes.clone();
                 let strip_layout_jump = self.zoom.strip_layout_jump;
                 let ctx = &mut self.windows[self.active_window];
@@ -838,7 +839,6 @@ impl PlexiApp {
                     }
                 }
 
-                let mut peek_click: Option<bool> = None;
                 let mut reset_dividers: bool = false;
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
@@ -870,6 +870,7 @@ impl PlexiApp {
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes,
                     strip_layout_jump,
+                    strip_layout: strip_layout.clone(),
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -881,6 +882,32 @@ impl PlexiApp {
                         ui.disable();
                     }
                     crate::platform::ui_profile::time("tile_tree_total", || {
+                        if zoomed_pane.is_none() {
+                            if let Some(ref strip) = w_strip {
+                                if strip.total_width_px > canvas_full_rect.width() + 0.5
+                                    || strip.scroll_offset_px > 0.5
+                                {
+                                    let strip_rect = egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            canvas_full_rect.min.x - strip.scroll_offset_px,
+                                            canvas_full_rect.min.y,
+                                        ),
+                                        egui::vec2(
+                                            strip.total_width_px.max(canvas_full_rect.width()),
+                                            canvas_full_rect.height(),
+                                        ),
+                                    );
+                                    let mut strip_ui = ui.new_child(
+                                        egui::UiBuilder::new()
+                                            .id_salt("continuous-strip")
+                                            .max_rect(strip_rect),
+                                    );
+                                    strip_ui.set_clip_rect(canvas_full_rect);
+                                    ctx.tree.ui(&mut behavior, &mut strip_ui);
+                                    return;
+                                }
+                            }
+                        }
                         ctx.tree.ui(&mut behavior, ui);
                     });
                 });
@@ -890,11 +917,16 @@ impl PlexiApp {
                 // has the full window clip rect. paint_on_top_of_tile cannot do this —
                 // its painter is clipped to the tile rect, making Outside strokes invisible.
                 if zoomed_pane.is_none() {
-                    let mut focused_frame_outer = None;
                     if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
-                        if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
+                        let focus_rect = ctx.tree.tiles.rect(tile_id).map(|r| {
+                            if canvas_full_rect.expand(0.5).contains_rect(r) {
+                                r
+                            } else {
+                                r.intersect(canvas_full_rect)
+                            }
+                        });
+                        if let Some(rect) = focus_rect.filter(|r| r.width() > 0.5 && r.height() > 0.5) {
                             let gap = behavior.pane_gap;
-                            focused_frame_outer = Some(rect.expand(gap));
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -920,31 +952,15 @@ impl PlexiApp {
                             );
                         }
                     }
-                    crate::app::PlexiApp::paint_clipped_neighbor_edges(
-                        &focus_painter,
-                        canvas_full_rect,
-                        focused_frame_outer,
-                        has_left_neighbor,
-                        has_right_neighbor,
-                        self.colors,
-                    );
-                    let (left_peek_rect, right_peek_rect) = crate::app::zoom::peek_strip_rects(
-                        canvas_full_rect,
-                        focused_frame_outer,
-                        has_left_neighbor,
-                        has_right_neighbor,
-                    );
-                    if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)) {
+                    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                            if left_peek_rect.is_some_and(|r| r.contains(pos)) {
-                                peek_click = Some(true);
-                            } else if right_peek_rect.is_some_and(|r| r.contains(pos)) {
-                                peek_click = Some(false);
+                            if strip_layout
+                                .as_ref()
+                                .is_some_and(|l| l.dividers.iter().any(|d| d.rect.contains(pos)))
+                            {
+                                reset_dividers = true;
                             }
                         }
-                    }
-                    if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                        reset_dividers = true;
                     }
                 }
 
@@ -1202,6 +1218,12 @@ impl PlexiApp {
 
                 // Apply canvas focus change now that behavior is dropped and
                 // ctx is freely borrowable again.
+                let clicked_pane_id = new_focused.and_then(|new_tile| {
+                    match ctx.tree.tiles.get(new_tile) {
+                        Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                        _ => None,
+                    }
+                });
                 let canvas_focus_changed = if let Some(new) = new_focused {
                     let changed = Some(new) != canvas_old_focus;
                     ctx.navigate_to(new);
@@ -1218,8 +1240,8 @@ impl PlexiApp {
                     }
                 }
 
-                if let Some(is_left) = peek_click {
-                    self.handle_peek_click(is_left);
+                if let Some(pid) = clicked_pane_id {
+                    self.focus_pane_in_strip(pid);
                 }
                 if reset_dividers {
                     self.reset_column_widths(self.router.active().context_id);

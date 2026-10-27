@@ -235,7 +235,7 @@ pub fn render(
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(banner_rect),
             |ui| {
-                ui.set_clip_rect(banner_rect);
+                ui.set_clip_rect(banner_rect.intersect(ui.clip_rect()));
                 ui.label(
                     egui::RichText::new(banner)
                         .monospace()
@@ -245,7 +245,7 @@ pub fn render(
             },
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(hint_rect), |ui| {
-            ui.set_clip_rect(hint_rect);
+            ui.set_clip_rect(hint_rect.intersect(ui.clip_rect()));
             ui.label(
                 egui::RichText::new(hint)
                     .monospace()
@@ -256,7 +256,7 @@ pub fn render(
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(tail_rect),
             |ui| {
-                ui.set_clip_rect(tail_rect);
+                ui.set_clip_rect(tail_rect.intersect(ui.clip_rect()));
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     if !tail.is_empty() {
                         ui.label(
