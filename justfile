@@ -530,6 +530,7 @@ merge-pr PR *FLAGS:
 
 # Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
 test-infra-scripts:
+    uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_probe_one_note_authority.py

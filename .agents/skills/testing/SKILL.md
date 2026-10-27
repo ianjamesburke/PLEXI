@@ -61,6 +61,23 @@ when implementation is still uncommitted.
 
 A diff can hit multiple layers; produce evidence for each.
 
+**The docs-only classification is path-specific, because some markdown is code.**
+Markdown reachable from `include_str!` anywhere under `src/` — shipped *or*
+`#[cfg(test)]` — is compiled into the artifact or asserted on by a doc-sync
+test, so it takes the layer of its including module and needs that layer's
+evidence. Decide with the selector, never by eye:
+
+```bash
+bash scripts/scoped-tests.sh --gate $(git diff --name-only <base>...HEAD)
+```
+
+Exit 0 prints `docs-only, no build` only when every changed path is markdown
+that is provably not embedded; exit 1 prints one reason per path (`embedded in
+shipped code`, `embedded in a #[cfg(test)] doc-sync assertion`, or `not
+markdown`). The embedded set is computed from `include_str!` in `src/` on every
+call — never listed by hand — so a new include moves its target into the
+required-gate set automatically.
+
 ## Step 2 — Host Logic Evidence
 
 Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` stay mandatory on every push.
@@ -154,7 +171,7 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 Conclusion rules:
 - `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes pure-logic and docs-only changes with direct `HostHarness`/`PlexiUiHarness`/scene coverage of the full user-visible behavior — coverage is the test, not cosmetic-ness.
 - `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations). This is the default for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
-- `docs-only — no test evidence required`: markdown, comments, or skill/doc text with no code path touched.
+- `docs-only, no build — no test evidence required`: markdown, comments, or skill/doc text that `scripts/scoped-tests.sh --gate` proves is not embedded via `include_str!` and not under a `#[cfg(test)]` doc-sync assertion's directory. Embedded markdown is code and follows the rules for its including module.
 - A `LiveBackend` change always requires `just scene-live` against the installed
   PR channel. Headless parity proves schema semantics, not CLI execution or
   eventual polling against a real host.
