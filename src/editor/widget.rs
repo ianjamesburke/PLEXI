@@ -391,22 +391,20 @@ pub fn inline_image_strip_height(
 pub fn paint_inline_image_strip(
     cache: &mut ImageCache,
     painter: &egui::Painter,
-    ctx: &egui::Context,
     base: &Path,
     dest: &str,
     font_id: &egui::FontId,
-    top_left: egui::Pos2,
-    height: f32,
-    max_width: f32,
+    strip_rect: Rect,
     weak: Color32,
 ) -> bool {
-    match cache.get(ctx, base, dest) {
+    match cache.get(painter.ctx(), base, dest) {
         ImageState::Ready { texture, size } => {
+            let height = strip_rect.height();
             let scale = (height / size[1] as f32).min(1.0);
             let width = size[0] as f32 * scale;
             painter.image(
                 texture.id(),
-                Rect::from_min_size(top_left, Vec2::new(width, height)),
+                Rect::from_min_size(strip_rect.min, Vec2::new(width, height)),
                 Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -417,10 +415,11 @@ pub fn paint_inline_image_strip(
                 ImageState::Failed(reason) => format!("image unavailable: {reason}"),
                 _ => format!("remote image (not downloaded): {dest}"),
             };
-            let strip_rect = Rect::from_min_size(top_left, Vec2::new(max_width, height));
             painter.rect_stroke(
                 strip_rect,
-                egui::CornerRadius::same((strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8),
+                egui::CornerRadius::same(
+                    (strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8,
+                ),
                 egui::Stroke::new(1.0_f32, weak),
                 egui::StrokeKind::Inside,
             );
@@ -429,7 +428,7 @@ pub fn paint_inline_image_strip(
                 strip_rect.left() + 8.0,
                 strip_rect.center().y - label_galley.size().y / 2.0,
             )
-            .round_to_pixels(ctx.pixels_per_point());
+            .round_to_pixels(painter.ctx().pixels_per_point());
             painter.galley(label_pos, label_galley, weak);
             false
         }
@@ -1674,13 +1673,13 @@ impl<'a> EditorWidget<'a> {
                     paint_inline_image_strip(
                         cache,
                         &painter,
-                        ui.ctx(),
                         base,
                         dest,
                         font_id,
-                        egui::pos2(left, strip_top),
-                        height,
-                        placeholder_width,
+                        Rect::from_min_size(
+                            egui::pos2(left, strip_top),
+                            Vec2::new(placeholder_width, height),
+                        ),
                         weak,
                     );
                 }

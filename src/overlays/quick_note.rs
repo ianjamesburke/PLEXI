@@ -175,13 +175,10 @@ impl PlexiApp {
                         crate::editor::widget::paint_inline_image_strip(
                             &mut self.quick_note_image_cache,
                             ui.painter(),
-                            ui.ctx(),
                             &base,
                             &dest,
                             &preview_font,
-                            rect.min,
-                            height,
-                            max_width,
+                            rect,
                             weak,
                         );
                         ui.add_space(style::SPACE_XS);
