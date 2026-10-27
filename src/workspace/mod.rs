@@ -370,6 +370,24 @@ impl WorkspaceFile {
             })?;
             std::fs::create_dir_all(parent)
                 .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
+            match std::fs::read(&path) {
+                Ok(data) => {
+                    let existing: Self = serde_json::from_slice(&data).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("refusing to overwrite invalid workspace {}: {error}", path.display()),
+                        )
+                    })?;
+                    if existing.version != 2 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
             let json = serde_json::to_string_pretty(self).map_err(|error| {
                 save_error("serialize workspace", &temp_path, io::Error::other(error))
             })?;
@@ -415,25 +433,14 @@ impl WorkspaceFile {
             Ok(ws) => ws,
             Err(e) => {
                 log::warn!("Failed to parse workspace file: {e}");
-                let backup = path.with_extension(format!(
-                    "backup-{}.json",
-                    crate::platform::clock::now_secs()
-                ));
-                let _ = std::fs::rename(&path, &backup);
                 return None;
             }
         };
         if ws.version != 2 {
             log::info!(
-                "Ignoring old workspace file version {}; starting fresh",
+                "Unsupported workspace file version {}; preserving original",
                 ws.version
             );
-            let backup = path.with_extension(format!(
-                "backup-v{}-{}.json",
-                ws.version,
-                crate::platform::clock::now_secs()
-            ));
-            let _ = std::fs::rename(&path, &backup);
             return None;
         }
         Some(ws)
@@ -584,6 +591,32 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn invalid_workspace_load_preserves_original_file() {
+        let profile = tempfile::tempdir().expect("temporary profile");
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"{invalid workspace";
+        std::fs::write(&path, original).unwrap();
+        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn save_rejects_unreadable_existing_workspace() {
+        let profile = tempfile::tempdir().expect("temporary profile");
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"{invalid workspace";
+        std::fs::write(&path, original).unwrap();
+        let workspace: WorkspaceFile = serde_json::from_str(
+            r#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
+        )
+        .unwrap();
+        assert!(workspace.save_to(profile.path()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
     }
 
     #[test]
