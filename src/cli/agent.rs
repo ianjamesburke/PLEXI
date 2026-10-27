@@ -1647,7 +1647,23 @@ pub fn agent_list_in(
 
     if json {
         let json_rows: Vec<serde_json::Value> = rows.into_iter().map(|(_, _, _, _, j)| j).collect();
-        return serde_json::to_string_pretty(&json_rows).map_err(|e| e.to_string());
+        // The report rides beside the agent array rather than inside it, and is
+        // always present, so a consumer can branch on it without a missing-key
+        // check and an existing array element keeps its meaning.
+        let report: Vec<serde_json::Value> = unrecognised
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "path": item.path,
+                    "reason": item.issue.describe(),
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "agents": json_rows,
+            "unrecognised_agent_directories": report,
+        });
+        return serde_json::to_string_pretty(&payload).map_err(|e| e.to_string());
     }
 
     let mut out = if rows.is_empty() {
