@@ -865,6 +865,38 @@ fn legacy_conversion_preserves_tree_widths_and_stack_shares() {
 }
 
 #[test]
+fn legacy_conversion_preserves_relative_column_shares() {
+    for shares in [[1.2, 0.8], [1.0, 1.0]] {
+        let mut h = HostHarness::new();
+        let panes = [h.add_test_pane(), h.add_test_pane()];
+        let context = h.app.router.active().context_id;
+        h.app.set_context_columns(context, vec![vec![panes[0]], vec![panes[1]]]);
+        let tree = &mut h.app.windows[0].tree;
+        let root = tree.root().unwrap();
+        match tree.tiles.get_mut(root).unwrap() {
+            Tile::Container(Container::Linear(linear)) => {
+                for (child, share) in linear.children.clone().into_iter().zip(shares) {
+                    linear.shares.set_share(child, share);
+                }
+            }
+            _ => panic!("expected horizontal root"),
+        }
+        h.app.save_workspace_now();
+        let profile = h.profile_dir().to_path_buf();
+        let path = crate::workspace::workspace_path_in(&profile);
+        let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = 2.into();
+        legacy.as_object_mut().unwrap().remove("strips");
+        legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+        std::fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
+        for (column, share) in migrated.strips[&context].columns.iter().zip(shares) {
+            assert_eq!(column.width, ColumnWidth::CustomRatio(share / 2.0));
+        }
+    }
+}
+
+#[test]
 fn restored_focus_receives_unaddressed_key_without_refocusing() {
     let mut h = HostHarness::new();
     h.add_focused_terminal();

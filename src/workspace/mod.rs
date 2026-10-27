@@ -696,10 +696,14 @@ fn saved_legacy_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<
                     return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} has invalid column shares", window.window_id)));
                 }
                 let total: f32 = shares.iter().sum();
+                if !total.is_finite() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} has invalid column share total", window.window_id)));
+                }
+                // Egui's default shares sum to the number of children; divider
+                // drags preserve that total. Strip projection stores pixel widths.
+                let relative = total <= shares.len() as f32 + 0.0001;
                 linear.children.iter().zip(shares.iter()).map(|(&id, &share)| {
-                    let width = if shares.iter().all(|value| (*value - 1.0).abs() < f32::EPSILON) {
-                        None
-                    } else if shares.iter().all(|value| *value <= 1.0) {
+                    let width = if relative {
                         Some(crate::strip::ColumnWidth::CustomRatio(share / total))
                     } else {
                         Some(crate::strip::ColumnWidth::CustomPixels(share))
