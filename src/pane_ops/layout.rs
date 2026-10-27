@@ -144,7 +144,7 @@ pub(crate) fn build_squad_tree(
 /// Insert `new_pane_id` as a new tile next to `split_target` in `tree`.
 /// Pure tile/tree manipulation — no PlexiApp state, no focus history.
 ///
-/// If `split_target` is `None` or the tree is empty, inserts as the new root.
+/// With no target, splits the root; an empty tree gets a new root pane.
 /// If `split_target`'s parent is already a Linear container in the requested
 /// direction, inserts as a sibling. Otherwise wraps `split_target` and the new
 /// tile in a fresh Linear container.
@@ -162,7 +162,7 @@ pub(crate) fn insert_split_tile(
 
     let new_tile = tree.tiles.insert_pane(new_pane_id);
 
-    // Empty tree or no split target → new pane becomes the root.
+    // An empty tree makes the new pane the root.
     let Some(raw_target) = split_target.or(tree.root) else {
         tree.root = Some(new_tile);
         return new_tile;
@@ -175,24 +175,30 @@ pub(crate) fn insert_split_tile(
     } else {
         LinearDir::Vertical
     };
-    let target = if vertical {
-        // When splitting horizontally (adding a new column), if `raw_target` is inside
-        // a vertical stack (column), promote `target` to the column container so the
-        // hierarchy inside a context stays Columns (Horizontal) -> Stacked Panes (Vertical).
-        match tree.tiles.parent_of(raw_target) {
-            Some(parent_id)
-                if matches!(
-                    tree.tiles.get(parent_id),
-                    Some(Tile::Container(Container::Linear(lin))) if lin.dir == LinearDir::Vertical
-                ) =>
-            {
-                parent_id
+    let mut target = raw_target;
+    while let Some(parent_id) = tree.tiles.parent_of(target) {
+        let promote = match tree.tiles.get(parent_id) {
+            Some(Tile::Container(Container::Tabs(_))) => true,
+            Some(Tile::Container(Container::Linear(linear))) => {
+                vertical && linear.dir == LinearDir::Vertical
             }
-            _ => raw_target,
+            _ => false,
+        };
+        if !promote { break; }
+        target = parent_id;
+    }
+
+    if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(target) {
+        if linear.dir == split_dir {
+            if new_pane_first {
+                linear.children.insert(0, new_tile);
+            } else {
+                linear.children.push(new_tile);
+            }
+            linear.shares.set_share(new_tile, share.numerator);
+            return new_tile;
         }
-    } else {
-        raw_target
-    };
+    }
     let parent = tree.tiles.parent_of(target);
 
     let inserted_as_sibling = if let Some(parent_id) = parent {
@@ -2401,6 +2407,71 @@ mod send_pane_tests {
             app.send_pane(Direction::Right),
             SwapResult::AtBoundary
         ));
+    }
+}
+
+#[cfg(test)]
+mod insert_split_tile_tests {
+    use super::insert_split_tile;
+    use crate::host::command::ShareRatio;
+    use egui_tiles::{Container, LinearDir, Tile, Tiles, Tree};
+
+    #[test]
+    fn column_split_promotes_tab_wrapped_vertical_stack() {
+        let mut tiles = Tiles::default();
+        let first = tiles.insert_pane(1);
+        let focused = tiles.insert_pane(2);
+        let first_tab = tiles.insert_tab_tile(vec![first]);
+        let focused_tab = tiles.insert_tab_tile(vec![focused]);
+        let stack = tiles.insert_vertical_tile(vec![first_tab, focused_tab]);
+        let mut tree = Tree::new("split-stack", stack, tiles);
+        let new_tile = insert_split_tile(&mut tree, Some(focused), 3, true, ShareRatio::new(1.0, 2.0).unwrap(), false);
+        match tree.tiles.get(tree.root().unwrap()).unwrap() {
+            Tile::Container(Container::Linear(linear)) => {
+                assert_eq!(linear.dir, LinearDir::Horizontal);
+                assert_eq!(linear.children, vec![stack, new_tile]);
+            }
+            other => panic!("expected horizontal columns, got {other:?}"),
+        }
+        assert_eq!(tree.tiles.parent_of(focused), Some(focused_tab));
+        assert_eq!(tree.tiles.parent_of(focused_tab), Some(stack));
+    }
+
+    #[test]
+    fn stack_split_keeps_tab_wrapper_intact() {
+        let mut tiles = Tiles::default();
+        let focused = tiles.insert_pane(1);
+        let tabs = tiles.insert_tab_tile(vec![focused]);
+        let mut tree = Tree::new("split-tab", tabs, tiles);
+        let new_tile = insert_split_tile(&mut tree, Some(focused), 2, false, ShareRatio::new(1.0, 1.0).unwrap(), false);
+        match tree.tiles.get(tree.root().unwrap()).unwrap() {
+            Tile::Container(Container::Linear(linear)) => {
+                assert_eq!(linear.dir, LinearDir::Vertical);
+                assert_eq!(linear.children, vec![tabs, new_tile]);
+            }
+            other => panic!("expected vertical stack, got {other:?}"),
+        }
+        assert_eq!(tree.tiles.parent_of(focused), Some(tabs));
+    }
+
+    #[test]
+    fn root_container_inserts_in_place_and_sets_share() {
+        for first in [false, true] {
+            let mut tiles = Tiles::default();
+            let left = tiles.insert_pane(1);
+            let right = tiles.insert_pane(2);
+            let root = tiles.insert_horizontal_tile(vec![left, right]);
+            let mut tree = Tree::new("split-root", root, tiles);
+            let new_tile = insert_split_tile(&mut tree, None, 3, true, ShareRatio::new(2.0, 3.0).unwrap(), first);
+            assert_eq!(tree.root(), Some(root));
+            match tree.tiles.get(root).unwrap() {
+                Tile::Container(Container::Linear(linear)) => {
+                    assert_eq!(linear.children, if first { vec![new_tile, left, right] } else { vec![left, right, new_tile] });
+                    assert_eq!(linear.shares[new_tile], 2.0);
+                }
+                other => panic!("expected horizontal columns, got {other:?}"),
+            }
+        }
     }
 }
 

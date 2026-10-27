@@ -190,7 +190,7 @@ pub struct Strip {
     pub reference_gap_px: f32,
     /// Tracks the last `scroll_offset` produced by `Strip` methods so direct field assignment in
     /// unit tests (`strip.scroll_offset = k`) is respected by `layout_strip`.
-    #[serde(skip)]
+    #[serde(default)]
     pub last_synced_scroll_offset: usize,
 }
 

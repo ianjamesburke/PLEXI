@@ -1802,6 +1802,12 @@ pub enum AppCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
+    /// Export the preserved v2 workspace to a new isolated channel.
+    WorkspaceRollback {
+        /// Name of a channel whose profile does not already exist.
+        #[arg(long)]
+        to_channel: String,
+    },
     /// Restart this channel, restoring the saved workspace.
     Restart {
         /// Confirm restarting the host containing this pane; this pane will close.
@@ -1905,6 +1911,8 @@ pub enum AccountCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Show active workspace strip membership and geometry.
+    Layout,
     /// Hide a pane (defaults to the calling pane).
     Hide {
         /// Target pane id or name (defaults to the calling pane).
@@ -3417,6 +3425,14 @@ mod tests {
         SecretCmd,
     };
     use clap::Parser;
+
+    #[test]
+    fn workspace_rollback_and_pane_layout_parse() {
+        let parsed = Cli::try_parse_from(["plexi", "host", "workspace-rollback", "--to-channel", "recovery"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Host { cmd: super::HostCmd::WorkspaceRollback { ref to_channel } }) if to_channel == "recovery"));
+        let parsed = Cli::try_parse_from(["plexi", "pane", "layout"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Pane { cmd: super::PaneCmd::Layout })));
+    }
 
     #[test]
     fn session_history_and_draft_flags_parse() {

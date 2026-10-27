@@ -2404,7 +2404,9 @@ impl PlexiApp {
         }
 
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
+            conjoined_contexts: self.conjoined_contexts.clone(),
+            strips: self.router.iter().map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id))).collect(),
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),

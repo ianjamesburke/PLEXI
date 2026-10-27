@@ -1484,6 +1484,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 
 | Subcommand | Description |
 |---|---|
+| `layout` | Show active workspace strip membership and geometry |
 | `hide` | Hide a pane (defaults to the calling pane) |
 | `reveal` | Reveal a hidden pane (defaults to the calling pane) |
 | `zoom` | Focus a pane and toggle fullscreen zoom, or enter its sub-context |
@@ -1511,6 +1512,10 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `slot` | Manage host-managed named file slots for a pane |
 | `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
 | `result` | Read a pane's validated structured result |
+
+### `plexi pane layout`
+
+Show active workspace strip membership and geometry
 
 ### `plexi pane hide`
 
@@ -2576,6 +2581,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 | Subcommand | Description |
 |---|---|
+| `workspace-rollback` | Export the preserved v2 workspace to a new isolated channel |
 | `restart` | Restart this channel, restoring the saved workspace |
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host and every pane agent for this channel |
@@ -2583,6 +2589,14 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 | `key` | Inject a key or chord into the host-level keyboard path |
+
+### `plexi host workspace-rollback`
+
+Export the preserved v2 workspace to a new isolated channel
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--to-channel` | string | yes | Name of a channel whose profile does not already exist |
 
 ### `plexi host restart`
 

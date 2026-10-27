@@ -137,6 +137,8 @@ pub enum AppRequest {
     PaneZoom { pane_id: u64, response_file: String },
     /// Focus a pane and swap it with its directional neighbor.
     PaneSwap { pane_id: u64, direction: String, response_file: String },
+    /// Read the active workspace layout without pane content.
+    WorkspaceSnapshot { response_file: String },
     /// Reload the running host configuration from disk.
     ReloadConfig { response_file: String },
     /// Step through the host's pane focus history.

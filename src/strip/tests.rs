@@ -289,3 +289,17 @@ fn fitting_custom_split_and_navigation_preserve_widths() {
     assert!(layout.pane(1).unwrap().is_on_screen);
     assert!(layout.pane(3).unwrap().is_on_screen);
 }
+
+#[test]
+fn restored_scroll_does_not_jump_when_revealing_visible_column() {
+    let mut original = Strip::new(1);
+    for (index, pane) in [10, 20, 30].into_iter().enumerate() {
+        original.push_column(Column::new(ColumnId(index), pane, ColumnWidth::CustomPixels(400.0)));
+    }
+    original.set_scroll_offset_px(300.0, Some(600.0));
+    assert_eq!(original.scroll_offset, 1);
+    let mut restored: Strip = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+    original.reveal_column_with_viewport(1, 600.0, 4.0);
+    restored.reveal_column_with_viewport(1, 600.0, 4.0);
+    assert_eq!(restored.scroll_offset_px, original.scroll_offset_px);
+}
