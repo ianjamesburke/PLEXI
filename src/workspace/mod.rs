@@ -516,7 +516,7 @@ impl WorkspaceFile {
             let count = columns.len();
             let mut strip = Strip::new(context.context_id);
             for (index, (panes, saved_width, heights)) in columns.into_iter().enumerate() {
-                let width = saved_width.unwrap_or_else(|| ColumnWidth::Preset(if count > 1 && index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 }));
+                let width = saved_width.unwrap_or(ColumnWidth::Preset(if count > 1 && index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 }));
                 let id = strip.alloc_column_id();
                 let mut column = Column::new_stacked(id, panes, width);
                 column.heights = heights;
