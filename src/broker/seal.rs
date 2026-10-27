@@ -1056,6 +1056,11 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
 /// Needs you without blocking on a dialog. Even a profile without seal files
 /// may have an existing, unreadable key from an earlier run.
 pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
+    // A fresh Linux profile can start without Secret Service. macOS must probe
+    // for an existing Keychain item even when no profile files exist.
+    if !cfg!(target_os = "macos") && !has_any_profile_seal_files(dir) {
+        return Ok(MacRecovery::Ready);
+    }
     match existing_mac_key(dir) {
         Ok(_) => Ok(MacRecovery::Ready),
         Err(error) if super::host_key::is_key_unreadable(&error) => {

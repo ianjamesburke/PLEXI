@@ -5447,6 +5447,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn fresh_profile_with_unreadable_existing_key_offers_recovery() {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();
@@ -6450,11 +6451,12 @@ mod tests {
             "first launch on an empty profile must not raise spurious Needs attention items: {:?}",
             monitor.open_needs_you()
         );
-        assert_eq!(
-            crate::broker::host_key::backend_get_calls(),
-            0,
-            "an empty unsealed profile has no files to verify on first launch"
-        );
+        let lookups = crate::broker::host_key::backend_get_calls();
+        if cfg!(target_os = "macos") {
+            assert!(lookups > 0, "macOS checks for an existing Keychain item");
+        } else {
+            assert_eq!(lookups, 0, "a fresh profile does not need Secret Service");
+        }
         assert!(
             !dir.path().join("host").join("seal-state.json").exists(),
             "empty startup must not write an untrusted seal-state.json"
