@@ -9,7 +9,7 @@ source: local
 
 Implements one or more `.stint` tasks into a single PR targeting `alpha`, coordinates state via Plexi pane slots, and cleanly retires the worktree and PR channel on merge.
 
-When a babysitter brief explicitly selects `feature/alpha-cleanup` aggregate mode, the [aggregate instructions](../babysitter-v3/SKILL.md) override this skill's alpha-only start, PR base, and PASS merge steps. Use `just bs-start --base feature/alpha-cleanup <ids...>`, open the batch PR against that branch, and after PASS use `scripts/babysitter-policy.py integrate` with the validated JSON record. Never run `just bs-merge` for an aggregate batch or mark its stints done before the combined PR reaches alpha. All implementation and pre-push gates below still apply.
+When a babysitter brief explicitly selects `feature/alpha-cleanup` aggregate mode, the [aggregate instructions](../babysitter-v3/SKILL.md) override this skill's alpha-only start, PR base, and PASS merge steps. Use `just bs-start --base feature/alpha-cleanup <ids...>` and open the batch PR against that branch. **The head owns the merge: after PASS it runs `just bs-integrate` itself. You never run `integrate`, `just bs-integrate`, or `just bs-merge`, and you are not woken for a PASS.** Keep the stints claimed and do not mark them done before the combined PR reaches alpha. All implementation and pre-push gates below still apply.
 
 ```
 /implement-stint-v2 <STINT_ID> [<STINT_ID> ...]
@@ -174,10 +174,13 @@ TESTING:
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```
 2. Add or update `## Prior Attempts` in `.stint/tasks/<id>-*.md` with what was tried, why it failed, and gotchas for the next attempt.
-3. Clean up any installed PR build and unclaim the stint:
+3. Record the failure on your own pane:
+   ```bash
+   plexi pane slot write last_error "<one-line failure summary>" --pane-id $PLEXI_PANE_ID --replace
+   plexi pane slot write status impl:failed --pane-id $PLEXI_PANE_ID --replace
+   ```
+4. Retire the lane — **unless a `babysitter-v3` aggregate run dispatched you, where the head owns the park and runs this itself, so you must not:**
    ```bash
    just channel-clean "pr-<PR_NUMBER>"
    stint unclaim <id>
-   plexi pane slot write last_error "<one-line failure summary>" --pane-id $PLEXI_PANE_ID --replace
-   plexi pane slot write status impl:failed --pane-id $PLEXI_PANE_ID --replace
    ```
