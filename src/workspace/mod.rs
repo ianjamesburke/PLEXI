@@ -573,6 +573,19 @@ impl WorkspaceFile {
                 }
             }
         }
+        for (context, window_id) in &self.context_active_window {
+            let matches = self.windows.iter().filter(|window| window.context_id == *context && window.window_id == *window_id).count();
+            if !context_ids.contains(context) || matches != 1 {
+                return Err(invalid(format!("context {context} references invalid active window {window_id}")));
+            }
+        }
+        for window in &self.windows {
+            if let Some(focused) = window.focused_pane {
+                if !matches!(window.tree.tiles.get(focused), Some(egui_tiles::Tile::Pane(_))) {
+                    return Err(invalid(format!("window {} references invalid focused tile", window.window_id)));
+                }
+            }
+        }
         if owners.keys().any(|id| *id >= self.next_pane_id) {
             return Err(invalid(format!("next pane identity {} is not greater than every saved pane", self.next_pane_id)));
         }
@@ -1105,6 +1118,17 @@ mod tests {
         let path = workspace_path_in(profile.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1,"parent_id":2},{"name":"b","root":"/tmp","context_id":2,"parent_id":1}],"windows":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn invalid_active_window_reference_is_not_migrated() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[{"name":"a","root":"/tmp","context_id":1}],"windows":[],"context_active_window":{"1":88}}"#;
         std::fs::write(&path, original).unwrap();
         assert!(WorkspaceFile::load_from(profile.path()).is_none());
         assert_eq!(std::fs::read(path).unwrap(), original);

@@ -1282,7 +1282,7 @@ pub fn host_workspace_rollback_cli(to_channel: &str) -> i32 {
         eprintln!("error: channel must contain only letters, numbers, hyphens, or underscores");
         return 1;
     }
-    let source = host_config_dir(crate::config::build_channel().as_deref());
+    let source = crate::config::config_dir();
     let destination = host_config_dir(Some(to_channel));
     match crate::workspace::export_v2_rollback(&source, &destination) {
         Ok(()) => {

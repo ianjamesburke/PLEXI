@@ -10139,6 +10139,8 @@ mod tests {
             assert!(Instant::now() < deadline, "second window terminal did not print fixture output");
             std::thread::sleep(Duration::from_millis(20));
         }
+        h.run_steps(4);
+        h.save_screenshot(&evidence_png!("_terminal_multi")).unwrap();
         let companion = h.workspace.path().join("companion.md");
         std::fs::write(&companion, "# Companion note\n\nThe second page has two visible panes.\n").unwrap();
         h.with_app_mut(|app| {
