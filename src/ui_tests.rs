@@ -9932,4 +9932,33 @@ mod tests {
         h.with_app(|app| assert!(app.active_strip_layout().pane(focused).unwrap().is_on_screen));
     }
 
+    #[test]
+    fn strip_overflow_control_scrolls_outside_pane_hits() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
+        h.step();
+        add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(3);
+        let (before, click) = h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            (layout.scroll_offset_px, egui::pos2(layout.canvas_rect.left() + 20.0, layout.canvas_rect.bottom() + 6.0))
+        });
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(click),
+            egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px < before - 10.0, "overflow control did not scroll: {before} -> {}", layout.scroll_offset_px);
+            assert_eq!(app.focused_pane_id(), Some(focused));
+            assert!(layout.panes.iter().all(|pane| !pane.hit_rect.contains(click)));
+        });
+    }
+
 }

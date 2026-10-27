@@ -632,7 +632,29 @@ impl PlexiApp {
                     child_ui.set_clip_rect(rect);
                     &mut child_ui
                 } else { ui };
-                let canvas_full_rect = ui.available_rect_before_wrap();
+                let available_canvas = ui.available_rect_before_wrap();
+                let context_id = self.router.active().context_id;
+                let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+                let strip = self.strip_for_context(context_id);
+                let max_scroll = strip.max_scroll_offset_px(available_canvas.width(), gap);
+                let mut canvas_full_rect = available_canvas;
+                let mut strip_canvas_ui;
+                let ui = if max_scroll > 0.5 && self.windows[self.active_window].zoomed_pane.is_none() {
+                    const SCROLLBAR_HEIGHT: f32 = 16.0;
+                    canvas_full_rect.max.y = (canvas_full_rect.max.y - SCROLLBAR_HEIGHT).max(canvas_full_rect.min.y);
+                    let bar_rect = egui::Rect::from_min_max(
+                        egui::pos2(available_canvas.left(), canvas_full_rect.bottom()),
+                        available_canvas.max,
+                    );
+                    let mut offset = strip.scroll_offset_px.clamp(0.0, max_scroll);
+                    if ui.put(bar_rect, egui::Slider::new(&mut offset, 0.0..=max_scroll).show_value(false)).changed() {
+                        self.ensure_authoritative_strip(context_id).set_scroll_offset_px(offset, Some(canvas_full_rect.width()));
+                        log::info!("strip: scrollbar context={context_id} offset={offset:.1}");
+                    }
+                    strip_canvas_ui = ui.new_child(egui::UiBuilder::new().id_salt("strip-viewport").max_rect(canvas_full_rect));
+                    strip_canvas_ui.set_clip_rect(canvas_full_rect);
+                    &mut strip_canvas_ui
+                } else { ui };
                 // A shift-wheel belongs to horizontal scrolling. Prevent terminal raw-wheel
                 // handling from also turning it into vertical scrollback; egui's smooth
                 // horizontal delta remains available to a hovered pane control first.
