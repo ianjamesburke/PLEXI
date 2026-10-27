@@ -607,8 +607,11 @@ mod tests {
             t.agent_harness = Some("pi".into());
             t.name = Some("review-bot".into());
         }
-        let other_pane = h.add_focused_terminal();
+        let other_pane = h.app.split_focused(true, None, false, false, None).expect("second terminal");
+        h.run_frames(3);
         h.focus_pane(other_pane);
+
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
 
         // 1. Working: Pi starts a turn
         h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
@@ -716,6 +719,8 @@ mod tests {
             .unwrap()
             .contains(&format!("plexi agent fleet dismiss {pi_pane}")));
 
+        assert!(h.app.pane_navigate(other_pane));
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
         // 5. Done (Completed): Pi completes
         h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
             peer_ancestry: None,
@@ -729,6 +734,10 @@ mod tests {
         });
         h.hidden_frame();
 
+        assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
+        let terminal = h.app.windows[0].panes.get(&pi_pane).unwrap().as_terminal().unwrap();
+        assert!(!terminal.fleet_seen, "agent should remain unseen");
+        assert_eq!(terminal.effective_agent_state().0, crate::protocol::AgentState::Completed);
         let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
         assert_eq!(
             view_done.tasks[0].rows[0].display_state,
