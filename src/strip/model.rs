@@ -509,6 +509,17 @@ impl Strip {
         self.focused_pane = Some(pane_id);
         let cw = self.effective_viewport_width(None);
         let gap = self.reference_gap_px;
+        if col_idx < insert_idx
+            && matches!(self.columns[col_idx].width, ColumnWidth::CustomRatio(_) | ColumnWidth::CustomPixels(_) | ColumnWidth::FixedPx(_))
+        {
+            let widths = self.intrinsic_column_widths(cw, gap);
+            if widths[col_idx] + gap + widths[insert_idx] > cw {
+                let pair_width = ((cw - gap).max(2.0)) / 2.0;
+                self.columns[col_idx].width = ColumnWidth::CustomPixels(pair_width);
+                self.columns[insert_idx].width = ColumnWidth::CustomPixels(pair_width);
+                log::info!("strip: adjusted oversized split pair context={} source={} new={} width={pair_width:.1}", self.context_id, col_idx, insert_idx);
+            }
+        }
         self.reveal_pair_with_viewport(col_idx.min(insert_idx), insert_idx, cw, gap);
         insert_idx
     }
