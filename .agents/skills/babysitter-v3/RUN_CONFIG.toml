@@ -87,7 +87,7 @@ attended_only = ["0601", "0439"]  # never queued unattended
 [limits]
 max_concurrent_lanes = 2          # cargo builds are serialized by cargo-with-lease.sh; Ian capped the Gemini trial at 2 lanes
 max_fix_rounds = 2                # after this many tester FAILs on one batch, park it
-stall_minutes = 25                # idle footer + no terminal slot this long -> inspect
+stall_minutes = 25                # idle footer with no terminal slot, or one foreground command past this long (busy footer) -> inspect
 
 [cadence]
 heartbeat_seconds = 1800          # failsafe only; the head wakes on terminal slot transitions, never on progress slots
