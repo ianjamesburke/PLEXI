@@ -5447,6 +5447,26 @@ mod tests {
     }
 
     #[test]
+    fn fresh_profile_with_unreadable_existing_key_offers_recovery() {
+        let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
+        let dir = tempfile::tempdir().unwrap();
+        let original = crate::broker::seal::mac_key_bytes(dir.path()).unwrap();
+        let _denied = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let recovery = monitor.open_needs_you().into_iter()
+            .find(|row| row.kind == NeedsYouKind::Keychain)
+            .expect("an unreadable existing key must offer recovery even without profile seal files");
+        monitor.resolve_needs_you(&recovery.id, true).unwrap();
+        assert_eq!(*crate::broker::seal::mac_key_bytes(dir.path()).unwrap(), *original);
+        super::super::integrity::mark_clean_shutdown(dir.path());
+        crate::broker::host_key::clear_session_mac();
+        let restarted = PermissionMonitor::open_profile(dir.path());
+        assert!(restarted.open_needs_you().is_empty());
+        assert_eq!(*crate::broker::seal::mac_key_bytes(dir.path()).unwrap(), *original);
+        crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl")).unwrap();
+    }
+
+    #[test]
     fn unreadable_mac_key_rotates_resets_unverified_grants_and_loads_them() {
         let _exclusive = crate::broker::host_key::ExclusiveHostKey::acquire();
         let dir = tempfile::tempdir().unwrap();

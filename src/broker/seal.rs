@@ -1053,13 +1053,9 @@ pub(crate) fn rotate_unreadable_mac_key(dir: &Path) -> Result<MacRecovery, Strin
 ///
 /// An auth failure rotates the key and resets grants that cannot be verified.
 /// A delete that still needs a prompt returns that error so startup can file
-/// Needs you without blocking on a dialog. A fresh profile with no seal or
-/// permission files on disk yet is ready immediately without probing the
-/// host seal store.
+/// Needs you without blocking on a dialog. Even a profile without seal files
+/// may have an existing, unreadable key from an earlier run.
 pub(crate) fn ensure_readable_mac_key(dir: &Path) -> Result<MacRecovery, String> {
-    if !has_any_profile_seal_files(dir) {
-        return Ok(MacRecovery::Ready);
-    }
     match existing_mac_key(dir) {
         Ok(_) => Ok(MacRecovery::Ready),
         Err(error) if super::host_key::is_key_unreadable(&error) => {
