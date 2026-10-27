@@ -31,6 +31,10 @@ pub struct HostModel {
     active_context: usize,
     next_pane_id: PaneId,
     pub(crate) pane_lifecycle: HashMap<PaneId, crate::host::pane_lifecycle::PaneLifecycleState>,
+    /// Authoritative continuous-strip state per context (`context_id -> Strip`).
+    pub(crate) strips: HashMap<u64, crate::strip::Strip>,
+    /// Latest resolved strip presentation snapshot per context (`context_id -> StripLayout`).
+    pub(crate) strip_layouts: HashMap<u64, crate::strip::StripLayout>,
 }
 
 impl HostModel {
@@ -40,6 +44,8 @@ impl HostModel {
             active_context: 0,
             next_pane_id: 1,
             pane_lifecycle: HashMap::new(),
+            strips: HashMap::new(),
+            strip_layouts: HashMap::new(),
         };
         let initial = HostPane { id: 0, group: None };
         model.context_mut().panes.push(initial);
@@ -268,6 +274,31 @@ impl HostModel {
             }
         }
         result
+    }
+
+    /// Return the authoritative strip for `context_id` if present.
+    pub fn strip(&self, context_id: u64) -> Option<&crate::strip::Strip> {
+        self.strips.get(&context_id)
+    }
+
+    /// Return a mutable reference to the authoritative strip for `context_id` if present.
+    pub fn strip_mut(&mut self, context_id: u64) -> Option<&mut crate::strip::Strip> {
+        self.strips.get_mut(&context_id)
+    }
+
+    /// Insert or replace the authoritative strip for `context_id`.
+    pub fn insert_strip(&mut self, context_id: u64, strip: crate::strip::Strip) {
+        self.strips.insert(context_id, strip);
+    }
+
+    /// Return the latest presentation snapshot for `context_id`.
+    pub fn strip_layout(&self, context_id: u64) -> Option<&crate::strip::StripLayout> {
+        self.strip_layouts.get(&context_id)
+    }
+
+    /// Store the latest presentation snapshot for `context_id`.
+    pub fn set_strip_layout(&mut self, context_id: u64, layout: crate::strip::StripLayout) {
+        self.strip_layouts.insert(context_id, layout);
     }
 }
 

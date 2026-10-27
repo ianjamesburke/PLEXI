@@ -1130,17 +1130,21 @@ impl PlexiApp {
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
-        let strip_offset = {
-            let strip = self.ensure_authoritative_strip(ctx_id);
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        if !strip.contains_pane(new_pane_id) {
+            let new_col_id = crate::strip::ColumnId(strip.column_count());
             strip.push_column(crate::strip::Column::new(
-                crate::strip::ColumnId(strip.column_count()),
+                new_col_id,
                 new_pane_id,
                 crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
             ));
-            strip.focus_pane(new_pane_id);
-            strip.scroll_offset
-        };
-        self.zoom.strip_offsets.insert(ctx_id, strip_offset);
+        }
+        strip.focus_pane(new_pane_id);
+        if let Some(col_idx) = strip.find_column_for_pane(new_pane_id) {
+            strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+        }
         log::info!("strip: Cmd+N added authoritative column for pane {new_pane_id}");
         self.minimap.visible = true;
     }
@@ -1733,19 +1737,12 @@ impl PlexiApp {
             self.zoom
                 .context_last_pane
                 .insert(new_ctx_id, active_pane_id);
-            let cols = self.columns_for_context(new_ctx_id);
-            if let Some(col) = cols.iter().find(|c| c.panes.contains(&active_pane_id)) {
-                self.zoom
-                    .column_last_pane
-                    .insert((new_ctx_id, col.index), active_pane_id);
-                let offset = self.zoom.strip_offset_for(new_ctx_id);
-                if col.index < offset {
-                    self.zoom.strip_offsets.insert(new_ctx_id, col.index);
-                } else if col.index >= offset + 2 {
-                    self.zoom
-                        .strip_offsets
-                        .insert(new_ctx_id, col.index.saturating_sub(1));
-                }
+            let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+            let strip = self.ensure_authoritative_strip(new_ctx_id);
+            strip.focus_pane(active_pane_id);
+            if let Some(col_idx) = strip.find_column_for_pane(active_pane_id) {
+                strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
             }
         }
         let page_count = self

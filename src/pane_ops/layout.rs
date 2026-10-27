@@ -267,6 +267,13 @@ impl PlexiApp {
         };
         self.push_focus_history(old_window_id, old_focus);
 
+        let ctx_id = self.windows[self.active_window].context_id;
+        let source_pid = match self.windows[self.active_window].tree.tiles.get(focused) {
+            Some(Tile::Pane(pane_id)) => Some(*pane_id),
+            _ => None,
+        };
+        let _ = self.ensure_authoritative_strip(ctx_id);
+
         let ctx = &mut self.windows[self.active_window];
         let new_tile = insert_split_tile(
             &mut ctx.tree,
@@ -278,22 +285,44 @@ impl PlexiApp {
         );
 
         if !keep_focus {
-            ctx.navigate_to(new_tile);
-            let ctx_id = ctx.context_id;
+            self.windows[self.active_window].navigate_to(new_tile);
             self.zoom.context_last_pane.insert(ctx_id, new_pane_id);
-            let cols = self.columns_for_context(ctx_id);
-            if let Some(col) = cols.iter().find(|c| c.panes.contains(&new_pane_id)) {
-                self.zoom
-                    .column_last_pane
-                    .insert((ctx_id, col.index), new_pane_id);
-                let offset = self.zoom.strip_offset_for(ctx_id);
-                if col.index < offset {
-                    self.zoom.strip_offsets.insert(ctx_id, col.index);
-                } else if col.index >= offset + 2 {
-                    self.zoom
-                        .strip_offsets
-                        .insert(ctx_id, col.index.saturating_sub(1));
+        }
+
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        if vertical {
+            let col_pos = source_pid
+                .and_then(|pid| strip.find_column_for_pane(pid))
+                .unwrap_or(strip.column_count().saturating_sub(1));
+            let insert_after = if new_pane_first {
+                col_pos.saturating_sub(1)
+            } else {
+                col_pos
+            };
+            let new_col_pos = strip.insert_column_right_of(
+                insert_after,
+                new_pane_id,
+                crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+            );
+            if keep_focus {
+                if let Some(src) = source_pid {
+                    strip.focus_pane(src);
                 }
+            } else {
+                strip.reveal_pair_with_viewport(col_pos.min(new_col_pos), new_col_pos, viewport_w, gap);
+            }
+        } else if let Some(src_pid) = source_pid {
+            if !strip.insert_pane_below_in_column(src_pid, new_pane_id) {
+                if let Some(col) = strip.columns.first_mut() {
+                    col.push_pane(new_pane_id);
+                }
+            }
+            if keep_focus {
+                strip.focus_pane(src_pid);
+            } else if let Some(col_idx) = strip.find_column_for_pane(new_pane_id) {
+                strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
             }
         }
         Some(new_tile)
@@ -352,8 +381,10 @@ impl PlexiApp {
 
         match kind {
             Kind::Terminal => {
-                // Reuse the existing terminal split path.
-                self.split_focused(vertical, None, false, false, None);
+                // `split_focused` uses inverted `vertical` semantics:
+                //   false → Horizontal container (column right)
+                //   true  → Vertical container (stacked below)
+                self.split_focused(!vertical, None, false, false, None);
             }
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
@@ -435,7 +466,6 @@ impl PlexiApp {
             .get(self.active_window)
             .map(|w| w.context_id)
             .unwrap_or(0);
-        let strip_was_authoritative = self.zoom.strips.contains_key(&ctx_id);
         let context_env = self.pane_context_env_for_context(ctx_id);
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
@@ -453,6 +483,9 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return None;
         };
+        // Snapshot the authoritative strip from the pre-split tree only after
+        // terminal creation succeeds so a failed spawn leaves strip state untouched.
+        let _ = self.ensure_authoritative_strip(ctx_id);
         pane.ephemeral = close_on_exit;
         self.windows[self.active_window]
             .panes
@@ -572,28 +605,39 @@ impl PlexiApp {
                 _ => None,
             }
         });
-        if strip_was_authoritative {
-            let strip = self.zoom.strips.get_mut(&ws_id).expect("stored strip persists");
-            if !vertical || promoted_to_column {
-                let col_pos = target_pid
-                    .and_then(|pane_id| strip.find_column_for_pane(pane_id))
-                    .unwrap_or(strip.column_count().saturating_sub(1));
-                let insert_pos = if new_pane_first { col_pos } else { col_pos + 1 };
-                strip.insert_column_right_of(
-                    insert_pos.saturating_sub(1),
-                    new_id,
-                    crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
-                );
-                log::info!("split_focused: inserted authoritative column for pane {new_id}");
-            } else if let Some(column) = target_pid
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        self.zoom.context_last_pane.insert(ws_id, new_id);
+        let strip = self.ensure_authoritative_strip(ws_id);
+        if !vertical || promoted_to_column {
+            let col_pos = target_pid
                 .and_then(|pane_id| strip.find_column_for_pane(pane_id))
-                .and_then(|index| strip.columns.get_mut(index))
-            {
-                column.push_pane(new_id);
-                log::info!("split_focused: appended pane {new_id} to authoritative stack");
+                .unwrap_or(strip.column_count().saturating_sub(1));
+            let insert_after = if new_pane_first {
+                col_pos.saturating_sub(1)
+            } else {
+                col_pos
+            };
+            let new_col_pos = strip.insert_column_right_of(
+                insert_after,
+                new_id,
+                crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
+            );
+            strip.reveal_pair_with_viewport(col_pos.min(new_col_pos), new_col_pos, viewport_w, gap);
+            log::info!("split_focused: inserted authoritative column for pane {new_id}");
+        } else if let Some(src_pid) = target_pid {
+            if strip.insert_pane_below_in_column(src_pid, new_id) {
+                if let Some(col_idx) = strip.find_column_for_pane(new_id) {
+                    strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+                }
+                log::info!("split_focused: inserted pane {new_id} below {src_pid} in authoritative stack");
             } else if let Some(column) = strip.columns.first_mut() {
                 column.push_pane(new_id);
+                strip.focus_pane(new_id);
             }
+        } else if let Some(column) = strip.columns.first_mut() {
+            column.push_pane(new_id);
+            strip.focus_pane(new_id);
         }
 
         Some(new_id)
@@ -890,7 +934,7 @@ impl PlexiApp {
                     context_id: ctx_id,
                 });
                 self.close_tile(ctx_idx, tile_id);
-                if let Some(strip) = self.zoom.strips.get_mut(&ctx_id) {
+                if let Some(strip) = self.host.strip_mut(ctx_id) {
                     if strip.remove_pane(pane_id) {
                         log::info!(
                             "close_pane_by_id: removed pane {pane_id} from authoritative strip, cols={}",
@@ -1066,8 +1110,16 @@ impl PlexiApp {
         // without it a closed run would block its routine forever), then park
         // background WASM app runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
+            let win_context_id = self.windows[ctx_idx].context_id;
+            if let Some(strip) = self.host.strip_mut(win_context_id) {
+                if strip.remove_pane(pane_id) {
+                    log::info!(
+                        "close_tile: removed pane {pane_id} from authoritative strip, cols={}",
+                        strip.column_count()
+                    );
+                }
+            }
             if let Some(ref pane) = removed_pane {
-                let win_context_id = self.windows[ctx_idx].context_id;
                 let win_path = self.windows[ctx_idx].path.clone();
                 self.record_closed_agent_pane(win_context_id, &win_path, pane);
                 if let Some(slots) = pane.slots() {
@@ -1172,7 +1224,7 @@ impl PlexiApp {
             .flatten()
         {
             let column = &columns[adjacent_pos];
-            let remembered = self.zoom.column_last_pane.get(&(window.context_id, column.index)).copied();
+            let remembered = column.last_focused;
             if let Some(tile_id) = remembered
                 .filter(|pane_id| column.panes.contains(pane_id))
                 .and_then(tile_for_pane)
@@ -1189,11 +1241,15 @@ impl PlexiApp {
         let Some(Tile::Pane(pane_id)) = window.tree.tiles.get(tile_id) else { return };
         let context_id = window.context_id;
         let pane_id = *pane_id;
-        let columns = self.columns_for_context(context_id);
-        let Some(column) = columns.iter().find(|column| column.panes.contains(&pane_id)) else { return };
-        self.zoom.column_last_pane.insert((context_id, column.index), pane_id);
-        if self.zoom.level == crate::app::zoom::ZoomLevel::Columns {
-            self.ensure_column_visible(context_id, column.index, columns.len());
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let is_columns = self.zoom.level == crate::app::zoom::ZoomLevel::Columns;
+        let strip = self.ensure_authoritative_strip(context_id);
+        strip.focus_pane(pane_id);
+        if is_columns {
+            if let Some(col_idx) = strip.find_column_for_pane(pane_id) {
+                strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+            }
         }
     }
 
@@ -1385,24 +1441,48 @@ impl PlexiApp {
     pub(crate) fn swap_pane(&mut self, dir: Direction) -> SwapResult {
         use egui_tiles::Tile;
         let active = self.active_window;
-        let ctx = &mut self.windows[active];
+        let ctx_id = self.windows[active].context_id;
+        let _ = self.ensure_authoritative_strip(ctx_id);
 
-        let Some(focused) = ctx.focused_pane else {
+        let Some(focused) = self.windows[active].focused_pane else {
             return SwapResult::NoFocus;
         };
 
-        let Some(neighbor) = ctx.find_pane_in_direction_from(focused, dir) else {
+        let pane_a = match self.windows[active].tree.tiles.get(focused) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+
+        let neighbor = self.windows[active]
+            .find_pane_in_direction_from(focused, dir)
+            .or_else(|| {
+                let strip = self.host.strip(ctx_id)?;
+                let (col_idx, row_idx) = strip.find_pane_position(pane_a)?;
+                let target_pid = match dir {
+                    Direction::Up => row_idx
+                        .checked_sub(1)
+                        .and_then(|r| strip.columns[col_idx].panes.get(r).copied()),
+                    Direction::Down => strip.columns[col_idx].panes.get(row_idx + 1).copied(),
+                    Direction::Left => col_idx
+                        .checked_sub(1)
+                        .and_then(|c| strip.columns[c].remembered_or_first_pane()),
+                    Direction::Right => strip
+                        .columns
+                        .get(col_idx + 1)
+                        .and_then(|c| c.remembered_or_first_pane()),
+                }?;
+                self.windows[active].tree.tiles.find_pane(&target_pid)
+            });
+
+        let Some(neighbor) = neighbor else {
             log::info!("swap_pane({:?}): at boundary, no neighbor", dir);
             return SwapResult::AtBoundary;
         };
 
+        let ctx = &mut self.windows[active];
         let rect_a = ctx.tree.tiles.rect(focused).unwrap_or(egui::Rect::ZERO);
         let rect_b = ctx.tree.tiles.rect(neighbor).unwrap_or(egui::Rect::ZERO);
 
-        let pane_a = match ctx.tree.tiles.get(focused) {
-            Some(Tile::Pane(id)) => *id,
-            _ => return SwapResult::NoFocus,
-        };
         let pane_b = match ctx.tree.tiles.get(neighbor) {
             Some(Tile::Pane(id)) => *id,
             _ => return SwapResult::NoFocus,
@@ -1417,6 +1497,10 @@ impl PlexiApp {
 
         // Focus follows content: move focus to the tile now containing this pane.
         ctx.navigate_to(neighbor);
+
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.swap_panes(pane_a, pane_b);
+        self.focus_pane_in_strip(pane_a);
 
         log::info!(
             "swap_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?})",
@@ -1443,25 +1527,49 @@ impl PlexiApp {
     pub(crate) fn send_pane(&mut self, dir: Direction) -> SwapResult {
         use egui_tiles::Tile;
         let active = self.active_window;
-        let ctx = &mut self.windows[active];
+        let ctx_id = self.windows[active].context_id;
+        let _ = self.ensure_authoritative_strip(ctx_id);
 
-        let Some(focused) = ctx.focused_pane else {
+        let Some(focused) = self.windows[active].focused_pane else {
             return SwapResult::NoFocus;
         };
 
-        let Some(neighbor) = ctx.find_pane_in_direction_from(focused, dir) else {
+        let pane_a = match self.windows[active].tree.tiles.get(focused) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+
+        let neighbor = self.windows[active]
+            .find_pane_in_direction_from(focused, dir)
+            .or_else(|| {
+                let strip = self.host.strip(ctx_id)?;
+                let (col_idx, row_idx) = strip.find_pane_position(pane_a)?;
+                let target_pid = match dir {
+                    Direction::Up => row_idx
+                        .checked_sub(1)
+                        .and_then(|r| strip.columns[col_idx].panes.get(r).copied()),
+                    Direction::Down => strip.columns[col_idx].panes.get(row_idx + 1).copied(),
+                    Direction::Left => col_idx
+                        .checked_sub(1)
+                        .and_then(|c| strip.columns[c].remembered_or_first_pane()),
+                    Direction::Right => strip
+                        .columns
+                        .get(col_idx + 1)
+                        .and_then(|c| c.remembered_or_first_pane()),
+                }?;
+                self.windows[active].tree.tiles.find_pane(&target_pid)
+            });
+
+        let Some(neighbor) = neighbor else {
             log::info!("send_pane({:?}): at boundary within window", dir);
             // For L/R, try cross-window send. For U/D, edge-pulse.
             return SwapResult::AtBoundary;
         };
 
+        let ctx = &mut self.windows[active];
         let rect_a = ctx.tree.tiles.rect(focused).unwrap_or(egui::Rect::ZERO);
         let rect_b = ctx.tree.tiles.rect(neighbor).unwrap_or(egui::Rect::ZERO);
 
-        let pane_a = match ctx.tree.tiles.get(focused) {
-            Some(Tile::Pane(id)) => *id,
-            _ => return SwapResult::NoFocus,
-        };
         let pane_b = match ctx.tree.tiles.get(neighbor) {
             Some(Tile::Pane(id)) => *id,
             _ => return SwapResult::NoFocus,
@@ -1476,6 +1584,9 @@ impl PlexiApp {
 
         // Focus stays on the original tile (now containing pane_b).
         // focused_pane is unchanged — it already points at `focused`.
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.swap_panes(pane_a, pane_b);
+        strip.focus_pane(pane_b);
 
         log::info!(
             "send_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?}), focus stays at {:?}",

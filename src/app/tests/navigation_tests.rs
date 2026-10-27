@@ -291,7 +291,7 @@ fn close_focused_pane_prefers_window_local_history_and_keeps_strip_visible() {
         .find(|column| column.panes.contains(&c))
         .unwrap()
         .index;
-    let offset = h.app.zoom.strip_offset_for(context_id);
+    let offset = h.app.strip_offset_for(context_id);
     assert!(
         c_column >= offset && c_column < offset + 2,
         "close target column must remain in the visible strip"

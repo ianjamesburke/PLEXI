@@ -9986,6 +9986,11 @@ mod terminal_resize_debounce_tests {
             .app
             .split_focused(false, None, false, false, None)
             .expect("split must create a third terminal");
+        let ctx_id = h.app.router.active().context_id;
+        for col_idx in 0..3 {
+            h.app.set_column_width_ratio(ctx_id, col_idx, 0.32);
+        }
+        h.app.focus_pane_in_strip(first);
         [first, second, third]
     }
 
@@ -15264,7 +15269,6 @@ mod strip_navigation_frame_tests {
     use super::*;
     use crate::host::keys::Direction;
     use crate::spatial::tiling::PaneId;
-    use crate::ui::style;
 
     const COLUMNS: usize = 5;
     const SETTLE_FRAMES: u32 = 3;
@@ -15294,6 +15298,7 @@ mod strip_navigation_frame_tests {
     struct StripFrame {
         canvas: egui::Rect,
         lo: usize,
+        scroll_offset_px: f32,
         children: Vec<egui::Rect>,
         gap: f32,
     }
@@ -15301,10 +15306,11 @@ mod strip_navigation_frame_tests {
     fn strip_frame(h: &HostHarness) -> StripFrame {
         let strip = h.app.active_window_strip().expect("a strip of columns");
         let tiles = &h.app.windows[0].tree.tiles;
-        let root = h.app.windows[0].tree.root().expect("root");
+        let canvas = h.app.active_strip_layout().canvas_rect;
         StripFrame {
-            canvas: tiles.rect(root).expect("root rect"),
+            canvas,
             lo: strip.lo,
+            scroll_offset_px: strip.scroll_offset_px,
             children: strip
                 .children
                 .iter()
@@ -15323,78 +15329,52 @@ mod strip_navigation_frame_tests {
         h.terminal_backend(pane).committed_grid().0
     }
 
-    /// Layout invariants of one frame.
+    /// Layout invariants of one frame under Model B continuous-strip geometry.
     fn assert_layout(h: &HostHarness, label: &str) {
         let f = strip_frame(h);
         let n = f.children.len();
         assert_eq!(n, COLUMNS, "{label}: strip lost a column");
-        let left_peek = egui::Rect::from_min_size(
-            f.canvas.min,
-            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
-        );
-        let right_peek = egui::Rect::from_min_size(
-            egui::pos2(f.canvas.max.x - style::STRIP_PEEK_W, f.canvas.min.y),
-            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
-        );
-        for idx in f.lo..f.lo + 2 {
-            let r = f.children[idx];
+        for (idx, r) in f.children.iter().enumerate() {
             assert!(
                 r.width() >= 0.2 * f.canvas.width(),
-                "{label}: visible column {idx} is {}px of a {}px canvas",
+                "{label}: column {idx} must retain its full intrinsic width, got {}px of a {}px canvas",
                 r.width(),
                 f.canvas.width()
             );
-            for (name, peek, has) in [
-                ("left", left_peek, f.lo > 0),
-                ("right", right_peek, f.lo + 2 < n),
-            ] {
+            if idx > 0 {
+                let actual_gap = r.min.x - f.children[idx - 1].max.x;
                 assert!(
-                    !has || !r.intersects(peek),
-                    "{label}: visible column {idx} {r:?} intersects the {name} peek strip {peek:?}"
+                    (actual_gap - f.gap).abs() <= 1.5,
+                    "{label}: gap between column {} and {idx} is {actual_gap}px, expected {}px",
+                    idx - 1,
+                    f.gap
                 );
             }
         }
-        // Each clipped group, slivers and their gaps up to the visible pair, is
-        // exactly the peek strip plus the one gap that separates it from the pair.
-        let left_span = f.children[f.lo].min.x - f.canvas.min.x;
-        let right_span = f.canvas.max.x - f.children[f.lo + 1].max.x;
-        let (want_left, want_right) = (
-            if f.lo > 0 { style::STRIP_PEEK_W + f.gap } else { 0.0 },
-            if f.lo + 2 < n { style::STRIP_PEEK_W + f.gap } else { 0.0 },
-        );
+        let expected_first_x = f.canvas.min.x - f.scroll_offset_px;
         assert!(
-            (left_span - want_left).abs() <= 1.0,
-            "{label}: left clipped group spans {left_span}px, want {want_left}px (lo={})",
-            f.lo
+            (f.children[0].min.x - expected_first_x).abs() <= 1.5,
+            "{label}: first column min.x={} must align with canvas.min.x - scroll_offset_px ({expected_first_x})",
+            f.children[0].min.x
         );
-        assert!(
-            (right_span - want_right).abs() <= 1.0,
-            "{label}: right clipped group spans {right_span}px, want {want_right}px (lo={})",
-            f.lo
-        );
-        for (idx, r) in f.children.iter().enumerate() {
-            if idx < f.lo || idx >= f.lo + 2 {
+        if let Some(focused_pid) = h.app.active_focused_pane_id() {
+            if let Some(rect) = pane_rect(h, focused_pid) {
                 assert!(
-                    r.width() >= 1.0 && r.width() <= style::STRIP_PEEK_W + 1.0,
-                    "{label}: off-strip column {idx} is {}px wide",
-                    r.width()
+                    f.canvas.expand(1.5).contains_rect(rect),
+                    "{label}: focused pane {focused_pid} rect {rect:?} must be revealed inside canvas {:?}",
+                    f.canvas
                 );
             }
         }
     }
 
-    /// Every visible terminal's committed grid matches its rect, on this very frame.
+    /// Every on-screen terminal's committed grid matches its full intrinsic rect, on this very frame.
     fn assert_visible_grids(h: &mut HostHarness, terminals: &[PaneId], label: &str) {
-        let f = strip_frame(h);
         for &t in terminals {
-            let Some(rect) = pane_rect(h, t) else { continue };
-            let visible = (f.lo..f.lo + 2).any(|i| {
-                let c = f.children[i];
-                c.contains(rect.center())
-            });
-            if !visible {
+            if h.app.zoom.off_strip_panes.contains(&t) {
                 continue;
             }
+            let Some(rect) = pane_rect(h, t) else { continue };
             let cell_w = f32::from(h.terminal_backend(t).committed_cell_width());
             let want = (rect.width() / cell_w).floor() as i32;
             let got = i32::from(committed_cols(h, t));
@@ -15595,7 +15575,7 @@ mod strip_navigation_frame_tests {
             .collect();
         let initial_tile_count = window.tree.tiles.len();
         let initial_focus = window.focused_pane;
-        let initial_strip = h.app.zoom.strips.get(&context_id).cloned();
+        let initial_strip = h.app.host.strip(context_id).cloned();
 
         // `split_focused` is the production terminal-creation path. Force its
         // real `TerminalPane::new` call to fail without sharing a process env
@@ -15639,7 +15619,7 @@ mod strip_navigation_frame_tests {
             "failed split must retain focus on the existing pane"
         );
         assert_eq!(
-            h.app.zoom.strips.get(&context_id),
+            h.app.host.strip(context_id),
             initial_strip.as_ref(),
             "failed split must leave the authoritative strip unchanged"
         );

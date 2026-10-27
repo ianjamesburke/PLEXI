@@ -203,3 +203,50 @@ fn pure_representative_focus_sequence_keeps_order_and_visible_rects_sound() {
         "focus-only commands must not reorder columns or stack members"
     );
 }
+
+#[test]
+fn pure_stable_column_ids_and_swap_panes_preserve_focus_and_structure() {
+    let mut strip = Strip::new(1);
+    strip.push_column(Column::new(
+        ColumnId(0),
+        10,
+        ColumnWidth::Preset(ColumnWidthPreset::Parent35),
+    ));
+    strip.push_column(Column::new_stacked(
+        ColumnId(1),
+        vec![20, 21],
+        ColumnWidth::Preset(ColumnWidthPreset::Child65),
+    ));
+    strip.push_column(Column::new(
+        ColumnId(2),
+        30,
+        ColumnWidth::Preset(ColumnWidthPreset::Child65),
+    ));
+
+    let id_col1_before = strip.columns[1].id;
+    let id_col2_before = strip.columns[2].id;
+
+    // Remember bottom pane 21 in column 1, then focus column 0 and insert a new column right of 0.
+    assert!(strip.focus_pane(21));
+    assert!(strip.focus_pane(10));
+    let inserted_idx =
+        strip.insert_column_right_of(0, 15, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    assert_eq!(inserted_idx, 1);
+    assert_eq!(strip.columns[2].id, id_col1_before);
+    assert_eq!(strip.columns[3].id, id_col2_before);
+    assert_eq!(strip.columns[2].remembered_or_first_pane(), Some(21));
+
+    // Insert a pane below 20 in shifted column 2.
+    assert!(strip.insert_pane_below_in_column(20, 22));
+    assert_eq!(strip.columns[2].panes, vec![20, 22, 21]);
+    assert_eq!(strip.focused_pane, Some(22));
+
+    // Swap bottom pane 21 horizontally with column 3's pane 30.
+    assert!(strip.focus_pane(21));
+    assert!(strip.swap_panes(21, 30));
+    assert_eq!(strip.columns[2].panes, vec![20, 22, 30]);
+    assert_eq!(strip.columns[3].panes, vec![21]);
+    assert_eq!(strip.focused_pane, Some(21));
+    assert_eq!(strip.find_column_by_id(id_col2_before), Some(3));
+}
+

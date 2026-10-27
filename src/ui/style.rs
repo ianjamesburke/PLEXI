@@ -87,8 +87,6 @@ pub const PATH_BAR_H: f32 = 34.0;
 #[allow(dead_code)]
 pub const STRIP_GAP: f32 = 10.0;
 pub const STRIP_PEEK_W: f32 = 28.0;
-/// Narrowest a clipped strip column is laid out, so `egui_tiles` never sees a zero share.
-pub const STRIP_MIN_SLIVER_W: f32 = 2.0;
 /// Canvas width assumed for strip shares when the real width is not known yet.
 pub const STRIP_FALLBACK_CANVAS_W: f32 = 1200.0;
 pub const COLUMN_WIDTH_PARENT: f32 = 0.35;
