@@ -4,7 +4,7 @@ use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, Stroke, StrokeKind, Vec2};
-use egui_tiles::{Tile, TileId};
+use egui_tiles::{Container, Tile, TileId};
 use std::collections::HashMap;
 
 const FLASH_DUR: f32 = 0.4;
@@ -883,7 +883,7 @@ impl PlexiApp {
                     crate::platform::ui_profile::time("tile_tree_total", || {
                         if zoomed_pane.is_none() {
                             if let Some(ref strip) = w_strip {
-                                if strip.total_width_px > canvas_full_rect.width() + 0.5
+                                if (strip.total_width_px - canvas_full_rect.width()).abs() > 0.5
                                     || strip.scroll_offset_px > 0.5
                                 {
                                     let strip_rect = egui::Rect::from_min_size(
@@ -892,7 +892,7 @@ impl PlexiApp {
                                             canvas_full_rect.min.y,
                                         ),
                                         egui::vec2(
-                                            strip.total_width_px.max(canvas_full_rect.width()),
+                                            strip.total_width_px,
                                             canvas_full_rect.height(),
                                         ),
                                     );
@@ -904,6 +904,22 @@ impl PlexiApp {
                                     strip_ui.set_clip_rect(canvas_full_rect);
                                     ctx.tree.ui(&mut behavior, &mut strip_ui);
                                     return;
+                                }
+                            } else if let Some(layout) = strip_layout.as_ref() {
+                                let root_is_column = ctx.tree.root().and_then(|root| ctx.tree.tiles.get(root)).is_some_and(|tile| {
+                                    matches!(tile, Tile::Pane(_) | Tile::Container(Container::Tabs(_))) || matches!(tile, Tile::Container(Container::Linear(linear)) if linear.dir == egui_tiles::LinearDir::Vertical)
+                                });
+                                if root_is_column {
+                                    if let Some(pane) = layout.panes.iter().find(|pane| behavior.panes.contains_key(&pane.pane_id)) {
+                                        let rect = egui::Rect::from_min_size(
+                                            egui::pos2(pane.outer_rect.left(), canvas_full_rect.top()),
+                                            egui::vec2(pane.outer_rect.width(), canvas_full_rect.height()),
+                                        );
+                                        let mut column_ui = ui.new_child(egui::UiBuilder::new().id_salt("single-strip-column").max_rect(rect));
+                                        column_ui.set_clip_rect(canvas_full_rect);
+                                        ctx.tree.ui(&mut behavior, &mut column_ui);
+                                        return;
+                                    }
                                 }
                             }
                         }

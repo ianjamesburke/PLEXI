@@ -2071,7 +2071,7 @@ impl PlexiApp {
             widths,
             lo,
             scroll_offset_px: local_scroll_px,
-            total_width_px: window_total_w.max(canvas_w),
+            total_width_px: window_total_w,
         })
     }
 
@@ -2210,10 +2210,8 @@ impl PlexiApp {
         if let (Some(window_strip), Some(root)) = (window_strip, win.tree.root()) {
             if let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) {
                 if linear.dir == LinearDir::Horizontal {
-                    let available = (window_strip.total_width_px.max(canvas_width)
-                        - self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0) * window_strip.children.len().saturating_sub(1) as f32).max(1.0);
-                    let sizes = linear.shares.split(&window_strip.children, available);
-                    for (tile, size) in window_strip.children.iter().zip(sizes) {
+                    for tile in &window_strip.children {
+                        let size = linear.shares[*tile];
                         let mut panes = Vec::new();
                         collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
                         if let Some(pane) = panes.first() { changes.push((*pane, size)); }

@@ -10143,4 +10143,60 @@ mod tests {
         assert_eq!(heights, vec![1.5, 1.5, 4.0]);
     }
 
+    #[test]
+    fn strip_underfilled_custom_widths_match_rendered_tiles() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        let second = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        let third = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for (col, width) in strip.columns.iter_mut().zip([200.0, 300.0, 300.0]) { col.width = crate::strip::ColumnWidth::CustomPixels(width); }
+            app.focus_pane_in_strip(first);
+        });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            let win = &app.windows[app.active_window];
+            for pane in [first, second, third] {
+                let tile = win.tree.tiles.find_pane(&pane).unwrap();
+                let actual = win.tree.tiles.rect(tile).unwrap();
+                let expected = layout.pane(pane).unwrap().outer_rect;
+                assert!((actual.width() - expected.width()).abs() < 1.0, "pane {pane}: tile={actual:?} model={expected:?}");
+            }
+        });
+    }
+
+    #[test]
+    fn strip_single_oversized_column_scrolls_rendered_content() {
+        let mut h = PlexiUiHarness::new_sized(800.0, 600.0);
+        h.step();
+        let pane = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            app.ensure_authoritative_strip(context).columns[0].width = crate::strip::ColumnWidth::CustomPixels(1400.0);
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().canvas_rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-300.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
+        ]);
+        h.run_steps(8);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            assert!(layout.scroll_offset_px > 50.0);
+            let win = &app.windows[app.active_window];
+            let actual = win.tree.tiles.rect(win.tree.tiles.find_pane(&pane).unwrap()).unwrap();
+            let expected = layout.pane(pane).unwrap().outer_rect;
+            assert!((actual.left() - expected.left()).abs() < 1.0 && (actual.width() - expected.width()).abs() < 1.0, "tile={actual:?} model={expected:?} root={:?} window_strip={:?}", win.tree.tiles.get(win.tree.root().unwrap()), app.active_window_strip());
+        });
+    }
+
 }
