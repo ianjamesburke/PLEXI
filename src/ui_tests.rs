@@ -10103,4 +10103,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn strip_stack_double_click_resets_only_adjacent_shares() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
+        h.run_steps(2);
+        h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            let col = strip.find_column_for_pane(first).unwrap();
+            strip.columns[col].heights = vec![1.0, 2.0, 4.0];
+        });
+        h.run_steps(3);
+        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| !d.is_vertical).unwrap().rect.center());
+        let mut time = h.with_app(|app| app.ctx.input(|input| input.time));
+        for _ in 0..2 {
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            ]);
+            h.step();
+            time += 0.05;
+            h.harness().input_mut().time = Some(time);
+            h.harness().input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(3);
+        let heights = h.with_app(|app| {
+            let strip = app.strip_for_context(app.router.active().context_id);
+            strip.columns[strip.find_column_for_pane(first).unwrap()].heights.clone()
+        });
+        assert_eq!(heights, vec![1.5, 1.5, 4.0]);
+    }
+
 }

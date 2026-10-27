@@ -271,3 +271,21 @@ fn oversized_custom_split_fits_pair_without_resizing_other_columns() {
     strip.focus_pane(2);
     assert_eq!(before, strip.columns.iter().map(|c| c.width).collect::<Vec<_>>());
 }
+
+#[test]
+fn fitting_custom_split_and_navigation_preserve_widths() {
+    let mut strip = Strip::new(1);
+    strip.reference_width_px = Some(800.0);
+    strip.push_column(Column::new(ColumnId(0), 1, ColumnWidth::CustomPixels(200.0)));
+    strip.push_column(Column::new(ColumnId(1), 2, ColumnWidth::CustomPixels(1000.0)));
+    strip.focus_pane(2);
+    strip.focus_pane(1);
+    strip.focus_pane(2);
+    assert_eq!(strip.columns[1].width, ColumnWidth::CustomPixels(1000.0));
+    strip.insert_column_right_of(0, 3, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    assert_eq!(strip.columns[0].width, ColumnWidth::CustomPixels(200.0));
+    assert_eq!(strip.columns[2].width, ColumnWidth::CustomPixels(1000.0));
+    let layout = layout_strip(&strip, &StripViewport::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)), 4.0));
+    assert!(layout.pane(1).unwrap().is_on_screen);
+    assert!(layout.pane(3).unwrap().is_on_screen);
+}
