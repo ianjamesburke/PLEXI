@@ -2153,10 +2153,11 @@ mod tests {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
                 std::fs::write(h.workspace.path().join("review-notes.md"), "Pane corner fixture\n").unwrap();
                 let root = h.workspace.path().to_path_buf();
+                let config_path = crate::config::config_path();
+                std::fs::write(&config_path, format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n")).unwrap();
                 h.with_app_mut(|app| {
                     app.sidebar_visible = false;
-                    app.colors = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
-                    app.config.pane_gap = Some(0.0);
+                    app.reload_config();
                 });
                 h.open_file_browser(root);
                 h.run_steps(4);
@@ -2165,7 +2166,9 @@ mod tests {
                     (app.visible_pane_rect(pane).unwrap(), app.colors.accent)
                 });
                 for radius in [None, Some(18)] {
-                    h.with_app_mut(|app| app.config.pane_corner_radius = radius);
+                    let radius_line = radius.map(|r| format!("pane_corner_radius = {r}\n")).unwrap_or_default();
+                    std::fs::write(&config_path, format!("pane_gap = 0.0\nui_scale = {scale}\n{radius_line}[theme]\npreset = \"{theme}\"\n")).unwrap();
+                    h.with_app_mut(|app| app.reload_config());
                     h.run_steps(3);
                     let expected = crate::ui::style::pane_radius(radius, rect);
                     assert!(h.harness().output().shapes.iter().any(|shape| {
@@ -2237,7 +2240,7 @@ mod tests {
             for conjoined in [true, false] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
                 h.step();
-                std::fs::write(crate::config::config_path(), format!("pane_gap = 0.0\n[theme]\npreset = \"{theme}\"\n")).unwrap();
+                std::fs::write(crate::config::config_path(), format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n")).unwrap();
                 h.with_app_mut(|app| {
                     app.reload_config();
                 });
