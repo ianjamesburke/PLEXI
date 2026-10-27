@@ -310,6 +310,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "browse notes note picker open find global context",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenFileBrowser),
+        name: "File Explorer",
+        description: "Browse files and directories in the focused context",
+        search_text: "file explorer file browser browse directory folder tree open files",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::FocusApproval),
         name: "Focus oldest approval",
         description: "Focus the permission banner for a keyboard decision",
@@ -940,6 +946,7 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
         PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
         PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
+        PaletteCommand::Host(Action::OpenFileBrowser) => bindings.open_file_browser,
         PaletteCommand::Host(Action::ToggleAttentionQueue) => bindings.toggle_attention_queue,
         PaletteCommand::Host(Action::ZoomIn) => bindings.zoom_in,
         PaletteCommand::Host(Action::SplitRight) => bindings.split_right,
@@ -2010,6 +2017,7 @@ impl PlexiApp {
                 self.show_shortcuts = !self.show_shortcuts;
             }
             crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),
+            crate::host::keys::Action::OpenFileBrowser => self.open_file_browser(),
             crate::host::keys::Action::OpenQuickNote => {
                 self.open_quick_note_modal();
             }
@@ -2986,6 +2994,52 @@ mod tests {
         );
     }
 
+    /// The native file surface is reachable from Cmd+P like every other host
+    /// action: the registry must carry a File Explorer entry whose aliases
+    /// cover the words a user types, and its shortcut label must follow the
+    /// configured binding (never a hardcoded chord).
+    #[test]
+    fn palette_registers_file_explorer_with_search_aliases_and_configured_shortcut() {
+        use crate::host::keys::{Action, KeyBindings};
+        let command = PaletteCommand::Host(Action::OpenFileBrowser);
+
+        for query in [
+            "file explorer",
+            "file browser",
+            "file",
+            "browse",
+            "directory",
+            "tree",
+            "open",
+        ] {
+            assert!(
+                palette_command_matches(query).contains(&command),
+                "palette search '{query}' must surface File Explorer"
+            );
+        }
+
+        let entry = PALETTE_COMMANDS
+            .iter()
+            .find(|entry| entry.command == command)
+            .expect("File Explorer must be registered in PALETTE_COMMANDS");
+        assert_eq!(entry.name, "File Explorer");
+
+        let mut bindings = KeyBindings::default();
+        assert_eq!(
+            palette_host_binding(&bindings, &command),
+            Some(bindings.open_file_browser),
+            "File Explorer must show its configured shortcut"
+        );
+
+        // A user override renders the override, not the default chord.
+        bindings.open_file_browser =
+            (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F);
+        let overridden = palette_host_binding(&bindings, &command)
+            .expect("overridden binding must still render a label");
+        assert_eq!(overridden, bindings.open_file_browser);
+        assert_eq!(shortcut_label(overridden), shortcut_label(bindings.open_file_browser));
+    }
+
     #[test]
     fn palette_searchable_text_is_cached_lowercase() {
         assert_eq!(
@@ -3054,9 +3108,13 @@ mod tests {
         // Actions the palette does not list stay quiet: one debug line, not a
         // warn on every paint. Calling twice must not grow the seen-set twice
         // in a way that changes the result — both calls return None.
-        let unbound = PaletteCommand::Host(Action::OpenFileBrowser);
-        assert!(palette_host_binding(&bindings, &unbound).is_none());
-        assert!(palette_host_binding(&bindings, &unbound).is_none());
+        let unlisted = PaletteCommand::Host(Action::CloseApp);
+        assert!(
+            !PALETTE_COMMANDS.iter().any(|e| e.command == unlisted),
+            "CloseApp must stay unlisted for this coverage"
+        );
+        assert!(palette_host_binding(&bindings, &unlisted).is_none());
+        assert!(palette_host_binding(&bindings, &unlisted).is_none());
     }
 
     #[test]
