@@ -352,7 +352,86 @@ impl ImageCache {
             color,
             egui::TextureOptions::LINEAR,
         );
+        log::info!(
+            "notes_editor: inline image decoded dest={dest:?} size={}x{}",
+            size[0],
+            size[1]
+        );
         Ok(ImageState::Ready { texture, size })
+    }
+}
+
+/// On-screen height of one inline image strip scaled into `max_width`,
+/// matching [`paint_inline_image_strip`]'s sizing. Failed and remote
+/// destinations use the placeholder height. Shared by the Live Preview
+/// editor strip and the QuickNote composer preview (stint 1047) so both
+/// reserve the same space for the same image.
+pub fn inline_image_strip_height(
+    cache: &mut ImageCache,
+    ctx: &egui::Context,
+    base: &Path,
+    dest: &str,
+    max_width: f32,
+) -> f32 {
+    match cache.get(ctx, base, dest) {
+        ImageState::Ready { size, .. } => {
+            let scale = (max_width / size[0] as f32).min(1.0);
+            (size[1] as f32 * scale).min(IMAGE_MAX_HEIGHT)
+        }
+        ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
+    }
+}
+
+/// Paint one inline image strip with its top-left at `top_left`, `height`
+/// tall and at most `max_width` wide, preserving aspect ratio. A failed or
+/// remote destination paints the shared placeholder in `weak`. Returns
+/// `true` when a decoded image was painted, `false` for the placeholder.
+/// Shared by the Live Preview editor strip and the QuickNote composer
+/// preview (stint 1047) — one renderer, one placeholder contract.
+pub fn paint_inline_image_strip(
+    cache: &mut ImageCache,
+    painter: &egui::Painter,
+    base: &Path,
+    dest: &str,
+    font_id: &egui::FontId,
+    strip_rect: Rect,
+    weak: Color32,
+) -> bool {
+    match cache.get(painter.ctx(), base, dest) {
+        ImageState::Ready { texture, size } => {
+            let height = strip_rect.height();
+            let scale = (height / size[1] as f32).min(1.0);
+            let width = size[0] as f32 * scale;
+            painter.image(
+                texture.id(),
+                Rect::from_min_size(strip_rect.min, Vec2::new(width, height)),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            true
+        }
+        state @ (ImageState::Failed(_) | ImageState::Remote) => {
+            let label = match state {
+                ImageState::Failed(reason) => format!("image unavailable: {reason}"),
+                _ => format!("remote image (not downloaded): {dest}"),
+            };
+            painter.rect_stroke(
+                strip_rect,
+                egui::CornerRadius::same(
+                    (strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8,
+                ),
+                egui::Stroke::new(1.0_f32, weak),
+                egui::StrokeKind::Inside,
+            );
+            let label_galley = painter.layout_no_wrap(label, font_id.clone(), weak);
+            let label_pos = egui::pos2(
+                strip_rect.left() + 8.0,
+                strip_rect.center().y - label_galley.size().y / 2.0,
+            )
+            .round_to_pixels(painter.ctx().pixels_per_point());
+            painter.galley(label_pos, label_galley, weak);
+            false
+        }
     }
 }
 
@@ -1137,13 +1216,7 @@ impl<'a> EditorWidget<'a> {
             if rows.iter().any(|(l, _)| *l == line) {
                 continue; // one strip per line
             }
-            let height = match image_cache.get(ctx, base, &span.dest) {
-                ImageState::Ready { size, .. } => {
-                    let scale = (max_width / size[0] as f32).min(1.0);
-                    (size[1] as f32 * scale).min(IMAGE_MAX_HEIGHT)
-                }
-                ImageState::Failed(_) | ImageState::Remote => IMAGE_PLACEHOLDER_HEIGHT,
-            };
+            let height = inline_image_strip_height(image_cache, ctx, base, &span.dest, max_width);
             // Quantized like `line_height` so `line_top` stays on the physical
             // pixel grid for every line below an attachment strip.
             extras.push((
@@ -1582,6 +1655,7 @@ impl<'a> EditorWidget<'a> {
         if !image_rows.is_empty() {
             let visible = self.view.visible_lines(line_count);
             let weak = visuals.weak_text_color();
+            let placeholder_width = (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0);
             if let Some((cache, base)) = self.images.as_mut() {
                 for (line, dest) in image_rows {
                     if !visible.contains(line) {
@@ -1596,50 +1670,18 @@ impl<'a> EditorWidget<'a> {
                         + IMAGE_PAD;
                     let height = extra - 2.0 * IMAGE_PAD;
                     let left = content_left + IMAGE_PAD - scroll_x;
-                    match cache.get(ui.ctx(), base, dest) {
-                        ImageState::Ready { texture, size } => {
-                            let scale = (height / size[1] as f32).min(1.0);
-                            let width = size[0] as f32 * scale;
-                            let image_rect = Rect::from_min_size(
-                                egui::pos2(left, strip_top),
-                                Vec2::new(width, height),
-                            );
-                            painter.image(
-                                texture.id(),
-                                image_rect,
-                                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                        }
-                        state @ (ImageState::Failed(_) | ImageState::Remote) => {
-                            let label = match state {
-                                ImageState::Failed(reason) => {
-                                    format!("image unavailable: {reason}")
-                                }
-                                _ => format!("remote image (not downloaded): {dest}"),
-                            };
-                            let strip_rect = Rect::from_min_size(
-                                egui::pos2(left, strip_top),
-                                Vec2::new(
-                                    (self.view.viewport_width - 2.0 * IMAGE_PAD).max(16.0),
-                                    height,
-                                ),
-                            );
-                            painter.rect_stroke(
-                                strip_rect,
-                                egui::CornerRadius::same((strip_rect.width().min(strip_rect.height()) * 0.25).round() as u8),
-                                egui::Stroke::new(1.0_f32, weak),
-                                egui::StrokeKind::Inside,
-                            );
-                            let label_galley = painter.layout_no_wrap(label, font_id.clone(), weak);
-                            let label_pos = egui::pos2(
-                                strip_rect.left() + 8.0,
-                                strip_rect.center().y - label_galley.size().y / 2.0,
-                            )
-                            .round_to_pixels(ppp);
-                            painter.galley(label_pos, label_galley, weak);
-                        }
-                    }
+                    paint_inline_image_strip(
+                        cache,
+                        &painter,
+                        base,
+                        dest,
+                        font_id,
+                        Rect::from_min_size(
+                            egui::pos2(left, strip_top),
+                            Vec2::new(placeholder_width, height),
+                        ),
+                        weak,
+                    );
                 }
             }
         }

@@ -151,6 +151,39 @@ impl PlexiApp {
                         .font(font.clone()),
                     );
                     ui.add_space(style::SPACE_SM);
+
+                    // Inline preview of every staged image, reusing the
+                    // editor's shared decoder and strip renderer (0478) so a
+                    // preview and the saved note render identically —
+                    // including the placeholder for an undecodable file.
+                    let max_width = ui.available_width().max(16.0);
+                    let base = std::path::PathBuf::from("/");
+                    let preview_font = self.quick_note_font();
+                    let weak = self.colors.text_dim.linear_multiply(0.5);
+                    let attachments = self.quick_note_attachments.clone();
+                    for source in &attachments {
+                        let dest = source.to_string_lossy().into_owned();
+                        let height = crate::editor::widget::inline_image_strip_height(
+                            &mut self.quick_note_image_cache,
+                            ui.ctx(),
+                            &base,
+                            &dest,
+                            max_width,
+                        );
+                        let (rect, _) = ui
+                            .allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());
+                        crate::editor::widget::paint_inline_image_strip(
+                            &mut self.quick_note_image_cache,
+                            ui.painter(),
+                            &base,
+                            &dest,
+                            &preview_font,
+                            rect,
+                            weak,
+                        );
+                        ui.add_space(style::SPACE_XS);
+                    }
+                    ui.add_space(style::SPACE_SM);
                 }
 
                 let row_height = ui.fonts_mut(|f| f.row_height(&font));

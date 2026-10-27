@@ -53,3 +53,29 @@ assert_label = { target = "host", label = "new line" }
 
 [[steps]]
 assert_label = { target = "host", label = "discard" }
+
+# A staged attachment renders an inline preview above the editor (stint 1047),
+# bounded to the card width and preserving the image's aspect ratio.
+[[steps]]
+key = { target = "host", value = "esc" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+key = { target = "host", value = "cmd+0" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+paste = { target = "host", value = "Add this image to the note." }
+
+[[steps]]
+drop_file = { target = "host", value = "tests/fixtures/notes-drop.png" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+shot = "quick-note-attachment.png"
