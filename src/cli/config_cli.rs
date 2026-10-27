@@ -755,7 +755,7 @@ fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
             eprintln!("error: {key}: {msg}");
             return 1;
         }
-        log::info!("config_set: set {key}={raw_value}");
+        log::info!("config_set: key={key} value_chars={}", raw_value.chars().count());
     }
 
     if let Some(parent) = path.parent() {

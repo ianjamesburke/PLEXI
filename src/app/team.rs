@@ -974,10 +974,10 @@ impl PlexiApp {
             "error":error,"task_pane":run.root_pane,"members":run.members.iter().map(|(p,_)| p).collect::<Vec<_>>(),
             "member_summaries":summaries,"ballots":ballots_json,"report":report_text,"result_path":run.out.join("RESULT.md")});
         log::info!(
-            "agent_team: finished task={} status={} error={:?}",
+            "agent_team: finished task={} status={} error_chars={:?}",
             run.root_pane,
             reply["status"],
-            error
+            error.map(|value| value.chars().count())
         );
         crate::host::flight_recorder::record(
             "team_finish",
@@ -993,7 +993,7 @@ impl PlexiApp {
 
     pub(crate) fn mark_agent_failed(&mut self, pane_id: u64, reason: &str) {
         let reason = reason.strip_prefix("failed: ").unwrap_or(reason);
-        log::info!("agent_worker: failed pane={pane_id}: {reason}");
+        log::info!("agent_worker: failed pane={pane_id} reason_chars={}", reason.chars().count());
         let mut provenance = crate::host::pane_lifecycle::Provenance {
             source: crate::host::pane_lifecycle::Source::Hook,
             agent_label: "worker".into(),

@@ -5856,12 +5856,11 @@ pub(crate) fn restore_workspace(
                                     session.session_id = None;
                                 }
                                 log::info!(
-                                    "workspace_restore: auto-resuming agent pane {} harness={} session_id={:?} state={} cmd={:?}",
+                                    "workspace_restore: auto-resuming agent pane {} harness={} session_id={:?} state={}",
                                     saved_pane.id,
                                     session.harness,
                                     session.session_id,
-                                    session.last_state.as_str(),
-                                    resume_cmd
+                                    session.last_state.as_str()
                                 );
                                 settings
                                     .env

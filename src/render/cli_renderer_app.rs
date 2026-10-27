@@ -340,7 +340,7 @@ impl CliRendererApp {
             command: cmd.clone(),
             echo: true,
         });
-        log::info!("CliRendererApp: queued run '{cmd}'");
+        log::info!("CliRendererApp: queued run command_chars={}", cmd.chars().count());
         true
     }
 

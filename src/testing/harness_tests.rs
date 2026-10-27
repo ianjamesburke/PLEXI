@@ -11224,10 +11224,8 @@ mod flight_recorder_session {
         assert_eq!(timeline[requested]["pane_id"], caller);
         assert_eq!(timeline[requested]["context_id"], context_id);
         assert_eq!(timeline[requested]["data"]["wait_approved"], true);
-        assert_eq!(
-            timeline[requested]["data"]["input"]["text"],
-            "Buy groceries"
-        );
+        assert_eq!(timeline[requested]["data"]["input"],
+            format!("<{} chars>", serde_json::json!({"text":"Buy groceries"}).to_string().chars().count()));
         assert!(timeline[ask]["data"]["pending_request_id"]
             .as_str()
             .is_some());
@@ -11237,7 +11235,8 @@ mod flight_recorder_session {
             timeline[ask]["data"]["pending_request_id"]
         );
         assert_eq!(timeline[completed]["data"]["ok"], true);
-        assert_eq!(timeline[completed]["data"]["output"]["added"], true);
+        assert_eq!(timeline[completed]["data"]["output"],
+            format!("<{} chars>", serde_json::json!({"added":true}).to_string().chars().count()));
 
         // --pane keeps the pane's own rows and the calls it made.
         let (_, _, pane_rows) =

@@ -172,10 +172,11 @@ sharing a capacity limit.
 ## Draft a workflow from a session
 
 The host captures CLI argv with caller pane, agent session, timestamps and the
-CLI exit code. Secret-setting values, secret options, known secret names and
-uppercase environment assignments such as `API_KEY=value` are redacted before
-recording. Ordinary grants such as `agents.ping=allow` remain readable. Interrupted calls, including a host shutdown,
-retain an unknown exit status. This diagnostic trace is not an authorization log.
+CLI exit code. [Logging for app developers](https://plexiapp.com/docs/apps/#logging)
+describes content and secret redaction and the content-capture opt-in. Ordinary
+grants such as `agents.ping=allow` remain readable. Interrupted calls, including
+a host shutdown, retain an unknown exit status. This diagnostic trace is not an
+authorization log.
 
 ```bash
 plexi debug session show --cli

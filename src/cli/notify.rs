@@ -197,7 +197,7 @@ pub fn notify_cli(args: NotifyCliArgs<'_>) -> i32 {
         (wait_timeout_secs > 0).then(|| std::time::Duration::from_secs(wait_timeout_secs));
     match crate::rpc::poll_string(&response_file, timeout) {
         Ok(key) => {
-            log::info!("notify:cli: response received {:?}", key.trim());
+            log::info!("notify:cli: response received chars={}", key.trim().chars().count());
             print!("{}", key.trim());
             0
         }

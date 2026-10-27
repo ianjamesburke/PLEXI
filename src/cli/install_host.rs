@@ -272,7 +272,7 @@ fn install_one_git(
     chmod_python_entries(&dest);
     provision_venv(&id, &dest, &manifest);
     write_installed_version_file(&dest, &manifest.app.version);
-    log::info!("install: {} ← {url} ({})", id, git_ref.unwrap_or("default"));
+    log::info!("install: id={} ref={}", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
         id,
         status: InstallStatus::Installed(dest),

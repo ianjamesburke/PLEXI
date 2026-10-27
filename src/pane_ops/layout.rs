@@ -454,7 +454,7 @@ impl PlexiApp {
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, false);
         if let Some(cmd) = initial_cmd {
-            log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
+            log::info!("split_focused: initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count());
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         let Some(mut pane) = TerminalPane::new(
@@ -684,7 +684,7 @@ impl PlexiApp {
             );
             if let Some(cmd) = initial_cmd {
                 log::info!(
-                    "new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}"
+                    "new_tab (empty context): initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count()
                 );
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
             }
@@ -746,7 +746,7 @@ impl PlexiApp {
         let (mut settings, pending_credential) =
             Self::make_backend_settings(new_id, cwd, &self.colors, &context_env, agent_pane);
         if let Some(cmd) = initial_cmd {
-            log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
+            log::info!("new_tab: initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count());
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         crate::host::shell::apply_folder_secret_injection(

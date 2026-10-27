@@ -307,19 +307,6 @@ impl PlexiApp {
 
         // Sidebar
         if self.sidebar_visible {
-            ctx.input(|i| {
-                for e in &i.events {
-                    if let egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        modifiers: m,
-                        ..
-                    } = e
-                    {
-                        log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
-                    }
-                }
-            });
             self.show_sidebar_panel(ui);
         }
 
@@ -654,7 +641,7 @@ impl PlexiApp {
                     if response.changed() {
                         self.ensure_authoritative_strip(context_id).set_scroll_offset_px(offset, Some(canvas_full_rect.width()));
                         self.mark_workspace_dirty();
-                        log::info!("strip: scrollbar context={context_id} offset={offset:.1}");
+                        log::debug!("strip: scrollbar context={context_id} offset={offset:.1}");
                     }
                     strip_canvas_ui = ui.new_child(egui::UiBuilder::new().id_salt("strip-viewport").max_rect(canvas_full_rect));
                     strip_canvas_ui.set_clip_rect(canvas_full_rect);
@@ -1261,7 +1248,7 @@ impl PlexiApp {
                     let context = self.router.active().context_id;
                     let strip = self.ensure_authoritative_strip(context);
                     strip.set_scroll_offset_px(strip.scroll_offset_px - scroll_x, Some(canvas_full_rect.width()));
-                    log::info!("strip: wheel scroll context={context} offset={:.1}", strip.scroll_offset_px);
+                    log::debug!("strip: wheel scroll context={context} offset={:.1}", strip.scroll_offset_px);
                     self.mark_workspace_dirty();
                     ui.ctx().request_repaint();
                 }

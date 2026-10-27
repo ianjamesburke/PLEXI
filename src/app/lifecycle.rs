@@ -1023,7 +1023,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=slot_wait pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} timeout_secs={timeout_secs}"
+                    "pane_ipc: kind=slot_wait pane_id={pane_id} slot={slot_name:?} pattern_chars={} timeout_secs={timeout_secs}", pattern.chars().count()
                 );
                 if let Err(msg) = validate_slot_name(slot_name) {
                     slot_read_error(response_file, msg);
@@ -1062,7 +1062,8 @@ impl PlexiApp {
                         Ok(bytes) => {
                             if regex.is_match(&String::from_utf8_lossy(&bytes)) {
                                 log::info!(
-                                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} already matched {} bytes",
+                                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern_chars={} already matched {} bytes",
+                                    pattern.chars().count(),
                                     bytes.len()
                                 );
                                 write_response(response_file, &bytes);
@@ -1092,7 +1093,7 @@ impl PlexiApp {
                 let expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs_f64(*timeout_secs);
                 log::info!(
-                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={pattern:?} parked for {timeout_secs}s"
+                    "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern_chars={} parked for {timeout_secs}s", pattern.chars().count()
                 );
                 self.pending_slot_waits
                     .push(crate::app::pane_wait::PendingSlotWait {
@@ -1811,10 +1812,10 @@ impl PlexiApp {
                     }
                 };
                 log::info!(
-                    "pane_ipc: kind=spawn_pane target={} layout={:?} args={:?} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} worktree={:?} workspace_root={:?} response_file={:?}",
+                    "pane_ipc: kind=spawn_pane target={} layout={:?} argc={} ephemeral={} no_focus={} from_pane_id={:?} cwd={:?} worktree={:?} workspace_root={:?} response_file={:?}",
                     spec.target_for_log(),
                     spec.layout,
-                    spec.args,
+                    spec.args.len(),
                     spec.ephemeral,
                     spec.no_focus,
                     spec.from_pane_id,
@@ -1923,7 +1924,7 @@ impl PlexiApp {
                             matches!(layout_str, "split_h" | "split_right" | "split_left");
                         let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                         log::info!(
-                            "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} initial_cmd={initial_cmd:?} ephemeral={}",
+                            "pane_ipc: spawn_pane terminal context_name='{ctx_name}' context_id={target_ctx_id} target_win={target_win} layout={layout_str} ephemeral={}",
                             spec.ephemeral
                         );
                         response_pane_id = self.spawn_terminal_pane_at(
@@ -1958,7 +1959,7 @@ impl PlexiApp {
                             .max();
                         let new_x = max_x.map(|x| x + 1).unwrap_or(1);
                         log::info!(
-                            "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
+                            "pane_ipc: spawn_pane terminal layout=new_window from_pane_id={:?} target_win_idx={target_win_idx} context={ws_id} grid=({new_x},{active_y}) response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
                             spec.from_pane_id,
                             spec.ephemeral
                         );
@@ -1985,7 +1986,7 @@ impl PlexiApp {
                             .unwrap_or(active);
                         let original_focused = self.windows[target_win_idx].focused_pane;
                         log::info!(
-                            "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} initial_cmd={initial_cmd:?} ephemeral={}",
+                            "pane_ipc: spawn_pane terminal layout=tab from_pane_id={:?} target_win_idx={target_win_idx} window_id={} response_pane_id={response_pane_id} cwd={cwd_override:?} ephemeral={}",
                             spec.from_pane_id,
                             self.windows[target_win_idx].window_id,
                             spec.ephemeral
@@ -2040,7 +2041,7 @@ impl PlexiApp {
                         if let Some((target_win, target_tile)) = split_target {
                             let keep_focus = spec.no_focus || spec.from_pane_id.is_some();
                             log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
+                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} target_win={target_win} keep_focus={keep_focus}",
                                 spec.ephemeral
                             );
                             response_pane_id = self.spawn_terminal_pane_at(
@@ -2068,7 +2069,7 @@ impl PlexiApp {
                             // spawn. Seed a root pane into the existing active window
                             // instead. The seeded pane's id is the id we report.
                             log::info!(
-                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={} (empty active window — seeding root)",
+                                "pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} ephemeral={} (empty active window — seeding root)",
                                 spec.ephemeral
                             );
                             match self.seed_root_pane(
@@ -3385,7 +3386,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}"
+                    "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} argc={}", args.len()
                 );
                 let approval_verb = {
                     let name = action.to_ascii_lowercase();
@@ -3863,8 +3864,8 @@ impl PlexiApp {
                     .clone()
                     .unwrap_or_else(|| format!("__host__:{}", crate::platform::clock::now_nanos()));
                 log::info!(
-                    "pane_ipc: kind=notify title={:?} choices={} scope={:?} peer_pid={:?} response_file={:?}",
-                    title,
+                    "pane_ipc: kind=notify title_chars={} choices={} scope={:?} peer_pid={:?} response_file={:?}",
+                    title.chars().count(),
                     options.len(),
                     scope,
                     peer_pid,
@@ -4164,7 +4165,7 @@ impl PlexiApp {
                         .unwrap_or(1);
                     for (new_x, cmd) in (first_x..).zip(windows) {
                         log::info!(
-                            "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
+                            "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x}"
                         );
                         self.create_page_at(
                             new_x,
@@ -5066,7 +5067,7 @@ impl PlexiApp {
                         }
                         self.mark_workspace_dirty();
                         log::info!(
-                            "agent_reopen: reopened run_id={} session_id={:?} harness={} in pane {new_pane_id} cmd={resume_cmd}",
+                            "agent_reopen: reopened run_id={} session_id={:?} harness={} in pane {new_pane_id}",
                             record.run_id,
                             record.session_id,
                             record.harness
@@ -5675,7 +5676,7 @@ impl PlexiApp {
                 ..Default::default()
             },
         );
-        log::info!("scheduler: routine notification queued={queued} title='{title}' body='{body}'");
+        log::info!("scheduler: routine notification queued={queued} title_chars={} body_chars={}", title.chars().count(), body.chars().count());
     }
 
     /// The pane a context-targeted terminal spawn splits beside: the first
@@ -5860,10 +5861,10 @@ impl PlexiApp {
                 );
             }
             log::info!(
-                "spawn-queue: launching target={} origin={origin} age_secs={age_secs:?} layout={:?} args={:?} ephemeral={} no_focus={} cwd={:?} workspace_root={:?}",
+                "spawn-queue: launching target={} origin={origin} age_secs={age_secs:?} layout={:?} argc={} ephemeral={} no_focus={} cwd={:?} workspace_root={:?}",
                 spec.target_for_log(),
                 spec.layout,
-                spec.args,
+                spec.args.len(),
                 spec.ephemeral,
                 spec.no_focus,
                 spec.cwd,
@@ -5972,7 +5973,7 @@ impl PlexiApp {
                     if let Some(cmd) = title.strip_prefix("plexi:") {
                         match cmd {
                             "close" => panes_to_close.push(id),
-                            _ => log::debug!("unknown plexi command: {}", cmd),
+                            _ => log::debug!("pty: unknown plexi command chars={}", cmd.chars().count()),
                         }
                     } else {
                         let title_trimmed = title.trim();

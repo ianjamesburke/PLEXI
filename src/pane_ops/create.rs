@@ -1409,7 +1409,7 @@ impl PlexiApp {
                 // the caller only ever sees "failed to create terminals".
                 log::error!(
                     "create_context_pane_set: TerminalPane::new failed for pane {} of {total} \
-                     (pane_id={new_id} context_id={} cmd={initial_cmd:?}) — discarding \
+                     (pane_id={new_id} context_id={}) — discarding \
                      {} already-created pane(s) {:?}, no partial squad is installed",
                     idx + 1,
                     context.context_id,
@@ -1423,7 +1423,7 @@ impl PlexiApp {
             pane.name_locked = true;
             log::info!(
                 "create_context_pane_set: spawned pane {} of {total} pane_id={new_id} \
-                 name={pane_name:?} context_id={} cmd={initial_cmd:?}",
+                 name={pane_name:?} context_id={}",
                 idx + 1,
                 context.context_id
             );
@@ -1463,7 +1463,7 @@ impl PlexiApp {
         );
         if let Some(cmd) = initial_cmd {
             log::info!(
-                "create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}"
+                "create_single_pane_tree: initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count()
             );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1520,7 +1520,7 @@ impl PlexiApp {
         let cwd = cwd_override.or_else(|| self.windows[win_idx].get_focused_pane_cwd(target_tile));
         log::info!(
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
-             vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
+             vertical={vertical} keep_focus={keep_focus}"
         );
         let (mut settings, pending_credential) = Self::make_backend_settings(
             new_id,
@@ -2182,9 +2182,9 @@ impl PlexiApp {
         );
         if !args.is_empty() || cwd_override.is_some() {
             log::warn!(
-                "on_launch[{scope}]: '{id}' relaunch carried args={args:?} cwd={cwd_override:?} \
+                "on_launch[{scope}]: '{id}' relaunch carried argc={} cwd={cwd_override:?} \
                  but the policy focused the existing instance — these are NOT delivered to it \
-                 (relaunch arg delivery to a running instance is future work)"
+                 (relaunch arg delivery to a running instance is future work)", args.len()
             );
         }
         self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
@@ -2331,7 +2331,7 @@ impl PlexiApp {
                 Some(crate::host::shell::shell_join(args))
             };
             log::info!(
-                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?}"
+                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first}"
             );
             self.split_focused(
                 vertical,

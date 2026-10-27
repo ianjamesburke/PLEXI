@@ -1220,7 +1220,7 @@ fn control_roundtrip_once(command: &Value) -> ControlOnce {
             if reply.get("ok").and_then(Value::as_bool) == Some(true) {
                 ControlOnce::Done(0)
             } else {
-                log::warn!("relay: control command rejected reply={reply}");
+                log::warn!("relay: control command rejected");
                 ControlOnce::Done(1)
             }
         }

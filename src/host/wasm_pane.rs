@@ -2285,9 +2285,9 @@ impl LiveWasmPane {
 
         let stepped = if let Some(snapshot) = self.pending_init.take() {
             log::info!(
-                "app::{}: wasm init args={:?}",
+                "app::{}: wasm init argc={}",
                 self.spawn_name,
-                self.launch_args
+                self.launch_args.len()
             );
             self.inner
                 .init(&snapshot, (size.x, size.y), now, &self.launch_args)

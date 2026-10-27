@@ -262,7 +262,7 @@ impl NetService for UreqNetService {
             // bodies or GitHub's JSON error payloads).
             Err(ureq::Error::Status(_, resp)) => Self::finish(resp, max_body_bytes),
             Err(ureq::Error::Transport(t)) => {
-                log::warn!("UreqNetService: transport error for {method} {url}: {t}");
+                log::warn!("UreqNetService: transport error method={method} error_chars={}", t.to_string().chars().count());
                 HttpResponse {
                     status: 0,
                     body: String::new(),

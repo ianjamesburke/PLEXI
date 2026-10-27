@@ -2287,10 +2287,10 @@ impl PlexiApp {
         if !force_split {
             if let Some(pane_id) = self.focused_idle_shell_pane_id() {
                 log::info!(
-                    "user_command: running '{}' in focused idle shell pane {} (cmd={:?})",
+                    "user_command: running '{}' in focused idle shell pane {} command_chars={}",
                     name,
                     pane_id,
-                    shell_cmd
+                    shell_cmd.chars().count()
                 );
                 self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
                     pane_id,
@@ -2304,10 +2304,10 @@ impl PlexiApp {
             }
         }
         log::info!(
-            "user_command: splitting for '{}' (split={}, cmd={:?})",
+            "user_command: splitting for '{}' (split={}, command_chars={})",
             name,
             force_split,
-            shell_cmd
+            shell_cmd.chars().count()
         );
         self.split_focused(false, Some(shell_cmd), false, false, ws_root);
     }
@@ -2363,7 +2363,7 @@ impl PlexiApp {
                 match command.status() {
                     Ok(status) => status.code().unwrap_or(1),
                     Err(e) => {
-                        log::error!("user_command: shell step '{}' failed: {e}", rendered);
+                        log::error!("user_command: shell step failed command_chars={} error={e}", rendered.chars().count());
                         1
                     }
                 }
@@ -2406,7 +2406,7 @@ impl PlexiApp {
         let cli = match Cli::try_parse_from(argv) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("user_command: invalid CLI step {:?}: {e}", argv);
+                log::warn!("user_command: invalid CLI step argc={} error_kind={:?}", argv.len(), e.kind());
                 return 2;
             }
         };
