@@ -2131,7 +2131,11 @@ impl PlexiApp {
                 Some((child, *authoritative_strip.columns[col].heights.get(row)?))
             }).collect();
             if let Some(Tile::Container(Container::Linear(linear))) = self.windows[self.active_window].tree.tiles.get_mut(tile) {
-                for (child, share) in updates { linear.shares.set_share(child, share); }
+                for (child, share) in updates {
+                    if (linear.shares[child] - share).abs() > f32::EPSILON {
+                        linear.shares.set_share(child, share);
+                    }
+                }
             }
         }
         let Some(w_strip) = self.active_window_strip() else {
@@ -2189,7 +2193,9 @@ impl PlexiApp {
         };
         if let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get_mut(root_id) {
             for (child_id, share) in w_strip.children.iter().copied().zip(shares) {
-                lin.shares.set_share(child_id, share);
+                if (lin.shares[child_id] - share).abs() > f32::EPSILON {
+                    lin.shares.set_share(child_id, share);
+                }
             }
         }
     }
@@ -2427,11 +2433,11 @@ impl PlexiApp {
                 {
                     width = crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
                 }
-                let resolved_heights = if old_col.heights.len() == panes.len() {
-                    old_col.heights
-                } else {
-                    heights
-                };
+                let resolved_heights = panes.iter().enumerate().map(|(row, pane)| {
+                    old_col.panes.iter().position(|old| old == pane)
+                        .and_then(|old_row| old_col.heights.get(old_row).copied())
+                        .unwrap_or_else(|| heights.get(row).copied().unwrap_or(1.0))
+                }).collect();
                 let last_focused = old_col
                     .last_focused
                     .filter(|p| panes.contains(p))
