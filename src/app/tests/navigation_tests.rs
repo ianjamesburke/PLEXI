@@ -442,8 +442,8 @@ fn pane_info_and_list_include_agent_state() {
 #[test]
 fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_failure() {
     let mut h = HostHarness::new();
-    let app_pane = h.add_test_pane();
     let terminal_pane = h.add_focused_terminal();
+    let app_pane = h.add_test_pane();
 
     h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
         peer_ancestry: None,
@@ -505,6 +505,33 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     assert_eq!(terminal_state["agent"], "pi");
     assert_eq!(terminal_state["detail"], "exited (3)");
     assert!(terminal_state["session_id"].is_null());
+
+    let responses = tempfile::tempdir().unwrap();
+    let info_file = responses.path().join("info.json");
+    let list_file = responses.path().join("list.json");
+    let fleet_file = responses.path().join("fleet.json");
+    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+        pane_id: terminal_pane,
+        response_file: info_file.to_string_lossy().into_owned(),
+    });
+    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
+        response_file: list_file.to_string_lossy().into_owned(),
+        context_id: None,
+    });
+    h.inject_ipc(crate::protocol::AppRequest::AgentFleet {
+        filter: crate::protocol::FleetFilter::All,
+        response_file: fleet_file.to_string_lossy().into_owned(),
+    });
+    h.app.drain_pane_cmd_channel();
+    let fleet_json = std::fs::read_to_string(fleet_file).unwrap();
+    assert!(fleet_json.contains("exited (3)"));
+    let info: serde_json::Value = serde_json::from_slice(&std::fs::read(info_file).unwrap()).unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(list_file).unwrap()).unwrap();
+    let entry = list.iter().find(|p| p["id"] == terminal_pane).unwrap();
+    assert_eq!(info["agent"]["state"], "failed");
+    assert_eq!(entry["agent"]["state"], "failed");
+    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    assert_eq!(fleet.tasks[0].rows[0].display_state, crate::agent::fleet::DisplayState::Failed);
 
     let _ = std::fs::remove_file(&states_file);
 }

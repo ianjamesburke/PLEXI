@@ -74,18 +74,7 @@ impl PlexiApp {
                 if !t.is_agent_pane() {
                     continue;
                 }
-                let state = if t.agent_completed {
-                    AgentState::Completed
-                } else if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
-                    AgentState::Failed
-                } else {
-                    t.agent
-                        .as_ref()
-                        .or(t.observed_agent.as_ref())
-                        .map(|a| a.state.clone())
-                        .or_else(|| t.standby_session.as_ref().map(|s| s.last_state.clone()))
-                        .unwrap_or(AgentState::Idle)
-                };
+                let (state, _) = t.effective_agent_state();
                 let is_stalled_idle = state == AgentState::Idle
                     && t.ephemeral
                     && !t.fleet_done_unseen
@@ -168,13 +157,7 @@ impl PlexiApp {
                     continue;
                 }
                 let report = pane.agent();
-                let state = if t.agent_completed {
-                    AgentState::Completed
-                } else if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
-                    AgentState::Failed
-                } else {
-                    report.map(|a| a.state.clone()).unwrap_or(AgentState::Idle)
-                };
+                let (state, effective_detail) = t.effective_agent_state();
                 let question = report
                     .and_then(|a| a.detail.clone())
                     .filter(|s| !s.is_empty());
@@ -260,34 +243,10 @@ impl PlexiApp {
                             )
                         })
                 });
-                let exit_failure_detail = t
-                    .exit_status
-                    .filter(|status| t.exited && status.is_failure())
-                    .map(|status| status.summary());
-                let failure_detail = exit_failure_detail
-                    .clone()
-                    .or_else(|| report.and_then(|a| a.detail.clone()))
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        t.standby_session
-                            .as_ref()
-                            .and_then(|s| s.last_detail.clone())
-                            .filter(|s| !s.is_empty())
-                    })
-                    .or_else(|| match t.exit_status {
-                        Some(crate::host::pane_lifecycle::ExitStatus::Code(c)) if c != 0 => {
-                            Some(format!("exited ({c})"))
-                        }
-                        Some(crate::host::pane_lifecycle::ExitStatus::Signal(sig)) => {
-                            Some(format!("killed by signal {sig}"))
-                        }
-                        Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
-                            if state == AgentState::ExitedUnreported =>
-                        {
-                            Some("exited (0) without calling plexi agent done".into())
-                        }
-                        _ => None,
-                    });
+                let failure_detail = effective_detail.clone().filter(|s| !s.is_empty()).or_else(|| match t.exit_status {
+                    Some(crate::host::pane_lifecycle::ExitStatus::Code(0)) if state == AgentState::ExitedUnreported => Some("exited (0) without calling plexi agent done".into()),
+                    _ => None,
+                });
                 let raw_harness = t
                     .agent_harness
                     .clone()
@@ -323,8 +282,7 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        exit_failure_detail
-                            .or_else(|| report.and_then(|a| a.detail.clone()))
+                        effective_detail
                             .map(|reason| {
                                 format!(
                                     "{}: {reason}",
@@ -635,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_agent_lifecycle_transitions_through_working_waiting_done_failed_with_fleet_and_cli_parity() {
+    fn pi_agent_lifecycle_transitions_through_working_waiting_done_failed_in_fleet() {
         let mut h = HostHarness::new();
         let pi_pane = h.add_focused_terminal();
         {

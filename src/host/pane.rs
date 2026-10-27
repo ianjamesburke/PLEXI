@@ -586,6 +586,27 @@ impl Pane {
         }
     }
 
+    /// Agent report with terminal exit and completion precedence applied.
+    pub(crate) fn effective_agent(&self) -> Option<crate::protocol::PaneAgentState> {
+        match self {
+            Pane::Terminal(t) => {
+                let mut report = self.agent().cloned().or_else(|| {
+                    t.is_agent_pane().then(|| crate::protocol::PaneAgentState {
+                        pane_id: t.id,
+                        state: crate::protocol::AgentState::Idle,
+                        agent: t.agent_harness.clone().or_else(|| t.standby_session.as_ref().map(|s| s.harness.clone())).unwrap_or_default(),
+                        detail: None,
+                        session_id: t.agent_session_id.clone(),
+                    })
+                })?;
+                (report.state, report.detail) = t.effective_agent_state();
+                Some(report)
+            }
+            Pane::App(_) => self.agent().cloned(),
+            Pane::Portal(_) => None,
+        }
+    }
+
     /// App-reported pip status, checking the outer app then any overlay-replaced
     /// pane underneath (mirrors `agent()`).
     pub fn pip_status(&self) -> Option<crate::protocol::PipStatus> {
@@ -1178,6 +1199,24 @@ impl TerminalPane {
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
+    /// Completion takes precedence over a failed process exit, then the report.
+    pub(crate) fn effective_agent_state(&self) -> (crate::protocol::AgentState, Option<String>) {
+        let report = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), std::time::Instant::now());
+        let state = report.map(|a| a.state.clone()).or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone())).unwrap_or(crate::protocol::AgentState::Idle);
+        let detail = report.and_then(|a| a.detail.clone()).or_else(|| self.standby_session.as_ref().and_then(|s| s.last_detail.clone()));
+        Self::resolve_agent_state(self.agent_completed || self.slots.contains_key("completed"), self.exited.then_some(self.exit_status).flatten(), state, detail)
+    }
+
+    fn resolve_agent_state(completed: bool, exit: Option<crate::host::pane_lifecycle::ExitStatus>, state: crate::protocol::AgentState, detail: Option<String>) -> (crate::protocol::AgentState, Option<String>) {
+        if completed || state == crate::protocol::AgentState::Completed {
+            (crate::protocol::AgentState::Completed, detail)
+        } else if let Some(status) = exit.filter(|s| s.is_failure()) {
+            (crate::protocol::AgentState::Failed, Some(status.summary()))
+        } else {
+            (state, detail)
+        }
+    }
+
     /// Build the persisted [`crate::workspace::SavedAgentSession`] for this pane
     /// if it is an agent pane.
     pub fn build_saved_agent_session(&self) -> Option<crate::workspace::SavedAgentSession> {
@@ -1203,19 +1242,7 @@ impl TerminalPane {
             if self.agent_permission_posture.is_some() {
                 s.permission_posture = self.agent_permission_posture.clone();
             }
-            if let Some(ref a) = self.agent {
-                s.last_state = a.state.clone();
-                if a.detail.is_some() {
-                    s.last_detail = a.detail.clone();
-                }
-            }
-            if self.agent_completed || self.slots.contains_key("completed") {
-                s.last_state = crate::protocol::AgentState::Completed;
-            }
-            if self.exited && self.exit_status.is_some_and(|status| status.is_failure()) {
-                s.last_state = crate::protocol::AgentState::Failed;
-                s.last_detail = self.exit_status.map(|status| status.summary());
-            }
+            (s.last_state, s.last_detail) = self.effective_agent_state();
             if self.last_blocked_reason.is_some() {
                 s.last_blocked_reason = self.last_blocked_reason;
             }
@@ -1250,28 +1277,7 @@ impl TerminalPane {
             .agent_session_id
             .clone()
             .or_else(|| self.agent.as_ref().and_then(|a| a.session_id.clone()));
-        let active_agent = select_terminal_agent(
-            self.reported_7501.as_ref(),
-            self.agent.as_ref(),
-            self.agent_reported_at,
-            self.observed_agent.as_ref(),
-            std::time::Instant::now(),
-        );
-        let last_state = if self.agent_completed || self.slots.contains_key("completed") {
-            crate::protocol::AgentState::Completed
-        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
-            crate::protocol::AgentState::Failed
-        } else if let Some(a) = active_agent {
-            a.state.clone()
-        } else {
-            crate::protocol::AgentState::Idle
-        };
-        let last_detail = self
-            .exit_status
-            .filter(|status| self.exited && status.is_failure())
-            .map(|status| status.summary())
-            .or_else(|| self.agent.as_ref().and_then(|a| a.detail.clone()))
-            .or_else(|| self.observed_agent.as_ref().and_then(|a| a.detail.clone()));
+        let (last_state, last_detail) = self.effective_agent_state();
 
         Some(crate::workspace::SavedAgentSession {
             fleet_result: self.fleet_result.clone(),
@@ -1303,16 +1309,7 @@ impl TerminalPane {
         context_name: &str,
         cwd: PathBuf,
     ) -> Option<crate::workspace::AgentHistoryRecord> {
-        let mut session = self.build_saved_agent_session()?;
-        if self.agent_completed
-            || self.slots.contains_key("completed")
-            || (self.ephemeral
-                && self.exit_status == Some(crate::host::pane_lifecycle::ExitStatus::Code(0)))
-        {
-            session.last_state = crate::protocol::AgentState::Completed;
-        } else if self.exited && self.exit_status.is_some_and(|s| s.is_failure()) {
-            session.last_state = crate::protocol::AgentState::Failed;
-        }
+        let session = self.build_saved_agent_session()?;
         let summary = self
             .slots
             .get("summary")
@@ -1430,6 +1427,22 @@ pub fn format_spawned_by_badge(raw: Option<&str>) -> Option<String> {
 mod agent_source_tests {
     use super::*;
     use crate::protocol::{AgentState, PaneAgentState};
+
+    #[test]
+    fn effective_agent_state_precedence_table() {
+        use crate::host::pane_lifecycle::ExitStatus;
+        for (completed, exit, reported, expected, detail) in [
+            (true, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Completed, "report"),
+            (false, Some(ExitStatus::Code(3)), AgentState::Completed, AgentState::Completed, "report"),
+            (false, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Failed, "exited (3)"),
+            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Working, "report"),
+            (false, None, AgentState::Blocked, AgentState::Blocked, "report"),
+        ] {
+            let actual = super::TerminalPane::resolve_agent_state(completed, exit, reported, Some("report".into()));
+            assert_eq!(actual, (expected, Some(detail.into())));
+        }
+    }
+
     use std::time::{Duration, Instant};
 
     fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
