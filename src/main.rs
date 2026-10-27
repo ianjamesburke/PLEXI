@@ -1180,6 +1180,7 @@ fn main() -> eframe::Result {
                         HostCmd::Restart { yes } => {
                             cli::trace::exit(cli::host::host_restart_cli(yes, json))
                         }
+                        HostCmd::WorkspaceRollback { to_channel } => cli::trace::exit(cli::host_workspace_rollback_cli(&to_channel)),
                         HostCmd::Stop => cli::trace::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {
                             cli::trace::exit(cli::host_log_cli(&source, &message))
@@ -1304,6 +1305,7 @@ fn main() -> eframe::Result {
                         }));
                     }
                     Commands::Pane { cmd } => match cmd {
+                        PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         PaneCmd::Name { first, second } => {
                             let (pane_id, name) = match second {
                                 Some(title) => {

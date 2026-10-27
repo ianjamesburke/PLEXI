@@ -34,7 +34,14 @@ pub struct HostModel {
     /// Authoritative continuous-strip state per context (`context_id -> Strip`).
     pub(crate) strips: HashMap<u64, crate::strip::Strip>,
     /// Latest resolved strip presentation snapshot per context (`context_id -> StripLayout`).
-    pub(crate) strip_layouts: HashMap<u64, crate::strip::StripLayout>,
+    pub(crate) strip_layouts: HashMap<u64, PublishedStripSnapshot>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PublishedStripSnapshot {
+    pub generation: u64,
+    pub strip: crate::strip::Strip,
+    pub layout: crate::strip::StripLayout,
 }
 
 impl HostModel {
@@ -294,12 +301,21 @@ impl HostModel {
 
     /// Return the latest presentation snapshot for `context_id`.
     pub fn strip_layout(&self, context_id: u64) -> Option<&crate::strip::StripLayout> {
+        self.strip_layouts.get(&context_id).map(|snapshot| &snapshot.layout)
+    }
+
+    pub(crate) fn published_strip_snapshot(&self, context_id: u64) -> Option<&PublishedStripSnapshot> {
         self.strip_layouts.get(&context_id)
     }
 
     /// Store the latest presentation snapshot for `context_id`.
     pub fn set_strip_layout(&mut self, context_id: u64, layout: crate::strip::StripLayout) {
-        self.strip_layouts.insert(context_id, layout);
+        let Some(strip) = self.strips.get(&context_id) else { return };
+        let generation = self.strip_layouts.get(&context_id).map_or(1, |previous| {
+            if previous.layout == layout && previous.strip == *strip { previous.generation }
+            else { previous.generation.saturating_add(1) }
+        });
+        self.strip_layouts.insert(context_id, PublishedStripSnapshot { generation, strip: strip.clone(), layout });
     }
 }
 

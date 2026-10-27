@@ -1715,7 +1715,7 @@ impl PlexiApp {
                     delivered_child_batches: HashMap::new(),
                     agent_tool_waits: Vec::new(),
                     agent_tool_children: std::collections::HashMap::new(),
-                    conjoined_contexts: std::collections::HashMap::new(),
+                    conjoined_contexts: restored.conjoined_contexts,
                     conjoined_parent_focus: None,
                     conjoined_parent_rect: None,
                     team_runs: Vec::new(),
@@ -2157,6 +2157,7 @@ impl PlexiApp {
         self.next_window_id = restored.next_window_id;
         self.host.seed_next_pane_id(restored.next_pane_id);
         self.host.strips = restored.strips;
+        self.conjoined_contexts = restored.conjoined_contexts;
         self.apply_context_transition_effects();
     }
 
@@ -5507,6 +5508,7 @@ pub(crate) struct WorkspaceRestoreCollaborators<'a> {
 
 /// Reconstructed workspace state returned by [`restore_workspace`].
 pub(crate) struct RestoredWorkspace {
+    pub conjoined_contexts: HashMap<u64, u64>,
     pub strips: HashMap<u64, crate::strip::Strip>,
     pub router: crate::workspace::router::WorkspaceRouter,
     pub windows: Vec<Window>,
@@ -6204,6 +6206,7 @@ pub(crate) fn restore_workspace(
     );
 
     Some(RestoredWorkspace {
+        conjoined_contexts: ws.conjoined_contexts,
         strips: ws.strips,
         router,
         windows,

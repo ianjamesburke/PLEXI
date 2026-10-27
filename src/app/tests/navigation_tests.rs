@@ -1525,3 +1525,61 @@ fn open_config_in_editor_splits_and_dedups() {
         "opening the editor must not rewrite the config"
     );
 }
+
+#[test]
+fn conjoined_parent_reference_survives_workspace_restart() {
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = crate::testing::reserve_test_context_id();
+    h.app.windows.push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Child".into(), root: h.workspace_root(), description: None,
+        context_id: child_context, parent_id: Some(parent_context), depth: 1, parked: false,
+    });
+    let (_, child) = h.app.add_app_pane_in_window(1, "child");
+    h.app.windows[1].panes.get_mut(&child).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    h.app.conjoined_contexts.insert(child_context, parent);
+    let profile = h.profile_dir().to_path_buf();
+    h.app.save_workspace_now();
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(restored.app.conjoined_contexts.get(&child_context), Some(&parent));
+    assert!(restored.app.find_pane_in_any_window(parent).is_some());
+    assert_eq!(restored.app.windows.iter().find(|w| w.panes.contains_key(&parent)).unwrap().context_id, parent_context);
+}
+
+#[test]
+fn legacy_multi_window_conversion_retains_membership_and_focus() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.app.windows[0].panes.get_mut(&first).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first]]);
+    let second_window = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(same_workspace_window_right(context, second_window));
+    let (tile, second) = h.app.add_app_pane_in_window(1, "second");
+    h.app.windows[1].panes.get_mut(&second).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    h.app.windows[1].focused_pane = Some(tile);
+    h.app.active_window = 1;
+    h.app.context_active_window.insert(context, second_window);
+    h.app.focus_pane_in_strip(second);
+    h.app.save_workspace_now();
+    let profile = h.profile_dir().to_path_buf();
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 2.into();
+    legacy.as_object_mut().unwrap().remove("strips");
+    legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+    let original = serde_json::to_vec(&legacy).unwrap();
+    std::fs::write(&path, &original).unwrap();
+    let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
+    assert_eq!(migrated.context_active_window[&context], second_window);
+    assert!(migrated.windows.iter().any(|window| window.window_id == second_window && window.panes.iter().any(|pane| pane.id == second)));
+    assert_eq!(migrated.strips[&context].focused_pane, Some(second));
+    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(restored.app.windows[restored.app.active_window].window_id, second_window);
+    assert_eq!(restored.app.focused_pane_id(), Some(second));
+    assert!(restored.app.find_pane_in_any_window(first).is_some());
+}

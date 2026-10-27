@@ -916,6 +916,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
         strips: Default::default(),
+        conjoined_contexts: Default::default(),
         active_context: 1,
         sidebar_visible: false,
         next_pane_id: 77,
@@ -1059,8 +1060,10 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     // A real, validly-shaped `Tree<PaneId>` — its serde form carries internal
     // fields (`id`, `height`, `width`) with no `#[serde(default)]`, so it must
     // come from the type itself rather than a hand-typed JSON fragment.
-    let tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+    let mut tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
         egui_tiles::Tree::empty("legacy-migration");
+    let tile = tree.tiles.insert_pane(1);
+    tree.root = Some(tile);
     let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
 
     let workspace_json = format!(
@@ -1069,7 +1072,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
             "active_context": 0,
             "sidebar_visible": true,
             "next_pane_id": 2,
-            "contexts": [],
+            "contexts": [{{"name":"Legacy", "root":"/tmp", "context_id":1}}],
             "windows": [
                 {{
                     "name": "Default",
@@ -1092,7 +1095,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
             ]
         }}"#
     );
-    std::fs::write(&workspace_path, workspace_json).expect("write legacy workspace file");
+    std::fs::write(&workspace_path, &workspace_json).expect("write legacy workspace file");
 
     let loaded = crate::workspace::WorkspaceFile::load();
     assert!(
@@ -1107,21 +1110,12 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     assert!(record.runtime_kind.is_none());
     assert!(record.launch.is_none());
 
-    // No backup file was written — the migration path is "still parses",
-    // not "detected and quarantined like a version mismatch".
-    let has_backup = std::fs::read_dir(&workspace_dir)
-        .expect("read workspace dir")
-        .any(|entry| {
-            entry
-                .expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .contains("backup")
-        });
-    assert!(
-        !has_backup,
-        "loading a legacy record must not quarantine the file"
+    assert_eq!(
+        std::fs::read(workspace_path.with_extension("v2.rollback.json")).unwrap(),
+        workspace_json.as_bytes(),
+        "migration must preserve the original legacy record",
     );
+    assert!(workspace_path.exists(), "migration keeps the active workspace path");
 }
 
 /// The other half of the migration path: a `launch` that names an app
@@ -12009,6 +12003,7 @@ mod agent_state_restoration_tests {
         let ws = WorkspaceFile {
             version: 2,
             strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 40,
@@ -12550,6 +12545,7 @@ mod agent_state_restoration_tests {
         let ws = WorkspaceFile {
             version: 2,
             strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,
@@ -14482,6 +14478,7 @@ ask = ["pane.send"]
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
         strips: Default::default(),
+        conjoined_contexts: Default::default(),
         active_context: 1,
         sidebar_visible: false,
         next_pane_id: 20,
@@ -15101,6 +15098,7 @@ mod restore_followups_0983b {
         let ws = WorkspaceFile {
             version: 2,
             strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,

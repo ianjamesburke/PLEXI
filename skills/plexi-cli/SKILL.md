@@ -159,8 +159,12 @@ visible from the current directory, so pass exactly the paths `list` printed.
 
 Use `host status --json` to check readiness after a startup timeout before
 retrying. Capture rendered pixels with `host screenshot`; use `pane state`
-for semantics. Updates preserve the channel; restart after rollback to run
-the restored package.
+for semantics. Use `pane layout` for the active strip's membership, widths,
+bounds, geometry generation, and input owner without pane content. Updates
+preserve the channel; restart after rollback to run
+the restored package. To recover a pre-migration workspace with an older build,
+run `plexi-alpha host workspace-rollback --to-channel recovery` with a new
+channel name. The export is the earlier workspace; later changes stay in Alpha.
 
 ```bash
 plexi host start --ephemeral --timeout-secs 15
@@ -464,6 +468,7 @@ pane count (`--json` is supported).
 - `plexi registry`: Watch installed CLI tools for changes to their available commands and options
 - `plexi registry watch`: Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
 - `plexi pane`: Control panes — list, focus, send input, capture output, and more
+- `plexi pane layout`: Show active workspace strip membership and geometry
 - `plexi pane hide`: Hide a pane (defaults to the calling pane)
 - `plexi pane reveal`: Reveal a hidden pane (defaults to the calling pane)
 - `plexi pane zoom`: Focus a pane and toggle fullscreen zoom, or enter its sub-context
@@ -570,6 +575,7 @@ pane count (`--json` is supported).
 - `plexi update`: Update this channel's managed package, or restore its previous generation
 - `plexi uninstall`: Remove this channel's recorded package and launchers
 - `plexi host`: Launch, stop, or check a headless-friendly Plexi host from the CLI
+- `plexi host workspace-rollback`: Export the preserved v2 workspace to a new isolated channel
 - `plexi host restart`: Restart this channel, restoring the saved workspace
 - `plexi host start`: Launch this channel's app bundle detached and wait for readiness
 - `plexi host stop`: Stop the running host and every pane agent for this channel

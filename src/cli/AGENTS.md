@@ -172,3 +172,11 @@ A worker harness that exits zero without `agent done` is `exited_unreported`, an
 `src/workspace/secrets/manager.rs`. The output fields and user workflow are
 documented in `website/src/content/docs/secrets.md`. Keep permission decisions
 in the existing monitor; the inventory only observes them.
+
+## Pane layout inspection
+
+The `pane layout` workflow is documented in `skills/plexi-cli/intro.md` under Inspect the host and manage capacity. It reads the published strip snapshot and must not include pane content.
+
+## Workspace rollback
+
+The `host workspace-rollback` workflow is documented in `skills/plexi-cli/intro.md` under Inspect the host and manage capacity. It exports only to a new channel profile.

@@ -10107,6 +10107,88 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_saved_workspace_strip_and_windows() {
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        for (name, layout) in [("first", "split_h"), ("second", "split_h")] {
+            let path = h.workspace.path().join(format!("{name}.md"));
+            std::fs::write(&path, format!("# {name} project\n\nReview the migration and record the result.\n")).unwrap();
+            h.with_app_mut(|app| app.launch_app_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
+            h.run_steps(3);
+        }
+        h.save_screenshot(&evidence_png!("_fresh")).unwrap();
+        let path = h.workspace.path().join("window.md");
+        std::fs::write(&path, "# Second window\n\nThe workspace keeps its pane identity.\n").unwrap();
+        let (terminal, first_editor) = h.with_app_mut(|app| {
+            let context = app.router.active().context_id;
+            app.create_page_at(1, 0, context, crate::pane_ops::create::TerminalSpawnOptions {
+                initial_cmd: Some("printf 'Second window ready\\n'"),
+                close_on_exit: false, cwd_override: path.parent().map(|p| p.to_path_buf()),
+                agent_pane: false, inject_folder_secrets: false,
+            });
+            let terminal = app.focused_pane_id().expect("new page terminal");
+            let previous: std::collections::HashSet<_> = app.windows[app.active_window].panes.keys().copied().collect();
+            app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).unwrap();
+            let first_editor = app.windows[app.active_window].panes.keys().copied().find(|id| !previous.contains(id)).expect("second-page editor");
+            (terminal, first_editor)
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| app.windows.iter_mut().find_map(|window| window.panes.get_mut(&terminal)).and_then(Pane::as_terminal_mut).is_some_and(|pane| pane.backend.capture_lines(30).iter().any(|line| line.contains("Second window ready"))));
+            if ready { break; }
+            assert!(Instant::now() < deadline, "second window terminal did not print fixture output");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let companion = h.workspace.path().join("companion.md");
+        std::fs::write(&companion, "# Companion note\n\nThe second page has two visible panes.\n").unwrap();
+        h.with_app_mut(|app| {
+            app.close_pane_by_id(terminal);
+            let previous: std::collections::HashSet<_> = app.windows[app.active_window].panes.keys().copied().collect();
+            app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[companion.display().to_string()], None).unwrap();
+            let second_editor = app.windows[app.active_window].panes.keys().copied().find(|id| !previous.contains(id)).expect("companion editor");
+            let context = app.router.active().context_id;
+            let strip = app.ensure_authoritative_strip(context);
+            for (pane, width) in [(first_editor, 480.0), (second_editor, 680.0)] {
+                let column = strip.find_column_for_pane(pane).expect("editor column");
+                strip.columns[column].width = crate::strip::ColumnWidth::CustomPixels(width);
+            }
+            strip.focus_pane(second_editor);
+        });
+        h.run_steps(4);
+        assert!(h.with_app(|app| app.windows.len()) >= 2);
+        h.with_app(|app| {
+            let layout = app.active_strip_layout();
+            let pane = layout.pane(first_editor).expect("second-page editor layout");
+            assert!(pane.is_visible, "visible editor must not be marked off-screen: {pane:?}");
+            let window = &app.windows[app.active_window];
+            let tile = window.tree.tiles.find_pane(&first_editor).unwrap();
+            let painted = window.tree.tiles.rect(tile).unwrap();
+            let painted_visible = painted.intersect(layout.canvas_rect);
+            assert!(pane.clip_rect.intersect(painted_visible).width() >= painted_visible.width() - 2.0,
+                "editor snapshot and painted tile must agree: snapshot={:?}, tile={painted:?}", pane.clip_rect);
+        });
+        h.save_screenshot(&evidence_png!("_multi_window")).unwrap();
+        h.with_app(|app| app.save_workspace_now());
+        let profile = h._profile_dir.path().to_path_buf();
+        let saved = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+        let mut restored = PlexiUiHarness::new_sized(1200.0, 700.0);
+        restored.with_app_mut(|app| {
+            let config = app.config.clone();
+            let colors = app.colors.clone();
+            let context = app.ctx.clone();
+            let sender = app.pty_event_tx.clone();
+            let workspace = crate::app::restore_workspace(saved, &config, crate::app::WorkspaceRestoreCollaborators {
+                profile_dir: &profile, colors: &colors, hot_reload: &mut app.hot_reload,
+                state_watch: &mut app.state_watch, terminal_spawner: Some((&context, &sender)),
+            }).expect("restore workspace");
+            app.install_restored_workspace(workspace);
+        });
+        restored.run_steps(4);
+        assert!(restored.with_app(|app| app.windows.len()) >= 2);
+        restored.save_screenshot(&evidence_png!("_restored")).unwrap();
+    }
+
+    #[test]
     fn strip_stack_double_click_resets_only_adjacent_shares() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.step();

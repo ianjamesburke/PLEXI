@@ -1277,6 +1277,26 @@ fn installed_identity() -> Option<(String, String)> {
     Some((receipt.active.tag, receipt.active.build_id))
 }
 
+pub fn host_workspace_rollback_cli(to_channel: &str) -> i32 {
+    if to_channel.is_empty() || !to_channel.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') {
+        eprintln!("error: channel must contain only letters, numbers, hyphens, or underscores");
+        return 1;
+    }
+    let source = host_config_dir(crate::config::build_channel().as_deref());
+    let destination = host_config_dir(Some(to_channel));
+    match crate::workspace::export_v2_rollback(&source, &destination) {
+        Ok(()) => {
+            println!("Exported the pre-migration workspace to channel {to_channel}. Later changes remain in the current channel.");
+            0
+        }
+        Err(error) => {
+            log::error!("host workspace rollback export failed: {error}");
+            eprintln!("error: workspace rollback export failed: {error}");
+            1
+        }
+    }
+}
+
 fn restart_hint() -> String {
     let name = crate::config::current_exe_basename();
     format!("{name} host stop && {name} host start")

@@ -643,12 +643,29 @@ impl PlexiApp {
         )
     }
 
-    /// Compute the presentation snapshot for the active context's strip.
+    /// Project the context strip into the active window's local viewport.
+    fn active_window_layout(&self, strip: &crate::strip::Strip, vp: &crate::strip::StripViewport) -> crate::strip::StripLayout {
+        let Some(window) = self.windows.get(self.active_window) else {
+            return crate::strip::layout_strip(strip, vp);
+        };
+        let intervals = strip.column_intervals(vp.canvas_rect.width(), vp.gap);
+        let first = strip.columns.iter().position(|column| column.panes.iter().any(|pane| window.panes.contains_key(pane)));
+        let base_x = first.and_then(|index| intervals.get(index)).map_or(0.0, |(x, _)| *x);
+        let mut local = strip.clone();
+        local.columns.retain(|column| column.panes.iter().any(|pane| window.panes.contains_key(pane)));
+        let max_scroll = local.max_scroll_offset_px(vp.canvas_rect.width(), vp.gap);
+        local.scroll_offset_px = (strip.scroll_offset_px - base_x).clamp(0.0, max_scroll);
+        local.scroll_offset = 0;
+        local.last_synced_scroll_offset = 0;
+        crate::strip::layout_strip(&local, vp)
+    }
+
+    /// Compute the presentation snapshot for the active window's strip.
     pub fn active_strip_layout(&self) -> crate::strip::StripLayout {
         let ctx_id = self.router.active().context_id;
         let strip = self.strip_for_context(ctx_id);
         let vp = self.active_strip_viewport();
-        crate::strip::layout_strip(&strip, &vp)
+        self.active_window_layout(&strip, &vp)
     }
 
     /// True if `pane_id` is the focused strip pane and no overlay owns input.
@@ -723,7 +740,8 @@ impl PlexiApp {
         let vp = self.active_strip_viewport();
         let strip = self.ensure_authoritative_strip(ctx_id);
         strip.focus_pane(pane_id);
-        let layout = crate::strip::layout_strip(strip, &vp);
+        let strip = strip.clone();
+        let layout = self.active_window_layout(&strip, &vp);
         self.host.set_strip_layout(ctx_id, layout);
         self.sync_attention_queue();
         true
@@ -2121,7 +2139,7 @@ impl PlexiApp {
 
         let authoritative_strip = self.strip_for_context(ctx_id);
         let vp = crate::strip::StripViewport::new(resolved_rect, gap);
-        let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
+        let layout = self.active_window_layout(&authoritative_strip, &vp);
         self.host.set_strip_layout(ctx_id, layout.clone());
 
         let stack_shares = {

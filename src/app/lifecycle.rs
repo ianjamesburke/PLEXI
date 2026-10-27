@@ -1718,6 +1718,39 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"error":"direction must be left, right, up, or down"}));
                 }
             }
+            crate::protocol::AppRequest::WorkspaceSnapshot { response_file } => {
+                let context_id = self.router.active().context_id;
+                let owner = match self.input_owner(&self.ctx) {
+                    crate::app::input_owner::InputOwner::Pane(pane_id) => serde_json::json!({"kind":"pane", "pane_id":pane_id}),
+                    crate::app::input_owner::InputOwner::Overlay(_) => serde_json::json!({"kind":"overlay"}),
+                    crate::app::input_owner::InputOwner::OsUnfocused => serde_json::json!({"kind":"os_unfocused"}),
+                    crate::app::input_owner::InputOwner::Nobody => serde_json::json!({"kind":"nobody"}),
+                };
+                let reply = if let Some(snapshot) = self.host.published_strip_snapshot(context_id) {
+                    let columns: Vec<_> = snapshot.strip.columns.iter().map(|column| serde_json::json!({
+                        "column_id":column.id.0, "panes":column.panes, "width":column.width,
+                        "height_shares":column.heights,
+                    })).collect();
+                    let panes: Vec<_> = snapshot.strip.columns.iter().flat_map(|column| column.panes.iter().map(move |pane_id| (column.id, *pane_id))).map(|(column_id, pane_id)| {
+                        let window_id = self.windows.iter().find(|window| window.panes.contains_key(&pane_id)).map(|window| window.window_id);
+                        let geometry = snapshot.layout.pane(pane_id);
+                        serde_json::json!({"pane_id":pane_id, "window_id":window_id,
+                            "column_id":column_id.0, "visible":geometry.is_some_and(|pane| pane.is_visible),
+                            "partially_visible":geometry.is_some_and(|pane| pane.is_partially_visible),
+                            "fully_on_screen":geometry.is_some_and(|pane| pane.is_on_screen),
+                            "bounds":geometry.map(|pane| serde_json::json!({"min":[pane.outer_rect.min.x, pane.outer_rect.min.y], "max":[pane.outer_rect.max.x, pane.outer_rect.max.y]})),
+                            "clip_bounds":geometry.filter(|pane| pane.is_visible).map(|pane| serde_json::json!({"min":[pane.clip_rect.min.x, pane.clip_rect.min.y], "max":[pane.clip_rect.max.x, pane.clip_rect.max.y]}))})
+                    }).collect();
+                    serde_json::json!({"context_id":context_id, "geometry_generation":snapshot.generation,
+                        "scroll_offset_px":snapshot.layout.scroll_offset_px, "focused_pane":snapshot.strip.focused_pane, "columns":columns,
+                        "conjoined_parent":self.conjoined_contexts.get(&context_id),
+                        "panes":panes, "input_owner":owner})
+                } else {
+                    serde_json::json!({"error":"workspace geometry is not available yet"})
+                };
+                log::info!("workspace_snapshot: context={context_id} available={}", reply.get("error").is_none());
+                write_json_response(response_file, reply);
+            }
             crate::protocol::AppRequest::ReloadConfig { response_file } => {
                 log::info!("config_reload: CLI requested reload");
                 self.reload_config();
