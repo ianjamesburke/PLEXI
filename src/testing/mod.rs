@@ -606,14 +606,18 @@ impl HostHarness {
     /// asserting that Tab/Escape reach the PTY must start from a settled
     /// terminal. Returns the terminal's `PaneId`.
     pub fn add_focused_terminal(&mut self) -> PaneId {
-        let app_pane = self.add_test_pane();
-        self.focus_pane(app_pane);
+        if self.app.windows[0].tree.root.is_none() {
+            let app_pane = self.add_test_pane();
+            self.focus_pane(app_pane);
+        } else if self.app.windows[0].focused_pane.is_none() {
+            if let Some(root) = self.app.windows[0].tree.root {
+                self.app.windows[0].focused_pane = self.app.windows[0].find_first_pane_in(root);
+            }
+        }
         self.run_frames(1);
-        self.app.split_focused(true, None, false, false, None);
-        let term = self.app.windows[0]
-            .panes
-            .iter()
-            .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+        let term = self
+            .app
+            .split_focused(true, None, false, false, None)
             .expect("split_focused should create a terminal pane");
         self.focus_pane(term);
         self.run_frames(3);

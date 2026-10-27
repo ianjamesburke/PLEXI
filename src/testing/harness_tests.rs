@@ -11049,6 +11049,7 @@ mod pane_lifecycle_events {
             if let Some(crate::host::pane::Pane::Terminal(t)) = win.panes.get_mut(&w3) {
                 t.exited = true;
                 t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
+                t.agent_completed = false;
                 t.agent = None;
                 t.observed_agent = None;
                 t.activity = None;
