@@ -181,6 +181,13 @@ pub(crate) struct ApprovalButton {
     pub pending_request_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContextRenameState {
+    pub(crate) target_id: u64,
+    pub(crate) origin_id: u64,
+    pub(crate) buffer: String,
+}
+
 pub struct PlexiApp {
     pub(crate) resource_leases: Option<crate::host::resource_leases::LeaseService>,
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
@@ -212,8 +219,6 @@ pub struct PlexiApp {
     pub(crate) pending_close: bool,
     pub(crate) pending_quit: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
-    pub(crate) welcome_delete_press_count: u8,
-    pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
     pub(crate) ui_phase: crate::platform::logging::UiPhaseTracker,
     /// Repaint-cause diagnostics sample window (#2019): start instant and
@@ -302,7 +307,7 @@ pub struct PlexiApp {
     /// Keys whose press edge fired a host binding and whose matching release
     /// remains host-owned, even if Command is released first.
     pub(crate) claimed_host_key_releases: HashSet<egui::Key>,
-    pub(crate) renaming_window: Option<usize>,
+    pub(crate) context_rename: Option<ContextRenameState>,
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
     pub(crate) description_buffer: String,
@@ -1675,8 +1680,6 @@ impl PlexiApp {
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
-                    welcome_delete_press_count: 0,
-                    welcome_delete_last_press: None,
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
@@ -1722,7 +1725,7 @@ impl PlexiApp {
                     permission_store_dir: profile_dir.clone(),
                     #[cfg(test)]
                     _test_scratch: None,
-                    renaming_window: None,
+                    context_rename: None,
                     rename_buffer: String::new(),
                     editing_description: None,
                     description_buffer: String::new(),
@@ -1948,8 +1951,6 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            welcome_delete_press_count: 0,
-            welcome_delete_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
@@ -1995,7 +1996,7 @@ impl PlexiApp {
             permission_store_dir: crate::config::config_dir(),
             #[cfg(test)]
             _test_scratch: None,
-            renaming_window: None,
+            context_rename: None,
             rename_buffer: String::new(),
             editing_description: None,
             description_buffer: String::new(),
@@ -2912,8 +2913,6 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            welcome_delete_press_count: 0,
-            welcome_delete_last_press: None,
             config,
             binding_table: crate::host::keys::build_binding_table(&key_bindings),
             claimed_host_key_releases: HashSet::new(),
@@ -2958,7 +2957,7 @@ impl PlexiApp {
             last_sent_window_title: None,
             permission_store_dir,
             _test_scratch: Some(scratch),
-            renaming_window: None,
+            context_rename: None,
             rename_buffer: String::new(),
             editing_description: None,
             description_buffer: String::new(),
@@ -3334,15 +3333,35 @@ impl PlexiApp {
 
     /// Single entry point for opening a context rename. Used by Cmd+Shift+R
     /// (active context) and by Cmd+R falling through from a focused portal
-    /// pane (the portal's target subcontext). Renders inline in the sidebar
-    /// when visible, otherwise as the centered overlay.
+    /// pane (the portal's target subcontext). The centered overlay owns input.
     pub(crate) fn open_context_rename(&mut self, ctx_idx: usize) {
-        self.rename_buffer = self.router.get(ctx_idx).name.to_string();
-        self.renaming_window = Some(ctx_idx);
-        log::info!(
-            "context_rename: opened for context {:?} (idx {ctx_idx})",
-            self.router.get(ctx_idx).name
-        );
+        self.cancel_context_rename("replaced");
+        let target = self.router.get(ctx_idx);
+        self.context_rename = Some(ContextRenameState {
+            target_id: target.context_id,
+            origin_id: self.router.active().context_id,
+            buffer: target.name.to_string(),
+        });
+        log::info!("context_rename: opened context_id={}", target.context_id);
+        self.sync_context_rename_focus();
+    }
+
+    pub(crate) fn cancel_context_rename(&mut self, reason: &str) {
+        if let Some(edit) = self.context_rename.take() {
+            log::info!("context_rename: cancelled context_id={} reason={reason}", edit.target_id);
+            self.sync_context_rename_focus();
+        }
+    }
+
+    pub(crate) fn commit_context_rename(&mut self) {
+        self.sync_context_rename_focus();
+        if let Some(edit) = self.context_rename.take() {
+            if let Some(idx) = self.router.position(|c| c.context_id == edit.target_id) {
+                self.rename_context(idx, &edit.buffer);
+                log::info!("context_rename: committed context_id={}", edit.target_id);
+            }
+            self.sync_context_rename_focus();
+        }
     }
 
     pub(crate) fn context_name_for(&self, context_id: u64) -> String {
@@ -3875,8 +3894,7 @@ impl eframe::App for PlexiApp {
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         // A close chord belongs to the top modal, never the pane beneath it.
         // Reuse that modal's Escape/cancel contract, including unsaved-work vetoes.
-        let modal_focus_open = !self.focus_stack.is_empty()
-            || (self.sidebar_visible && self.renaming_window.is_some());
+        let modal_focus_open = !self.focus_stack.is_empty();
         if modal_focus_open {
             let binding = self.key_bindings.close_pane;
             let mut claimed = false;

@@ -1266,7 +1266,7 @@ fn new_context_creates_top_level_empty_context() {
     // New contexts are immediately usable; the rename overlay is strictly
     // user-initiated now.
     assert_eq!(
-        app.renaming_window, None,
+        app.context_rename, None,
         "new context must not open a rename overlay"
     );
     assert!(matches!(
@@ -2186,17 +2186,16 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
 
     app.open_rename_for_focused();
 
-    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
     assert_eq!(
-        app.renaming_window,
-        Some(child_idx),
+        app.context_rename.as_ref().map(|edit| edit.target_id),
+        Some(child_id),
         "portal Cmd+R must open the context rename targeting the child"
     );
     assert_eq!(
         app.renaming_pane, None,
         "portal Cmd+R must not open the pane rename modal"
     );
-    assert_eq!(app.rename_buffer, "Child");
+    assert_eq!(app.context_rename.as_ref().unwrap().buffer, "Child");
 }
 
 /// Cmd+R on a non-portal pane still opens the pane rename modal.
@@ -2212,7 +2211,7 @@ fn rename_on_focused_pane_opens_pane_rename() {
     app.open_rename_for_focused();
 
     assert_eq!(app.renaming_pane, Some(pane_id));
-    assert_eq!(app.renaming_window, None);
+    assert_eq!(app.context_rename, None);
 }
 
 /// Closing the last pane in a subcontext must delete the subcontext and zoom

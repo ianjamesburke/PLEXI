@@ -538,15 +538,6 @@ fn paint_pips(
 }
 
 impl SidebarRow {
-    /// The inset rounded-card rect inside an allocated `row_rect` where the
-    /// row's selection fill and hover fill live.
-    pub(crate) fn card_rect(row_rect: Rect) -> Rect {
-        selection_inset(Rect::from_min_max(
-            Pos2::new(row_rect.min.x + style::SPACE_XS, row_rect.min.y),
-            Pos2::new(row_rect.max.x - style::SPACE_XS, row_rect.max.y),
-        ))
-    }
-
     pub fn show(
         self,
         ui: &mut egui::Ui,

@@ -3232,8 +3232,8 @@ fn rename_pane_overlay_focus_wins_after_central_panel_steal() {
 fn context_rename_overlay_focus_wins_after_central_panel_steal() {
     use crate::app::FocusKind;
     let mut h = HostHarness::new();
-    h.app.renaming_window = Some(0);
-    h.app.rename_buffer = "new context".to_string();
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "new context".to_string();
     h.app.sidebar_visible = false;
     h.app.push_focus_layer(FocusKind::ContextRename);
     h.run_frames(1);
@@ -4498,6 +4498,160 @@ fn frame_with_events(h: &mut HostHarness, events: Vec<egui::Event>) {
     });
 }
 
+#[test]
+fn context_1041_parked_rename_releases_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1041, tmp.path());
+    h.app.sidebar_visible = true;
+    h.app.open_context_rename(1);
+    h.run_frames(2);
+    h.app.park_context(1);
+    h.run_frames(2);
+    assert!(h.app.context_rename.is_none(), "parking hides the editor and must cancel rename");
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_direct_router_navigation_releases_rename_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    push_secondary_context(&mut h, 900_1044, tmp.path());
+    h.app.open_context_rename(0);
+    h.run_frames(2);
+    h.app.router.set_active(1);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none(), "direct navigation must cancel rename before routing input");
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_pane_rename_cannot_replace_context_draft() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "context draft".into();
+    h.app.open_rename_for_focused();
+    assert_ne!(h.app.rename_buffer, "context draft");
+    h.app.commit_context_rename();
+    assert_eq!(h.app.router.get(0).name.to_string(), "context draft");
+}
+
+#[test]
+fn context_1041_target_identity_survives_reorder_and_missing_target_cancels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1045, tmp.path());
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "target".into();
+    h.app.router.apply_order(&[1, 0]);
+    h.app.commit_context_rename();
+    let target = h.app.router.position(|c| c.context_id == 900_1045).unwrap();
+    assert_eq!(h.app.router.get(target).name.to_string(), "target");
+    h.app.open_context_rename(target);
+    h.app.router.remove_at(target);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_unpark_cancels_rename_and_returns_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1046, tmp.path());
+    h.app.park_context(1);
+    h.app.open_context_rename(0);
+    h.app.unpark_context(1);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(), AppPermissions::builtin(),
+        tmp.path().to_path_buf(), None, Some("split_h"), None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.app.open_context_rename(0);
+    h.run_frames(2);
+    run_blurred_frames(&mut h, 1);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::ArrowDown, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state()).unwrap();
+    assert_ne!(state["received"], serde_json::json!([] as [&str; 0]));
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_rename_switch_cancel_commit_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1043, tmp.path());
+    h.app.sidebar_visible = true;
+    h.app.open_context_rename(1);
+    h.run_frames(2);
+    assert_eq!(h.app.focus_stack.last(), Some(&crate::app::FocusKind::ContextRename));
+    h.app.switch_workspace(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    assert_ne!(h.app.router.get(1).name.to_string(), "changed");
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Enter, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    assert_eq!(h.app.router.get(1).name.to_string(), "changed");
+    h.app.open_context_rename(1);
+    h.app.delete_context(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_backspace_does_not_delete_blank_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1042, tmp.path());
+    h.app.switch_workspace(1);
+    h.run_frames(2);
+    for _ in 0..3 {
+        frame_with_events(&mut h, vec![egui::Event::Key {
+            key: egui::Key::Backspace, physical_key: None, pressed: true,
+            repeat: false, modifiers: egui::Modifiers::NONE,
+        }]);
+        frame_with_events(&mut h, vec![egui::Event::Key {
+            key: egui::Key::Backspace, physical_key: None, pressed: false,
+            repeat: false, modifiers: egui::Modifiers::NONE,
+        }]);
+    }
+    assert_eq!(h.app.router.len(), 2, "backspace must not remove a context");
+}
+
 /// Host focus can move before the frame's egui pass (keyboard pane nav,
 /// `focus_pane`). The editor used to insert `Event::Text` whenever its
 /// widget id still held egui focus, which the reconciler only updates at
@@ -4717,24 +4871,24 @@ fn input_owner_precedence_os_overlay_pane() {
         "with no overlay, the focused pane owns input"
     );
 
-    // Inline sidebar rename outranks the pane.
+    // Context rename outranks the pane.
     h.app.sidebar_visible = true;
-    h.app.renaming_window = Some(0);
+    h.app.open_context_rename(0);
     assert_eq!(
         h.app.input_owner(&ctx),
-        InputOwner::Overlay(OverlaySurface::SidebarRename),
-        "the inline sidebar rename editor owns input over the focused pane"
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::ContextRename)),
+        "the context rename overlay owns input over the focused pane"
     );
 
-    // A modal focus layer outranks the inline editor.
+    // A later modal focus layer outranks context rename.
     h.app
         .push_focus_layer(crate::app::FocusKind::CommandPalette);
     assert_eq!(
         h.app.input_owner(&ctx),
         InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)),
-        "the focus-stack top outranks inline editors"
+        "the focus-stack top owns input"
     );
-    h.app.renaming_window = None;
+    h.app.cancel_context_rename("test");
     h.app
         .pop_focus_layer(&crate::app::FocusKind::CommandPalette);
 
@@ -4764,8 +4918,8 @@ fn input_owner_precedence_os_overlay_pane() {
     );
 }
 
-/// Typing into the inline sidebar rename must not reach the focused app
-/// pane's `handle_key` — the editor is `InputOwner::Overlay(SidebarRename)`,
+/// Typing into the context rename overlay must not reach the focused app
+/// pane's `handle_key` — the editor is `InputOwner::Overlay(ContextRename)`,
 /// so `dispatch_app_key_events` is gated off (stint 0429). Before, the keys
 /// fed both the rename box and the app.
 #[test]
@@ -4785,7 +4939,7 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     h.run_frames(1);
 
     h.app.sidebar_visible = true;
-    h.app.renaming_window = Some(0);
+    h.app.open_context_rename(0);
     h.run_frames(1);
 
     frame_with_events(
@@ -4808,7 +4962,7 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     assert_eq!(
         state["received"],
         serde_json::json!([] as [&str; 0]),
-        "keys typed during sidebar rename must not reach the focused app pane"
+        "keys typed during context rename must not reach the focused app pane"
     );
 }
 
@@ -7833,8 +7987,8 @@ fn rename_pane_overlay_preselects_prefill() {
 #[test]
 fn rename_context_overlay_preselects_prefill() {
     let mut h = HostHarness::new();
-    h.app.renaming_window = Some(0);
-    h.app.rename_buffer = "new context".to_string();
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "new context".to_string();
     h.app.sidebar_visible = false;
     h.app.push_focus_layer(crate::app::FocusKind::ContextRename);
     h.run_frames(3);

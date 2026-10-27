@@ -33,16 +33,11 @@ pub(crate) enum InputOwner {
     Nobody,
 }
 
-/// The overlay surfaces that can own input. `Layer` covers every modal on
-/// the focus stack; the sidebar's inline context-rename editor is host state
-/// (`renaming_window` + visible sidebar) that never pushes a stack layer, so
-/// it gets its own variant instead of a sixth ad-hoc convention.
+/// The overlay surfaces that can own input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum OverlaySurface {
     /// The top of the modal focus stack.
     Layer(FocusKind),
-    /// Inline context rename in the visible sidebar.
-    SidebarRename,
     /// Decision overlay (`What would you do here?`).
     DecisionOverlay,
     /// Attention queue list (`Cmd+I`).
@@ -55,7 +50,7 @@ pub(crate) enum OverlaySurface {
 
 impl PlexiApp {
     /// The overlay surface that owns input, if any: the top of the modal
-    /// focus stack, else the inline sidebar rename editor. This is the single
+    /// focus stack or other host overlays. This is the single
     /// derivation behind [`Self::input_captured_by_overlay`] and
     /// [`Self::input_owner`] — never re-derive it elsewhere.
     pub(crate) fn overlay_surface(&self) -> Option<OverlaySurface> {
@@ -67,9 +62,6 @@ impl PlexiApp {
         }
         if let Some(kind) = self.focus_stack.last() {
             return Some(OverlaySurface::Layer(*kind));
-        }
-        if self.sidebar_visible && self.renaming_window.is_some() {
-            return Some(OverlaySurface::SidebarRename);
         }
         match self.zoom.level {
             crate::app::zoom::ZoomLevel::Columns => None,

@@ -1,15 +1,6 @@
 use super::*;
 
 impl PlexiApp {
-    pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
-        self.draw_triple_tap_overlay(
-            ctx,
-            "welcome_delete_overlay",
-            self.welcome_delete_press_count,
-            "⌫ pressed",
-        );
-    }
-
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
         crate::ui::toast::ToastShell::bottom("quit_confirm_overlay").show(
@@ -449,16 +440,4 @@ impl PlexiApp {
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
-    fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
-        crate::ui::toast::ToastShell::bottom(id).show(ctx, &self.colors, |ui| {
-            ui.horizontal(|ui| {
-                crate::ui::toast::toast_caption(
-                    ui,
-                    format!("{label} {} of 3 -- press again to delete context", count),
-                    &self.colors,
-                );
-                crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
-            });
-        });
-    }
 }
