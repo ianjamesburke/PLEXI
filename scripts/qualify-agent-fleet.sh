@@ -93,7 +93,7 @@ resolve_channel_target() {
 }
 
 resolve_real_plexi_binary() {
-  local candidate="$1" wrapper_name channel installer resolved
+  local candidate="$1" wrapper_name channel resolved
   if is_native_plexi_binary "$candidate"; then
     printf '%s\n' "$candidate"
     return 0
@@ -108,12 +108,7 @@ resolve_real_plexi_binary() {
     echo "error: $candidate is not a native Plexi executable" >&2
     return 1
   fi
-  installer="$(sed -n "s|^exec '\\([^']*\\)' launch.*$|\\1|p" "$candidate" | head -n 1)"
-  if [[ -z "$installer" || ! -x "$installer" ]]; then
-    echo "error: $candidate is an unsupported Plexi launcher; provide target/release/plexi or a Plexi app executable" >&2
-    return 1
-  fi
-  resolved="$($installer locate --channel "$channel" 2>/dev/null | tail -n 1)"
+  resolved="$(bash "$ROOT_DIR/scripts/distribution-tool.sh" locate --channel "$channel" 2>/dev/null | tail -n 1)"
   if [[ -z "$resolved" || ! -x "$resolved" ]] || ! is_native_plexi_binary "$resolved"; then
     echo "error: launcher $candidate did not resolve a native Plexi executable" >&2
     return 1
@@ -178,22 +173,34 @@ echo ""
 
 if [[ "$LIVE_MODE" == 1 ]]; then
   echo "--- [4/5] Live Channel Isolation Qualification ---"
-  LIVE_CHAN="qualif-fleet-$$"
+  target_name="$(basename "${TARGET:-}")"
+  case "$target_name" in
+    plexi-pr-*) LIVE_CHAN="${target_name#plexi-}" ;;
+    pr-*) LIVE_CHAN="$target_name" ;;
+    *) LIVE_CHAN="qualif-fleet-$$" ;;
+  esac
+  unset PLEXI_SOCKET PLEXI_PANE_ID PLEXI_CONTEXT_ID PLEXI_CONTEXT_NAME PLEXI_CONTEXT_ROOT PLEXI_RUNNING
   WS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-fleet-qualif-ws.XXXXXX")"
   SHIM_BIN="$WS_DIR/plexi-$LIVE_CHAN"
   ln "$PLEXI_BIN" "$SHIM_BIN" 2>/dev/null || cp "$PLEXI_BIN" "$SHIM_BIN"
-  stop_live_host() {
-    env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host stop >/dev/null 2>&1 || true
-  }
-  trap stop_live_host EXIT
-
   echo "Starting isolated host on channel $LIVE_CHAN (scratch retained at $WS_DIR)..."
-  env -u PLEXI_SOCKET -u PLEXI_PANE_ID -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_CONTEXT_ROOT -u PLEXI_RUNNING \
-    PLEXI_CHANNEL="$LIVE_CHAN" \
+  env PLEXI_CHANNEL="$LIVE_CHAN" \
     "$SHIM_BIN" host start --ephemeral --timeout-secs 15 --background --pane "cwd=$WS_DIR"
 
   STATUS_JSON="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host status --json)"
   echo "Host status: $STATUS_JSON"
+  OWNED_PID="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"])')"
+  OWNED_SOCKET="$(printf '%s' "$STATUS_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["socket"])')"
+  stop_live_host() {
+    local current
+    current="$(env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host status --json 2>/dev/null)" || return 0
+    if printf '%s' "$current" | python3 -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if str(s.get("pid")) == sys.argv[1] and s.get("socket") == sys.argv[2] else 1)' "$OWNED_PID" "$OWNED_SOCKET"; then
+      env PLEXI_CHANNEL="$LIVE_CHAN" "$SHIM_BIN" host stop >/dev/null 2>&1 || true
+    else
+      echo "Not stopping host: channel pid or socket changed" >&2
+    fi
+  }
+  trap stop_live_host EXIT
 
   echo "Creating real Pi-reported lifecycle panes..."
   printf -v WORKING_BODY '"%s" agent report --state working --agent pi --detail "qualifying working"; sleep 30' "$SHIM_BIN"

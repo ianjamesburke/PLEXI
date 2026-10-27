@@ -88,10 +88,11 @@ impl ContextState {
                             .clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
-                        let status = if t.exited && t.exit_status.is_some_and(|s| s.is_failure()) {
+                        let effective = pane.effective_agent();
+                        let status = if t.exited && t.effective_agent_state().0 == AgentState::Failed {
                             has_error = true;
                             PaneSummaryStatus::Error
-                        } else if let Some(agent) = pane.agent() {
+                        } else if let Some(agent) = effective.as_ref() {
                             match agent.state {
                                 AgentState::NeedsYou => {
                                     has_needs_you = true;
