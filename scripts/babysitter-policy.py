@@ -308,8 +308,10 @@ def preflight(settings, task_root, sprint_file, requested, integrated=()):
         raise PolicyError("requested task is not claimable")
     for task_id in selected:
         for blocker in task_data[task_id]["blocked_by"]:
-            if blocker in task_data and task_data[blocker]["status"] != "done" and blocker not in integrated:
-                raise PolicyError(f"task {task_id} is blocked by {blocker}")
+            if blocker in task_data:
+                status = task_data[blocker]["status"]
+                if status != "done" and not (status == "in-progress" and blocker in integrated):
+                    raise PolicyError(f"task {task_id} is blocked by {blocker}")
     return {"topology": settings["topology"], "tasks": selected,
             "size": max((task_data[task_id]["size"] for task_id in selected),
                         key=lambda item: {"S": 1, "M": 2, "L": 3}[item]),

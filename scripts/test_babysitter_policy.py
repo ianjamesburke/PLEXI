@@ -532,6 +532,14 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)["tasks"], ["0987"])
                 with self.assertRaises(policy.PolicyError):
                     policy.preflight(self.settings, tasks, sprint, ["0987"])
+                blocker = tasks / "0986-one.md"
+                original_task = blocker.read_text()
+                for status in ("todo", "blocked"):
+                    with self.subTest(blocker_status=status):
+                        blocker.write_text(original_task.replace("status: in-progress", f"status: {status}"))
+                        with self.assertRaisesRegex(policy.PolicyError, "blocked by 0986"):
+                            policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)
+                blocker.write_text(original_task)
                 # A merged PR may advance the remote before its manifest is written.
                 recovery_record = copy.deepcopy(record)
                 recovery_record.update(stints=["0987"], base_head="d" * 40, head="f" * 40,
