@@ -5879,7 +5879,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 newly_exited = !t.exited;
-                                let (prior_agent_state, _) = t.effective_agent_state();
+                                let (prior_agent_state, prior_agent_detail) = t.effective_agent_state();
                                 t.exited = true;
                                 t.exit_status = Some(status);
                                 t.program_status
@@ -5896,7 +5896,7 @@ impl PlexiApp {
                                 );
                                 if newly_exited && t.is_agent_pane() {
                                     let (state, detail) = t.effective_agent_state();
-                                    if prior_agent_state != crate::protocol::AgentState::Failed && state == crate::protocol::AgentState::Failed && detail.as_deref() == Some(status.summary().as_str()) {
+                                    if (prior_agent_state != state || prior_agent_detail != detail) && state == crate::protocol::AgentState::Failed && detail.as_deref() == Some(status.summary().as_str()) {
                                         log::info!("agents: pane {id} effective state overridden to Failed on {}", status.summary());
                                     }
                                 }
