@@ -735,6 +735,16 @@ impl PlexiApp {
             // fall through to the root/split path below
         }
 
+        if let Some(focused) = self.windows[active].focused_pane {
+            let window = &self.windows[active];
+            let valid = window.find_first_pane_in(focused).and_then(|tile| window.tree.tiles.get(tile))
+                .is_some_and(|tile| matches!(tile, Tile::Pane(id) if window.panes.contains_key(id)));
+            if !valid {
+                log::warn!("app::{app_id}: launch skipped — stale focus target");
+                return None;
+            }
+        }
+
         if self.windows[active].zoomed_pane.take().is_some() {
             log::info!("app::{app_id}: cleared zoom before launch");
         }

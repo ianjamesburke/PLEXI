@@ -27,7 +27,11 @@ impl PlexiApp {
                 self.ctx.request_repaint();
             }
             crate::pane_ops::SwapResult::AtBoundary => {
-                let moved = match dir {
+                let ctx_id = self.windows[self.active_window].context_id;
+                let in_strip = self.active_focused_pane_id().is_some_and(|pane| {
+                    self.host.strip(ctx_id).is_some_and(|strip| strip.contains_pane(pane))
+                });
+                let moved = !in_strip && match dir {
                     crate::host::keys::Direction::Down => {
                         self.move_focused_pane_to_row_boundary(true)
                     }

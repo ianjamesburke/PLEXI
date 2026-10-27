@@ -83,3 +83,16 @@ assert = { target = "stack_bottom", focused = true }
 
 [[steps]]
 shot = "continuous-strip-navigation.png"
+
+# Swap the focused stack member left and follow the moved pane identity.
+[[steps]]
+key = { target = "host", value = "cmd+ctrl+h" }
+
+[[steps]]
+run_steps = 120
+
+[[steps]]
+assert = { target = "stack_bottom", focused = true, pane_count = 4 }
+
+[[steps]]
+shot = "continuous-strip-swap.png"
