@@ -15470,6 +15470,92 @@ mod strip_navigation_frame_tests {
     }
 
     #[test]
+    fn swap_pane_uses_strip_neighbors_and_keeps_focus() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let context_id = h.app.router.active().context_id;
+        assert!(h.app.focus_pane_in_strip(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.find_column_for_pane(panes[2]), Some(1));
+        assert_eq!(strip.find_column_for_pane(panes[1]), Some(2));
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Right), crate::pane_ops::SwapResult::Swapped { .. }));
+        assert_eq!(h.app.host.strip(context_id).unwrap().find_column_for_pane(panes[2]), Some(2));
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        h.run_frames(2);
+        h.terminal_backend(panes[2]).enable_input_tap();
+        h.terminal_backend(panes[1]).enable_input_tap();
+        super::type_x_through_raw_input(&mut h);
+        assert_eq!(h.terminal_backend(panes[2]).take_input_tap(), b"x");
+        assert!(h.terminal_backend(panes[1]).take_input_tap().is_empty());
+    }
+
+    #[test]
+    fn swap_pane_stacked_neighbor_and_boundaries() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let context_id = h.app.router.active().context_id;
+        h.app.set_context_columns(context_id, vec![vec![panes[0]], vec![panes[1], panes[2]], vec![panes[3]], vec![panes[4]]]);
+        h.app.focus_pane_in_strip(panes[2]);
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.columns[0].panes, vec![panes[2]]);
+        assert_eq!(strip.columns[1].panes, vec![panes[1], panes[0]]);
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(matches!(h.app.swap_pane(Direction::Up), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(h.app.navigate_columns_strip(Direction::Right));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.columns[0].panes, vec![panes[2]]);
+        assert_eq!(strip.columns[1].panes, vec![panes[1], panes[0]]);
+    }
+
+    #[test]
+    fn close_tile_keeps_background_focus_and_reveals_active_successor() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let ctx_id = h.app.router.active().context_id;
+        h.app.focus_pane_in_strip(panes[3]);
+        let background = h.app.windows[0].tree.tiles.find_pane(&panes[0]).unwrap();
+        h.app.close_tile(0, background);
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[3]));
+        assert_eq!(h.app.host.strip(ctx_id).unwrap().focused_pane, Some(panes[3]));
+        let active = h.app.windows[0].tree.tiles.find_pane(&panes[3]).unwrap();
+        h.app.close_tile(0, active);
+        let target = h.app.active_focused_pane_id().expect("live successor");
+        assert_ne!(target, panes[3]);
+        assert!(h.app.windows[0].panes.contains_key(&target));
+        assert_eq!(h.app.host.strip(ctx_id).unwrap().focused_pane, Some(target));
+        h.run_frames(2);
+        h.terminal_backend(target).enable_input_tap();
+        super::type_x_through_raw_input(&mut h);
+        assert_eq!(h.terminal_backend(target).take_input_tap(), b"x");
+    }
+
+    #[test]
+    fn stale_split_swap_and_close_leave_layout_unchanged() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let ctx_id = h.app.router.active().context_id;
+        h.app.focus_pane_in_strip(panes[2]);
+        let tile = h.app.windows[0].tree.tiles.find_pane(&panes[2]).unwrap();
+        let removed = h.app.windows[0].panes.remove(&panes[2]).unwrap();
+        let strip = h.app.host.strip(ctx_id).cloned();
+        let model = h.app.host.test_pane_ids();
+        let tree_count = h.app.windows[0].tree.tiles.len();
+        assert!(h.app.split_focused(false, None, false, false, None).is_none());
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::NoFocus));
+        h.app.close_tile(0, tile);
+        h.app.close_pane_by_id(panes[2]);
+        assert_eq!(h.app.host.strip(ctx_id), strip.as_ref());
+        assert_eq!(h.app.host.test_pane_ids(), model);
+        assert_eq!(h.app.windows[0].tree.tiles.len(), tree_count);
+        assert_eq!(h.app.windows[0].focused_pane, Some(tile));
+        h.app.windows[0].panes.insert(panes[2], removed);
+    }
+
+    #[test]
     fn slow_shell_paints_stable_placeholder_chrome_and_preserves_geometry() {
         let mut h = HostHarness::new();
         let app_pane = h.add_test_pane();
@@ -15576,6 +15662,8 @@ mod strip_navigation_frame_tests {
         let initial_tile_count = window.tree.tiles.len();
         let initial_focus = window.focused_pane;
         let initial_strip = h.app.host.strip(context_id).cloned();
+        let initial_model_panes = h.app.host.test_pane_ids();
+        let initial_model_focus = h.app.host.test_focused_pane();
 
         // `split_focused` is the production terminal-creation path. Force its
         // real `TerminalPane::new` call to fail without sharing a process env
@@ -15583,13 +15671,19 @@ mod strip_navigation_frame_tests {
         let _shell_override = crate::host::shell::set_test_shell_override(
             "/nonexistent/plexi-test-shell-that-cannot-spawn",
         );
-        assert!(
-            h.app
-                .split_focused(true, None, false, false, None)
-                .is_none(),
-            "the real split path must report terminal spawn failure"
-        );
+        crate::host::event_log::test_capture_events();
+        for vertical in [false, true] {
+            assert!(
+                h.app.split_focused(vertical, None, false, false, None).is_none(),
+                "the real split path must report terminal spawn failure"
+            );
+        }
+        h.app.new_tab(0, None, false, None, false, false);
+        let events = crate::host::event_log::test_take_events();
+        assert!(!events.iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { .. })), "failed spawn must not emit PaneSplit");
 
+        assert_eq!(h.app.host.test_pane_ids(), initial_model_panes, "failed spawn must not register a model pane");
+        assert_eq!(h.app.host.test_focused_pane(), initial_model_focus, "failed spawn must not change model focus");
         let window = &h.app.windows[0];
         let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
         let final_tree_panes: std::collections::BTreeSet<_> = window
@@ -15623,6 +15717,10 @@ mod strip_navigation_frame_tests {
             initial_strip.as_ref(),
             "failed split must leave the authoritative strip unchanged"
         );
+        drop(_shell_override);
+        crate::host::event_log::test_capture_events();
+        let created = h.app.split_focused(false, None, false, false, None).expect("control spawn succeeds");
+        assert!(crate::host::event_log::test_take_events().iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { pane_id, .. } if *pane_id == created)), "capture must observe a successful split event");
     }
 }
 

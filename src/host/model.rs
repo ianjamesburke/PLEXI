@@ -152,12 +152,7 @@ impl HostModel {
 
     fn split(&mut self, placement: Placement) -> Vec<HostEffect> {
         let new_id = self.alloc_pane_id();
-        let pane = HostPane {
-            id: new_id,
-            group: None,
-        };
-        self.context_mut().panes.push(pane);
-        self.context_mut().focused_pane = Some(new_id);
+        self.commit_split_pane(new_id);
         vec![
             HostEffect::SplitOpened {
                 pane_id: new_id,
@@ -168,6 +163,12 @@ impl HostModel {
                 pane_id: Some(new_id),
             },
         ]
+    }
+
+    /// Commit a reserved split identity after its runtime has been created.
+    pub(crate) fn commit_split_pane(&mut self, pane_id: PaneId) {
+        self.context_mut().panes.push(HostPane { id: pane_id, group: None });
+        self.context_mut().focused_pane = Some(pane_id);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
