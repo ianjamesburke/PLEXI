@@ -710,6 +710,10 @@ test("an attached session injects the Plexi container section into the system pr
   assert.equal(typeof text, "string");
   assert.match(text, /pane #7/);
   assert.match(text, /plexi app open text-editor/);
+  // Stint 1050: an attached agent must know the notes editor exists without
+  // having to load the (model-invocation-disabled) `plexi-cli` skill.
+  assert.match(text, /plexi note open/);
+  assert.match(text, /plexi note rm/);
 });
 
 test("a detached session injects no Plexi container section", async () => {

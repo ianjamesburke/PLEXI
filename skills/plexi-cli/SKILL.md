@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "6.1.2"
+skill_version: "6.1.3"
 plexi_version: "0.4.0"
-last_verified: "2026-10-25"
+last_verified: "2026-10-26"
 disable-model-invocation: true
 ---
 
@@ -134,6 +134,26 @@ plexi app open file_browser           # no path: browses the pane's directory
 Built-in pane types do not appear in `plexi app list` (that lists installed
 apps only), and `text-editor` with no path opens a fresh scratch note. Read an
 open app pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+
+## Capture and handle notes
+
+Plexi has a built-in notes editor. A note is a Markdown file in the tier of the
+current directory (its nearest ancestor holding `.plexi/`, else the global
+tier), and the CLI is the sanctioned way to read and retire it. Never read or
+delete a note through its backing file path directly.
+
+```bash
+plexi note "a thought"            # capture (shorthand for `plexi note add`)
+plexi note list                   # print every visible note path, newest first
+plexi note show <path>            # print one note's contents
+plexi note open                   # fzf picker in the focused pane, opens in $EDITOR
+```
+
+To handle a person's notes: run `plexi note list`, then `plexi note show` each
+path and act on what it says. After a note has been addressed, tell the person
+it can likely be deleted and run `plexi note rm <path>` only on their yes —
+`rm` is irreversible. `show` and `rm` refuse any path outside a notes tier
+visible from the current directory, so pass exactly the paths `list` printed.
 
 ## Inspect the host and manage capacity
 
@@ -539,10 +559,12 @@ pane count (`--json` is supported).
 - `plexi config reset`: Overwrite the selected config.toml with the built-in default template
 - `plexi config list`: Print all known config keys with type, current value, and description
 - `plexi config set`: Set one or more keys in the selected config.toml
-- `plexi note`: Capture, list, and open notes
+- `plexi note`: Capture, list, read, open, and delete notes
 - `plexi note add`: Capture a note explicitly, even when the text is `list`, `open`, or `add`
 - `plexi note list`: Print paths of every note in every visible tier, newest first
 - `plexi note open`: Open a note picker with fzf in the focused terminal pane
+- `plexi note show`: Print one note's contents by the path `plexi note list` printed
+- `plexi note rm`: Delete one note by the path `plexi note list` printed
 - `plexi doctor`: Audit all installed apps for capability and config gaps
 - `plexi demo`: Interactive keybinding tutorial — learn split and navigate in real time
 - `plexi update`: Update this channel's managed package, or restore its previous generation

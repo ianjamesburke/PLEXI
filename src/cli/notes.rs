@@ -110,7 +110,106 @@ fn run_note_cmd(cmd: super::args::NoteCmd) -> i32 {
         NoteCmd::Add { text } => note_capture_cli(&text),
         NoteCmd::List => notes_list_cli(),
         NoteCmd::Open => notes_open_cli(),
+        NoteCmd::Show { path } => notes_show_cli(&path),
+        NoteCmd::Rm { path } => notes_rm_cli(&path),
     }
+}
+
+/// The notes directories visible from cwd — the exact set `plexi note list`
+/// prints from, so every path `list` produced resolves here.
+fn visible_note_tiers() -> Vec<std::path::PathBuf> {
+    cli_notes_scopes().into_iter().map(|scope| scope.dir).collect()
+}
+
+/// `plexi note show <path>` — print one note's contents.
+pub fn notes_show_cli(path: &std::path::Path) -> i32 {
+    match note_contents_in(path, &visible_note_tiers()) {
+        Ok(body) => {
+            log::info!("note_show: read {:?}", path);
+            print!("{body}");
+            // A note without a trailing newline would glue the player's shell
+            // prompt to its last line, so terminate the stream either way.
+            if !body.ends_with('\n') {
+                println!();
+            }
+            0
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            1
+        }
+    }
+}
+
+/// `plexi note rm <path>` — delete exactly one note. Irreversible.
+pub fn notes_rm_cli(path: &std::path::Path) -> i32 {
+    match remove_note_in(path, &visible_note_tiers()) {
+        Ok(removed) => {
+            log::info!("note_rm: removed {:?}", removed);
+            0
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            1
+        }
+    }
+}
+
+/// Read one note that lives inside one of `tiers`.
+fn note_contents_in(
+    path: &std::path::Path,
+    tiers: &[std::path::PathBuf],
+) -> Result<String, String> {
+    let resolved = resolve_note_path(path, tiers)?;
+    std::fs::read_to_string(&resolved)
+        .map_err(|error| format!("failed to read {}: {error}", resolved.display()))
+}
+
+/// Delete one note that lives inside one of `tiers`, returning its resolved path.
+fn remove_note_in(
+    path: &std::path::Path,
+    tiers: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let resolved = resolve_note_path(path, tiers)?;
+    std::fs::remove_file(&resolved)
+        .map_err(|error| format!("failed to remove {}: {error}", resolved.display()))?;
+    Ok(resolved)
+}
+
+/// Resolve a user-supplied note path against the tiers visible to this call.
+///
+/// The path's **directory** is canonicalized before the containment check, so a
+/// hand-typed `..` cannot escape a tier — while a symlinked note (a real
+/// affordance; see `scan_tier`) still resolves by where the link sits, not by
+/// where it points. A path outside every tier, or one that is not an existing
+/// file, is an error naming the path.
+fn resolve_note_path(
+    path: &std::path::Path,
+    tiers: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let parent = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => parent,
+        None => std::path::Path::new("."),
+    };
+    let Some(file_name) = path.file_name() else {
+        return Err(format!("{} is not a note file", path.display()));
+    };
+    let canonical_parent = std::fs::canonicalize(parent)
+        .map_err(|error| format!("cannot open {} — {error}", path.display()))?;
+    let resolved = canonical_parent.join(file_name);
+    if !resolved.is_file() {
+        return Err(format!("no note at {}", path.display()));
+    }
+    let inside = tiers.iter().any(|tier| {
+        std::fs::canonicalize(tier).is_ok_and(|tier| canonical_parent.starts_with(&tier))
+    });
+    if !inside {
+        return Err(format!(
+            "{} is not in a notes tier visible from this directory — run `plexi note list` and pass one of its paths",
+            path.display()
+        ));
+    }
+    Ok(resolved)
 }
 
 /// `plexi note list` — every note across every visible tier, newest first.
@@ -227,7 +326,118 @@ fn notes_open_command(self_exe: &str, editor: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_note_into, missing_picker_error, notes_open_command, InstallPlatform};
+    use super::{
+        capture_note_into, missing_picker_error, note_contents_in, notes_open_command,
+        remove_note_in, InstallPlatform,
+    };
+
+    /// A tier-shaped temp dir plus one seeded note, so every show/rm test names a
+    /// real path under a real `.plexi/notes`.
+    fn seeded_tier(
+        tag: &str,
+    ) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tier = tmp.path().join(".plexi").join("notes");
+        std::fs::create_dir_all(&tier).expect("create tier");
+        let note = tier.join(format!("{tag}.md"));
+        std::fs::write(&note, format!("{tag} body\n")).expect("seed note");
+        (tmp, tier, note)
+    }
+
+    #[test]
+    fn show_reads_a_note_inside_a_visible_tier() {
+        let (_tmp, tier, note) = seeded_tier("shown");
+        assert_eq!(
+            note_contents_in(&note, &[tier]).expect("read"),
+            "shown body\n"
+        );
+    }
+
+    #[test]
+    fn show_reads_notes_from_a_nested_tier_and_the_global_tier() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("project");
+        let own = root.join(".plexi").join("notes");
+        let nested = root.join("crates").join("engine").join(".plexi").join("notes");
+        let global = tmp.path().join("global").join("notes");
+        for tier in [&own, &nested, &global] {
+            std::fs::create_dir_all(tier).expect("create tier");
+        }
+        let nested_note = nested.join("nested.md");
+        std::fs::write(&nested_note, "nested body\n").expect("seed");
+        let global_note = global.join("g.md");
+        std::fs::write(&global_note, "global body\n").expect("seed");
+
+        // The exact tier list `notes_scopes_for_root` yields: own, nested, global.
+        let tiers = vec![own, nested, global];
+        assert_eq!(
+            note_contents_in(&nested_note, &tiers).expect("nested"),
+            "nested body\n"
+        );
+        assert_eq!(
+            note_contents_in(&global_note, &tiers).expect("global"),
+            "global body\n"
+        );
+    }
+
+    #[test]
+    fn show_refuses_a_missing_note_and_names_the_path() {
+        let (_tmp, tier, _note) = seeded_tier("present");
+        let missing = tier.join("gone.md");
+        let error = note_contents_in(&missing, &[tier]).expect_err("missing must fail");
+        assert!(error.contains("no note at"), "{error}");
+        assert!(error.contains("gone.md"), "{error}");
+    }
+
+    #[test]
+    fn show_and_rm_refuse_a_path_outside_every_tier() {
+        let (tmp, tier, _note) = seeded_tier("inside");
+        let outside = tmp.path().join("secret.md");
+        std::fs::write(&outside, "not a note\n").expect("seed");
+        let tiers = vec![tier];
+
+        let error = note_contents_in(&outside, &tiers).expect_err("outside must fail");
+        assert!(error.contains("not in a notes tier"), "{error}");
+        let error = remove_note_in(&outside, &tiers).expect_err("outside must fail");
+        assert!(error.contains("not in a notes tier"), "{error}");
+        assert!(outside.exists(), "the refused file must survive");
+    }
+
+    #[test]
+    fn show_and_rm_refuse_dotdot_traversal_out_of_a_tier() {
+        let (tmp, tier, _note) = seeded_tier("inside");
+        let escape = tier.join("..").join("..").join("secret.md");
+        std::fs::write(tmp.path().join("secret.md"), "escaped\n").expect("seed");
+        let tiers = vec![tier];
+
+        let error = note_contents_in(&escape, &tiers).expect_err("traversal must fail");
+        assert!(error.contains("not in a notes tier"), "{error}");
+        let error = remove_note_in(&escape, &tiers).expect_err("traversal must fail");
+        assert!(error.contains("not in a notes tier"), "{error}");
+        assert!(
+            tmp.path().join("secret.md").exists(),
+            "traversal must not reach the file"
+        );
+    }
+
+    #[test]
+    fn rm_deletes_exactly_the_named_note_and_leaves_siblings() {
+        let (_tmp, tier, note) = seeded_tier("doomed");
+        let sibling = tier.join("kept.md");
+        std::fs::write(&sibling, "keep me\n").expect("seed");
+
+        remove_note_in(&note, &[tier]).expect("remove");
+        assert!(!note.exists(), "the named note must be gone");
+        assert!(sibling.exists(), "a sibling note must survive");
+    }
+
+    #[test]
+    fn rm_reports_a_missing_note_instead_of_panicking() {
+        let (_tmp, tier, _note) = seeded_tier("present");
+        let missing = tier.join("gone.md");
+        let error = remove_note_in(&missing, &[tier]).expect_err("missing must fail");
+        assert!(error.contains("no note at"), "{error}");
+    }
 
     #[test]
     fn missing_picker_hint_uses_each_platforms_native_install_path() {
