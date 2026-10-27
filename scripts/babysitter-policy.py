@@ -38,7 +38,8 @@ def route(settings, size, exhausted=(), worker_alias=None):
             raise PolicyError(f"unconfigured alias: {alias}")
         return alias not in unavailable
 
-    if worker_alias is not None and (worker_alias not in settings["roles"][role]
+    explicit = settings["roles"].get(f"{role}_explicit", ())
+    if worker_alias is not None and (worker_alias not in (*settings["roles"][role], *explicit)
                                      or not eligible(worker_alias)):
         raise PolicyError("worker alias is unavailable for this size")
     candidates = [worker_alias] if worker_alias else settings["roles"][role]

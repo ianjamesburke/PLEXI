@@ -104,6 +104,35 @@ class PolicyTests(unittest.TestCase):
         engine = prefixes[max((p for p in prefixes if "com".startswith(p)), key=len)]
         self.assertEqual(engines["launch"][engine], "{alias} {prompt}")
 
+    def test_pi_small_queue_is_explicit_only_and_never_a_default_fallback(self):
+        settings = policy.config()
+        self.assertEqual(settings["roles"].get("worker_small_explicit"), ["pi"])
+        for size in "SML":
+            with self.subTest(size=size):
+                self.assertEqual(policy.route(settings, size)["worker"], "com")
+                with self.assertRaisesRegex(policy.PolicyError, "no available independent"):
+                    policy.route(settings, size, ["com"])
+        for exhausted in ([], ["com"]):
+            selected = policy.route(settings, "S", exhausted, worker_alias="pi")
+            self.assertEqual(selected["worker"], "pi")
+            self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
+        for size in "ML":
+            with self.assertRaisesRegex(policy.PolicyError, "unavailable for this size"):
+                policy.route(settings, size, worker_alias="pi")
+        with self.assertRaisesRegex(policy.PolicyError, "unavailable for this size"):
+            policy.route(settings, "S", ["pi"], worker_alias="pi")
+
+    def test_explicit_pi_batch_preserves_independent_merge_gates(self):
+        settings = policy.config()
+        record = copy.deepcopy(self.record)
+        record.update(worker_alias="pi", tester_alias="agy")
+        record["validation"].update(worker_vendor="deepseek", tester_vendor="gemini")
+        self.assertEqual(policy.check_gate(settings, record, self.pr, self.checks,
+                                           self.base, "batch"), self.head)
+        record["validation"]["tester_vendor"] = "deepseek"
+        with self.assertRaisesRegex(policy.PolicyError, "self-validation"):
+            policy.check_gate(settings, record, self.pr, self.checks, self.base, "batch")
+
     def test_sizes_route_distinct_models_and_independent_vendors(self):
         for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
             result = policy.route(self.settings, size)

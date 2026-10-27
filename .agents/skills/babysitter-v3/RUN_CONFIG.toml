@@ -6,6 +6,7 @@
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
 worker_small  = ["com"]
+worker_small_explicit = ["pi"]  # reserved child queue; explicit selection only
 worker_medium = ["com"]
 worker_large  = ["com"]
 tester        = ["agy", "pi", "cs", "agym", "cos"]

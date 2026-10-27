@@ -11,6 +11,8 @@ You are the **head**: a router, never a coder. You spawn panes, brief them, read
 
 Settings (roles, aliases, limits, footers, paths) live in `RUN_CONFIG.toml` next to this file. Read it at start and before every spawn. Never restate its values in briefs or state files.
 
+Reserved child queues may explicitly select an alias from the size role's `_explicit` allowlist using `route --worker-alias`. Explicit lists never participate in automatic selection or exhaustion fallback. Keep the chosen alias in the batch record so the same route and independent-vendor gates apply.
+
 ## Hosted Rust verification
 
 `RUN_CONFIG.toml` `[ci].rust_host = "after_alpha"` defers the Rust host workflow
