@@ -593,6 +593,13 @@ bs-validate-setup pr:
 bs-merge pr *flags:
     bash scripts/bs-merge.sh {{pr}} {{flags}}
 
+# Aggregate batch integration: `integrate` then `channel-clean`, both run from
+# the aggregate worktree so the caller's cwd is irrelevant. The head's single
+# action once a batch's gate is green.
+#   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
+bs-integrate pr record manifest:
+    bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
+
 # Dispatch Claude agents at one or more issues. Labels each "in progress" first
 # to prevent double-claiming when multiple dispatches run close together.
 # TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
