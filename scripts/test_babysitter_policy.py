@@ -87,6 +87,23 @@ class PolicyTests(unittest.TestCase):
                 selected = policy.route(settings, size)
                 self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
 
+    def test_live_worker_routes_use_terra_and_park_when_exhausted(self):
+        settings = policy.config()
+        engines = settings["engines"]
+        for size, role in (("S", "worker_small"), ("M", "worker_medium"),
+                           ("L", "worker_large")):
+            with self.subTest(size=size):
+                self.assertEqual(settings["roles"][role], ["com"])
+                selected = policy.route(settings, size)
+                self.assertEqual((selected["worker"], selected["worker_model"]),
+                                 ("com", "gpt-6.1-terra"))
+                self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
+                with self.assertRaisesRegex(policy.PolicyError, "no available independent"):
+                    policy.route(settings, size, ["com"])
+        prefixes = engines["alias_engine"]
+        engine = prefixes[max((p for p in prefixes if "com".startswith(p)), key=len)]
+        self.assertEqual(engines["launch"][engine], "{alias} {prompt}")
+
     def test_sizes_route_distinct_models_and_independent_vendors(self):
         for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
             result = policy.route(self.settings, size)

@@ -5,9 +5,9 @@
 # mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker_small  = ["pi", "agyf", "cos", "cs"]
-worker_medium = ["agyf", "com", "cm", "pi"]
-worker_large  = ["agyg", "col", "agyl", "cl", "pi"]
+worker_small  = ["com"]
+worker_medium = ["com"]
+worker_large  = ["com"]
 tester        = ["agy", "pi", "cs", "agym", "cos"]
 
 [engines.alias_vendor]
@@ -26,7 +26,7 @@ pi = "deepseek"
 
 [engines.alias_model]
 cos = "Luna"
-com = "Terra"
+com = "gpt-6.1-terra"
 col = "Astra"
 cs = "Sonnet"
 cm = "Opus"
