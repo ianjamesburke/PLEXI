@@ -5,9 +5,10 @@
 # mapping is explicit so fallback never silently permits self-validation.
 [roles]
 head          = ["agy", "col", "cm", "agym"]        # router; needs background tasks + wake
-worker_small  = ["pi", "agyf", "cos", "cs"]
-worker_medium = ["agyf", "com", "cm", "pi"]
-worker_large  = ["agyg", "col", "agyl", "cl", "pi"]
+worker_small  = ["com"]
+worker_small_explicit = ["pi"]  # reserved child queue; explicit selection only
+worker_medium = ["com"]
+worker_large  = ["com"]
 tester        = ["agy", "pi", "cs", "agym", "cos"]
 
 [engines.alias_vendor]
@@ -26,7 +27,7 @@ pi = "deepseek"
 
 [engines.alias_model]
 cos = "Luna"
-com = "Terra"
+com = "gpt-6.1-terra"
 col = "Astra"
 cs = "Sonnet"
 cm = "Opus"
@@ -75,7 +76,7 @@ pi     = "Working"      # observed: spinner line "── ⠇ Working ──"; ab
 all = ["usage limit", "limit reached", "rate limit", "quota", "resets at", "try again later"]
 
 [ci]
-rust_host = "after_alpha"          # nightly verification; local full suite gates landing
+rust_host = "after_alpha"          # nightly verification; phase-aware local gates in TESTING.md
 
 [authorization]
 auto_merge = true                 # tester PASS + configured checks -> merge without asking

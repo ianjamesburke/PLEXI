@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --.
 # Taxonomy: .agents/skills/testing/SKILL.md, Step 1 — Classify the Diff.
-# Over-selecting is safe; under-selecting is a silent gate gap. Unknown src/
-# module relationships select :: (all Rust test paths), never no tests.
+# Unknown src/ module relationships report ::, never no tests. Batch callers
+# must replace that broad fallback with reviewed relevant filters; only the final
+# combined candidate runs the full host suite (src/testing/TESTING.md).
 # scripts/** selects no Rust filters: the table assigns no evidence block.
-# Run script-specific checks separately; scripts still trigger full host PR CI
-# because rust-host.yml does not paths-ignore them. No CI rules change here.
+# Run script-specific checks separately. Hosted Rust verification is deferred
+# until after Alpha landing; test selection does not change hosted CI rules.
 # With no arguments, detect branch + staged + unstaged + untracked paths against
 # SCOPED_TEST_BASE (default origin/alpha), using the merge base. Set this to the
 # actual PR base for aggregate lanes. Detection failure conservatively selects ::.

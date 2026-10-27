@@ -65,7 +65,7 @@ A diff can hit multiple layers; produce evidence for each.
 
 Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` stay mandatory on every push.
 
-Direct-to-alpha pushes require full `cargo test --bin plexi`: stint 0799 removed per-push host CI. The full local suite also remains required at lane integration / before merge and combined aggregate validation. Hosted Rust CI runs after Alpha landing through nightly verification. Do not wait for it before PR handoff or merge. A scoped local pass is not acceptance: the full local integration suite and independent installed validation are, subject to the install-skip rules below. Record absent hosted checks as deferred, not passed; unrelated PR checks still gate.
+Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, use relevant scoped checks plus build/Clippy and independent installed affected-behavior validation. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
 
 Record pass/fail counts and the selected filters. Verify each selected surface has actual matches; zero tests is not evidence. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test written first. Use `-- --exact` only with the fully-qualified test name. Evidence must identify the current attempt and diff; do not silently reuse an earlier full-suite run.
 
@@ -144,7 +144,7 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 **Test evidence (attempt <N>):**
 - just build: ok
 - clippy: ok
-- cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
+- cargo test: <passed> passed, <failed> failed — filters: <module list or "final combined full bin suite">
 - PlexiUiHarness render: /tmp/plexi-render-<issue>-<name>.png — <one line: what it shows>
 - Conclusion: install skippable — full coverage | binary install required — <why>
 ```
