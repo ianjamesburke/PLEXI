@@ -61,6 +61,63 @@ pub const RADIUS_MD: CornerRadius = RADIUS_MEDIUM;
 pub const RADIUS_LG: CornerRadius = RADIUS_LARGE;
 pub const RADIUS_MOTORWAYS: CornerRadius = RADIUS_LARGE;
 pub const RADIUS_BAR: CornerRadius = RADIUS_MEDIUM;
+/// Shared silhouette for pane content and focus outlines.
+pub const RADIUS_PANE: CornerRadius = RADIUS_SMALL;
+/// Focus is independent of the inter-pane gap, including when the gap is zero.
+pub const PANE_FOCUS_WIDTH: f32 = 1.5;
+
+/// Resolve a configured pane radius, fitting it to small pane rectangles.
+pub fn pane_radius(configured: Option<u8>, rect: egui::Rect) -> CornerRadius {
+    let requested = configured.unwrap_or(RADIUS_PANE.nw);
+    let max_radius = (rect.width().min(rect.height()).max(0.0) / 2.0) as u8;
+    CornerRadius::same(requested.min(max_radius))
+}
+
+/// Cover the parts of a rectangular pane outside its rounded silhouette.
+/// Egui clips child painters to rectangles, so this is painted after their
+/// contents, using the central canvas background and a one-pixel soft edge.
+pub fn mask_pane_corners(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: CornerRadius,
+    background: egui::Color32,
+) {
+    let r = radius.nw as f32;
+    if r <= 0.0 || !rect.is_positive() {
+        return;
+    }
+    let mut painter = painter.clone();
+    painter.set_opacity(1.0);
+    let aa = 1.0 / painter.ctx().pixels_per_point();
+    let mut mesh = egui::Mesh::default();
+    let segments = ((r / aa).sqrt() * 2.0).ceil().clamp(12.0, 64.0) as usize;
+    for (origin, sx, sy) in [
+        (rect.left_top(), 1.0, 1.0),
+        (rect.right_top(), -1.0, 1.0),
+        (rect.left_bottom(), 1.0, -1.0),
+        (rect.right_bottom(), -1.0, -1.0),
+    ] {
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(origin, background);
+        for i in 0..=segments {
+            let angle = std::f32::consts::FRAC_PI_2 * i as f32 / segments as f32;
+            let (sin, cos) = angle.sin_cos();
+            let point = |radius: f32| {
+                origin + egui::vec2(sx * (r - radius * sin), sy * (r - radius * cos))
+            };
+            mesh.colored_vertex(point(r), background);
+            mesh.colored_vertex(point((r - aa).max(0.0)), egui::Color32::TRANSPARENT);
+        }
+        for i in 0..segments as u32 {
+            let a = base + 1 + i * 2;
+            let b = a + 2;
+            mesh.add_triangle(base, a, b);
+            mesh.add_triangle(a, a + 1, b);
+            mesh.add_triangle(b, a + 1, b + 1);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
 /// Badge radius as f32 (`Frame::corner_radius` / `rect_filled` accept it).
 /// Keep in sync with RADIUS_BADGE in plexi_sdk/ui.py.
 pub const RADIUS_BADGE: f32 = 6.0;

@@ -184,11 +184,13 @@ impl PlexiApp {
                 }
             },
         );
+        let radius = crate::ui::style::pane_radius(self.config.pane_corner_radius, left);
+        crate::ui::style::mask_pane_corners(ui.painter(), left, radius, self.colors.bg_darkest);
         if focused {
             ui.painter().rect_stroke(
                 left,
-                0.0,
-                egui::Stroke::new(gap.max(1.0), self.colors.accent),
+                radius,
+                egui::Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, self.colors.accent),
                 egui::StrokeKind::Inside,
             );
         }

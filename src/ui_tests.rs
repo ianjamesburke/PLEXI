@@ -2147,6 +2147,43 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_pane_corners_themes_scale_and_override() {
+        for theme in ["catppuccin-mocha", "catppuccin-latte"] {
+            for (width, scale) in [(1440.0, 1.0), (720.0, 1.5)] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                std::fs::write(h.workspace.path().join("review-notes.md"), "Pane corner fixture\n").unwrap();
+                let root = h.workspace.path().to_path_buf();
+                let config_path = crate::config::config_path();
+                std::fs::write(&config_path, format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    app.reload_config();
+                });
+                h.open_file_browser(root);
+                h.run_steps(4);
+                let (rect, accent) = h.with_app(|app| {
+                    let pane = app.visual_owner_pane().unwrap();
+                    (app.visible_pane_rect(pane).unwrap(), app.colors.accent)
+                });
+                for radius in [None, Some(18)] {
+                    let radius_line = radius.map(|r| format!("pane_corner_radius = {r}\n")).unwrap_or_default();
+                    std::fs::write(&config_path, format!("pane_gap = 0.0\nui_scale = {scale}\n{radius_line}[theme]\npreset = \"{theme}\"\n")).unwrap();
+                    h.with_app_mut(|app| app.reload_config());
+                    h.run_steps(3);
+                    let expected = crate::ui::style::pane_radius(radius, rect);
+                    assert!(h.harness().output().shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect && r.corner_radius == expected
+                            && r.stroke.color == accent && r.stroke.width == crate::ui::style::PANE_FOCUS_WIDTH
+                            && r.stroke_kind == egui::StrokeKind::Inside)
+                    }), "focus radius and width must follow the pane config even at zero gap");
+                    let suffix = format!("_{theme}_{width}_{scale}_{}", radius.unwrap_or(0));
+                    h.save_screenshot(&evidence_png!(&suffix)).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn screenshot_agent_conjoined_strip_and_parent_pin() {
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         h.step();
@@ -2197,6 +2234,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn screenshot_pane_corners_lineage_themes() {
+        for (theme, width, scale) in [("catppuccin-mocha", 1440.0, 1.0), ("catppuccin-latte", 720.0, 1.5)] {
+            for conjoined in [true, false] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 900.0, scale);
+                h.step();
+                std::fs::write(crate::config::config_path(), format!("pane_gap = 0.0\nui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                });
+                let (parent, child, portal) = h.with_app_mut(|app| {
+                    let (parent, _) = app.spawn_agent_worker_pane("lead", "pi", "printf 'Lead: review evidence\\n'; sleep 120", "Coordinate", None, false, None, None, None, None, false, None).unwrap();
+                    let (child, context) = app.spawn_agent_worker_pane("researcher", "pi", "printf 'Researcher: checking evidence\\n'; sleep 120", "Review", Some("research"), true, Some(parent), None, None, None, conjoined, None).unwrap();
+                    let portal = app.windows.iter().flat_map(|w| w.panes.iter()).find_map(|(&id, p)| (p.portal_target() == Some(context)).then_some(id));
+                    if conjoined { assert!(app.dive_into_agent_children(parent)); }
+                    (parent, child, portal)
+                });
+                wait_for_lineage_fixture(&mut h, &[parent, child]);
+                h.with_app(|app| {
+                    let expected = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
+                    assert_eq!(app.colors.bg_darkest, expected.bg_darkest, "fixture theme must survive startup");
+                });
+                if conjoined {
+                    h.focus_pane(child).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_child"))).unwrap();
+                    h.with_app_mut(|app| app.conjoined_parent_focus = Some(parent));
+                    h.run_steps(3);
+                    let (rect, accent) = h.with_app(|app| (app.conjoined_parent_rect.unwrap().1, app.colors.accent));
+                    assert!(h.harness().output().shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
+                            && r.corner_radius == crate::ui::style::pane_radius(None, rect)
+                            && r.stroke.color == accent && r.stroke.width == crate::ui::style::PANE_FOCUS_WIDTH
+                            && r.stroke_kind == egui::StrokeKind::Inside)
+                    }), "conjoined parent must use the shared radius and independent focus width");
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_conjoined"))).unwrap();
+                } else {
+                    h.focus_pane(portal.expect("portal fixture")).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_portal"))).unwrap();
+                    h.focus_pane(parent).unwrap();
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_terminal"))).unwrap();
+                }
+            }
+        }
+    }
+
     // Agent lineage and pinned-parent input ownership cannot be seeded by scenes.
     #[test]
     fn screenshot_child_lineage_and_focus_outline() {
@@ -2218,9 +2303,9 @@ mod tests {
         });
         assert!(h.harness().output().shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
-                && r.stroke.color == accent && r.stroke.width == gap
-                && r.stroke_kind == egui::StrokeKind::Outside)
-        }), "focused child must have the ordinary outside accent outline");
+                && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
+                && r.stroke_kind == egui::StrokeKind::Inside)
+        }), "focused child must have the ordinary accent outline");
         let mut texts = Vec::new();
         for shape in &h.harness().output().shapes {
             gallery_text_shapes(&shape.shape, &mut texts);
@@ -2250,8 +2335,8 @@ mod tests {
         });
         assert!(h.harness().output().shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(r) if r.rect == rect
-                && r.stroke.color == accent && r.stroke.width == gap
-                && r.stroke_kind == egui::StrokeKind::Outside)
+                && r.stroke.color == accent && r.stroke.width > 0.0 && r.stroke.width < gap
+                && r.stroke_kind == egui::StrokeKind::Inside)
         }));
         assert!(h.harness().query_by_label("↳ research · child of lead").is_some());
         h.save_screenshot(&evidence_png!()).unwrap();
