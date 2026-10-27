@@ -648,8 +648,8 @@ impl PlexiApp {
         crate::strip::layout_strip(&strip, &vp)
     }
 
-    /// True if `pane_id` is in a column that is currently visible in the strip presentation
-    /// snapshot at `ZoomLevel::Columns` and no overlay/queue owns input (`SPEC.md` R40).
+    /// True if `pane_id` is the focused strip pane and no overlay owns input.
+    /// A manually scrolled-out pane keeps ownership until the next key reveals it.
     pub fn pane_qualifies_for_input(&self, pane_id: PaneId) -> bool {
         if self.zoom.level != ZoomLevel::Columns {
             return false;

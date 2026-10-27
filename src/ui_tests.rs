@@ -10170,6 +10170,22 @@ mod tests {
                 assert!((actual.width() - expected.width()).abs() < 1.0, "pane {pane}: tile={actual:?} model={expected:?}");
             }
         });
+        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| d.is_vertical).unwrap().rect.center());
+        h.harness().input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        h.step();
+        let moved = pos + egui::vec2(50.0, 0.0);
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
+        h.step();
+        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run_steps(3);
+        h.with_app(|app| {
+            let strip = app.strip_for_context(app.router.active().context_id);
+            assert_eq!(strip.columns[strip.find_column_for_pane(third).unwrap()].width, crate::strip::ColumnWidth::CustomPixels(300.0));
+            assert!(strip.intrinsic_column_widths(app.active_strip_viewport().canvas_rect.width(), app.active_strip_viewport().gap)[strip.find_column_for_pane(first).unwrap()] > 230.0);
+        });
     }
 
     #[test]
