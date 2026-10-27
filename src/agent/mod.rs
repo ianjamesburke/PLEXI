@@ -500,6 +500,45 @@ impl AgentDefinition {
     }
 }
 
+/// Local discovery projection. An empty interface list advertises no A2A server.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCard {
+    name: String,
+    description: String,
+    skills: Vec<AgentCardSkill>,
+    capabilities: serde_json::Value,
+    supported_interfaces: Vec<serde_json::Value>,
+    version: String,
+    default_input_modes: Vec<String>,
+    default_output_modes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AgentCardSkill {
+    id: String,
+    name: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+impl AgentCard {
+    pub fn from_definition(definition: &AgentDefinition) -> Self {
+        Self {
+            name: definition.id.clone(),
+            description: definition.description.clone(),
+            skills: definition.skills.iter().map(|name| AgentCardSkill {
+                id: name.clone(), name: name.clone(), description: name.clone(), tags: Vec::new(),
+            }).collect(),
+            capabilities: serde_json::json!({}),
+            supported_interfaces: Vec::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentRegistry {
     active: BTreeMap<String, AgentDefinition>,
@@ -912,9 +951,9 @@ pub fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentDirIssue {
     /// The card sits under the pre-rename filename. `head.json` was renamed to
-    /// `agent.json` in code but never migrated on disk, so a legacy card was
+    /// `agent.json` in code but never migrated on disk, so a legacy authority record was
     /// unreachable and looked exactly like a missing agent.
-    LegacyCardFilename {
+    LegacyAuthorityFilename {
         found: &'static str,
         expected: &'static str,
         migrated: bool,
@@ -927,7 +966,7 @@ impl AgentDirIssue {
     /// One line naming the file that is missing or legacy.
     pub fn describe(&self) -> String {
         match self {
-            Self::LegacyCardFilename {
+            Self::LegacyAuthorityFilename {
                 found,
                 expected,
                 migrated,
@@ -950,12 +989,12 @@ pub struct UnrecognisedAgentDir {
     pub issue: AgentDirIssue,
 }
 
-/// The card file for a directory, renaming a legacy `head.json` in place.
+/// The authority file for a directory, renaming a legacy `head.json` in place.
 ///
 /// The rename *is* the migration: reading `head.json` under its old name would
 /// keep the old name alive forever, and skipping it is what made a real agent
 /// invisible. A failed rename returns `None` so the caller reports it.
-pub(crate) fn card_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn authority_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
     let canonical = dir.join("agent.json");
     if canonical.is_file() {
         return Some(canonical);
@@ -967,7 +1006,7 @@ pub(crate) fn card_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
     match std::fs::rename(&legacy, &canonical) {
         Ok(()) => {
             log::info!(
-                "agents: migrated legacy card {} to {}",
+                "agents: migrated legacy authority record {} to {}",
                 legacy.display(),
                 canonical.display()
             );
@@ -975,7 +1014,7 @@ pub(crate) fn card_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
         }
         Err(error) => {
             log::error!(
-                "agents: could not migrate legacy card {} to {}: {error}",
+                "agents: could not migrate legacy authority record {} to {}: {error}",
                 legacy.display(),
                 canonical.display()
             );
@@ -985,14 +1024,14 @@ pub(crate) fn card_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Classify one directory: `None` when it is a usable agent, `Some(issue)`
-/// when it is not. Migrates a legacy card filename on the way.
+/// when it is not. Migrates a legacy authority record filename on the way.
 fn classify_agent_dir(dir: &Path) -> Option<AgentDirIssue> {
     if dir.join("agent.json").is_file() {
         return None;
     }
     if dir.join("head.json").is_file() {
-        let migrated = card_file_migrating_legacy(dir).is_some();
-        return Some(AgentDirIssue::LegacyCardFilename {
+        let migrated = authority_file_migrating_legacy(dir).is_some();
+        return Some(AgentDirIssue::LegacyAuthorityFilename {
             found: "head.json",
             expected: "agent.json",
             migrated,
@@ -1752,7 +1791,7 @@ default = "ask"
         let issues = scan_agent_dirs(root.path());
         let legacy_issue = issues.iter().find(|i| i.path == legacy).unwrap();
         let incomplete_issue = issues.iter().find(|i| i.path == incomplete).unwrap();
-        assert!(matches!(legacy_issue.issue, AgentDirIssue::LegacyCardFilename { .. }));
+        assert!(matches!(legacy_issue.issue, AgentDirIssue::LegacyAuthorityFilename { .. }));
         assert!(matches!(incomplete_issue.issue, AgentDirIssue::MissingRequiredFile { .. }));
     }
 
@@ -2151,6 +2190,21 @@ default_tier = "low"
         assert_eq!(registry.shadowed("default").len(), 2);
         assert_eq!(registry.shadowed("default")[0].source, AgentSource::BuiltIn);
         assert_eq!(registry.shadowed("default")[1].source, AgentSource::User);
+    }
+
+    #[test]
+    fn discovery_card_projects_skills_without_authority() {
+        let mut definition = builtin_default_agent().unwrap();
+        definition.skills = vec!["research".to_string()];
+        definition.can_call = vec!["private-child".to_string()];
+        let card = serde_json::to_value(AgentCard::from_definition(&definition)).unwrap();
+        assert_eq!(card["skills"][0]["id"], "research");
+        assert_eq!(card["skills"][0]["name"], "research");
+        assert!(card["skills"][0]["description"].is_string());
+        assert!(card["skills"][0]["tags"].is_array());
+        assert!(card.get("grants").is_none());
+        assert!(card.get("can_call").is_none());
+        assert_eq!(card["supportedInterfaces"], serde_json::json!([]));
     }
 
     #[test]
