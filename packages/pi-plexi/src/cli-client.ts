@@ -74,11 +74,14 @@ const AGENT_TIER_RANK: Record<string, number> = {
 };
 
 /**
- * Minimal orient payload from `agent list --json`: name, tier, harness, one row
- * per name. A workspace definition shadows a global one of the same name; the
- * built-in `default` is always present until a workspace definition replaces it.
+ * Minimal orient payload from `agent list --json`: the agent array under the
+ * top-level `agents` key (unrecognised directories ride beside it under
+ * `unrecognised_agent_directories`). name, tier, harness, one row per name. A
+ * workspace definition shadows a global one of the same name; the built-in
+ * `default` is always present until a workspace definition replaces it.
  */
-function summarizeAgents(rows: unknown): WorkspaceAgentSummary[] {
+function summarizeAgents(payload: unknown): WorkspaceAgentSummary[] {
+  const rows = (payload as { agents?: unknown } | null)?.agents;
   const byName = new Map<string, WorkspaceAgentSummary>();
   for (const row of Array.isArray(rows) ? rows : []) {
     const name = typeof row?.name === "string" ? row.name : undefined;
