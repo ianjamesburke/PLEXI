@@ -361,6 +361,14 @@ impl WorkspaceFile {
     }
 
     pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
+        self.save_to_with_migration_source(profile_dir, None)
+    }
+
+    fn save_to_with_migration_source(
+        &self,
+        profile_dir: &Path,
+        migration_source: Option<&[u8]>,
+    ) -> io::Result<()> {
         self.validate()?;
         let path = workspace_path_in(profile_dir);
         let temp_path = unique_temp_path(&path);
@@ -377,6 +385,12 @@ impl WorkspaceFile {
                 .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
             match std::fs::read(&path) {
                 Ok(data) => {
+                    if migration_source.is_some_and(|source| source != data) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "workspace changed while migrating; preserving original",
+                        ));
+                    }
                     let mut existing: Self = serde_json::from_slice(&data).map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
@@ -389,7 +403,7 @@ impl WorkspaceFile {
                             format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
                         ));
                     }
-                    if existing.version == 2 && self.version == 3 {
+                    if migration_source.is_some() && existing.version == 2 && self.version == 3 {
                         existing.remove_legacy_deleted_context_focus();
                     }
                     existing.validate()?;
@@ -400,7 +414,8 @@ impl WorkspaceFile {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "refusing to downgrade a version 3 workspace"));
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound && migration_source.is_none() => {}
                 Err(error) => return Err(error),
             }
             let json = serde_json::to_string_pretty(self).map_err(|error| {
@@ -473,7 +488,7 @@ impl WorkspaceFile {
             match ws.assign_legacy_window_ids().and_then(|()| ws.convert_legacy_strips()).and_then(|strips| {
                 ws.strips = strips;
                 ws.version = 3;
-                ws.save_to(profile_dir)
+                ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
             }) {
                 Ok(()) => log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2"),
                 Err(error) => {

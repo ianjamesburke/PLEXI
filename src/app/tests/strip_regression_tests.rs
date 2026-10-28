@@ -1059,6 +1059,11 @@ fn legacy_deleted_context_active_window_is_migrated_without_losing_workspace() {
     legacy["context_active_window"]["999999"] = 999998.into();
     let original = serde_json::to_vec(&legacy).unwrap();
     std::fs::write(&path, &original).unwrap();
+    assert!(
+        !h.app.save_workspace_now(),
+        "ordinary saves cannot overwrite an unmigrated invalid workspace"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
 
     let migrated = crate::workspace::WorkspaceFile::load_from(&profile)
         .expect("a deleted context's obsolete focus entry must not prevent migration");
