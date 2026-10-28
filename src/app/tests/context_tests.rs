@@ -2,6 +2,50 @@ use super::super::*;
 use crate::host::context::Window;
 
 #[test]
+fn deleting_context_preserves_workspace_save_and_restore() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.set_context_columns(root, vec![vec![pane]]);
+    let child = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    let window = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    let root_path = h.app.router.active().root.clone();
+    h.app.router.push(crate::host::context::Context {
+        name: "Disposable".to_string().into(),
+        root: root_path.clone(),
+        description: None,
+        context_id: child,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(Window {
+        name: String::new(),
+        path: root_path,
+        tree: egui_tiles::Tree::empty("disposable"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: window,
+        context_id: child,
+    });
+    h.app.context_active_window.insert(child, window);
+    let index = h.app.router.position(|context| context.context_id == child).unwrap();
+    h.app.delete_context(index);
+    h.app.save_workspace_now();
+    let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("workspace must remain saveable after deleting a context");
+    assert!(!saved.context_active_window.contains_key(&child));
+    assert!(saved.windows.iter().any(|window| {
+        window.context_id == root && window.panes.iter().any(|saved_pane| saved_pane.id == pane)
+    }));
+}
+
+#[test]
 fn workspace_config_applies_when_switching_contexts() {
     let profile = tempfile::tempdir().expect("isolated config profile");
     let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
@@ -864,6 +908,9 @@ fn delete_context_cascades_cleans_depth_stack_and_revokes_credentials() {
     // Delete A (find it by id).
     let a_idx_now = app.router.position(|c| c.context_id == a_id).unwrap();
     app.delete_context(a_idx_now);
+
+    assert!(!app.context_active_window.contains_key(&a_id));
+    assert!(!app.context_active_window.contains_key(&b_id));
 
     assert_eq!(
         crate::app::host_mcp::authenticated_workspace_for_test(&a_token),

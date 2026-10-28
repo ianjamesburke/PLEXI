@@ -1431,6 +1431,8 @@ impl PlexiApp {
                 None => break,
             }
         }
+        self.context_active_window
+            .retain(|context_id, _| !deleted.contains(context_id));
 
         // 5b. Emit ContextRemoved AFTER the router mutation above, not
         // before: `RegistryViews::invalidate` (stint 0724 Phase B) decides
