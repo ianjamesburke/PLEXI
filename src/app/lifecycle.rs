@@ -6000,16 +6000,15 @@ impl PlexiApp {
                                                 Some(curr) => !is_empty && curr == title_trimmed,
                                             };
                                             if !already_matches {
-                                                let old_placeholder = t.placeholder_title.clone();
+                                                let had_placeholder = t.placeholder_title.is_some();
                                                 t.name = if is_empty {
                                                     None
                                                 } else {
                                                     Some(title_trimmed.to_string())
                                                 };
                                                 log::info!(
-                                                    "osc_title: pane {id} title updated to {:?} (replacing placeholder={:?})",
-                                                    t.name,
-                                                    old_placeholder
+                                                    "osc_title: pane={id} title_chars={} placeholder_present={had_placeholder}",
+                                                    title_trimmed.chars().count()
                                                 );
                                             }
                                         }

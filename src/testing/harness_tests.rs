@@ -2775,6 +2775,57 @@ fn osc_title_updates_unlocked_terminal_pane_name_by_default() {
 }
 
 #[test]
+#[ignore = "requires-pty"]
+fn osc_title_content_stays_out_of_persistent_logs() {
+    const CHILD: &str = "PLEXI_OSC_TITLE_TEST_PROFILE";
+    const SENTINEL: &str = "echo SENTINEL_0948_OSC_SECRET";
+    if let Some(profile) = std::env::var_os(CHILD) {
+        let profile = std::path::PathBuf::from(profile);
+        let _profile = crate::config::set_test_profile_dir(profile.clone());
+        crate::platform::logging::init(log::LevelFilter::Trace, 30, false);
+        crate::host::event_log::init_global(profile.join("events.jsonl"));
+        crate::host::flight_recorder::adopt_session(&profile, "sess-osc");
+        let mut h = HostHarness::from_profile_dir(&profile);
+        let pane_id = h.add_focused_terminal();
+        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Title(SENTINEL.to_string()))).unwrap();
+        h.run_frames(1);
+        let terminal = h.app.windows[0].panes.get(&pane_id).unwrap().as_terminal().unwrap();
+        assert_eq!(terminal.pty_title.as_deref(), Some(SENTINEL));
+        assert_eq!(terminal.name.as_deref(), Some(SENTINEL));
+        h.app.reconcile_focus_logging(std::time::Duration::ZERO);
+        let journal = std::fs::read_to_string(profile.join("focus-journal.jsonl")).unwrap();
+        h.app.bank_final_focus_segment();
+        let events_path = profile.join("events.jsonl");
+        let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let events = loop {
+            let content = std::fs::read_to_string(&events_path).unwrap_or_default();
+            if content.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .any(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id) { break content; }
+            assert!(std::time::Instant::now() < deadline, "focus event not written");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        log::logger().flush();
+        let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
+        let trace = std::fs::read_to_string(profile.join("sessions/sess-osc.jsonl")).unwrap();
+        assert!(!log.contains(SENTINEL), "OSC title leaked to plexi.log");
+        assert!(!events.contains(SENTINEL), "OSC title leaked to events.jsonl");
+        let row = events.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id).unwrap();
+        assert!(row["pty_title"].is_null());
+        assert!(row["pane_name"].is_null());
+        assert!(!journal.contains(SENTINEL), "OSC title leaked to focus journal");
+        assert!(!trace.contains(SENTINEL), "OSC title leaked to session trace");
+        assert!(log.contains(&format!("title_chars={}", SENTINEL.chars().count())));
+        return;
+    }
+    let profile = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "testing::harness_tests::osc_title_content_stays_out_of_persistent_logs", "--ignored", "--nocapture"])
+        .env(CHILD, profile.path()).output().unwrap();
+    assert!(output.status.success(), "child failed: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
 fn osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name() {
     let mut h = HostHarness::new();
     let app_pane = h.add_test_pane();
