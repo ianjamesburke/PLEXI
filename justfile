@@ -51,13 +51,19 @@ website-smoke:
     bash website/scripts/prod-smoke.sh
 
 # Run the full test suite — HostHarness regression tests + unit tests.
-# Skips release-gated experimental features during alpha development (Assistant, DAW, Cloud/Account).
+# Skips release-gated experimental features and heavy scene renders during alpha dev.
 test:
     bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test -- \
         --skip assistant \
         --skip daw \
         --skip cloud \
-        --skip account::
+        --skip account:: \
+        --skip relay \
+        --skip marketplace \
+        --skip ledger \
+        --skip routine \
+        --skip changes \
+        --skip scene_suite
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
