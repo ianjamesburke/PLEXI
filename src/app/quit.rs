@@ -33,8 +33,9 @@ impl super::PlexiApp {
         self.quit_last_press = None;
         self.quitting = confirmed;
         if confirmed && self.prepare_user_quit() {
-            self.save_workspace_now();
-            self.workspace_dirty = false;
+            if self.save_workspace_now() {
+                self.workspace_dirty = false;
+            }
             self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             log::info!("quit: working-agent confirmation accepted");
         } else {

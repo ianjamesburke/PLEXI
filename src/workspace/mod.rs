@@ -361,6 +361,14 @@ impl WorkspaceFile {
     }
 
     pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
+        self.save_to_with_migration_source(profile_dir, None)
+    }
+
+    fn save_to_with_migration_source(
+        &self,
+        profile_dir: &Path,
+        migration_source: Option<&[u8]>,
+    ) -> io::Result<()> {
         self.validate()?;
         let path = workspace_path_in(profile_dir);
         let temp_path = unique_temp_path(&path);
@@ -377,7 +385,13 @@ impl WorkspaceFile {
                 .map_err(|error| save_error("create workspace directory", &temp_path, error))?;
             match std::fs::read(&path) {
                 Ok(data) => {
-                    let existing: Self = serde_json::from_slice(&data).map_err(|error| {
+                    if migration_source.is_some_and(|source| source != data) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "workspace changed while migrating; preserving original",
+                        ));
+                    }
+                    let mut existing: Self = serde_json::from_slice(&data).map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!("refusing to overwrite invalid workspace {}: {error}", path.display()),
@@ -389,6 +403,9 @@ impl WorkspaceFile {
                             format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
                         ));
                     }
+                    if migration_source.is_some() && existing.version == 2 && self.version == 3 {
+                        existing.remove_legacy_deleted_context_focus();
+                    }
                     existing.validate()?;
                     if existing.version == 2 && self.version == 3 {
                         preserve_v2_rollback(&path, &data)?;
@@ -397,7 +414,8 @@ impl WorkspaceFile {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "refusing to downgrade a version 3 workspace"));
                     }
                 }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound && migration_source.is_none() => {}
                 Err(error) => return Err(error),
             }
             let json = serde_json::to_string_pretty(self).map_err(|error| {
@@ -459,6 +477,9 @@ impl WorkspaceFile {
             );
             return None;
         }
+        if ws.version == 2 {
+            ws.remove_legacy_deleted_context_focus();
+        }
         if let Err(error) = ws.validate() {
             log::error!("workspace_load: invalid workspace {}: {error}; preserving original", path.display());
             return None;
@@ -467,7 +488,7 @@ impl WorkspaceFile {
             match ws.assign_legacy_window_ids().and_then(|()| ws.convert_legacy_strips()).and_then(|strips| {
                 ws.strips = strips;
                 ws.version = 3;
-                ws.save_to(profile_dir)
+                ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
             }) {
                 Ok(()) => log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2"),
                 Err(error) => {
@@ -477,6 +498,31 @@ impl WorkspaceFile {
             }
         }
         Some(ws)
+    }
+
+    /// Version 2 could persist focus entries after a context was deleted.
+    /// Remove only entries whose context and window are both absent; retain
+    /// all other invalid references for validation to reject.
+    fn remove_legacy_deleted_context_focus(&mut self) {
+        let contexts: std::collections::HashSet<_> = self
+            .contexts
+            .iter()
+            .map(|context| context.context_id)
+            .collect();
+        let windows: std::collections::HashSet<_> = self
+            .windows
+            .iter()
+            .map(|window| window.window_id)
+            .collect();
+        self.context_active_window.retain(|context, window| {
+            let orphaned = !contexts.contains(context) && !windows.contains(window);
+            if orphaned {
+                log::info!(
+                    "workspace migration: removed stale focus entry context={context} window={window}"
+                );
+            }
+            !orphaned
+        });
     }
 
     fn assign_legacy_window_ids(&mut self) -> io::Result<()> {
@@ -805,11 +851,12 @@ pub fn export_v2_rollback(source_profile: &Path, destination_profile: &Path) -> 
     current.validate()?;
     let backup = source.with_extension("v2.rollback.json");
     let bytes = std::fs::read(&backup)?;
-    let legacy: WorkspaceFile = serde_json::from_slice(&bytes)
+    let mut legacy: WorkspaceFile = serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("invalid rollback workspace: {error}")))?;
     if legacy.version != 2 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "rollback workspace is not version 2"));
     }
+    legacy.remove_legacy_deleted_context_focus();
     legacy.validate()?;
     std::fs::create_dir(destination_profile)?;
     let result = (|| {
