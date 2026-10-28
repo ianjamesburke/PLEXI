@@ -30,6 +30,7 @@ When work begins: `stint claim <task-id>`. Do not run or document `stint start`;
 | Directory | Owns |
 |---|---|
 | `src/host/` | The three scope models, user-data tiers, env-vs-current-scope rule |
+| `src/agent/` | Agent vocabulary: harness vs agent, identity vs authority, lifetimes, team meanings |
 | `src/cli/` | CLI rules, channel-agnostic enforcement, namespace design, pane naming |
 | `src/ui/` | Host UI kit primitives, design tokens, overlay layout widgets |
 | `src/config/` | Config loading/validation; reference is `docs/CONFIG.md` |
@@ -136,7 +137,7 @@ Document failures in the issue **body** under `## Prior Attempts`, not in commen
 - **Checkpoint before another audit.** Once a coherent implementation slice has passed its targeted validation, commit it before starting a fresh review or broad suite. Fix review findings in that next slice, then commit; do not run repeated review cycles against one uncommitted pile unless the user explicitly asks for an adversarial audit.
 - **Pipeline phases flow inline.** implement → open-pr → validate → merge. No stopping to ask.
 - **Match user energy.** When the user says "do it," start building.
-- **Sequential sub-agents only.** Never parallel in one worktree.
+- **Sequential child agents only.** Never parallel in one worktree.
 - **Ideas become stint tasks, not tangents.**
 - **Direct-to-alpha when user is watching.**
 - **Own the build.** If your change breaks something, fix it.
