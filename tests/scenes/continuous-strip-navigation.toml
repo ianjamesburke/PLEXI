@@ -1,0 +1,98 @@
+# Continuous horizontal strip navigation and stack memory across columns.
+# Exercises Explorer -> text-editor right split -> vertical stack -> leftmost Cmd+D column insert ->
+# H/L/K/J directional navigation restoring shifted column's last-focused pane via stable ColumnId.
+macos_only = true
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests/scenes", as = "explorer" }
+
+[[steps]]
+run_steps = 2
+
+# Activate selected file in Explorer to open a text-editor column to the right (Col 1 top)
+[[steps]]
+key = { target = "explorer", value = "enter" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { pane_count = 2 }
+
+# Open a second text-editor stacked below the first editor in Col 1 (Col 1 bottom)
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "stack_bottom", args = ["{tmp}/stack-bottom.md"] }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { target = "stack_bottom", focused = true, pane_count = 3 }
+
+# Navigate left from Col 1 (stack_bottom) to Col 0 (explorer)
+[[steps]]
+key = { target = "host", value = "cmd+h" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { target = "explorer", focused = true }
+
+# Press Cmd+D from leftmost column (explorer) to insert a new full-height column at index 1,
+# shifting the [editor_top, stack_bottom] column from index 1 to index 2
+[[steps]]
+key = { target = "host", value = "cmd+d" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { pane_count = 4 }
+
+# Navigate right (Cmd+L) from the newly inserted Col 1 into Col 2:
+# must restore focus to stack_bottom (remembered via stable ColumnId), not editor_top!
+[[steps]]
+key = { target = "host", value = "cmd+l" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { target = "stack_bottom", focused = true }
+
+# Navigate up and down within the vertical stack in Col 2
+[[steps]]
+key = { target = "host", value = "cmd+k" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { target = "stack_bottom", focused = false }
+
+[[steps]]
+key = { target = "host", value = "cmd+j" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { target = "stack_bottom", focused = true }
+
+[[steps]]
+shot = "continuous-strip-navigation.png"
+
+# Swap the focused stack member left and follow the moved pane identity.
+[[steps]]
+key = { target = "host", value = "cmd+ctrl+h" }
+
+[[steps]]
+run_steps = 120
+
+[[steps]]
+assert = { target = "stack_bottom", focused = true, pane_count = 4 }
+
+[[steps]]
+shot = "continuous-strip-swap.png"

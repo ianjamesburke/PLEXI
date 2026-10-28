@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn scope_refusal_is_final_and_never_routes_through_a_terminal() {
         for guidance in [
-            crate::agent::DEFAULT_AGENT_PROMPT,
+            crate::assistant::ASSISTANT_AGENT_PROMPT,
             &crate::assistant::skills::SkillRegistry::load(
                 std::path::Path::new("/nonexistent-profile"),
                 std::path::Path::new("/nonexistent-workspace"),

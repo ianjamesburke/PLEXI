@@ -120,6 +120,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "file_handlers",
     "experiments",
     "pane_gap",
+    "pane_corner_radius",
     "pane_title_font_size",
     "osc_pane_title",
 ];
@@ -763,6 +764,8 @@ pub struct PlexiConfig {
     pub ui_scale: Option<f32>,
     /// Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0].
     pub pane_gap: Option<f32>,
+    /// Pane corner radius in points. Default: 6 (the shared pane style token).
+    pub pane_corner_radius: Option<u8>,
     /// Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0].
     pub pane_title_font_size: Option<f32>,
     /// Apply OSC 0/1/2 title sequences from terminal processes as pane names.
@@ -2175,6 +2178,9 @@ impl PlexiConfig {
         if other.pane_gap.is_some() {
             self.pane_gap = other.pane_gap;
         }
+        if other.pane_corner_radius.is_some() {
+            self.pane_corner_radius = other.pane_corner_radius;
+        }
         if other.pane_title_font_size.is_some() {
             self.pane_title_font_size = other.pane_title_font_size;
         }
@@ -2689,6 +2695,20 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "ui_scale = 1.3\n").unwrap();
         assert!(validate_from_path(&path).is_empty());
+    }
+
+    #[test]
+    fn pane_corner_radius_parses_validates_and_overlays() {
+        let mut config: PlexiConfig = toml::from_str("pane_corner_radius = 12\n").unwrap();
+        assert_eq!(config.pane_corner_radius, Some(12));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "pane_corner_radius = 12\n").unwrap();
+        assert!(validate_from_path(&path).is_empty());
+        config.overlay(toml::from_str("pane_corner_radius = 0\n").unwrap());
+        assert_eq!(config.pane_corner_radius, Some(0));
+        assert!(toml::from_str::<PlexiConfig>("pane_corner_radius = -1\n").is_err());
+        assert!(toml::from_str::<PlexiConfig>("pane_corner_radius = 256\n").is_err());
     }
 
     #[test]

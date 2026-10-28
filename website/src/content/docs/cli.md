@@ -1484,6 +1484,7 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 
 | Subcommand | Description |
 |---|---|
+| `layout` | Show active workspace strip membership and geometry |
 | `hide` | Hide a pane (defaults to the calling pane) |
 | `reveal` | Reveal a hidden pane (defaults to the calling pane) |
 | `zoom` | Focus a pane and toggle fullscreen zoom, or enter its sub-context |
@@ -1511,6 +1512,10 @@ For an ordinary shell command in a terminal pane, use `plexi pane command <id> "
 | `slot` | Manage host-managed named file slots for a pane |
 | `message` | Send and receive structured messages via a host-managed per-pane FIFO mailbox |
 | `result` | Read a pane's validated structured result |
+
+### `plexi pane layout`
+
+Show active workspace strip membership and geometry
 
 ### `plexi pane hide`
 
@@ -2472,11 +2477,11 @@ Each argument must be in KEY=VALUE form (e.g. theme.preset=dracula font_size=14)
 
 ## `plexi note`
 
-Capture, list, and open notes.
+Capture, list, read, open, and delete notes.
 
-`plexi note "a thought"` captures a note. `plexi note list` prints note paths, and `plexi note open` picks one with fzf in the focused pane. Notes live in the tier of the current directory (its nearest ancestor holding `.plexi/`, else the global tier); see `src/host/AGENTS.md` for the tier contract. `list` also rolls up nested tiers and the global tier.
+`plexi note "a thought"` captures a note. `plexi note list` prints note paths, `plexi note show <path>` prints one note, `plexi note open` picks one with fzf in the focused pane, and `plexi note rm <path>` deletes one. Notes live in the tier of the current directory (its nearest ancestor holding `.plexi/`, else the global tier); see `src/host/AGENTS.md` for the tier contract. `list` also rolls up nested tiers and the global tier.
 
-Text that is exactly `list`, `open`, or `add` is read as that subcommand; shell quoting cannot tell them apart. Capture it with `plexi note add list`.
+Text that is exactly `list`, `open`, `add`, `show`, or `rm` is read as that subcommand; shell quoting cannot tell them apart. Capture it with `plexi note add list`.
 
 Example: plexi note "remember to update the docs"
 
@@ -2485,6 +2490,8 @@ Example: plexi note "remember to update the docs"
 | `add` | Capture a note explicitly, even when the text is `list`, `open`, or `add` |
 | `list` | Print paths of every note in every visible tier, newest first |
 | `open` | Open a note picker with fzf in the focused terminal pane |
+| `show` | Print one note's contents by the path `plexi note list` printed |
+| `rm` | Delete one note by the path `plexi note list` printed |
 
 ### `plexi note add`
 
@@ -2509,6 +2516,30 @@ Tiers are the current directory's context tier (its nearest ancestor holding a `
 Open a note picker with fzf in the focused terminal pane.
 
 Candidates come from `plexi note list`. Requires fzf and a running host; both are reported as errors rather than silently degrading.
+
+### `plexi note show`
+
+Print one note's contents by the path `plexi note list` printed.
+
+Refuses any path outside a notes tier visible from the current directory, so a hand-typed path cannot read an arbitrary file.
+
+Example: plexi note show ~/.plexi/notes/20260101T000000.000Z.md
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Note path from `plexi note list` |
+
+### `plexi note rm`
+
+Delete one note by the path `plexi note list` printed.
+
+Irreversible: the note file is removed from disk. Refuses any path outside a notes tier visible from the current directory.
+
+Example: plexi note rm ~/.plexi/notes/20260101T000000.000Z.md
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Note path from `plexi note list` |
 
 ## `plexi doctor`
 
@@ -2550,6 +2581,7 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 
 | Subcommand | Description |
 |---|---|
+| `workspace-rollback` | Export the preserved v2 workspace to a new isolated channel |
 | `restart` | Restart this channel, restoring the saved workspace |
 | `start` | Launch this channel's app bundle detached and wait for readiness |
 | `stop` | Stop the running host and every pane agent for this channel |
@@ -2557,6 +2589,14 @@ Launch, stop, or check a headless-friendly Plexi host from the CLI.
 | `status` | Report whether this channel's host is running, its pid, socket path, and pane count |
 | `screenshot` | Capture the running host window as a PNG through the real render pipeline — the pixels the user actually sees, no OS screen capture |
 | `key` | Inject a key or chord into the host-level keyboard path |
+
+### `plexi host workspace-rollback`
+
+Export the preserved v2 workspace to a new isolated channel
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--to-channel` | string | yes | Name of a channel whose profile does not already exist |
 
 ### `plexi host restart`
 

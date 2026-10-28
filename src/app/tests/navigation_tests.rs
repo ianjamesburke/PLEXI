@@ -98,6 +98,89 @@ fn conjoined_navigation_fixture(h: &mut HostHarness) -> (u64, egui_tiles::TileId
 }
 
 #[test]
+fn conjoined_strip_keyboard_navigation_routes_input_and_restores_context() {
+    use crate::app::input_owner::InputOwner;
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = parent_context + 1;
+    h.app
+        .windows
+        .push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Agent tools".into(),
+        root: crate::testing::scratch_context_root("agent-tools"),
+        description: None,
+        context_id: child_context,
+        parent_id: Some(parent_context),
+        depth: 1,
+        parked: false,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    let (tile, top) = h.app.add_app_pane_in_window(1, "top");
+    h.app.windows[1].focused_pane = Some(tile);
+    h.run_frames(2);
+    let child = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("child terminal");
+    h.app.conjoined_contexts.insert(child_context, parent);
+    h.app.focus_pane_in_strip(child);
+    h.run_frames(2);
+    assert!(h
+        .app
+        .strip_for_context(child_context)
+        .columns
+        .iter()
+        .any(|column| column.panes == vec![top, child]));
+    assert!(h.app.dive_into_agent_children(parent));
+    h.run_frames(2);
+    let command = egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND;
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    h.press_key(egui::Key::L, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    assert_eq!(h.app.visual_owner_pane(), Some(child));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    backend.enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    let backend = &mut h.app.windows[1]
+        .panes
+        .get_mut(&child)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .backend;
+    assert_eq!(backend.take_input_tap(), b"\x09");
+    assert!(h.app.switch_to_context_restoring_last_pane(parent_context));
+    assert!(h.app.switch_to_context_restoring_last_pane(child_context));
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(child));
+    h.press_key(egui::Key::H, command);
+    h.run_frames(2);
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(parent));
+    assert_eq!(h.app.visual_owner_pane(), Some(parent));
+    assert_eq!(h.app.router.active().context_id, child_context);
+    assert_eq!(h.app.active_window, 1);
+    h.terminal_backend(parent).enable_input_tap();
+    h.press_key(egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(h.terminal_backend(parent).take_input_tap(), b"\x09");
+    assert_eq!(h.app.windows[0].context_id, parent_context);
+    assert_eq!(h.app.windows[1].context_id, child_context);
+    assert!(h.app.windows[0].panes.contains_key(&parent));
+    assert!(h.app.windows[1].panes.contains_key(&child));
+}
+
+#[test]
 fn navigate_right_moves_from_conjoined_parent_to_last_focused_child() {
     let mut h = HostHarness::new();
     let (parent, child_tile, child) = conjoined_navigation_fixture(&mut h);
@@ -291,7 +374,7 @@ fn close_focused_pane_prefers_window_local_history_and_keeps_strip_visible() {
         .find(|column| column.panes.contains(&c))
         .unwrap()
         .index;
-    let offset = h.app.zoom.strip_offset_for(context_id);
+    let offset = h.app.strip_offset_for(context_id);
     assert!(
         c_column >= offset && c_column < offset + 2,
         "close target column must remain in the visible strip"
@@ -442,8 +525,8 @@ fn pane_info_and_list_include_agent_state() {
 #[test]
 fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_failure() {
     let mut h = HostHarness::new();
-    let app_pane = h.add_test_pane();
     let terminal_pane = h.add_focused_terminal();
+    let app_pane = h.add_test_pane();
 
     h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
         peer_ancestry: None,
@@ -505,6 +588,41 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     assert_eq!(terminal_state["agent"], "pi");
     assert_eq!(terminal_state["detail"], "exited (3)");
     assert!(terminal_state["session_id"].is_null());
+
+    let responses = tempfile::tempdir().unwrap();
+    let info_file = responses.path().join("info.json");
+    let list_file = responses.path().join("list.json");
+    let fleet_file = responses.path().join("fleet.json");
+    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+        pane_id: terminal_pane,
+        response_file: info_file.to_string_lossy().into_owned(),
+    });
+    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
+        response_file: list_file.to_string_lossy().into_owned(),
+        context_id: None,
+    });
+    h.inject_ipc(crate::protocol::AppRequest::AgentFleet {
+        filter: crate::protocol::FleetFilter::All,
+        response_file: fleet_file.to_string_lossy().into_owned(),
+    });
+    h.app.drain_pane_cmd_channel();
+    let fleet_json = std::fs::read_to_string(fleet_file).unwrap();
+    assert!(fleet_json.contains("exited (3)"));
+    let info: serde_json::Value = serde_json::from_slice(&std::fs::read(info_file).unwrap()).unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(list_file).unwrap()).unwrap();
+    let entry = list.iter().find(|p| p["id"] == terminal_pane).unwrap();
+    assert_eq!(info["agent"]["state"], "failed");
+    assert_eq!(entry["agent"]["state"], "failed");
+    let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+    assert_eq!(fleet.tasks[0].rows[0].display_state, crate::agent::fleet::DisplayState::Failed);
+
+    let terminal = h.app.windows[0].panes.get_mut(&terminal_pane).unwrap().as_terminal_mut().unwrap();
+    let failed_session = terminal.build_saved_agent_session().unwrap();
+    assert_eq!(failed_session.last_state, crate::protocol::AgentState::Failed);
+    terminal.standby_session = Some(failed_session);
+    terminal.agent_completed = true;
+    assert_eq!(terminal.build_saved_agent_session().unwrap().last_state, crate::protocol::AgentState::Completed);
+    assert_eq!(terminal.build_history_record(1, "test", std::path::PathBuf::new()).unwrap().last_state, crate::protocol::AgentState::Completed);
 
     let _ = std::fs::remove_file(&states_file);
 }
@@ -1406,4 +1524,62 @@ fn open_config_in_editor_splits_and_dedups() {
         on_disk,
         "opening the editor must not rewrite the config"
     );
+}
+
+#[test]
+fn conjoined_parent_reference_survives_workspace_restart() {
+    let mut h = HostHarness::new();
+    let parent = h.add_focused_terminal();
+    let parent_context = h.app.router.active().context_id;
+    let child_context = crate::testing::reserve_test_context_id();
+    h.app.windows.push(same_workspace_window_right(child_context, 2));
+    h.app.router.push(crate::host::context::Context {
+        name: "Child".into(), root: h.workspace_root(), description: None,
+        context_id: child_context, parent_id: Some(parent_context), depth: 1, parked: false,
+    });
+    let (_, child) = h.app.add_app_pane_in_window(1, "child");
+    h.app.windows[1].panes.get_mut(&child).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    h.app.conjoined_contexts.insert(child_context, parent);
+    let profile = h.profile_dir().to_path_buf();
+    h.app.save_workspace_now();
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(restored.app.conjoined_contexts.get(&child_context), Some(&parent));
+    assert!(restored.app.find_pane_in_any_window(parent).is_some());
+    assert_eq!(restored.app.windows.iter().find(|w| w.panes.contains_key(&parent)).unwrap().context_id, parent_context);
+}
+
+#[test]
+fn legacy_multi_window_conversion_retains_membership_and_focus() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.app.windows[0].panes.get_mut(&first).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first]]);
+    let second_window = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(same_workspace_window_right(context, second_window));
+    let (tile, second) = h.app.add_app_pane_in_window(1, "second");
+    h.app.windows[1].panes.get_mut(&second).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    h.app.windows[1].focused_pane = Some(tile);
+    h.app.active_window = 1;
+    h.app.context_active_window.insert(context, second_window);
+    h.app.focus_pane_in_strip(second);
+    h.app.save_workspace_now();
+    let profile = h.profile_dir().to_path_buf();
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 2.into();
+    legacy.as_object_mut().unwrap().remove("strips");
+    legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+    let original = serde_json::to_vec(&legacy).unwrap();
+    std::fs::write(&path, &original).unwrap();
+    let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
+    assert_eq!(migrated.context_active_window[&context], second_window);
+    assert!(migrated.windows.iter().any(|window| window.window_id == second_window && window.panes.iter().any(|pane| pane.id == second)));
+    assert_eq!(migrated.strips[&context].focused_pane, Some(second));
+    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    let restored = HostHarness::from_profile_dir(profile);
+    assert_eq!(restored.app.windows[restored.app.active_window].window_id, second_window);
+    assert_eq!(restored.app.focused_pane_id(), Some(second));
+    assert!(restored.app.find_pane_in_any_window(first).is_some());
 }

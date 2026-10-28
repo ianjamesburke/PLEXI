@@ -127,6 +127,8 @@ fn cli_parity_reload_focus_history_and_swap() {
         true
     );
     assert_eq!(h.app.fleet_focused_pane(), Some(b));
+    let context = h.app.router.active().context_id;
+    let before: Vec<_> = h.app.strip_for_context(context).columns.iter().map(|column| column.panes.clone()).collect();
     assert_eq!(
         request(
             &mut h,
@@ -135,6 +137,8 @@ fn cli_parity_reload_focus_history_and_swap() {
         true
     );
     assert_eq!(h.app.windows[0].tree.tiles.find_pane(&b), Some(tile_a));
+    assert_eq!(h.app.strip_for_context(context).focused_pane, Some(b));
+    assert_eq!(h.app.strip_for_context(context).columns[0].panes, vec![b]);
     h.press_key(
         egui::Key::L,
         egui::Modifiers {
@@ -144,6 +148,9 @@ fn cli_parity_reload_focus_history_and_swap() {
         },
     );
     assert_eq!(h.app.windows[0].tree.tiles.find_pane(&b), Some(tile_b));
+    let after = h.app.strip_for_context(context);
+    assert_eq!(after.columns.iter().map(|column| column.panes.clone()).collect::<Vec<_>>(), before);
+    assert_eq!(after.focused_pane, Some(b));
     std::fs::write(
         h.profile_dir().join("config.toml"),
         "[theme]\naccent = \"#12ab34\"\n",
@@ -221,4 +228,81 @@ fn cli_parity_context_close_matches_shortcut_confirmation_and_empty_close() {
     assert_eq!(reply["pending_confirmation"], false);
     assert_eq!(h.app.router.len(), 1);
     assert_eq!(h.app.router.active().context_id, current);
+}
+
+#[test]
+fn workspace_snapshot_reports_strip_geometry_without_pane_text() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.windows[0].panes.get_mut(&a).unwrap().as_app_mut().unwrap().name = "private sentinel text".into();
+    h.app.set_context_columns(context, vec![vec![a], vec![b]]);
+    h.app.focus_pane_in_strip(a);
+    h.run_frames(2);
+    let snapshot = request(&mut h, serde_json::json!({"type":"workspace_snapshot"}));
+    assert_eq!(snapshot["context_id"], context);
+    assert!(snapshot["geometry_generation"].as_u64().unwrap() > 0);
+    assert_eq!(snapshot["columns"][0]["panes"][0], a);
+    assert!(snapshot["panes"].as_array().unwrap().iter().any(|pane| pane["pane_id"] == a && pane["bounds"].is_object()));
+    assert!(snapshot["input_owner"]["kind"].is_string());
+    assert!(!snapshot.to_string().contains("private sentinel text"));
+    let generation = snapshot["geometry_generation"].as_u64().unwrap();
+    h.app.focus_pane_in_strip(b);
+    let next = request(&mut h, serde_json::json!({"type":"workspace_snapshot"}));
+    assert!(next["geometry_generation"].as_u64().unwrap() > generation);
+    assert_eq!(next["focused_pane"], b);
+}
+
+#[test]
+fn cli_swap_and_shortcut_exchange_stacked_panes_by_identity() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let c = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![a, b], vec![c]]);
+    h.app.focus_pane_in_strip(b);
+    h.run_frames(2);
+    assert_eq!(request(&mut h, serde_json::json!({"type":"pane_swap", "pane_id":b, "direction":"right"}))["ok"], true);
+    let swapped = h.app.strip_for_context(context);
+    assert_eq!(swapped.focused_pane, Some(b));
+    let cli_columns: Vec<_> = swapped.columns.iter().map(|column| column.panes.clone()).collect();
+    assert_eq!(cli_columns, vec![vec![a, c], vec![b]]);
+    h.app.set_context_columns(context, vec![vec![a, b], vec![c]]);
+    h.app.focus_pane_in_strip(b);
+    h.run_frames(2);
+    h.press_key(egui::Key::L, egui::Modifiers { command: true, ctrl: true, ..Default::default() });
+    let shortcut = h.app.strip_for_context(context);
+    assert_eq!(shortcut.columns.iter().map(|column| column.panes.clone()).collect::<Vec<_>>(), cli_columns);
+    assert_eq!(shortcut.focused_pane, Some(b));
+}
+
+#[test]
+fn workspace_snapshot_marks_other_windows_outside_active_view() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![first]]);
+    let window_id = h.app.next_window_id;
+    h.app.next_window_id += 1;
+    h.app.windows.push(crate::host::context::Window {
+        name: "second".into(), path: h.workspace_root(), tree: egui_tiles::Tree::empty("second"),
+        panes: std::collections::HashMap::new(), focused_pane: None, zoomed_pane: None,
+        grid_x: 1, grid_y: 0, window_id, context_id: context,
+    });
+    let (tile, second) = h.app.add_app_pane_in_window(1, "second");
+    h.app.windows[1].focused_pane = Some(tile);
+    h.app.active_window = 1;
+    h.app.context_active_window.insert(context, window_id);
+    h.app.focus_pane_in_strip(second);
+    h.run_frames(2);
+    let snapshot = request(&mut h, serde_json::json!({"type":"workspace_snapshot"}));
+    let panes = snapshot["panes"].as_array().unwrap();
+    let other = panes.iter().find(|pane| pane["pane_id"] == first).expect("other-window pane");
+    assert_eq!(other["visible"], false);
+    assert!(other["bounds"].is_null());
+    let active = panes.iter().find(|pane| pane["pane_id"] == second).expect("active-window pane");
+    assert_eq!(active["window_id"], window_id);
+    assert!(active["bounds"].is_object());
 }

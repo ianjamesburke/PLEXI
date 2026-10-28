@@ -298,9 +298,11 @@ sdk-smoke:
 # this does not boot it. Tester flows then run `plexi-pr-<N> host start --background`.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Resolves the PR head via gh and builds THAT tree — run from anywhere inside
-# the repo: just pr-install 123
+# the repo: just pr-install 123 [scoped|full]. Scoped is the batch default; full
+# is reserved for the configured final combined candidate. Broad automatic
+# selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
 # Removes the previous managed PR installation and profile first.
-pr-install number:
+pr-install number test_scope="scoped":
     #!/usr/bin/env bash
     set -euo pipefail
     # pr-install must never build whatever tree the caller happens to be
@@ -310,13 +312,15 @@ pr-install number:
     _repo_root="$(git rev-parse --path-format=absolute --git-common-dir)"
     _repo_root="${_repo_root%/.git}"
     _driver_root="$(git rev-parse --show-toplevel)"
-    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid 2>/dev/null || echo "")"
+    _head_json="$(gh pr view {{number}} --json headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null || echo "")"
     if [[ -z "$_head_json" ]]; then
       echo "Error: could not resolve PR #{{number}} via gh (gh pr view failed)."
       exit 1
     fi
     _head_ref="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefName"])' <<<"$_head_json")"
     _head_oid="$(python3 -c 'import sys,json; print(json.load(sys.stdin)["headRefOid"])' <<<"$_head_json")"
+    _base_oid="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefOid"])' <<<"$_head_json")"
+    _base_ref="$(uv run --no-project python -c 'import sys,json; print(json.load(sys.stdin)["baseRefName"])' <<<"$_head_json")"
     if [[ -z "$_head_oid" ]]; then
       echo "Error: PR #{{number}} has no resolvable head commit."
       exit 1
@@ -364,7 +368,7 @@ pr-install number:
     echo "pr-install: PR #{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
     # Pre-install tests and the build both run inside the resolved worktree,
     # never the caller's cwd.
-    ( cd "$_wt" && just fetch-python-runtime sdk-smoke )
+    bash "$_driver_root/scripts/pr-install-pretests.sh" "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
     # Binary reuse (stint 0637): skip the release build only when the selected
     # tree already holds a binary whose embedded sha equals the PR head, stamped
@@ -406,7 +410,7 @@ pr-install number:
     # Provenance trace: which head this channel is actually running. Written
     # after install.sh; path matches
     # install.sh's profile_dir for channel pr-{{number}}.
-    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt build=\"$_reuse_note\" $_sdk_prov"
+    _prov="[$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO pr-install] pr=#{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt test_scope={{test_scope}} test_base=$_base_oid build=\"$_reuse_note\" $_sdk_prov"
     mkdir -p "$HOME/.plexi-pr-{{number}}"
     echo "$_prov" | tee -a "$HOME/.plexi-pr-{{number}}/install.log"
 
@@ -526,7 +530,9 @@ merge-pr PR *FLAGS:
 
 # Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
 test-infra-scripts:
+    uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
+    uv run --no-project python scripts/test_pr_install_pretests.py
     uv run --no-project python scripts/test_probe_one_note_authority.py
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
@@ -586,6 +592,13 @@ bs-validate-setup pr:
 #   just bs-merge 2542 no-issue
 bs-merge pr *flags:
     bash scripts/bs-merge.sh {{pr}} {{flags}}
+
+# Aggregate batch integration: `integrate` then `channel-clean`, both run from
+# the aggregate worktree so the caller's cwd is irrelevant. The head's single
+# action once a batch's gate is green.
+#   just bs-integrate 2948 .stint/runs/<run>/record-1077-r1.json .stint/runs/<run>/aggregate.json
+bs-integrate pr record manifest:
+    bash scripts/bs-integrate.sh {{pr}} {{record}} {{manifest}}
 
 # Dispatch Claude agents at one or more issues. Labels each "in progress" first
 # to prevent double-claiming when multiple dispatches run close together.

@@ -915,6 +915,8 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
 
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
+        strips: Default::default(),
+        conjoined_contexts: Default::default(),
         active_context: 1,
         sidebar_visible: false,
         next_pane_id: 77,
@@ -1058,8 +1060,10 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     // A real, validly-shaped `Tree<PaneId>` — its serde form carries internal
     // fields (`id`, `height`, `width`) with no `#[serde(default)]`, so it must
     // come from the type itself rather than a hand-typed JSON fragment.
-    let tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
+    let mut tree: egui_tiles::Tree<crate::spatial::tiling::PaneId> =
         egui_tiles::Tree::empty("legacy-migration");
+    let tile = tree.tiles.insert_pane(1);
+    tree.root = Some(tile);
     let tree_json = serde_json::to_string(&tree).expect("tree must serialize");
 
     let workspace_json = format!(
@@ -1068,7 +1072,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
             "active_context": 0,
             "sidebar_visible": true,
             "next_pane_id": 2,
-            "contexts": [],
+            "contexts": [{{"name":"Legacy", "root":"/tmp", "context_id":1}}],
             "windows": [
                 {{
                     "name": "Default",
@@ -1091,7 +1095,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
             ]
         }}"#
     );
-    std::fs::write(&workspace_path, workspace_json).expect("write legacy workspace file");
+    std::fs::write(&workspace_path, &workspace_json).expect("write legacy workspace file");
 
     let loaded = crate::workspace::WorkspaceFile::load();
     assert!(
@@ -1106,21 +1110,12 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     assert!(record.runtime_kind.is_none());
     assert!(record.launch.is_none());
 
-    // No backup file was written — the migration path is "still parses",
-    // not "detected and quarantined like a version mismatch".
-    let has_backup = std::fs::read_dir(&workspace_dir)
-        .expect("read workspace dir")
-        .any(|entry| {
-            entry
-                .expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .contains("backup")
-        });
-    assert!(
-        !has_backup,
-        "loading a legacy record must not quarantine the file"
+    assert_eq!(
+        std::fs::read(workspace_path.with_extension("v2.rollback.json")).unwrap(),
+        workspace_json.as_bytes(),
+        "migration must preserve the original legacy record",
     );
+    assert!(workspace_path.exists(), "migration keeps the active workspace path");
 }
 
 /// The other half of the migration path: a `launch` that names an app
@@ -3232,8 +3227,8 @@ fn rename_pane_overlay_focus_wins_after_central_panel_steal() {
 fn context_rename_overlay_focus_wins_after_central_panel_steal() {
     use crate::app::FocusKind;
     let mut h = HostHarness::new();
-    h.app.renaming_window = Some(0);
-    h.app.rename_buffer = "new context".to_string();
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "new context".to_string();
     h.app.sidebar_visible = false;
     h.app.push_focus_layer(FocusKind::ContextRename);
     h.run_frames(1);
@@ -4498,6 +4493,160 @@ fn frame_with_events(h: &mut HostHarness, events: Vec<egui::Event>) {
     });
 }
 
+#[test]
+fn context_1041_parked_rename_releases_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1041, tmp.path());
+    h.app.sidebar_visible = true;
+    h.app.open_context_rename(1);
+    h.run_frames(2);
+    h.app.park_context(1);
+    h.run_frames(2);
+    assert!(h.app.context_rename.is_none(), "parking hides the editor and must cancel rename");
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_direct_router_navigation_releases_rename_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    push_secondary_context(&mut h, 900_1044, tmp.path());
+    h.app.open_context_rename(0);
+    h.run_frames(2);
+    h.app.router.set_active(1);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none(), "direct navigation must cancel rename before routing input");
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_pane_rename_cannot_replace_context_draft() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "context draft".into();
+    h.app.open_rename_for_focused();
+    assert_ne!(h.app.rename_buffer, "context draft");
+    h.app.commit_context_rename();
+    assert_eq!(h.app.router.get(0).name.to_string(), "context draft");
+}
+
+#[test]
+fn context_1041_target_identity_survives_reorder_and_missing_target_cancels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1045, tmp.path());
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "target".into();
+    h.app.router.apply_order(&[1, 0]);
+    h.app.commit_context_rename();
+    let target = h.app.router.position(|c| c.context_id == 900_1045).unwrap();
+    assert_eq!(h.app.router.get(target).name.to_string(), "target");
+    h.app.open_context_rename(target);
+    h.app.router.remove_at(target);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_unpark_cancels_rename_and_returns_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1046, tmp.path());
+    h.app.park_context(1);
+    h.app.open_context_rename(0);
+    h.app.unpark_context(1);
+    h.run_frames(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::<KeyBurstProbe>::default(), AppPermissions::builtin(),
+        tmp.path().to_path_buf(), None, Some("split_h"), None,
+    );
+    let pane_id = h.state().open_panes[0];
+    h.focus_pane(pane_id);
+    h.app.open_context_rename(0);
+    h.run_frames(2);
+    run_blurred_frames(&mut h, 1);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::ArrowDown, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
+        .and_then(|pane| pane.runtime.serialize_state()).unwrap();
+    assert_ne!(state["received"], serde_json::json!([] as [&str; 0]));
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_rename_switch_cancel_commit_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1043, tmp.path());
+    h.app.sidebar_visible = true;
+    h.app.open_context_rename(1);
+    h.run_frames(2);
+    assert_eq!(h.app.focus_stack.last(), Some(&crate::app::FocusKind::ContextRename));
+    h.app.switch_workspace(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    assert_ne!(h.app.router.get(1).name.to_string(), "changed");
+    h.app.open_context_rename(1);
+    h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
+    h.run_frames(2);
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::Enter, physical_key: None, pressed: true,
+        repeat: false, modifiers: egui::Modifiers::NONE,
+    }]);
+    assert_eq!(h.app.router.get(1).name.to_string(), "changed");
+    h.app.open_context_rename(1);
+    h.app.delete_context(1);
+    assert!(h.app.context_rename.is_none());
+    assert!(!h.app.input_captured_by_overlay());
+}
+
+#[test]
+fn context_1041_backspace_does_not_delete_blank_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut h = HostHarness::new();
+    push_secondary_context(&mut h, 900_1042, tmp.path());
+    h.app.switch_workspace(1);
+    h.run_frames(2);
+    for _ in 0..3 {
+        frame_with_events(&mut h, vec![egui::Event::Key {
+            key: egui::Key::Backspace, physical_key: None, pressed: true,
+            repeat: false, modifiers: egui::Modifiers::NONE,
+        }]);
+        frame_with_events(&mut h, vec![egui::Event::Key {
+            key: egui::Key::Backspace, physical_key: None, pressed: false,
+            repeat: false, modifiers: egui::Modifiers::NONE,
+        }]);
+    }
+    assert_eq!(h.app.router.len(), 2, "backspace must not remove a context");
+}
+
 /// Host focus can move before the frame's egui pass (keyboard pane nav,
 /// `focus_pane`). The editor used to insert `Event::Text` whenever its
 /// widget id still held egui focus, which the reconciler only updates at
@@ -4717,24 +4866,24 @@ fn input_owner_precedence_os_overlay_pane() {
         "with no overlay, the focused pane owns input"
     );
 
-    // Inline sidebar rename outranks the pane.
+    // Context rename outranks the pane.
     h.app.sidebar_visible = true;
-    h.app.renaming_window = Some(0);
+    h.app.open_context_rename(0);
     assert_eq!(
         h.app.input_owner(&ctx),
-        InputOwner::Overlay(OverlaySurface::SidebarRename),
-        "the inline sidebar rename editor owns input over the focused pane"
+        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::ContextRename)),
+        "the context rename overlay owns input over the focused pane"
     );
 
-    // A modal focus layer outranks the inline editor.
+    // A later modal focus layer outranks context rename.
     h.app
         .push_focus_layer(crate::app::FocusKind::CommandPalette);
     assert_eq!(
         h.app.input_owner(&ctx),
         InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::CommandPalette)),
-        "the focus-stack top outranks inline editors"
+        "the focus-stack top owns input"
     );
-    h.app.renaming_window = None;
+    h.app.cancel_context_rename("test");
     h.app
         .pop_focus_layer(&crate::app::FocusKind::CommandPalette);
 
@@ -4764,8 +4913,8 @@ fn input_owner_precedence_os_overlay_pane() {
     );
 }
 
-/// Typing into the inline sidebar rename must not reach the focused app
-/// pane's `handle_key` — the editor is `InputOwner::Overlay(SidebarRename)`,
+/// Typing into the context rename overlay must not reach the focused app
+/// pane's `handle_key` — the editor is `InputOwner::Overlay(ContextRename)`,
 /// so `dispatch_app_key_events` is gated off (stint 0429). Before, the keys
 /// fed both the rename box and the app.
 #[test]
@@ -4785,7 +4934,7 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     h.run_frames(1);
 
     h.app.sidebar_visible = true;
-    h.app.renaming_window = Some(0);
+    h.app.open_context_rename(0);
     h.run_frames(1);
 
     frame_with_events(
@@ -4808,7 +4957,7 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     assert_eq!(
         state["received"],
         serde_json::json!([] as [&str; 0]),
-        "keys typed during sidebar rename must not reach the focused app pane"
+        "keys typed during context rename must not reach the focused app pane"
     );
 }
 
@@ -7833,8 +7982,8 @@ fn rename_pane_overlay_preselects_prefill() {
 #[test]
 fn rename_context_overlay_preselects_prefill() {
     let mut h = HostHarness::new();
-    h.app.renaming_window = Some(0);
-    h.app.rename_buffer = "new context".to_string();
+    h.app.open_context_rename(0);
+    h.app.context_rename.as_mut().unwrap().buffer = "new context".to_string();
     h.app.sidebar_visible = false;
     h.app.push_focus_layer(crate::app::FocusKind::ContextRename);
     h.run_frames(3);
@@ -9986,6 +10135,11 @@ mod terminal_resize_debounce_tests {
             .app
             .split_focused(false, None, false, false, None)
             .expect("split must create a third terminal");
+        let ctx_id = h.app.router.active().context_id;
+        for col_idx in 0..3 {
+            h.app.set_column_width_ratio(ctx_id, col_idx, 0.32);
+        }
+        h.app.focus_pane_in_strip(first);
         [first, second, third]
     }
 
@@ -10895,6 +11049,7 @@ mod pane_lifecycle_events {
             if let Some(crate::host::pane::Pane::Terminal(t)) = win.panes.get_mut(&w3) {
                 t.exited = true;
                 t.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(1));
+                t.agent_completed = false;
                 t.agent = None;
                 t.observed_agent = None;
                 t.activity = None;
@@ -11848,6 +12003,8 @@ mod agent_state_restoration_tests {
 
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 40,
@@ -12388,6 +12545,8 @@ mod agent_state_restoration_tests {
 
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,
@@ -14319,7 +14478,9 @@ ask = ["pane.send"]
 
     let ws = crate::workspace::WorkspaceFile {
         version: 2,
-        active_context: 1,
+        strips: Default::default(),
+        conjoined_contexts: Default::default(),
+        active_context: 0,
         sidebar_visible: false,
         next_pane_id: 20,
         contexts: vec![crate::host::context::Context {
@@ -14937,6 +15098,8 @@ mod restore_followups_0983b {
         let tree = egui_tiles::Tree::new("script_tree", t30, tiles);
         let ws = WorkspaceFile {
             version: 2,
+            strips: Default::default(),
+            conjoined_contexts: Default::default(),
             active_context: 0,
             sidebar_visible: true,
             next_pane_id: 50,
@@ -15264,7 +15427,6 @@ mod strip_navigation_frame_tests {
     use super::*;
     use crate::host::keys::Direction;
     use crate::spatial::tiling::PaneId;
-    use crate::ui::style;
 
     const COLUMNS: usize = 5;
     const SETTLE_FRAMES: u32 = 3;
@@ -15294,6 +15456,7 @@ mod strip_navigation_frame_tests {
     struct StripFrame {
         canvas: egui::Rect,
         lo: usize,
+        scroll_offset_px: f32,
         children: Vec<egui::Rect>,
         gap: f32,
     }
@@ -15301,10 +15464,11 @@ mod strip_navigation_frame_tests {
     fn strip_frame(h: &HostHarness) -> StripFrame {
         let strip = h.app.active_window_strip().expect("a strip of columns");
         let tiles = &h.app.windows[0].tree.tiles;
-        let root = h.app.windows[0].tree.root().expect("root");
+        let canvas = h.app.active_strip_layout().canvas_rect;
         StripFrame {
-            canvas: tiles.rect(root).expect("root rect"),
+            canvas,
             lo: strip.lo,
+            scroll_offset_px: strip.scroll_offset_px,
             children: strip
                 .children
                 .iter()
@@ -15323,78 +15487,52 @@ mod strip_navigation_frame_tests {
         h.terminal_backend(pane).committed_grid().0
     }
 
-    /// Layout invariants of one frame.
+    /// Layout invariants of one frame under Model B continuous-strip geometry.
     fn assert_layout(h: &HostHarness, label: &str) {
         let f = strip_frame(h);
         let n = f.children.len();
         assert_eq!(n, COLUMNS, "{label}: strip lost a column");
-        let left_peek = egui::Rect::from_min_size(
-            f.canvas.min,
-            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
-        );
-        let right_peek = egui::Rect::from_min_size(
-            egui::pos2(f.canvas.max.x - style::STRIP_PEEK_W, f.canvas.min.y),
-            egui::vec2(style::STRIP_PEEK_W, f.canvas.height()),
-        );
-        for idx in f.lo..f.lo + 2 {
-            let r = f.children[idx];
+        for (idx, r) in f.children.iter().enumerate() {
             assert!(
                 r.width() >= 0.2 * f.canvas.width(),
-                "{label}: visible column {idx} is {}px of a {}px canvas",
+                "{label}: column {idx} must retain its full intrinsic width, got {}px of a {}px canvas",
                 r.width(),
                 f.canvas.width()
             );
-            for (name, peek, has) in [
-                ("left", left_peek, f.lo > 0),
-                ("right", right_peek, f.lo + 2 < n),
-            ] {
+            if idx > 0 {
+                let actual_gap = r.min.x - f.children[idx - 1].max.x;
                 assert!(
-                    !has || !r.intersects(peek),
-                    "{label}: visible column {idx} {r:?} intersects the {name} peek strip {peek:?}"
+                    (actual_gap - f.gap).abs() <= 1.5,
+                    "{label}: gap between column {} and {idx} is {actual_gap}px, expected {}px",
+                    idx - 1,
+                    f.gap
                 );
             }
         }
-        // Each clipped group, slivers and their gaps up to the visible pair, is
-        // exactly the peek strip plus the one gap that separates it from the pair.
-        let left_span = f.children[f.lo].min.x - f.canvas.min.x;
-        let right_span = f.canvas.max.x - f.children[f.lo + 1].max.x;
-        let (want_left, want_right) = (
-            if f.lo > 0 { style::STRIP_PEEK_W + f.gap } else { 0.0 },
-            if f.lo + 2 < n { style::STRIP_PEEK_W + f.gap } else { 0.0 },
-        );
+        let expected_first_x = f.canvas.min.x - f.scroll_offset_px;
         assert!(
-            (left_span - want_left).abs() <= 1.0,
-            "{label}: left clipped group spans {left_span}px, want {want_left}px (lo={})",
-            f.lo
+            (f.children[0].min.x - expected_first_x).abs() <= 1.5,
+            "{label}: first column min.x={} must align with canvas.min.x - scroll_offset_px ({expected_first_x})",
+            f.children[0].min.x
         );
-        assert!(
-            (right_span - want_right).abs() <= 1.0,
-            "{label}: right clipped group spans {right_span}px, want {want_right}px (lo={})",
-            f.lo
-        );
-        for (idx, r) in f.children.iter().enumerate() {
-            if idx < f.lo || idx >= f.lo + 2 {
+        if let Some(focused_pid) = h.app.active_focused_pane_id() {
+            if let Some(rect) = pane_rect(h, focused_pid) {
                 assert!(
-                    r.width() >= 1.0 && r.width() <= style::STRIP_PEEK_W + 1.0,
-                    "{label}: off-strip column {idx} is {}px wide",
-                    r.width()
+                    f.canvas.expand(1.5).contains_rect(rect),
+                    "{label}: focused pane {focused_pid} rect {rect:?} must be revealed inside canvas {:?}",
+                    f.canvas
                 );
             }
         }
     }
 
-    /// Every visible terminal's committed grid matches its rect, on this very frame.
+    /// Every on-screen terminal's committed grid matches its full intrinsic rect, on this very frame.
     fn assert_visible_grids(h: &mut HostHarness, terminals: &[PaneId], label: &str) {
-        let f = strip_frame(h);
         for &t in terminals {
-            let Some(rect) = pane_rect(h, t) else { continue };
-            let visible = (f.lo..f.lo + 2).any(|i| {
-                let c = f.children[i];
-                c.contains(rect.center())
-            });
-            if !visible {
+            if h.app.zoom.off_strip_panes.contains(&t) {
                 continue;
             }
+            let Some(rect) = pane_rect(h, t) else { continue };
             let cell_w = f32::from(h.terminal_backend(t).committed_cell_width());
             let want = (rect.width() / cell_w).floor() as i32;
             let got = i32::from(committed_cols(h, t));
@@ -15487,6 +15625,92 @@ mod strip_navigation_frame_tests {
             !h.app.zoom.off_strip_panes.is_empty(),
             "scrolled strip must have clipped columns"
         );
+    }
+
+    #[test]
+    fn swap_pane_uses_strip_neighbors_and_keeps_focus() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let context_id = h.app.router.active().context_id;
+        assert!(h.app.focus_pane_in_strip(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.find_column_for_pane(panes[2]), Some(1));
+        assert_eq!(strip.find_column_for_pane(panes[1]), Some(2));
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Right), crate::pane_ops::SwapResult::Swapped { .. }));
+        assert_eq!(h.app.host.strip(context_id).unwrap().find_column_for_pane(panes[2]), Some(2));
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        h.run_frames(2);
+        h.terminal_backend(panes[2]).enable_input_tap();
+        h.terminal_backend(panes[1]).enable_input_tap();
+        super::type_x_through_raw_input(&mut h);
+        assert_eq!(h.terminal_backend(panes[2]).take_input_tap(), b"x");
+        assert!(h.terminal_backend(panes[1]).take_input_tap().is_empty());
+    }
+
+    #[test]
+    fn swap_pane_stacked_neighbor_and_boundaries() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let context_id = h.app.router.active().context_id;
+        h.app.set_context_columns(context_id, vec![vec![panes[0]], vec![panes[1], panes[2]], vec![panes[3]], vec![panes[4]]]);
+        h.app.focus_pane_in_strip(panes[2]);
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.columns[0].panes, vec![panes[2]]);
+        assert_eq!(strip.columns[1].panes, vec![panes[1], panes[0]]);
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(matches!(h.app.swap_pane(Direction::Up), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(h.app.navigate_columns_strip(Direction::Right));
+        let strip = h.app.host.strip(context_id).unwrap();
+        assert_eq!(strip.columns[0].panes, vec![panes[2]]);
+        assert_eq!(strip.columns[1].panes, vec![panes[1], panes[0]]);
+    }
+
+    #[test]
+    fn close_tile_keeps_background_focus_and_reveals_active_successor() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let ctx_id = h.app.router.active().context_id;
+        h.app.focus_pane_in_strip(panes[3]);
+        let background = h.app.windows[0].tree.tiles.find_pane(&panes[0]).unwrap();
+        h.app.close_tile(0, background);
+        assert_eq!(h.app.active_focused_pane_id(), Some(panes[3]));
+        assert_eq!(h.app.host.strip(ctx_id).unwrap().focused_pane, Some(panes[3]));
+        let active = h.app.windows[0].tree.tiles.find_pane(&panes[3]).unwrap();
+        h.app.close_tile(0, active);
+        let target = h.app.active_focused_pane_id().expect("live successor");
+        assert_ne!(target, panes[3]);
+        assert!(h.app.windows[0].panes.contains_key(&target));
+        assert_eq!(h.app.host.strip(ctx_id).unwrap().focused_pane, Some(target));
+        h.run_frames(2);
+        h.terminal_backend(target).enable_input_tap();
+        super::type_x_through_raw_input(&mut h);
+        assert_eq!(h.terminal_backend(target).take_input_tap(), b"x");
+    }
+
+    #[test]
+    fn stale_split_swap_and_close_leave_layout_unchanged() {
+        let mut h = HostHarness::new();
+        let panes = five_terminal_columns(&mut h);
+        let ctx_id = h.app.router.active().context_id;
+        h.app.focus_pane_in_strip(panes[2]);
+        let tile = h.app.windows[0].tree.tiles.find_pane(&panes[2]).unwrap();
+        let removed = h.app.windows[0].panes.remove(&panes[2]).unwrap();
+        let strip = h.app.host.strip(ctx_id).cloned();
+        let model = h.app.host.test_pane_ids();
+        let tree_count = h.app.windows[0].tree.tiles.len();
+        assert!(h.app.split_focused(false, None, false, false, None).is_none());
+        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::NoFocus));
+        h.app.close_tile(0, tile);
+        h.app.close_pane_by_id(panes[2]);
+        assert_eq!(h.app.host.strip(ctx_id), strip.as_ref());
+        assert_eq!(h.app.host.test_pane_ids(), model);
+        assert_eq!(h.app.windows[0].tree.tiles.len(), tree_count);
+        assert_eq!(h.app.windows[0].focused_pane, Some(tile));
+        h.app.windows[0].panes.insert(panes[2], removed);
     }
 
     #[test]
@@ -15595,7 +15819,9 @@ mod strip_navigation_frame_tests {
             .collect();
         let initial_tile_count = window.tree.tiles.len();
         let initial_focus = window.focused_pane;
-        let initial_strip = h.app.zoom.strips.get(&context_id).cloned();
+        let initial_strip = h.app.host.strip(context_id).cloned();
+        let initial_model_panes = h.app.host.test_pane_ids();
+        let initial_model_focus = h.app.host.test_focused_pane();
 
         // `split_focused` is the production terminal-creation path. Force its
         // real `TerminalPane::new` call to fail without sharing a process env
@@ -15603,13 +15829,19 @@ mod strip_navigation_frame_tests {
         let _shell_override = crate::host::shell::set_test_shell_override(
             "/nonexistent/plexi-test-shell-that-cannot-spawn",
         );
-        assert!(
-            h.app
-                .split_focused(true, None, false, false, None)
-                .is_none(),
-            "the real split path must report terminal spawn failure"
-        );
+        crate::host::event_log::test_capture_events();
+        for vertical in [false, true] {
+            assert!(
+                h.app.split_focused(vertical, None, false, false, None).is_none(),
+                "the real split path must report terminal spawn failure"
+            );
+        }
+        h.app.new_tab(0, None, false, None, false, false);
+        let events = crate::host::event_log::test_take_events();
+        assert!(!events.iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { .. })), "failed spawn must not emit PaneSplit");
 
+        assert_eq!(h.app.host.test_pane_ids(), initial_model_panes, "failed spawn must not register a model pane");
+        assert_eq!(h.app.host.test_focused_pane(), initial_model_focus, "failed spawn must not change model focus");
         let window = &h.app.windows[0];
         let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
         let final_tree_panes: std::collections::BTreeSet<_> = window
@@ -15639,10 +15871,14 @@ mod strip_navigation_frame_tests {
             "failed split must retain focus on the existing pane"
         );
         assert_eq!(
-            h.app.zoom.strips.get(&context_id),
+            h.app.host.strip(context_id),
             initial_strip.as_ref(),
             "failed split must leave the authoritative strip unchanged"
         );
+        drop(_shell_override);
+        crate::host::event_log::test_capture_events();
+        let created = h.app.split_focused(false, None, false, false, None).expect("control spawn succeeds");
+        assert!(crate::host::event_log::test_take_events().iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { pane_id, .. } if *pane_id == created)), "capture must observe a successful split event");
     }
 }
 

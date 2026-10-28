@@ -8,25 +8,56 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 ## The Gate
 
-Before any push, in this order:
+Feature and batch validation uses relevant scoped tests, the release build, strict Clippy, and independent installed verification of affected behavior. This includes stabilization slices pushed directly to alpha and batches integrated into an aggregate. Reserve the full host suite for the final combined candidate; do not repeat it for each feature, batch, integration, or tester install.
 
-1. `just build` — release build under the justfile's `-D warnings`. This is the path `just pr-install` and every install take. It compiles `cfg(not(test))` code and rejects dead code whose callers are all `#[cfg(test)]`. Tests omit those production paths; bare `cargo build` includes them but does not enforce the justfile's `-D warnings` (root `AGENTS.md` Traps).
-2. **PR push:** scoped `cargo test --bin plexi -- <filters...>` selected by `scripts/scoped-tests.sh` using the testing skill's layer table. **Direct-to-alpha push:** full `cargo test --bin plexi`. Stint 0799 removed per-push Rust host CI, so the full local suite is the only full-suite gate before a direct push lands; nightly is too late.
-3. `cargo clippy --bin plexi -- -D warnings` — exactly what CI's `clippy` job runs (`.github/workflows/rust-host.yml`). `just build` does not run clippy, so `too_many_arguments`, `type_complexity`, and `needless_borrow` sail through the first two steps and turn alpha red after merge.
+Before pushing a feature or batch:
 
-All required gates green, or no push. The full local `cargo test --bin plexi` remains required at lane integration / before merge; integrators rerun the full gate on the combined tree after each integration and at final aggregate validation. Hosted Rust verification runs after Alpha landing through `nightly.yml`, not on PRs. Do not poll or wait for hosted Rust checks before handing off or landing. A scoped local pass is not acceptance: the full local suite at the exact integration head and independent installed validation are, subject to the existing docs-only/install-skip rules in the testing workflow. Record hosted Rust checks as deferred, never passed. Unrelated PR checks retain their gates.
+1. `just build` compiles the installable release binary with warnings denied. Test builds omit production-only paths; bare `cargo build` does not enforce this warning gate.
+2. Run relevant tests selected by `scripts/scoped-tests.sh`, plus script/SDK/scene/specialized checks for the changed surfaces. Record the commands, coverage, and actual matches. A zero-match Rust run is a gate gap.
+3. `cargo clippy --bin plexi -- -D warnings` remains mandatory. Build and tests do not replace it.
 
-Run the selector from the worktree. It includes committed, staged, unstaged and untracked paths against the merge base with `origin/alpha`; set `SCOPED_TEST_BASE` to the actual PR base for aggregate lanes. Explicit path arguments are also supported. Run the filters together as libtest arguments (OR matching), not as multiple Cargo positional arguments:
+Independent validation installs the exact head and exercises the affected behavior. A scoped worker pass alone is insufficient; preserve the installed-head match, independent vendor, PASS verdict, non-deferred checks, and truthful evidence. Apply the testing skill's existing install-skip rules outside aggregate mode. Aggregate batches still require an installed-head record.
+
+The final combined candidate requires a full `cargo test --bin plexi` with stdin closed and the Plexi environment scrubbed, plus release build, Clippy, independent combined installed validation, and the final manifest gate. Scoped-only evidence must fail that final gate. A subsequent change invalidates the candidate's evidence. Hosted Rust verification remains deferred to nightly after Alpha landing; record it as deferred, never passed, and retain other PR check gates.
+
+Run the selector from the worktree against the actual PR base (`SCOPED_TEST_BASE=origin/feature/alpha-cleanup` for aggregate batches). It includes committed, staged, unstaged and untracked paths. Pass the filters together after libtest's `--`:
 
 ```bash
 filters=()
-while IFS= read -r filter; do filters+=("$filter"); done < <(bash scripts/scoped-tests.sh)
+while IFS= read -r filter; do
+    if [[ "$filter" == :: ]]; then
+        echo "Select and document relevant filters for this batch; full suite is final-candidate only." >&2
+        exit 1
+    fi
+    filters+=("$filter")
+done < <(bash scripts/scoped-tests.sh)
 if (( ${#filters[@]} )); then
-    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi -- "${filters[@]}"
+    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi -- "${filters[@]}" < /dev/null
 fi
 ```
 
-No filters means no local Rust test run, not permission to skip build, Clippy, script-specific checks, PGAP evidence, or specialized release gates below. Unknown source relationships select broadly. Record selected filters, matching test counts and results; zero matched tests for a selected layer is a gate gap. Filtering saves test execution and cargo-lease time, not test-binary compilation or release-build time. Cross-module regressions must be caught by the full local integration suite before landing.
+No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the testing skill's path-specific `scripts/scoped-tests.sh --gate` decision, which is the single source of truth for the docs-only skip. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff. Render and inspect screenshots for visual changes as described below.
+
+### Aggregate evidence
+
+`local.head`, passing `build`/`test`/`clippy`, and `local.test_scope` identify the current validation. Use `"scoped"` for a batch selection, and `"full"` only when the full host suite actually passed at that head. Historical full batch evidence remains valid; it never creates a new batch requirement.
+
+For scoped evidence, provide:
+
+- `local.test_base`: the record's `base_head`.
+- `local.test_paths`: the exact changed paths from `git diff --name-only --no-renames -z <base_head>...<head>`. Policy checks this against Git during live gates, merge recovery, and prerequisite verification.
+- `local.test_evidence`: passing entries with `command`, `covers` (literal changed paths), and `passed: true`. Their coverage must equal `test_paths`. Rust commands include explicit libtest filters and a positive integer `matched`; unfiltered, broad, or zero-match Rust evidence is rejected. Non-Rust checks identify their actual command and covered paths without inventing Rust test counts.
+- `validation.affected_behavior`: what the independent tester verified at the matching installed head, alongside the existing head/install/vendor/PASS evidence.
+
+The final phase requires `local.test_scope = "full"` regardless of hosted CI policy. Preserved batch prerequisite records use batch scope rules, so a properly validated scoped integration can satisfy a later batch dependency without marking its task done.
+
+### Installer pretests
+
+`just pr-install <PR>` defaults to `scoped`; `just pr-install <PR> scoped` is the explicit batch path. It resolves the PR's head and base, runs SDK smoke and selected host tests from that exact worktree, and records scope/base in installation provenance. It never falls back to the full suite for a batch.
+
+If automatic selection returns `::`, set `PLEXI_PR_TEST_FILTERS` to reviewed newline-separated relevant filters and record the choice in the batch evidence. Empty overrides and zero-match selections fail. For a script/documentation-only diff, automatic selection runs SDK smoke without host Rust tests; the tester separately verifies the affected scripts at the installed source head.
+
+`just pr-install <PR> full` is supported only for the configured aggregate branch targeting its final base, when collecting final combined full-suite evidence. Do not use it for a feature or batch. Independent testing verifies the installed affected behavior rather than rerunning the worker's unrelated tests.
 
 ## Wall-clock budgets
 

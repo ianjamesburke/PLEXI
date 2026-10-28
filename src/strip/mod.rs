@@ -10,5 +10,5 @@ pub mod model;
 #[cfg(test)]
 pub mod tests;
 
-pub use layout::{layout_strip, StripViewport};
+pub use layout::{layout_strip, StripLayout, StripViewport};
 pub use model::{Column, ColumnId, ColumnWidth, Strip};

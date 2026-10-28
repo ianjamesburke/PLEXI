@@ -203,3 +203,103 @@ fn pure_representative_focus_sequence_keeps_order_and_visible_rects_sound() {
         "focus-only commands must not reorder columns or stack members"
     );
 }
+
+#[test]
+fn pure_stable_column_ids_and_swap_panes_preserve_focus_and_structure() {
+    let mut strip = Strip::new(1);
+    strip.push_column(Column::new(
+        ColumnId(0),
+        10,
+        ColumnWidth::Preset(ColumnWidthPreset::Parent35),
+    ));
+    strip.push_column(Column::new_stacked(
+        ColumnId(1),
+        vec![20, 21],
+        ColumnWidth::Preset(ColumnWidthPreset::Child65),
+    ));
+    strip.push_column(Column::new(
+        ColumnId(2),
+        30,
+        ColumnWidth::Preset(ColumnWidthPreset::Child65),
+    ));
+
+    let id_col1_before = strip.columns[1].id;
+    let id_col2_before = strip.columns[2].id;
+
+    // Remember bottom pane 21 in column 1, then focus column 0 and insert a new column right of 0.
+    assert!(strip.focus_pane(21));
+    assert!(strip.focus_pane(10));
+    let inserted_idx =
+        strip.insert_column_right_of(0, 15, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    assert_eq!(inserted_idx, 1);
+    assert_eq!(strip.columns[2].id, id_col1_before);
+    assert_eq!(strip.columns[3].id, id_col2_before);
+    assert_eq!(strip.columns[2].remembered_or_first_pane(), Some(21));
+
+    // Insert a pane below 20 in shifted column 2.
+    assert!(strip.insert_pane_below_in_column(20, 22));
+    assert_eq!(strip.columns[2].panes, vec![20, 22, 21]);
+    assert_eq!(strip.focused_pane, Some(22));
+
+    // Swap bottom pane 21 horizontally with column 3's pane 30.
+    assert!(strip.focus_pane(21));
+    assert!(strip.swap_panes(21, 30));
+    assert_eq!(strip.columns[2].panes, vec![20, 22, 30]);
+    assert_eq!(strip.columns[3].panes, vec![21]);
+    assert_eq!(strip.focused_pane, Some(21));
+    assert_eq!(strip.find_column_by_id(id_col2_before), Some(3));
+}
+
+
+#[test]
+fn oversized_custom_split_fits_pair_without_resizing_other_columns() {
+    let mut strip = Strip::new(1);
+    strip.reference_width_px = Some(800.0);
+    strip.push_column(Column::new(ColumnId(0), 1, ColumnWidth::CustomPixels(333.0)));
+    strip.push_column(Column::new(ColumnId(1), 2, ColumnWidth::CustomPixels(900.0)));
+    strip.focus_pane(2);
+    assert_eq!(strip.columns[1].width, ColumnWidth::CustomPixels(900.0));
+    strip.insert_column_right_of(1, 3, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    let widths = strip.intrinsic_column_widths(800.0, 4.0);
+    assert_eq!(widths[0], 333.0);
+    assert!(widths[1] + 4.0 + widths[2] <= 800.0);
+    let intervals = strip.column_intervals(800.0, 4.0);
+    assert!(intervals[1].0 >= strip.scroll_offset_px - 0.5);
+    assert!(intervals[2].0 + intervals[2].1 <= strip.scroll_offset_px + 800.5);
+    let before = strip.columns.iter().map(|c| c.width).collect::<Vec<_>>();
+    strip.focus_pane(1);
+    strip.focus_pane(2);
+    assert_eq!(before, strip.columns.iter().map(|c| c.width).collect::<Vec<_>>());
+}
+
+#[test]
+fn fitting_custom_split_and_navigation_preserve_widths() {
+    let mut strip = Strip::new(1);
+    strip.reference_width_px = Some(800.0);
+    strip.push_column(Column::new(ColumnId(0), 1, ColumnWidth::CustomPixels(200.0)));
+    strip.push_column(Column::new(ColumnId(1), 2, ColumnWidth::CustomPixels(1000.0)));
+    strip.focus_pane(2);
+    strip.focus_pane(1);
+    strip.focus_pane(2);
+    assert_eq!(strip.columns[1].width, ColumnWidth::CustomPixels(1000.0));
+    strip.insert_column_right_of(0, 3, ColumnWidth::Preset(ColumnWidthPreset::Child65));
+    assert_eq!(strip.columns[0].width, ColumnWidth::CustomPixels(200.0));
+    assert_eq!(strip.columns[2].width, ColumnWidth::CustomPixels(1000.0));
+    let layout = layout_strip(&strip, &StripViewport::new(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)), 4.0));
+    assert!(layout.pane(1).unwrap().is_on_screen);
+    assert!(layout.pane(3).unwrap().is_on_screen);
+}
+
+#[test]
+fn restored_scroll_does_not_jump_when_revealing_visible_column() {
+    let mut original = Strip::new(1);
+    for (index, pane) in [10, 20, 30].into_iter().enumerate() {
+        original.push_column(Column::new(ColumnId(index), pane, ColumnWidth::CustomPixels(400.0)));
+    }
+    original.set_scroll_offset_px(300.0, Some(600.0));
+    assert_eq!(original.scroll_offset, 1);
+    let mut restored: Strip = serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+    original.reveal_column_with_viewport(1, 600.0, 4.0);
+    restored.reveal_column_with_viewport(1, 600.0, 4.0);
+    assert_eq!(restored.scroll_offset_px, original.scroll_offset_px);
+}

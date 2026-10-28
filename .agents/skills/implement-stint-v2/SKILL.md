@@ -1,6 +1,6 @@
 ---
 name: implement-stint-v2
-description: "Implement one or more stints in an isolated feature worktree, validate with the full pre-push gate, open a PR against alpha, and handle PASS / FOLLOW-UP / FAIL through bs-merge and channel-clean."
+description: "Implement one or more stints in an isolated feature worktree, validate with phase-appropriate pre-push gates, open a PR against alpha, and handle PASS / FOLLOW-UP / FAIL through bs-merge and channel-clean."
 risk: low
 source: local
 ---
@@ -9,7 +9,7 @@ source: local
 
 Implements one or more `.stint` tasks into a single PR targeting `alpha`, coordinates state via Plexi pane slots, and cleanly retires the worktree and PR channel on merge.
 
-When a babysitter brief explicitly selects `feature/alpha-cleanup` aggregate mode, the [aggregate instructions](../babysitter-v3/SKILL.md) override this skill's alpha-only start, PR base, and PASS merge steps. Use `just bs-start --base feature/alpha-cleanup <ids...>`, open the batch PR against that branch, and after PASS use `scripts/babysitter-policy.py integrate` with the validated JSON record. Never run `just bs-merge` for an aggregate batch or mark its stints done before the combined PR reaches alpha. All implementation and pre-push gates below still apply.
+When a babysitter brief explicitly selects `feature/alpha-cleanup` aggregate mode, the [aggregate instructions](../babysitter-v3/SKILL.md) override this skill's alpha-only start, PR base, and PASS merge steps. Use `just bs-start --base feature/alpha-cleanup <ids...>` and open the batch PR against that branch. **The head owns the merge: after PASS it runs `just bs-integrate` itself. You never run `integrate`, `just bs-integrate`, or `just bs-merge`, and you are not woken for a PASS.** Keep the stints claimed and do not mark them done before the combined PR reaches alpha. All implementation and pre-push gates below still apply.
 
 ```
 /implement-stint-v2 <STINT_ID> [<STINT_ID> ...]
@@ -78,10 +78,7 @@ Before pushing, run every required gate in the foreground from your worktree:
    ```bash
    just build
    ```
-3. **Tests by push path:** PR pushes run `cargo test --bin plexi -- <filters...>` from `scripts/scoped-tests.sh`, using the array invocation and environment isolation in TESTING.md. Direct-to-alpha pushes require the full command below because stint 0799 removed per-push host CI. The full local suite remains required at lane integration / before merge and at combined aggregate validation. A scoped local pass is not acceptance: the full local integration suite and independent installed validation are, subject to existing docs-only/install-skip rules. Hosted Rust CI is post-Alpha; do not wait for it before publishing pr:done or merging. Unrelated PR checks still gate.
-   ```bash
-   bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi
-   ```
+3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
 4. **Clippy lint gate:**
    ```bash
    bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings
@@ -156,7 +153,7 @@ TESTING:
    ```bash
    plexi pane slot write status merge:working --pane-id $PLEXI_PANE_ID --replace
    ```
-2. Confirm the full local integration gate, independent validation and non-deferred PR checks are green for the head being merged (TESTING.md); a scoped worker pass alone is insufficient. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
+2. Confirm the phase-appropriate local gate, independent installed affected-behavior validation and non-deferred PR checks are green for the head being merged (TESTING.md). Batch integration does not require a full suite; the final combined candidate does. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
    ```bash
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```
@@ -177,10 +174,13 @@ TESTING:
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```
 2. Add or update `## Prior Attempts` in `.stint/tasks/<id>-*.md` with what was tried, why it failed, and gotchas for the next attempt.
-3. Clean up any installed PR build and unclaim the stint:
+3. Record the failure on your own pane:
+   ```bash
+   plexi pane slot write last_error "<one-line failure summary>" --pane-id $PLEXI_PANE_ID --replace
+   plexi pane slot write status impl:failed --pane-id $PLEXI_PANE_ID --replace
+   ```
+4. Retire the lane — **unless a `babysitter-v3` aggregate run dispatched you, where the head owns the park and runs this itself, so you must not:**
    ```bash
    just channel-clean "pr-<PR_NUMBER>"
    stint unclaim <id>
-   plexi pane slot write last_error "<one-line failure summary>" --pane-id $PLEXI_PANE_ID --replace
-   plexi pane slot write status impl:failed --pane-id $PLEXI_PANE_ID --replace
    ```

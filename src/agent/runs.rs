@@ -1,7 +1,7 @@
 //! Minimal Agents API.
 //!
 //! One host service, used by the CLI and by the host MCP endpoint. Agent
-//! definitions live only under `<workspace>/.plexi/agents/`. `AGENT.md` is
+//! authority lives under `<workspace>/.plexi/agents/`. `AGENT.md` is
 //! guidance and grants nothing. Authority is a `GrantRecord` in the permission
 //! monitor: an allow is a tool-scoped grant (`args_unbound`), an ask is the
 //! ordinary pending-approval path, and a tool outside that set is a denial.
@@ -38,7 +38,7 @@ pub struct ToolGrant {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct AgentCard {
+struct AgentAuthorityRecord {
     id: String,
     display_name: String,
     description: String,
@@ -271,7 +271,7 @@ fn record_scope_allow(
 pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
     let agent_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
     let agent_dir = agents_root(workspace).join(agent_id);
-    if agent_dir.join("agent.json").is_file() {
+    if crate::agent::authority_file_migrating_legacy(&agent_dir).is_some() {
         if let Ok(mut card) = read_agent(&agent_dir) {
             let mut changed = false;
             for grant in &mut card.grants {
@@ -344,7 +344,7 @@ pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<
     Ok(updated.actor_id)
 }
 
-fn write_definition(workspace: &Path, card: &AgentCard) -> Result<(), String> {
+fn write_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
     let dir = agents_root(workspace).join(&card.id);
     fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let prompt = format!(
@@ -385,13 +385,15 @@ fn write_definition(workspace: &Path, card: &AgentCard) -> Result<(), String> {
     Ok(())
 }
 
-fn read_agent(dir: &Path) -> Result<AgentCard, String> {
-    let raw = fs::read_to_string(dir.join("agent.json"))
-        .map_err(|error| format!("read {}: {error}", dir.display()))?;
+fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
+    let path = crate::agent::authority_file_migrating_legacy(dir)
+        .ok_or_else(|| format!("no agent.json in {}", dir.display()))?;
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
     serde_json::from_str(&raw).map_err(|error| format!("agent.json in {}: {error}", dir.display()))
 }
 
-fn list_agent_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<AgentCard>, String> {
+fn list_agent_authorities(workspace: &Path, include_temporary: bool) -> Result<Vec<AgentAuthorityRecord>, String> {
     let root = agents_root(workspace);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -402,7 +404,7 @@ fn list_agent_cards(workspace: &Path, include_temporary: bool) -> Result<Vec<Age
     for entry in entries {
         let entry = entry.map_err(|error| format!("read agent entry: {error}"))?;
         let path = entry.path();
-        if !path.is_dir() || !path.join("agent.json").is_file() {
+        if !path.is_dir() || crate::agent::authority_file_migrating_legacy(&path).is_none() {
             continue;
         }
         let card = read_agent(&path)?;
@@ -583,7 +585,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if dir.join("agent.json").is_file() {
+    if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
         return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
     }
     let now = gate.now_secs();
@@ -606,7 +608,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
             }
         })
         .collect();
-    let card = AgentCard {
+    let card = AgentAuthorityRecord {
         id: req.name.to_string(),
         display_name: if req.display_name.is_empty() {
             req.name.to_string()
@@ -646,7 +648,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
 
 struct IssueRun<'a> {
     workspace: &'a Path,
-    agent: &'a AgentCard,
+    agent: &'a AgentAuthorityRecord,
     parent_run: Option<&'a str>,
     admission_id: &'a str,
     client_ref: &'a str,
@@ -780,14 +782,36 @@ fn issue_run(req: IssueRun<'_>) -> Value {
     body
 }
 
-fn find_agent(workspace: &Path, id: &str) -> Result<AgentCard, Value> {
+fn find_agent(workspace: &Path, id: &str) -> Result<AgentAuthorityRecord, Value> {
     let dir = agents_root(workspace).join(id);
-    if !dir.join("agent.json").is_file() {
-        return Err(
-            json!({"ok": false, "error_code": "agent_not_found", "error": format!("no agent '{id}'")}),
-        );
+    let definition = match crate::cli::agent::resolve_agent_definition_in(
+        id, &crate::config::config_dir(), Some(workspace),
+    ) {
+        Ok((definition, _)) => definition,
+        Err(error) => {
+            return Err(match crate::agent::unrecognised_agent_dir(&dir) {
+                Some(issue) => json!({
+                    "ok": false, "error_code": "agent_unrecognised",
+                    "error": format!("agent directory {} is unrecognised: {}", dir.display(), issue.issue.describe()),
+                }),
+                None => json!({"ok": false, "error_code": "agent_not_found", "error": if dir.exists() { error } else { format!("no agent '{id}'") }}),
+            });
+        }
+    };
+    if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
+        let authority = read_agent(&dir)
+            .map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))?;
+        return Ok(authority);
     }
-    read_agent(&dir).map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))
+    log::info!("agents_api: resolved identity {} with no local authority", definition.id);
+    Ok(AgentAuthorityRecord {
+        id: definition.id,
+        display_name: definition.display_name,
+        description: definition.description,
+        reports_to: None,
+        temporary: false,
+        grants: Vec::new(),
+    })
 }
 
 fn find_run(workspace: &Path, id: &str) -> Result<RunRecord, Value> {
@@ -1007,7 +1031,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
                 .get("all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            match list_agent_cards(&workspace, include_temporary) {
+            match list_agent_authorities(&workspace, include_temporary) {
                 Ok(agents) => {
                     log::info!("agents_api: listed {} agent(s)", agents.len());
                     json!({"ok": true, "agents": agents})
@@ -1411,7 +1435,7 @@ fn invoke(
 fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str) -> Value {
     let input: Value = serde_json::from_str(input_json).unwrap_or_else(|_| json!({}));
     match tool {
-        "agents.list" => match list_agent_cards(workspace, false) {
+        "agents.list" => match list_agent_authorities(workspace, false) {
             Ok(agents) => json!({"ok": true, "agents": agents, "actor_id": run.actor_id}),
             Err(error) => json!({"ok": false, "error_code": "io_error", "error": error}),
         },
@@ -1683,6 +1707,33 @@ mod tests {
         let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
         assert_eq!(listed["agents"][0]["id"], "worker");
         assert_eq!(listed["agents"][0]["grants"][0]["tool"], "agents.ping");
+    }
+
+    #[test]
+    fn run_identity_uses_workspace_then_user_registry_precedence() {
+        let fix = Fixture::new();
+        let profile_agent = fix._profile.path().join("agents/worker");
+        fs::create_dir_all(&profile_agent).unwrap();
+        fs::write(profile_agent.join("AGENT.md"), "User persona").unwrap();
+        fs::write(profile_agent.join("settings.toml"), "[agent]\nid = \"worker\"\ndisplay_name = \"User\"\ndefault_tier = \"low\"\n[permissions]\ndefault_posture = \"deny\"\n").unwrap();
+        assert_eq!(find_agent(fix.ws(), "worker").unwrap().display_name, "User");
+        create(&fix, "worker", &["agents.ping=allow"]);
+        let workspace_agent = find_agent(fix.ws(), "worker").unwrap();
+        assert_eq!(workspace_agent.display_name, "worker");
+        assert_eq!(workspace_agent.grants[0].tool, "agents.ping");
+        fs::remove_file(agents_root(fix.ws()).join("worker/agent.json")).unwrap();
+        assert_eq!(find_agent(fix.ws(), "worker").unwrap().display_name, "worker");
+    }
+
+    #[test]
+    fn definition_without_authority_can_spawn_but_cannot_call_tools() {
+        let fix = Fixture::new();
+        create(&fix, "worker", &["agents.ping=allow"]);
+        fs::remove_file(agents_root(fix.ws()).join("worker/agent.json")).unwrap();
+        let spawned = handle_request("spawn_run", &json!({"workspace": fix.ws(), "agent": "worker"}));
+        assert_eq!(spawned["ok"], true, "{spawned}");
+        let call = handle_request("call", &json!({"workspace": fix.ws(), "run_id": spawned["run"]["id"], "tool": "agents.ping", "input_json": "{}"}));
+        assert_eq!(call["error_code"], "permission_denied", "{call}");
     }
 
     #[test]
@@ -2208,5 +2259,50 @@ mod tests {
             .unwrap();
         assert_eq!(soft_after["decision"], "ask");
         assert!(soft_after["expires_at"].is_null());
+    }
+
+    /// Stint 1036: `head.json` was renamed to `agent.json` in code but never on
+    /// disk, which made every pre-rename card — `~/.plexi/agents/lead-120cadfb`
+    /// is the live one — unreachable with `no agent '<id>'`.
+    #[test]
+    fn legacy_head_json_card_is_migrated_then_found() {
+        let fix = Fixture::new();
+        create(&fix, "lead-120cadfb", &["agents.ping=allow"]);
+        let dir = agents_root(fix.ws()).join("lead-120cadfb");
+        fs::rename(dir.join("agent.json"), dir.join("head.json")).unwrap();
+
+        let card = find_agent(fix.ws(), "lead-120cadfb").expect("the legacy authority record resolves");
+        assert_eq!(card.id, "lead-120cadfb");
+        assert_eq!(card.grants[0].tool, "agents.ping");
+        assert!(
+            dir.join("agent.json").is_file() && !dir.join("head.json").exists(),
+            "head.json is migrated in place, not read under its old name"
+        );
+        let listed = handle_request("list_agents", &json!({"workspace": fix.ws()}));
+        assert_eq!(listed["agents"][0]["id"], "lead-120cadfb", "{listed}");
+    }
+
+    /// Stint 1036: a directory the loader does not understand is named, not
+    /// answered with the same `no agent` as a directory that is not there.
+    #[test]
+    fn find_agent_reports_an_unrecognised_directory_by_path() {
+        let fix = Fixture::new();
+        let dir = agents_root(fix.ws()).join("writer");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("AGENT.md"), "pane-agent prose\n").unwrap();
+
+        let error = find_agent(fix.ws(), "writer").unwrap_err();
+        assert_eq!(error["error_code"], "agent_unrecognised", "{error}");
+        let message = error["error"].as_str().unwrap();
+        assert!(message.contains("settings.toml"), "{error}");
+    }
+
+    /// Stint 1036: a name with no directory at all keeps the old answer.
+    #[test]
+    fn find_agent_still_reports_a_missing_directory_as_not_found() {
+        let fix = Fixture::new();
+        let error = find_agent(fix.ws(), "nobody").unwrap_err();
+        assert_eq!(error["error_code"], "agent_not_found", "{error}");
+        assert_eq!(error["error"], "no agent 'nobody'");
     }
 }

@@ -591,6 +591,17 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
+pub fn pane_layout_cli() -> i32 {
+    log::info!("pane_layout:cli: requesting workspace snapshot");
+    match super::request(serde_json::json!({"type":"workspace_snapshot"}), "pane-layout-response", "pane layout") {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => print_json_output(&content),
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
 pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
     let context_id: Option<u64> = if current {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {

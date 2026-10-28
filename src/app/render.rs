@@ -4,7 +4,7 @@ use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, Stroke, StrokeKind, Vec2};
-use egui_tiles::{Tile, TileId};
+use egui_tiles::{Container, Tile, TileId};
 use std::collections::HashMap;
 
 const FLASH_DUR: f32 = 0.4;
@@ -349,54 +349,7 @@ impl PlexiApp {
                 }
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
-                    if self.router.len() > 1 {
-                        let delete_pressed = ctx.input_mut(|input| {
-                            input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                                || input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                        });
-                        if delete_pressed {
-                            let now = std::time::Instant::now();
-                            let elapsed = self
-                                .welcome_delete_last_press
-                                .and_then(|t| now.checked_duration_since(t))
-                                .unwrap_or(std::time::Duration::MAX);
-                            if elapsed > std::time::Duration::from_millis(1500) {
-                                self.welcome_delete_press_count = 0;
-                            }
-                            self.welcome_delete_press_count += 1;
-                            self.welcome_delete_last_press = Some(now);
-                            if self.welcome_delete_press_count >= 3 {
-                                let ctx_idx = self.router.active_idx();
-                                log::info!(
-                                    "welcome_delete: triple-tap delete context idx={ctx_idx} name={:?}",
-                                    self.router.active().name
-                                );
-                                self.welcome_delete_press_count = 0;
-                                self.welcome_delete_last_press = None;
-                                self.delete_context(ctx_idx);
-                                self.mark_workspace_dirty();
-                                return;
-                            }
-                        }
-                    }
                     self.draw_welcome_screen(ui);
-                    if self.welcome_delete_press_count > 0 {
-                        let timed_out = self
-                            .welcome_delete_last_press
-                            .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
-                            .unwrap_or(false);
-                        if timed_out {
-                            self.welcome_delete_press_count = 0;
-                            self.welcome_delete_last_press = None;
-                        } else {
-                            self.draw_welcome_delete_overlay(&ctx);
-                            // Same 100ms confirm-timeout poll as the quit overlay.
-                            crate::platform::frame_diag::note(
-                                crate::platform::frame_diag::RepaintCause::QuitConfirm,
-                            );
-                            ctx.request_repaint_after(std::time::Duration::from_millis(100));
-                        }
-                    }
                     return;
                 }
 
@@ -671,7 +624,6 @@ impl PlexiApp {
                     ui.ctx().data_mut(|d| d.insert_temp(lineage_log_id, pane_lineage.clone()));
                 }
                 let focus_painter = ui.painter().clone();
-                let (has_left_neighbor, has_right_neighbor) = self.active_strip_clipped_neighbors();
                 let right = self.render_conjoined_parent(ui, &mut focused_terminal_input);
                 let owner_pane = self.visual_owner_pane();
                 let mut child_ui;
@@ -680,10 +632,51 @@ impl PlexiApp {
                     child_ui.set_clip_rect(rect);
                     &mut child_ui
                 } else { ui };
-                let canvas_full_rect = ui.available_rect_before_wrap();
+                let available_canvas = ui.available_rect_before_wrap();
+                let context_id = self.router.active().context_id;
+                let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+                let strip = self.strip_for_context(context_id);
+                let max_scroll = strip.max_scroll_offset_px(available_canvas.width(), gap);
+                let mut canvas_full_rect = available_canvas;
+                let mut strip_canvas_ui;
+                let ui = if max_scroll > 0.5 && self.windows[self.active_window].zoomed_pane.is_none() {
+                    const SCROLLBAR_HEIGHT: f32 = 16.0;
+                    canvas_full_rect.max.y = (canvas_full_rect.max.y - SCROLLBAR_HEIGHT).max(canvas_full_rect.min.y);
+                    let bar_rect = egui::Rect::from_min_max(
+                        egui::pos2(available_canvas.left(), canvas_full_rect.bottom()),
+                        available_canvas.max,
+                    );
+                    let mut offset = strip.scroll_offset_px.clamp(0.0, max_scroll);
+                    let response = ui.scope(|ui| {
+                        ui.spacing_mut().slider_width = bar_rect.width();
+                        ui.put(bar_rect, egui::Slider::new(&mut offset, 0.0..=max_scroll).show_value(false))
+                    }).inner;
+                    if response.changed() {
+                        self.ensure_authoritative_strip(context_id).set_scroll_offset_px(offset, Some(canvas_full_rect.width()));
+                        self.mark_workspace_dirty();
+                        log::info!("strip: scrollbar context={context_id} offset={offset:.1}");
+                    }
+                    strip_canvas_ui = ui.new_child(egui::UiBuilder::new().id_salt("strip-viewport").max_rect(canvas_full_rect));
+                    strip_canvas_ui.set_clip_rect(canvas_full_rect);
+                    &mut strip_canvas_ui
+                } else { ui };
+                // A shift-wheel belongs to horizontal scrolling. Prevent terminal raw-wheel
+                // handling from also turning it into vertical scrollback; egui's smooth
+                // horizontal delta remains available to a hovered pane control first.
+                if ui.input(|input| input.pointer.hover_pos().is_some_and(|pos| canvas_full_rect.contains(pos))) {
+                    ui.input_mut(|input| {
+                        for event in &mut input.events {
+                            if let egui::Event::MouseWheel { delta, modifiers, .. } = event {
+                                if modifiers.shift { delta.y = 0.0; }
+                            }
+                        }
+                    });
+                }
                 // After the conjoined parent has claimed its side, so the shares
                 // are sized against the width the tree actually gets.
-                self.sync_strip_tree_shares(Some(ui.available_width()));
+                self.sync_strip_tree_shares_with_rect(Some(canvas_full_rect));
+                let w_strip = self.active_window_strip();
+                let strip_layout = Some(self.active_strip_layout());
                 let off_strip_panes = self.zoom.off_strip_panes.clone();
                 let strip_layout_jump = self.zoom.strip_layout_jump;
                 let ctx = &mut self.windows[self.active_window];
@@ -824,6 +817,12 @@ impl PlexiApp {
                 }
 
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+                let pane_radius_log = egui::Id::new("pane_corner_radius_logged");
+                let pane_radius_setting = self.config.pane_corner_radius.unwrap_or(crate::ui::style::RADIUS_PANE.nw);
+                if ui.ctx().data(|d| d.get_temp::<u8>(pane_radius_log)) != Some(pane_radius_setting) {
+                    log::info!("pane corner radius: {pane_radius_setting} points");
+                    ui.ctx().data_mut(|d| d.insert_temp(pane_radius_log, pane_radius_setting));
+                }
                 {
                     let overlay_log_id = egui::Id::new("pane_id_overlay_on");
                     let was_held: bool =
@@ -838,8 +837,7 @@ impl PlexiApp {
                     }
                 }
 
-                let mut peek_click: Option<bool> = None;
-                let mut reset_dividers: bool = false;
+                let mut reset_divider = None;
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     child_agent_strips,
@@ -863,6 +861,7 @@ impl PlexiApp {
                     owner_pane,
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
+                    pane_corner_radius: self.config.pane_corner_radius,
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(12.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
                     focused_terminal_input: focused_terminal_input.take(),
@@ -870,6 +869,8 @@ impl PlexiApp {
                     pending_pane_clicks: &mut pending_pane_clicks,
                     off_strip_panes,
                     strip_layout_jump,
+                    strip_layout: strip_layout.clone(),
+                    resized: false,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -881,20 +882,59 @@ impl PlexiApp {
                         ui.disable();
                     }
                     crate::platform::ui_profile::time("tile_tree_total", || {
+                        if zoomed_pane.is_none() {
+                            if let Some(ref strip) = w_strip {
+                                if (strip.total_width_px - canvas_full_rect.width()).abs() > 0.5
+                                    || strip.scroll_offset_px > 0.5
+                                {
+                                    let strip_rect = egui::Rect::from_min_size(
+                                        egui::pos2(
+                                            canvas_full_rect.min.x - strip.scroll_offset_px,
+                                            canvas_full_rect.min.y,
+                                        ),
+                                        egui::vec2(
+                                            strip.total_width_px,
+                                            canvas_full_rect.height(),
+                                        ),
+                                    );
+                                    let mut strip_ui = ui.new_child(
+                                        egui::UiBuilder::new()
+                                            .id_salt("continuous-strip")
+                                            .max_rect(strip_rect),
+                                    );
+                                    strip_ui.set_clip_rect(canvas_full_rect);
+                                    ctx.tree.ui(&mut behavior, &mut strip_ui);
+                                    return;
+                                }
+                            } else if let Some(layout) = strip_layout.as_ref() {
+                                let root_is_column = ctx.tree.root().and_then(|root| ctx.tree.tiles.get(root)).is_some_and(|tile| {
+                                    matches!(tile, Tile::Pane(_) | Tile::Container(Container::Tabs(_))) || matches!(tile, Tile::Container(Container::Linear(linear)) if linear.dir == egui_tiles::LinearDir::Vertical)
+                                });
+                                if root_is_column {
+                                    if let Some(pane) = layout.panes.iter().find(|pane| behavior.panes.contains_key(&pane.pane_id)) {
+                                        let rect = egui::Rect::from_min_size(
+                                            egui::pos2(pane.outer_rect.left(), canvas_full_rect.top()),
+                                            egui::vec2(pane.outer_rect.width(), canvas_full_rect.height()),
+                                        );
+                                        let mut column_ui = ui.new_child(egui::UiBuilder::new().id_salt("single-strip-column").max_rect(rect));
+                                        column_ui.set_clip_rect(canvas_full_rect);
+                                        ctx.tree.ui(&mut behavior, &mut column_ui);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         ctx.tree.ui(&mut behavior, ui);
                     });
                 });
                 log::debug!("[DRAG] tiling: done");
 
-                // Paint the active pane focus outline using the parent painter which
-                // has the full window clip rect. paint_on_top_of_tile cannot do this —
-                // its painter is clipped to the tile rect, making Outside strokes invisible.
+                // Paint after the tile contents and their corner masks, clipping to
+                // the viewport rather than manufacturing corners at a scroll edge.
                 if zoomed_pane.is_none() {
-                    let mut focused_frame_outer = None;
                     if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
-                        if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
-                            let gap = behavior.pane_gap;
-                            focused_frame_outer = Some(rect.expand(gap));
+                        let focus_rect = ctx.tree.tiles.rect(tile_id);
+                        if let Some(rect) = focus_rect.filter(|r| r.width() > 0.5 && r.height() > 0.5) {
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -911,40 +951,21 @@ impl PlexiApp {
                             } else {
                                 self.colors.accent
                             };
-                            let stroke = egui::Stroke::new(gap, stroke_color);
-                            focus_painter.rect_stroke(
+                            let stroke = egui::Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, stroke_color);
+                            focus_painter.with_clip_rect(canvas_full_rect).rect_stroke(
                                 rect,
-                                crate::ui::style::RADIUS_MOTORWAYS,
+                                crate::ui::style::pane_radius(behavior.pane_corner_radius, rect),
                                 stroke,
-                                egui::StrokeKind::Outside,
+                                egui::StrokeKind::Inside,
                             );
                         }
                     }
-                    crate::app::PlexiApp::paint_clipped_neighbor_edges(
-                        &focus_painter,
-                        canvas_full_rect,
-                        focused_frame_outer,
-                        has_left_neighbor,
-                        has_right_neighbor,
-                        self.colors,
-                    );
-                    let (left_peek_rect, right_peek_rect) = crate::app::zoom::peek_strip_rects(
-                        canvas_full_rect,
-                        focused_frame_outer,
-                        has_left_neighbor,
-                        has_right_neighbor,
-                    );
-                    if ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)) {
-                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                            if left_peek_rect.is_some_and(|r| r.contains(pos)) {
-                                peek_click = Some(true);
-                            } else if right_peek_rect.is_some_and(|r| r.contains(pos)) {
-                                peek_click = Some(false);
-                            }
-                        }
-                    }
                     if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
-                        reset_dividers = true;
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            reset_divider = strip_layout.as_ref().and_then(|layout| {
+                                layout.dividers.iter().find(|divider| divider.rect.contains(pos)).copied()
+                            });
+                        }
                     }
                 }
 
@@ -958,6 +979,7 @@ impl PlexiApp {
                 // Extract new_focused before the zoom overlay block so we can
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
+                let resized = behavior.resized;
                 let new_focused = behavior.new_focused;
                 if new_focused.is_some() { self.conjoined_parent_focus = None; }
                 let should_close_exited = behavior.close_exited.is_some();
@@ -1202,6 +1224,12 @@ impl PlexiApp {
 
                 // Apply canvas focus change now that behavior is dropped and
                 // ctx is freely borrowable again.
+                let clicked_pane_id = new_focused.and_then(|new_tile| {
+                    match ctx.tree.tiles.get(new_tile) {
+                        Some(egui_tiles::Tile::Pane(pid)) => Some(*pid),
+                        _ => None,
+                    }
+                });
                 let canvas_focus_changed = if let Some(new) = new_focused {
                     let changed = Some(new) != canvas_old_focus;
                     ctx.navigate_to(new);
@@ -1218,11 +1246,29 @@ impl PlexiApp {
                     }
                 }
 
-                if let Some(is_left) = peek_click {
-                    self.handle_peek_click(is_left);
+                if let Some(pid) = clicked_pane_id {
+                    self.focus_pane_in_strip(pid);
                 }
-                if reset_dividers {
-                    self.reset_column_widths(self.router.active().context_id);
+                // Nested pane scroll areas get first refusal on the horizontal delta.
+                let scroll_x = ui.input_mut(|input| {
+                    if input.pointer.hover_pos().is_some_and(|pos| canvas_full_rect.contains(pos)) {
+                        let delta = input.smooth_scroll_delta.x;
+                        input.smooth_scroll_delta.x = 0.0;
+                        delta
+                    } else { 0.0 }
+                });
+                if scroll_x != 0.0 && zoomed_pane.is_none() && self.overlay_surface().is_none() {
+                    let context = self.router.active().context_id;
+                    let strip = self.ensure_authoritative_strip(context);
+                    strip.set_scroll_offset_px(strip.scroll_offset_px - scroll_x, Some(canvas_full_rect.width()));
+                    log::info!("strip: wheel scroll context={context} offset={:.1}", strip.scroll_offset_px);
+                    self.mark_workspace_dirty();
+                    ui.ctx().request_repaint();
+                }
+                if let (Some(divider), Some(layout)) = (reset_divider, strip_layout.as_ref()) {
+                    self.reset_strip_divider(divider, layout);
+                } else if resized {
+                    self.commit_strip_tree_resize(canvas_full_rect.width());
                 }
 
                 // ── Pane swap animation overlays ────────────────────────────────────────

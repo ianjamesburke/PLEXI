@@ -574,6 +574,24 @@
         },
         {
           "additionalProperties": false,
+          "description": "Read the active workspace layout without pane content.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "workspace_snapshot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Reload the running host configuration from disk.",
           "properties": {
             "response_file": {

@@ -15,6 +15,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "float",
         "Inter-pane gap width in pixels (clamped 0–20, default 4)",
     ),
+    ("pane_corner_radius", "integer", "Pane corner radius in points (0–255, default 6)"),
     (
         "pane_title_font_size",
         "float",

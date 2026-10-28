@@ -708,7 +708,7 @@ impl PlexiApp {
                             "context_name": context_name,
                             "window_id": win.window_id,
                             "cwd": cwd,
-                            "agent": pane.agent(),
+                            "agent": pane.effective_agent(),
                             "slots": pane_slots_json(pane),
                             "heartbeat": self.pane_heartbeat_json(*pane_id),
                         });
@@ -800,7 +800,7 @@ impl PlexiApp {
                         });
                     if let Some(pane) = win.panes.get(pane_id) {
                         let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
-                        let agent = pane.agent();
+                        let agent = pane.effective_agent();
                         let info = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
                                 let cwd = t
@@ -1718,6 +1718,39 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"error":"direction must be left, right, up, or down"}));
                 }
             }
+            crate::protocol::AppRequest::WorkspaceSnapshot { response_file } => {
+                let context_id = self.router.active().context_id;
+                let owner = match self.input_owner(&self.ctx) {
+                    crate::app::input_owner::InputOwner::Pane(pane_id) => serde_json::json!({"kind":"pane", "pane_id":pane_id}),
+                    crate::app::input_owner::InputOwner::Overlay(_) => serde_json::json!({"kind":"overlay"}),
+                    crate::app::input_owner::InputOwner::OsUnfocused => serde_json::json!({"kind":"os_unfocused"}),
+                    crate::app::input_owner::InputOwner::Nobody => serde_json::json!({"kind":"nobody"}),
+                };
+                let reply = if let Some(snapshot) = self.host.published_strip_snapshot(context_id) {
+                    let columns: Vec<_> = snapshot.strip.columns.iter().map(|column| serde_json::json!({
+                        "column_id":column.id.0, "panes":column.panes, "width":column.width,
+                        "height_shares":column.heights,
+                    })).collect();
+                    let panes: Vec<_> = snapshot.strip.columns.iter().flat_map(|column| column.panes.iter().map(move |pane_id| (column.id, *pane_id))).map(|(column_id, pane_id)| {
+                        let window_id = self.windows.iter().find(|window| window.panes.contains_key(&pane_id)).map(|window| window.window_id);
+                        let geometry = snapshot.layout.pane(pane_id);
+                        serde_json::json!({"pane_id":pane_id, "window_id":window_id,
+                            "column_id":column_id.0, "visible":geometry.is_some_and(|pane| pane.is_visible),
+                            "partially_visible":geometry.is_some_and(|pane| pane.is_partially_visible),
+                            "fully_on_screen":geometry.is_some_and(|pane| pane.is_on_screen),
+                            "bounds":geometry.map(|pane| serde_json::json!({"min":[pane.outer_rect.min.x, pane.outer_rect.min.y], "max":[pane.outer_rect.max.x, pane.outer_rect.max.y]})),
+                            "clip_bounds":geometry.filter(|pane| pane.is_visible).map(|pane| serde_json::json!({"min":[pane.clip_rect.min.x, pane.clip_rect.min.y], "max":[pane.clip_rect.max.x, pane.clip_rect.max.y]}))})
+                    }).collect();
+                    serde_json::json!({"context_id":context_id, "geometry_generation":snapshot.generation,
+                        "scroll_offset_px":snapshot.layout.scroll_offset_px, "focused_pane":snapshot.strip.focused_pane, "columns":columns,
+                        "conjoined_parent":self.conjoined_contexts.get(&context_id),
+                        "panes":panes, "input_owner":owner})
+                } else {
+                    serde_json::json!({"error":"workspace geometry is not available yet"})
+                };
+                log::info!("workspace_snapshot: context={context_id} available={}", reply.get("error").is_none());
+                write_json_response(response_file, reply);
+            }
             crate::protocol::AppRequest::ReloadConfig { response_file } => {
                 log::info!("config_reload: CLI requested reload");
                 self.reload_config();
@@ -2224,15 +2257,27 @@ impl PlexiApp {
                         }
                     })
                 });
+                // Resolve the caller independently of its posture. A non-agent
+                // human-owned pane keeps sending without broker gating. A
+                // non-human-owned caller with no snapshotted posture (an
+                // unconfigured or corrupted agent definition) still enters the
+                // broker with `None`, so the gate falls back to `Ask` instead of
+                // being skipped — missing posture must never mean un-gated.
                 let caller_and_posture = peer_ancestry
                     .as_deref()
                     .and_then(|ancestry| {
                         self.resolve_socket_peer_pane(ancestry)
                             .map(|(caller, _, _)| caller)
                     })
-                    .and_then(|caller| {
-                        self.pane_permission_posture(caller)
-                            .map(|posture| (caller, posture))
+                    .and_then(|caller| match self.pane_permission_posture(caller) {
+                        Some(posture) => Some((caller, Some(posture))),
+                        None if self.is_human_owned_pane(caller) => None,
+                        None => {
+                            log::info!(
+                                "pane_ipc: send_to_pane: caller pane_id={caller} has no posture snapshot — pane.send defaults to broker Ask (target pane_id={pane_id})"
+                            );
+                            Some((caller, None))
+                        }
                     });
                 if let Some((caller, _)) = &caller_and_posture {
                     let old = std::mem::take(&mut self.pending_send_approvals);
@@ -2286,7 +2331,7 @@ impl PlexiApp {
                                 .unwrap_or_default(),
                             target_type: crate::broker::TargetType::Capability,
                         },
-                        Some(&posture),
+                        posture.as_ref(),
                     );
                     (caller, adm)
                 });
@@ -3790,30 +3835,7 @@ impl PlexiApp {
                     .windows
                     .iter()
                     .flat_map(|win| win.panes.values())
-                    .filter_map(|pane| {
-                        let report = pane.agent()?;
-                        let Some(terminal) = pane.as_terminal() else {
-                            return Some(report.clone());
-                        };
-                        let exit_failure = terminal
-                            .exit_status
-                            .filter(|status| terminal.exited && status.is_failure());
-                        Some(crate::protocol::PaneAgentState {
-                            pane_id: report.pane_id,
-                            state: if terminal.agent_completed {
-                                crate::protocol::AgentState::Completed
-                            } else if exit_failure.is_some() {
-                                crate::protocol::AgentState::Failed
-                            } else {
-                                report.state.clone()
-                            },
-                            agent: report.agent.clone(),
-                            detail: exit_failure
-                                .map(|status| status.summary())
-                                .or_else(|| report.detail.clone()),
-                            session_id: report.session_id.clone(),
-                        })
-                    })
+                    .filter_map(|pane| pane.effective_agent())
                     .collect();
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
@@ -5902,6 +5924,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 newly_exited = !t.exited;
+                                let (prior_agent_state, prior_agent_detail) = t.effective_agent_state();
                                 t.exited = true;
                                 t.exit_status = Some(status);
                                 t.program_status
@@ -5916,11 +5939,11 @@ impl PlexiApp {
                                     "pty: pane {id} process exited status={status:?} ephemeral={} is_agent_or_subcontext={is_agent_or_subcontext}",
                                     t.ephemeral
                                 );
-                                if newly_exited && status.is_failure() && is_agent_or_subcontext {
-                                    log::info!(
-                                        "agents: pane {id} observed exit failure {}; preserving Failed state in fleet and history",
-                                        status.summary()
-                                    );
+                                if newly_exited && t.is_agent_pane() {
+                                    let (state, detail) = t.effective_agent_state();
+                                    if (prior_agent_state != state || prior_agent_detail != detail) && state == crate::protocol::AgentState::Failed && detail.as_deref() == Some(status.summary().as_str()) {
+                                        log::info!("agents: pane {id} effective state overridden to Failed on {}", status.summary());
+                                    }
                                 }
                                 // Stint 0765 / 0802: ephemeral agent/sub-context panes only
                                 // self-close on clean exit (0); non-zero or signal-terminated

@@ -477,6 +477,7 @@ pub struct MatchScore {
     pub primary_ranges: Vec<Range<usize>>,
     /// Matched UTF-8 byte ranges within `CandidateInput::relative_path`.
     pub path_ranges: Vec<Range<usize>>,
+    basename_tier: u8,
 }
 
 /// Score `candidate` against `query`. Returns `None` if `query` does not match.
@@ -490,8 +491,9 @@ pub struct MatchScore {
 ///   subsequence > scattered subsequence.
 /// - **Recency boost**: Smooth monotonic boost from `mtime` relative to `now`
 ///   so active files outrank stale files on similar lexical quality.
-/// - **Shallow depth tie-breaker**: Shallower paths beat deeper paths when
-///   lexical score and recency are tied.
+/// - **Locality**: Search sessions order basename lexical tiers first, then
+///   depth, then this score. Recency and content cannot promote a deeper
+///   basename match over a shallower match in the same tier.
 pub fn score_candidate(
     query: &str,
     candidate: &CandidateInput<'_>,
@@ -507,6 +509,7 @@ pub fn score_candidate(
             total: recency + depth_adj + len_adj,
             primary_ranges: Vec::new(),
             path_ranges: Vec::new(),
+            basename_tier: 0,
         });
     }
 
@@ -520,9 +523,11 @@ pub fn score_candidate(
         let mut total_lex = 0i64;
         let mut primary_ranges = Vec::new();
         let mut path_ranges = Vec::new();
+        let mut basename_tier = u8::MAX;
         for token in tokens {
             let sub = score_single_token(token, candidate, 0, 0, 0)?;
             total_lex += sub.total;
+            basename_tier = basename_tier.min(sub.basename_tier);
             primary_ranges.extend(sub.primary_ranges);
             path_ranges.extend(sub.path_ranges);
         }
@@ -530,6 +535,7 @@ pub fn score_candidate(
             total: total_lex + recency + depth_adj + len_adj,
             primary_ranges: merge_byte_ranges(primary_ranges),
             path_ranges: merge_byte_ranges(path_ranges),
+            basename_tier,
         })
     }
 }
@@ -542,6 +548,9 @@ fn score_single_token(
     len_adj: i64,
 ) -> Option<MatchScore> {
     let primary_match = score_text_target(token, candidate.primary);
+    let basename_tier = primary_match.as_ref().map_or(0, |(_, ranges)| {
+        basename_match_tier(candidate.primary, ranges)
+    });
     let path_match = candidate
         .relative_path
         .and_then(|rel| score_text_target(token, rel));
@@ -621,7 +630,28 @@ fn score_single_token(
         total: best_lexical + recency + depth_adj + effective_len_adj,
         primary_ranges,
         path_ranges,
+        basename_tier,
     })
+}
+
+// Keep lexical classes separate from case, recency, and content bonuses.
+fn basename_match_tier(primary: &str, ranges: &[Range<usize>]) -> u8 {
+    if let [range] = ranges {
+        if range.start == 0 && range.end == primary.len() {
+            return 5;
+        }
+        if range.start == 0 {
+            return 4;
+        }
+        if build_char_slice(primary)
+            .iter()
+            .any(|c| c.byte_start == range.start && c.boundary_bonus > 0)
+        {
+            return 3;
+        }
+        return 2;
+    }
+    1
 }
 
 fn basename_byte_offset(rel_path: &str, primary: &str) -> Option<usize> {
@@ -1205,6 +1235,8 @@ pub struct SearchHit {
     pub name_ranges: Vec<Range<usize>>,
     pub rel_path_ranges: Vec<Range<usize>>,
     pub kind: SearchHitKind,
+    basename_tier: u8,
+    depth: usize,
 }
 
 impl SearchHit {
@@ -1567,14 +1599,12 @@ fn search_worker_loop(
             };
 
             if let Some(&hit_idx) = existing_by_path.get(&entry.path) {
-                // File already matched by path: attach the content snippet and boost score.
-                merged_hits[hit_idx].score += 600;
+                // A content snippet enriches a path hit without changing its rank.
                 merged_hits[hit_idx].kind = SearchHitKind::Path {
                     content: Some(snippet),
                 };
             } else if merged_hits.len() < MAX_SEARCH_HITS {
-                let score = content_match.match_score
-                    + recency_boost(entry.modified, now)
+                let score = content_match.match_score + recency_boost(entry.modified, now)
                     - ((entry.depth.min(20) as i64) * 15);
                 let idx = merged_hits.len();
                 existing_by_path.insert(entry.path.clone(), idx);
@@ -1589,6 +1619,8 @@ fn search_worker_loop(
                     name_ranges: Vec::new(),
                     rel_path_ranges: Vec::new(),
                     kind: SearchHitKind::Content(snippet),
+                    basename_tier: 0,
+                    depth: entry.depth,
                 });
             }
         }
@@ -1597,11 +1629,7 @@ fn search_worker_loop(
             continue;
         }
 
-        merged_hits.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.rel_path.cmp(&b.rel_path))
-        });
+        sort_search_hits(&mut merged_hits);
         if merged_hits.len() > MAX_SEARCH_HITS {
             merged_hits.truncate(MAX_SEARCH_HITS);
         }
@@ -1660,16 +1688,14 @@ pub fn rank_path_hits(entries: &[WalkEntry], query: &str, now: SystemTime) -> Ve
                 name_ranges: match_score.primary_ranges,
                 rel_path_ranges: match_score.path_ranges,
                 kind: SearchHitKind::Path { content: None },
+                basename_tier: match_score.basename_tier,
+                depth: entry.depth,
             })
         })
         .collect();
 
     if !trimmed.is_empty() {
-        hits.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| a.rel_path.cmp(&b.rel_path))
-        });
+        sort_search_hits(&mut hits);
     }
     if hits.len() > MAX_SEARCH_HITS {
         hits.truncate(MAX_SEARCH_HITS);
@@ -1677,11 +1703,123 @@ pub fn rank_path_hits(entries: &[WalkEntry], query: &str, now: SystemTime) -> Ve
     hits
 }
 
+fn sort_search_hits(hits: &mut [SearchHit]) {
+    hits.sort_by(|a, b| {
+        b.basename_tier
+            .cmp(&a.basename_tier)
+            .then_with(|| {
+                if a.basename_tier > 0 {
+                    a.depth.cmp(&b.depth)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
+}
+
 // ─── Unit Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_basename_precedes_newer_nested_copies_in_both_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        for (path, contents) in [
+            ("AGENTS.md", "local"),
+            ("a/AGENTS.md", "AGENTS in content"),
+            ("a/b/c/AGENTS.md", "AGENTS in content"),
+            ("z/AGENTS.md", "AGENTS in content"),
+            ("myAGENTS.txt", "other"),
+            ("notes.txt", "AGENTS in content"),
+        ] {
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            let modified = if path == dir.path().join("AGENTS.md") {
+                SystemTime::UNIX_EPOCH
+            } else {
+                now
+            };
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+        }
+        for query in ["AGENTS", "agents"] {
+            let (cmd_tx, cmd_rx) = mpsc::channel();
+            let (update_tx, update_rx) = mpsc::channel();
+            let generation = Arc::new(AtomicU64::new(1));
+            let worker = std::thread::spawn(move || {
+                search_worker_loop(cmd_rx, update_tx, generation, Arc::new(Mutex::new(None)));
+            });
+            cmd_tx
+                .send(WorkerCommand::Run {
+                    generation: 1,
+                    root: dir.path().to_path_buf(),
+                    hidden: HiddenPolicy::SkipHidden,
+                    query: query.to_string(),
+                    invalidate_corpus: false,
+                })
+                .unwrap();
+            let timeout = crate::testing::load_aware_timeout(Duration::from_secs(10));
+            let phase1 = update_rx.recv_timeout(timeout).unwrap();
+            let phase2 = update_rx.recv_timeout(timeout).unwrap();
+            let WorkerUpdate::Phase1Complete { hits: first, .. } = phase1 else {
+                panic!("phase 1")
+            };
+            let WorkerUpdate::Phase2Complete { hits: second, .. } = phase2 else {
+                panic!("phase 2")
+            };
+            for hits in [&first, &second] {
+                let names: Vec<_> = hits.iter().map(|h| h.rel_path.as_str()).collect();
+                assert_eq!(
+                    &names[..4],
+                    &["AGENTS.md", "a/AGENTS.md", "z/AGENTS.md", "a/b/c/AGENTS.md"],
+                    "{query}: {names:?}"
+                );
+            }
+            assert!(second
+                .iter()
+                .any(|h| h.rel_path == "notes.txt" && matches!(h.kind, SearchHitKind::Content(_))));
+            drop(cmd_tx);
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stronger_basename_tiers_beat_local_weaker_matches() {
+        let now = SystemTime::now();
+        let entry = |rel: &str, depth| WalkEntry {
+            path: PathBuf::from(rel),
+            rel_path: rel.to_string(),
+            file_name: rel.rsplit('/').next().unwrap().to_string(),
+            is_dir: false,
+            depth,
+            size_bytes: None,
+            modified: Some(now),
+        };
+        let hits = rank_path_hits(
+            &[
+                entry("myagents.txt", 1),
+                entry("nested/agents.md", 2),
+                entry("nested/deep/agents", 3),
+            ],
+            "agents",
+            now,
+        );
+        let paths: Vec<_> = hits.iter().map(|h| h.rel_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["nested/deep/agents", "nested/agents.md", "myagents.txt"]
+        );
+    }
 
     #[test]
     fn scoped_walker_prunes_default_junk_dirs_and_respects_hidden_policy() {

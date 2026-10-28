@@ -1926,6 +1926,7 @@ pub use events::{
 };
 pub use host::{
     host_key_cli, host_log_cli, host_screenshot_cli, host_start_cli, host_status_cli, host_stop_cli,
+    host_workspace_rollback_cli,
 };
 pub use install::{
     install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
@@ -1942,7 +1943,7 @@ pub use open::{
 pub use permissions::permissions_cli;
 pub use pane::{
     pane_capture_cli, pane_click_cli, pane_click_node_cli, pane_close_cli, pane_drag_cli,
-    pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_list_cli,
+    pane_drop_cli, pane_focus_cli, pane_heartbeat_cli, pane_info_cli, pane_key_cli, pane_layout_cli, pane_list_cli,
     pane_message_recv_cli, pane_message_send_cli, pane_result_read_cli, 
      pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
     pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,

@@ -6,7 +6,7 @@
 //! of the selected note's full content. Keys:
 //!   arrows / ⌘J ⌘K — navigate         ↵ — open in focused pane
 //!   ⌘S — open in new pane              type — fuzzy-find (title, file name, body)
-//!   ⌘C — copy the note's content       ⌘X — cut (copy now, delete on confirm)
+//!   ⌘C — copy the note body            ⌘X — cut (copy body now, delete on confirm)
 //!   ⌘⌫ / ⌘Del — delete, after an inline confirm (↵/y confirm, esc/n cancel)
 //!   Esc — cancel a pending confirm, else clear the query, else close
 //!
@@ -137,8 +137,9 @@ impl PlexiApp {
             }
         }
         let text: std::sync::Arc<str> = match std::fs::read_to_string(&path) {
-            // Preview shows the body only; copy/cut keep the full file content.
-            Ok(text) => crate::notes::parse_note(&text).1.into(),
+            // Preview and clipboard share one projection: the note body, with a
+            // Plexi capture metadata envelope stripped and user text preserved.
+            Ok(text) => crate::notes::note_body(&text).into(),
             Err(e) => {
                 log::warn!("notes_picker: preview read failed for {path:?}: {e}");
                 format!("Could not read note: {e}").into()
@@ -166,16 +167,17 @@ impl PlexiApp {
         }
     }
 
-    /// Copy the selected note's full file content to the clipboard. Returns the
-    /// path copied so cut can reuse it.
+    /// Copy the selected note's body to the clipboard, stripping a Plexi capture
+    /// metadata envelope. Returns the path copied so cut can reuse it.
     fn notes_picker_copy_selected(&mut self) -> Option<std::path::PathBuf> {
         let entry_idx = self.notes_picker_selected_entry()?;
         let path = self.notes_picker_entries[entry_idx].path.clone();
         let title = self.notes_picker_entries[entry_idx].title.clone();
         match std::fs::read_to_string(&path) {
             Ok(text) => {
-                log::info!("notes_picker: copied {} byte(s) from {path:?}", text.len());
-                self.notes_picker_last_copied = Some(text);
+                let body = crate::notes::note_body(&text).to_string();
+                log::info!("notes_picker: copied {} byte(s) from {path:?}", body.len());
+                self.notes_picker_last_copied = Some(body);
                 self.notes_picker_copy_unsent = true;
                 Some(path)
             }
@@ -1321,12 +1323,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&profile);
     }
 
+    /// Dispatch one picker chord and return the frame output, so a test can read
+    /// the real egui clipboard command rather than only intermediate state.
     fn press_picker_chord(
         app: &mut PlexiApp,
         ctx: &egui::Context,
         modifiers: egui::Modifiers,
         key: egui::Key,
-    ) {
+    ) -> egui::FullOutput {
         let mut input = picker_frame_input();
         input.events.push(egui::Event::Key {
             key,
@@ -1335,11 +1339,23 @@ mod tests {
             repeat: false,
             modifiers,
         });
-        let _ = ctx.run_ui(input, |ui| {
+        ctx.run_ui(input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
             app.notes_picker_flush_copy(ui.ctx());
-        });
+        })
+    }
+
+    /// The text egui was actually handed for the clipboard during a frame.
+    fn clipboard_text(output: &egui::FullOutput) -> Option<String> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
     }
 
     fn picker_with_notes(
@@ -1390,22 +1406,87 @@ mod tests {
         }
     }
 
+    /// Baseline regression: a real saved capture's clipboard payload is exactly
+    /// its parsed body. The assertion reads the egui clipboard command, and
+    /// reverting the body projection in `notes_picker_copy_selected` makes it
+    /// fail because the envelope returns to the payload.
     #[test]
-    fn notes_picker_preview_strips_frontmatter_but_copy_keeps_it() {
-        let full = "---\ntitle: Hello\n---\nthe body";
-        let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full]);
-        assert_eq!(app.notes_picker_preview_text().as_deref(), Some("the body"));
-        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
-        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
+    fn notes_picker_preview_and_copy_share_the_note_body_without_metadata() {
+        // Written the way `write_note` writes a capture.
+        let body = "\n# Heading\n\nbody line 1\nbody line 2\n";
+        let full = format!(
+            "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n{body}"
+        );
+        let (mut app, ctx, paths) = picker_with_notes("frontmatter", &[full.as_str()]);
+        let before = std::fs::read(&paths[0]).expect("read note before copy");
+        assert_eq!(app.notes_picker_preview_text().as_deref(), Some(body));
+
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(
+            clipboard_text(&output).as_deref(),
+            Some(body),
+            "clipboard must carry the body, not storage metadata"
+        );
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(body));
+        assert_eq!(
+            std::fs::read(&paths[0]).expect("read note after copy"),
+            before,
+            "copy must not modify the backing file"
+        );
+        assert!(
+            !app.focus_stack.contains(&FocusKind::NotesPicker),
+            "successful copy must close the picker"
+        );
         for p in paths {
             let _ = std::fs::remove_file(p);
         }
     }
 
+    /// A delimiter block the user typed is not storage metadata; the clipboard
+    /// payload keeps it, along with fenced code and line breaks.
+    #[test]
+    fn notes_picker_copy_preserves_user_delimiter_blocks_and_markdown() {
+        let content = "---\ntags: [a, b]\n---\n\ntop line\n\n```sh\necho hi\n```\n";
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let frame_tick = crate::platform::logging::FrameTick::default();
+        let (mut app, _tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
+        let path = std::env::temp_dir().join(format!(
+            "plexi-notes-picker-user-delimiter-{}.md",
+            std::process::id()
+        ));
+        std::fs::write(&path, content).expect("seed note");
+        app.notes_picker_entries = vec![picker_entry(path.clone(), content)];
+        app.notes_picker_selected = 0;
+        app.push_focus_layer(FocusKind::NotesPicker);
+
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(clipboard_text(&output).as_deref(), Some(content));
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(content));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Copy closes the picker by popping its layer, so whatever owned focus
+    /// before the picker opened owns it again.
+    #[test]
+    fn notes_picker_copy_restores_the_layer_under_it() {
+        let (mut app, ctx, paths) = picker_with_notes("copy-focus", &["copy me"]);
+        // Stands in for the surface that owned focus before the picker opened.
+        app.focus_stack.insert(0, FocusKind::CommandPalette);
+        let _ = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(
+            app.focus_stack.last(),
+            Some(&FocusKind::CommandPalette),
+            "the layer under the picker must be restored"
+        );
+        let _ = std::fs::remove_file(&paths[0]);
+    }
+
     #[test]
     fn notes_picker_cmd_c_copies_content_and_closes_picker() {
         let (mut app, ctx, paths) = picker_with_notes("copy", &["copy me"]);
-        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::C);
+        assert_eq!(clipboard_text(&output).as_deref(), Some("copy me"));
         assert_eq!(app.notes_picker_last_copied.as_deref(), Some("copy me"));
         assert!(app.notes_picker_pending_delete.is_none());
         assert!(paths[0].exists());
@@ -1414,6 +1495,35 @@ mod tests {
             "Cmd+C must close the notes picker on successful copy"
         );
         let _ = std::fs::remove_file(&paths[0]);
+    }
+
+    /// Cut puts the same body payload on the clipboard and keeps the consent
+    /// flow: cancel deletes nothing, confirm removes the file and closes.
+    #[test]
+    fn notes_picker_cut_uses_the_body_payload_and_keeps_consent() {
+        let body = "cut body\n";
+        let full = format!("---\ntitle: \"C\"\nsource: \"cli\"\n---\n{body}");
+        let (mut app, ctx, paths) = picker_with_notes("cut-metadata", &[full.as_str()]);
+
+        let output = press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        assert_eq!(clipboard_text(&output).as_deref(), Some(body));
+        assert!(
+            paths[0].exists(),
+            "cut must wait for confirmation before deleting"
+        );
+        assert!(app
+            .notes_picker_pending_delete
+            .as_ref()
+            .is_some_and(|p| p.cut));
+
+        press_picker_key(&mut app, &ctx, egui::Key::Escape);
+        assert!(app.notes_picker_pending_delete.is_none());
+        assert!(paths[0].exists(), "a cancelled cut must not delete");
+
+        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::X);
+        press_picker_key(&mut app, &ctx, egui::Key::Enter);
+        assert!(!paths[0].exists());
+        assert!(!app.focus_stack.contains(&FocusKind::NotesPicker));
     }
 
     #[test]
@@ -1778,17 +1888,19 @@ mod tests {
 
     #[test]
     fn notes_picker_handles_egui_copy_and_cut_events_without_key_events() {
-        let full = "---\ntitle: Event Copy\n---\nfull body content";
-        let (mut app, ctx, paths) = picker_with_notes("copy-cut-events", &[full]);
+        let body = "full body content";
+        let full = format!("---\ntitle: Event Copy\nsource: \"scratchpad\"\n---\n{body}");
+        let (mut app, ctx, paths) = picker_with_notes("copy-cut-events", &[full.as_str()]);
 
         let mut copy_input = picker_frame_input();
         copy_input.events.push(egui::Event::Copy);
-        let _ = ctx.run_ui(copy_input, |ui| {
+        let copy_output = ctx.run_ui(copy_input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
             app.notes_picker_flush_copy(ui.ctx());
         });
-        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
+        assert_eq!(clipboard_text(&copy_output).as_deref(), Some(body));
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(body));
         assert!(app.notes_picker_pending_delete.is_none());
         assert!(paths[0].exists());
         assert!(
@@ -1801,12 +1913,13 @@ mod tests {
         app.notes_picker_last_copied = None;
         let mut cut_input = picker_frame_input();
         cut_input.events.push(egui::Event::Cut);
-        let _ = ctx.run_ui(cut_input, |ui| {
+        let cut_output = ctx.run_ui(cut_input, |ui| {
             let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
             app.notes_picker_handle_key(&mut input);
             app.notes_picker_flush_copy(ui.ctx());
         });
-        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(full));
+        assert_eq!(clipboard_text(&cut_output).as_deref(), Some(body));
+        assert_eq!(app.notes_picker_last_copied.as_deref(), Some(body));
         assert!(app
             .notes_picker_pending_delete
             .as_ref()

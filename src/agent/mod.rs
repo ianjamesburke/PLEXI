@@ -49,12 +49,34 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-/// System prompt for the built-in `default` agent.
+/// The built-in `default` agent's template, embedded at compile time.
 ///
-/// Every other agent reads its prose from an `AGENT.md` in its own directory;
-/// the built-in one has no directory, so its `AGENT.md` ships beside this
-/// module and is embedded at compile time.
-pub const DEFAULT_AGENT_PROMPT: &str = include_str!("AGENT.md");
+/// Every other agent reads its prose from a persona file in its own directory;
+/// the built-in one has no directory, so its definition ships beside this
+/// module and is seeded into `<workspace>/.plexi/agents/default/` on first use
+/// (`ensure_workspace_default_agent`) so the user owns and can edit the file.
+/// The registry's built-in and the seeded copy parse the same template, so they
+/// cannot drift.
+pub const DEFAULT_AGENT_SETTINGS: &str = include_str!("default/settings.toml");
+pub const DEFAULT_AGENT_PERSONA: &str = include_str!("default/persona.md");
+
+/// Parse the embedded built-in `default`. `None` only if the compiled-in
+/// template is invalid, which `builtin_default_agent_is_a_launchable_pi_agent`
+/// keeps from shipping.
+fn builtin_default_agent() -> Option<AgentDefinition> {
+    match AgentDefinition::parse_from(
+        DEFAULT_AGENT_PERSONA,
+        DEFAULT_AGENT_SETTINGS,
+        AgentSource::BuiltIn,
+        None,
+    ) {
+        Ok(definition) => Some(definition),
+        Err(error) => {
+            log::error!("assistant: embedded default agent template is invalid: {error}");
+            None
+        }
+    }
+}
 
 // ── Agent definition ─────────────────────────────────────────────────────────
 
@@ -459,17 +481,61 @@ impl AgentDefinition {
         })
     }
 
-    /// Load one agent directory (`AGENT.md` + `settings.toml`) as belonging to
+    /// Load one agent directory (persona file + `settings.toml`) as belonging to
     /// `source` — the tier it was discovered in, which the caller knows and the
     /// files themselves do not record.
     pub fn load_dir(dir: &Path, source: AgentSource) -> Result<Self, String> {
-        let prompt_path = dir.join("AGENT.md");
+        let prompt_path = agent_persona_path(dir).ok_or_else(|| {
+            format!(
+                "{} has no persona file — expected AGENT.md or persona.md (it is the agent's system prompt)",
+                dir.display()
+            )
+        })?;
         let settings_path = dir.join("settings.toml");
         let prompt = std::fs::read_to_string(&prompt_path)
             .map_err(|e| format!("failed to read {}: {e}", prompt_path.display()))?;
         let settings = std::fs::read_to_string(&settings_path)
             .map_err(|e| format!("failed to read {}: {e}", settings_path.display()))?;
         Self::parse_from(&prompt, &settings, source, Some(dir.to_path_buf()))
+    }
+}
+
+/// Local discovery projection. An empty interface list advertises no A2A server.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCard {
+    name: String,
+    description: String,
+    skills: Vec<AgentCardSkill>,
+    capabilities: serde_json::Value,
+    supported_interfaces: Vec<serde_json::Value>,
+    version: String,
+    default_input_modes: Vec<String>,
+    default_output_modes: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct AgentCardSkill {
+    id: String,
+    name: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+impl AgentCard {
+    pub fn from_definition(definition: &AgentDefinition) -> Self {
+        Self {
+            name: definition.id.clone(),
+            description: definition.description.clone(),
+            skills: definition.skills.iter().map(|name| AgentCardSkill {
+                id: name.clone(), name: name.clone(), description: name.clone(), tags: Vec::new(),
+            }).collect(),
+            capabilities: serde_json::json!({}),
+            supported_interfaces: Vec::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+        }
     }
 }
 
@@ -488,43 +554,19 @@ impl AgentRegistry {
         profile_dir: &Path,
         workspace_root: Option<&Path>,
     ) -> Self {
-        let default = AgentDefinition {
-            id: "default".to_string(),
-            display_name: "Plexi Assistant".to_string(),
-            default_tier: ModelTier::Medium,
-            prompt: DEFAULT_AGENT_PROMPT.to_string(),
-            posture: PermissionPosture {
-                default_posture: Decision::Ask,
-                allow: Vec::new(),
-                ask: Vec::new(),
-                deny: Vec::new(),
-            },
-            subscriptions: Vec::new(),
-            source: AgentSource::BuiltIn,
-            path: None,
-            description: "General workspace assistant".to_string(),
-            model_routes: AgentModelRoutes::default(),
-            effort: None,
-            tools: Vec::new(),
-            skills: Vec::new(),
-            hooks: Vec::new(),
-            client: None,
-            kind: None,
-            harness: None,
-            can_call: Vec::new(),
-            can_handoff: Vec::new(),
-        };
+        let builtin_default = builtin_default_agent();
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
         let workspace_agents = workspace_root
             .map(load_workspace_agent_definitions)
             .unwrap_or_default();
         log::info!(
-            "assistant: agent registry sources built-in=1 user={} workspace={}",
+            "assistant: agent registry sources built-in={} user={} workspace={}",
+            usize::from(builtin_default.is_some()),
             user_agents.len(),
             workspace_agents.len()
         );
-        let mut definitions = vec![default];
+        let mut definitions: Vec<AgentDefinition> = builtin_default.into_iter().collect();
         definitions.extend(user_agents);
         definitions.extend(workspace_agents);
         let mut active = BTreeMap::new();
@@ -555,6 +597,60 @@ impl AgentRegistry {
     pub fn shadowed(&self, id: &str) -> &[AgentDefinition] {
         self.shadowed.get(id).map(Vec::as_slice).unwrap_or(&[])
     }
+}
+
+/// An agent directory's persona file: `AGENT.md` (every agent written so far),
+/// else `persona.md` (what the built-in default's template seeds).
+fn agent_persona_path(dir: &Path) -> Option<PathBuf> {
+    let agent_md = dir.join("AGENT.md");
+    if agent_md.is_file() {
+        return Some(agent_md);
+    }
+    let persona_md = dir.join("persona.md");
+    persona_md.is_file().then_some(persona_md)
+}
+
+/// Write the built-in `default` into `<workspace>/.plexi/agents/default/` on
+/// first use, as a definition the user owns, versions, and can edit.
+///
+/// A directory that already exists is left exactly as it is — a user's own
+/// `default` always wins over the template. Partial-write cleanup only ever
+/// removes the directory this call created.
+pub fn ensure_workspace_default_agent(workspace_root: &Path) -> Result<PathBuf, String> {
+    let parent = workspace_agents_dir(workspace_root);
+    let dir = parent.join("default");
+    if dir.exists() {
+        return Ok(dir);
+    }
+    std::fs::create_dir_all(&parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    if let Err(error) = std::fs::create_dir(&dir) {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            // Another first use won the race; that definition is the user's now.
+            return Ok(dir);
+        }
+        return Err(format!("create {}: {error}", dir.display()));
+    }
+    for (name, contents) in [
+        ("settings.toml", DEFAULT_AGENT_SETTINGS),
+        ("persona.md", DEFAULT_AGENT_PERSONA),
+    ] {
+        let path = dir.join(name);
+        if let Err(error) = std::fs::write(&path, contents) {
+            if let Err(cleanup) = std::fs::remove_dir_all(&dir) {
+                log::error!(
+                    "agent definitions: failed to remove partial default agent {}: {cleanup}",
+                    dir.display()
+                );
+            }
+            return Err(format!("write {}: {error}", path.display()));
+        }
+    }
+    log::info!(
+        "agent definitions: seeded the workspace default agent at {}",
+        dir.display()
+    );
+    Ok(dir)
 }
 
 /// `<workspace>/.plexi/agents` — the only workspace agent-definition tier.
@@ -615,7 +711,7 @@ pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
         match entry {
             Ok(entry) => {
                 let path = entry.path();
-                if path.is_dir() && path.join("AGENT.md").is_file() {
+                if path.is_dir() && agent_persona_path(&path).is_some() {
                     if let Some(name) = entry.file_name().to_str() {
                         names.push(name.to_string());
                     }
@@ -715,7 +811,7 @@ pub fn migrate_legacy_workspace_agents(workspace_root: &Path) {
 }
 
 fn definition_files_match(left: &Path, right: &Path) -> bool {
-    for name in ["AGENT.md", "settings.toml"] {
+    for name in ["AGENT.md", "persona.md", "settings.toml"] {
         let a = left.join(name);
         let b = right.join(name);
         match (std::fs::read(&a), std::fs::read(&b)) {
@@ -846,6 +942,164 @@ pub fn load_agents_dir(dir: &Path, source: AgentSource) -> Vec<AgentDefinition> 
                 None
             }
         })
+        .collect()
+}
+
+// ── Agent directory scan ─────────────────────────────────────────────────────
+
+/// Why a scanned agent directory will not be presented as a live agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentDirIssue {
+    /// The card sits under the pre-rename filename. `head.json` was renamed to
+    /// `agent.json` in code but never migrated on disk, so a legacy authority record was
+    /// unreachable and looked exactly like a missing agent.
+    LegacyAuthorityFilename {
+        found: &'static str,
+        expected: &'static str,
+        migrated: bool,
+    },
+    /// The directory lacks a file an agent definition requires.
+    MissingRequiredFile { missing: &'static str },
+}
+
+impl AgentDirIssue {
+    /// One line naming the file that is missing or legacy.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::LegacyAuthorityFilename {
+                found,
+                expected,
+                migrated,
+            } => {
+                if *migrated {
+                    format!("legacy {found} - migrated to {expected}")
+                } else {
+                    format!("legacy {found} - could not be migrated to {expected}")
+                }
+            }
+            Self::MissingRequiredFile { missing } => format!("missing {missing}"),
+        }
+    }
+}
+
+/// One scanned directory the loader will not present as an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognisedAgentDir {
+    pub path: PathBuf,
+    pub issue: AgentDirIssue,
+}
+
+/// The authority file for a directory, renaming a legacy `head.json` in place.
+///
+/// The rename *is* the migration: reading `head.json` under its old name would
+/// keep the old name alive forever, and skipping it is what made a real agent
+/// invisible. A failed rename returns `None` so the caller reports it.
+pub(crate) fn authority_file_migrating_legacy(dir: &Path) -> Option<PathBuf> {
+    let canonical = dir.join("agent.json");
+    if canonical.is_file() {
+        return Some(canonical);
+    }
+    let legacy = dir.join("head.json");
+    if !legacy.is_file() {
+        return None;
+    }
+    match std::fs::rename(&legacy, &canonical) {
+        Ok(()) => {
+            log::info!(
+                "agents: migrated legacy authority record {} to {}",
+                legacy.display(),
+                canonical.display()
+            );
+            Some(canonical)
+        }
+        Err(error) => {
+            log::error!(
+                "agents: could not migrate legacy authority record {} to {}: {error}",
+                legacy.display(),
+                canonical.display()
+            );
+            None
+        }
+    }
+}
+
+/// Classify one directory: `None` when it is a usable agent, `Some(issue)`
+/// when it is not. Migrates a legacy authority record filename on the way.
+fn classify_agent_dir(dir: &Path) -> Option<AgentDirIssue> {
+    if dir.join("agent.json").is_file() {
+        return None;
+    }
+    if dir.join("head.json").is_file() {
+        let migrated = authority_file_migrating_legacy(dir).is_some();
+        return Some(AgentDirIssue::LegacyAuthorityFilename {
+            found: "head.json",
+            expected: "agent.json",
+            migrated,
+        });
+    }
+    let has_persona = agent_persona_path(dir).is_some();
+    if has_persona && dir.join("settings.toml").is_file() {
+        return None;
+    }
+    let missing = if has_persona {
+        "settings.toml"
+    } else {
+        "AGENT.md"
+    };
+    Some(AgentDirIssue::MissingRequiredFile { missing })
+}
+
+/// Classify one directory by path, naming the path that was scanned.
+///
+/// `None` when the directory does not exist or is a usable agent.
+pub fn unrecognised_agent_dir(dir: &Path) -> Option<UnrecognisedAgentDir> {
+    if !dir.is_dir() {
+        return None;
+    }
+    classify_agent_dir(dir).map(|issue| {
+        log::info!(
+            "assistant: agent directory {} is unrecognised: {}",
+            dir.display(),
+            issue.describe()
+        );
+        UnrecognisedAgentDir {
+            path: dir.to_path_buf(),
+            issue,
+        }
+    })
+}
+
+/// Every directory under `root` that is not a usable agent, in sorted path
+/// order, each with the reason it is not one. A missing root means no agents.
+///
+/// Never fails: a legitimate layout this build does not understand is reported,
+/// not treated as an error.
+pub fn scan_agent_dirs(root: &Path) -> Vec<UnrecognisedAgentDir> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            log::error!(
+                "assistant: failed to read agent directory {}: {error}",
+                root.display()
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(error) => log::error!(
+                "assistant: failed to read entry in agent directory {}: {error}",
+                root.display()
+            ),
+        }
+    }
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| unrecognised_agent_dir(&path))
         .collect()
 }
 
@@ -1414,6 +1668,150 @@ trigger = "conversation"
 default = "ask"
 "#;
 
+    /// Stint 1035: `default` must be a launchable agent, not the paused
+    /// Assistant's `harness: None` persona.
+    #[test]
+    fn builtin_default_agent_is_a_launchable_pi_agent() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::load(profile.path(), ws.path());
+
+        let default = registry.active("default").expect("built-in default exists");
+        assert_eq!(default.source, AgentSource::BuiltIn);
+        assert_eq!(
+            default.harness.as_ref().map(|h| h.cli.as_str()),
+            Some("pi"),
+            "the built-in default must launch on a harness"
+        );
+        assert_ne!(default.display_name, "Plexi Assistant");
+        assert!(!default.prompt.contains("Plexi Assistant"));
+        for def in registry.agents().chain(registry.shadowed("default")) {
+            if def.id == "default" {
+                assert!(
+                    def.harness.is_some(),
+                    "no entry named `default` may carry harness: None"
+                );
+            }
+        }
+    }
+
+    /// Stint 1035: first use seeds `<workspace>/.plexi/agents/default/` — a file
+    /// the user owns, which a later first use must not overwrite.
+    #[test]
+    fn workspace_default_agent_seeds_once_and_stays_the_users_file() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let ws = tempfile::tempdir().unwrap();
+
+        let dir = ensure_workspace_default_agent(ws.path()).unwrap();
+        assert_eq!(dir, workspace_agents_dir(ws.path()).join("default"));
+        assert!(dir.join("settings.toml").is_file());
+        assert!(dir.join("persona.md").is_file());
+
+        let definitions = load_workspace_agent_definitions(ws.path());
+        let default = definitions
+            .iter()
+            .find(|d| d.id == "default")
+            .expect("the seeded default loads as a workspace agent");
+        assert_eq!(default.source, AgentSource::Workspace);
+        assert_eq!(default.harness.as_ref().map(|h| h.cli.as_str()), Some("pi"));
+
+        std::fs::write(dir.join("persona.md"), "my own persona\n").unwrap();
+        assert_eq!(ensure_workspace_default_agent(ws.path()).unwrap(), dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("persona.md")).unwrap(),
+            "my own persona\n",
+            "seeding must never overwrite the user's definition"
+        );
+    }
+
+    /// The seeded template's persona file name, which `load_dir` accepts
+    /// alongside the older `AGENT.md`.
+    #[test]
+    fn persona_md_loads_when_agent_md_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("default");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("persona.md"), "persona from persona.md\n").unwrap();
+        std::fs::write(
+            dir.join("settings.toml"),
+            "[agent]\nid = \"default\"\ndisplay_name = \"Default\"\n\n[harness]\ncli = \"pi\"\n",
+        )
+        .unwrap();
+
+        let definition = AgentDefinition::load_dir(&dir, AgentSource::Workspace).unwrap();
+        assert_eq!(definition.prompt, "persona from persona.md\n");
+    }
+
+    /// Stint 1036: a scan names every directory it will not present as an
+    /// agent, and a legacy `head.json` is migrated rather than skipped.
+    #[test]
+    fn scan_reports_legacy_card_and_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("lead-120cadfb");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let pane = root.path().join("writer");
+        std::fs::create_dir_all(&pane).unwrap();
+        std::fs::write(pane.join("AGENT.md"), "legacy-writer-marker\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        let legacy_issue = issues.iter().find(|i| i.path == legacy).expect("legacy dir");
+        assert!(
+            legacy_issue.issue.describe().contains("head.json")
+                && legacy_issue.issue.describe().contains("agent.json"),
+            "{}",
+            legacy_issue.issue.describe()
+        );
+        assert!(
+            legacy.join("agent.json").is_file() && !legacy.join("head.json").exists(),
+            "a rename that lands as a data migration"
+        );
+        let pane_issue = issues.iter().find(|i| i.path == pane).expect("AGENT.md-only dir");
+        assert!(
+            pane_issue.issue.describe().contains("settings.toml"),
+            "{}",
+            pane_issue.issue.describe()
+        );
+    }
+
+    /// Stint 1036: a legacy filename and a missing required file are distinct
+    /// reasons, not one "unrecognised" bucket.
+    #[test]
+    fn scan_distinguishes_a_legacy_filename_from_a_missing_required_file() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("head.json"), "{}").unwrap();
+        let incomplete = root.path().join("incomplete");
+        std::fs::create_dir_all(&incomplete).unwrap();
+        std::fs::write(incomplete.join("AGENT.md"), "prose\n").unwrap();
+
+        let issues = scan_agent_dirs(root.path());
+        let legacy_issue = issues.iter().find(|i| i.path == legacy).unwrap();
+        let incomplete_issue = issues.iter().find(|i| i.path == incomplete).unwrap();
+        assert!(matches!(legacy_issue.issue, AgentDirIssue::LegacyAuthorityFilename { .. }));
+        assert!(matches!(incomplete_issue.issue, AgentDirIssue::MissingRequiredFile { .. }));
+    }
+
+    /// Stint 1036: a legitimate layout is not an error, so a complete
+    /// definition and a root that does not exist report nothing.
+    #[test]
+    fn scan_reports_nothing_for_a_complete_definition_or_a_missing_root() {
+        let root = tempfile::tempdir().unwrap();
+        let good = root.path().join("good");
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join("AGENT.md"), "prose\n").unwrap();
+        std::fs::write(
+            good.join("settings.toml"),
+            "[agent]\nid = \"good\"\ndisplay_name = \"Good\"\n",
+        )
+        .unwrap();
+        assert_eq!(scan_agent_dirs(root.path()), Vec::new());
+        assert_eq!(scan_agent_dirs(&root.path().join("absent")), Vec::new());
+    }
+
     #[test]
     fn transcript_info_log_omits_turn_text() {
         let sentinel = "SENTINEL_SECRET_DO_NOT_LOG";
@@ -1792,6 +2190,21 @@ default_tier = "low"
         assert_eq!(registry.shadowed("default").len(), 2);
         assert_eq!(registry.shadowed("default")[0].source, AgentSource::BuiltIn);
         assert_eq!(registry.shadowed("default")[1].source, AgentSource::User);
+    }
+
+    #[test]
+    fn discovery_card_projects_skills_without_authority() {
+        let mut definition = builtin_default_agent().unwrap();
+        definition.skills = vec!["research".to_string()];
+        definition.can_call = vec!["private-child".to_string()];
+        let card = serde_json::to_value(AgentCard::from_definition(&definition)).unwrap();
+        assert_eq!(card["skills"][0]["id"], "research");
+        assert_eq!(card["skills"][0]["name"], "research");
+        assert!(card["skills"][0]["description"].is_string());
+        assert!(card["skills"][0]["tags"].is_array());
+        assert!(card.get("grants").is_none());
+        assert!(card.get("can_call").is_none());
+        assert_eq!(card["supportedInterfaces"], serde_json::json!([]));
     }
 
     #[test]

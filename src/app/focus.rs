@@ -57,15 +57,13 @@ pub(crate) enum FocusKind {
     ConfirmClose,
     CommandPalette,
     RenamePane,
-    /// Context naming modal shown when a new context is created while the
-    /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
-    /// overlay so the terminal is immediately usable after dismissal.
+    /// Context naming overlay.
     ContextRename,
     /// Context description editor overlay.
     ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
-    /// Shared text-input overlay (context root, future: context rename).
+    /// Shared text-input overlay for context roots.
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
     ContextCloseConfirm,
@@ -566,7 +564,7 @@ impl PlexiApp {
     }
 
     /// True when a host overlay surface owns keyboard input: any modal on the
-    /// focus stack, or the inline sidebar rename editor. Thin wrapper over
+    /// focus stack or another host overlay. Thin wrapper over
     /// [`Self::overlay_surface`] (stint 0429) — the one derivation of overlay
     /// ownership. Used by `update()` to keep key events away from panes.
     pub(crate) fn input_captured_by_overlay(&self) -> bool {
@@ -1186,19 +1184,12 @@ impl PlexiApp {
             );
         }
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
-        let cols = self.columns_for_context(ctx_id);
-        if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
-            self.zoom
-                .column_last_pane
-                .insert((ctx_id, col.index), pane_id);
-            let offset = self.zoom.strip_offset_for(ctx_id);
-            if col.index < offset {
-                self.zoom.strip_offsets.insert(ctx_id, col.index);
-            } else if col.index >= offset + 2 {
-                self.zoom
-                    .strip_offsets
-                    .insert(ctx_id, col.index.saturating_sub(1));
-            }
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.focus_pane(pane_id);
+        if let Some(col_idx) = strip.find_column_for_pane(pane_id) {
+            strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
         }
         self.sync_attention_queue();
         true
@@ -1209,12 +1200,16 @@ impl PlexiApp {
         self.reconcile_focus_layer(FocusKind::RenamePane, self.renaming_pane.is_some());
     }
 
-    /// Reconcile the context-rename focus layer. Active when `renaming_window`
-    /// is set AND the sidebar is hidden -- in that case the inline sidebar row
-    /// never renders, so we promote the rename to a modal overlay instead.
+    /// Reconcile the context-rename overlay with its editing state.
     pub(crate) fn sync_context_rename_focus(&mut self) {
-        let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
-        self.reconcile_focus_layer(FocusKind::ContextRename, should_own);
+        let invalid = self.context_rename.as_ref().is_some_and(|edit| {
+            self.router.active().context_id != edit.origin_id
+                || !self.router.iter().any(|c| c.context_id == edit.target_id && !c.parked)
+        });
+        if invalid {
+            self.cancel_context_rename("context changed or unavailable");
+        }
+        self.reconcile_focus_layer(FocusKind::ContextRename, self.context_rename.is_some());
     }
 
     /// Reconcile the text-input overlay focus layer with `text_overlay`.

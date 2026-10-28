@@ -327,6 +327,22 @@ pub fn now_timestamp() -> String {
 
 static GLOBAL_EVENT_LOG: OnceLock<EventLog> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    static TEST_EVENTS: std::cell::RefCell<Option<Vec<HostEvent>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_capture_events() {
+    TEST_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn test_take_events() -> Vec<HostEvent> {
+    TEST_EVENTS.with(|events| events.borrow_mut().take().unwrap_or_default())
+}
+
+
 /// Initialize the global event log. Call once at app startup.
 /// Subsequent calls are no-ops (OnceLock guarantees at-most-once init).
 ///
@@ -344,6 +360,12 @@ pub fn init_global(global_path: PathBuf) {
 /// uses — pass `None` when no `ScopeOrigin`/context-root is resolvable
 /// nearby (global-only, same behavior as before Phase E).
 pub fn emit_scoped(event: HostEvent, context_root: Option<&std::path::Path>) {
+    #[cfg(test)]
+    TEST_EVENTS.with(|events| {
+        if let Some(captured) = events.borrow_mut().as_mut() {
+            captured.push(event.clone());
+        }
+    });
     mirror_to_flight_recorder(&event);
     if let Some(log) = GLOBAL_EVENT_LOG.get() {
         log.emit_scoped(event, context_root);

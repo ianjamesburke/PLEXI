@@ -629,16 +629,17 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
-    /// Capture, list, and open notes.
+    /// Capture, list, read, open, and delete notes.
     ///
     /// `plexi note "a thought"` captures a note. `plexi note list` prints note
-    /// paths, and `plexi note open` picks one with fzf in the focused pane.
+    /// paths, `plexi note show <path>` prints one note, `plexi note open` picks
+    /// one with fzf in the focused pane, and `plexi note rm <path>` deletes one.
     /// Notes live in the tier of the current directory (its nearest ancestor
     /// holding `.plexi/`, else the global tier); see `src/host/AGENTS.md` for the
     /// tier contract. `list` also rolls up nested tiers and the global tier.
     ///
-    /// Text that is exactly `list`, `open`, or `add` is read as that
-    /// subcommand; shell quoting cannot tell them apart. Capture it with
+    /// Text that is exactly `list`, `open`, `add`, `show`, or `rm` is read as
+    /// that subcommand; shell quoting cannot tell them apart. Capture it with
     /// `plexi note add list`.
     ///
     /// Example: plexi note "remember to update the docs"
@@ -1801,6 +1802,12 @@ pub enum AppCmd {
 /// `plexi host <cmd>` — CLI-driven host launch with declarative boot state.
 #[derive(Subcommand)]
 pub enum HostCmd {
+    /// Export the preserved v2 workspace to a new isolated channel.
+    WorkspaceRollback {
+        /// Name of a channel whose profile does not already exist.
+        #[arg(long)]
+        to_channel: String,
+    },
     /// Restart this channel, restoring the saved workspace.
     Restart {
         /// Confirm restarting the host containing this pane; this pane will close.
@@ -1904,6 +1911,8 @@ pub enum AccountCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Show active workspace strip membership and geometry.
+    Layout,
     /// Hide a pane (defaults to the calling pane).
     Hide {
         /// Target pane id or name (defaults to the calling pane).
@@ -2916,6 +2925,26 @@ pub enum NoteCmd {
     /// Candidates come from `plexi note list`. Requires fzf and a running host;
     /// both are reported as errors rather than silently degrading.
     Open,
+    /// Print one note's contents by the path `plexi note list` printed.
+    ///
+    /// Refuses any path outside a notes tier visible from the current directory,
+    /// so a hand-typed path cannot read an arbitrary file.
+    ///
+    /// Example: plexi note show ~/.plexi/notes/20260101T000000.000Z.md
+    Show {
+        /// Note path from `plexi note list`
+        path: std::path::PathBuf,
+    },
+    /// Delete one note by the path `plexi note list` printed.
+    ///
+    /// Irreversible: the note file is removed from disk. Refuses any path
+    /// outside a notes tier visible from the current directory.
+    ///
+    /// Example: plexi note rm ~/.plexi/notes/20260101T000000.000Z.md
+    Rm {
+        /// Note path from `plexi note list`
+        path: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3398,6 +3427,14 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn workspace_rollback_and_pane_layout_parse() {
+        let parsed = Cli::try_parse_from(["plexi", "host", "workspace-rollback", "--to-channel", "recovery"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Host { cmd: super::HostCmd::WorkspaceRollback { ref to_channel } }) if to_channel == "recovery"));
+        let parsed = Cli::try_parse_from(["plexi", "pane", "layout"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Pane { cmd: super::PaneCmd::Layout })));
+    }
+
+    #[test]
     fn session_history_and_draft_flags_parse() {
         let cli = Cli::try_parse_from(["plexi", "skill", "draft", "--from-session", "latest",
             "--all-panes", "--include-internal", "--include-failed"]).unwrap();
@@ -3461,13 +3498,20 @@ mod tests {
                 (Some(NoteCmd::List), true) | (Some(NoteCmd::Open), false)
             ));
         }
-        for word in ["list", "open", "add"] {
+        for word in ["list", "open", "add", "show", "rm"] {
             let (cmd, _) = note(parse(&["note", "add", word]).unwrap());
             assert!(matches!(cmd, Some(NoteCmd::Add { text }) if text == word));
         }
+        // `show` and `rm` take the path `plexi note list` printed.
+        let (cmd, _) = note(parse(&["note", "show", "/tmp/a.md"]).unwrap());
+        assert!(matches!(cmd, Some(NoteCmd::Show { path }) if path.ends_with("/tmp/a.md")));
+        let (cmd, _) = note(parse(&["note", "rm", "/tmp/a.md"]).unwrap());
+        assert!(matches!(cmd, Some(NoteCmd::Rm { path }) if path.ends_with("/tmp/a.md")));
         // Stray arguments are errors, never accidental captures.
         assert!(parse(&["note", "list", "extra"]).is_err());
         assert!(parse(&["note", "add"]).is_err());
+        assert!(parse(&["note", "show"]).is_err());
+        assert!(parse(&["note", "rm"]).is_err());
         assert!(parse(&["note", "one", "two"]).is_err());
     }
 

@@ -814,6 +814,8 @@ impl HarnessAdapter {
         if self.harness == AgentHarness::Pi {
             parts.push("--no-extensions".to_string());
             parts.push("--no-mcp".to_string());
+            parts.push("--models".to_string());
+            parts.push("'*'".to_string());
         }
         for f in flags {
             parts.push(shell_quote_arg(f));
@@ -903,6 +905,8 @@ impl HarnessAdapter {
         if self.harness == AgentHarness::Pi {
             parts.push("--no-extensions".to_string());
             parts.push("--no-mcp".to_string());
+            parts.push("--models".to_string());
+            parts.push("'*'".to_string());
         }
         let redacted_flags = redact_harness_flags(flags);
         for f in redacted_flags {
@@ -1189,7 +1193,7 @@ pub fn validate_agent_slug(name: &str) -> Result<(), String> {
     }
     if trimmed == "default" {
         return Err(
-            "invalid agent name 'default': 'default' is reserved for the built-in assistant"
+            "invalid agent name 'default': 'default' is the built-in agent — edit its seeded definition under <workspace>/.plexi/agents/default/ instead of creating it"
                 .to_string(),
         );
     }
@@ -1226,6 +1230,19 @@ pub fn resolve_agent_definition_in(
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("agent name cannot be empty".to_string());
+    }
+    // First use of the built-in `default` seeds the workspace copy the user owns
+    // (stint 1035). An existing `default` directory is never touched, so a user's
+    // own definition always wins.
+    if trimmed == "default" {
+        if let Some(ws) = workspace_root {
+            if let Err(error) = crate::agent::ensure_workspace_default_agent(ws) {
+                log::error!(
+                    "agent default: could not seed {}: {error}",
+                    crate::agent::workspace_agents_dir(ws).join("default").display()
+                );
+            }
+        }
     }
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
@@ -1564,11 +1581,19 @@ pub fn agent_list_in(
 ) -> Result<String, String> {
     let registry =
         crate::agent::AgentRegistry::load_with_optional_workspace(profile_dir, workspace_root);
+    // Directories neither tier will present as an agent, named with the file
+    // that is missing or legacy, so a real agent is never silently invisible.
+    let mut unrecognised = crate::agent::scan_agent_dirs(&profile_dir.join("agents"));
+    if let Some(root) = workspace_root {
+        unrecognised.extend(crate::agent::scan_agent_dirs(&crate::agent::workspace_agents_dir(
+            root,
+        )));
+    }
+    // The built-in `default` is listed too: it is a launchable Pi agent, and
+    // `spawn`/`start default` resolve exactly this row until the workspace has
+    // its own seeded copy (stint 1035).
     let mut rows = Vec::new();
     for def in registry.agents() {
-        if def.source == crate::agent::AgentSource::BuiltIn {
-            continue;
-        }
         let tier = tier_display_label(def.source);
         let shadows_global = registry
             .shadowed(&def.id)
@@ -1600,8 +1625,10 @@ pub fn agent_list_in(
             tier,
             shadows_global,
             harness_label,
-            serde_json::json!({
-                "name": def.id,
+            {
+                let mut card = serde_json::to_value(crate::agent::AgentCard::from_definition(def))
+                    .map_err(|e| e.to_string())?;
+                let extra = serde_json::json!({
                 "display_name": def.display_name,
                 "tier": tier,
                 "harness": if def.harness.is_some() { cli_val.clone() } else { serde_json::Value::String("assistant".to_string()) },
@@ -1610,7 +1637,11 @@ pub fn agent_list_in(
                 "description": def.description,
                 "shadows_global": shadows_global,
                 "path": def.path,
-            }),
+                });
+                card.as_object_mut().expect("serialized agent card is an object")
+                    .extend(extra.as_object().expect("metadata is an object").clone());
+                card
+            },
         ));
     }
 
@@ -1619,22 +1650,33 @@ pub fn agent_list_in(
         return serde_json::to_string_pretty(&json_rows).map_err(|e| e.to_string());
     }
 
-    if rows.is_empty() {
-        return Ok("No agents found in workspace or global registry.".to_string());
-    }
-
-    let mut lines = Vec::with_capacity(rows.len());
-    for (def, tier, shadows_global, harness_label, _) in rows {
-        let mut line = format!("{:<18} {:<10} {:<32}", def.id, tier, harness_label);
-        if !def.description.is_empty() {
-            line.push_str(&format!(" {}", def.description));
+    let mut out = if rows.is_empty() {
+        "No agents found in workspace or global registry.".to_string()
+    } else {
+        let mut lines = Vec::with_capacity(rows.len());
+        for (def, tier, shadows_global, harness_label, _) in rows {
+            let mut line = format!("{:<18} {:<10} {:<32}", def.id, tier, harness_label);
+            if !def.description.is_empty() {
+                line.push_str(&format!(" {}", def.description));
+            }
+            if shadows_global {
+                line.push_str(" [shadows global]");
+            }
+            lines.push(line.trim_end().to_string());
         }
-        if shadows_global {
-            line.push_str(" [shadows global]");
+        lines.join("\n")
+    };
+    if !unrecognised.is_empty() {
+        out.push_str("\n\nunrecognised agent directories (not loaded):");
+        for item in &unrecognised {
+            out.push_str(&format!(
+                "\n  {}  {}",
+                item.path.display(),
+                item.issue.describe()
+            ));
         }
-        lines.push(line.trim_end().to_string());
     }
-    Ok(lines.join("\n"))
+    Ok(out)
 }
 
 pub fn agent_list_cli(cwd: Option<&str>, json: bool) -> i32 {
@@ -1768,9 +1810,13 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
     let effective_cwd = cwd
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
-    let workspace_root = effective_cwd
-        .as_deref()
-        .and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
+    let workspace_root = effective_cwd.as_deref().and_then(|cwd| {
+        resolve_agent_workspace_root_for(
+            name,
+            cwd,
+            &crate::app::registry::workspace_walk_stops(),
+        )
+    });
     match agent_show_in(
         name,
         &crate::config::config_dir(),
@@ -1946,6 +1992,25 @@ fn display_agent_flags(def: &crate::agent::AgentDefinition, json: bool) -> i32 {
     0
 }
 
+/// Workspace root to resolve `name` in.
+///
+/// The definition-lookup walk only accepts a directory that already holds
+/// `.plexi/agents/`, so a fresh checkout with a `.git` and nothing else would
+/// never get its own `default`. The seed walk (`agent create`'s) accepts `.git`
+/// and `.plexi` as well, which is exactly that case (stint 1035).
+fn resolve_agent_workspace_root_for(
+    name: &str,
+    start_cwd: &Path,
+    stops: &[PathBuf],
+) -> Option<PathBuf> {
+    let lookup =
+        crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
+    if lookup.is_some() || name.trim() != "default" {
+        return lookup;
+    }
+    crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
+}
+
 /// Unified resolver for `plexi agent start <name>` and `plexi agent spawn <name>` from
 /// `start_cwd` (walking up to the project root stopping at `stops`, then falling back to
 /// `profile_dir`, then built-in) that assembles the `agent_spawn` IPC payload.
@@ -1960,8 +2025,7 @@ pub fn resolve_agent_spawn_in_stopping_at(
     parent_pane_id: Option<u64>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
-    let workspace_root =
-        crate::app::registry::resolve_agent_lookup_workspace_root_stopping_at(start_cwd, stops);
+    let workspace_root = resolve_agent_workspace_root_for(agent_name, start_cwd, stops);
     let (def, _) =
         resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
     let Some(ref harness_cfg) = def.harness else {
@@ -2304,8 +2368,6 @@ pub fn agent_ask_cli(question: &str, pane_id_flag: Option<u64>) -> i32 {
 /// Report print-mode worker exit even when the interactive pane shell stays alive.
 /// Repository checks, sandbox settings, and approval flags remain harness-owned.
 pub(crate) fn supervised_worker_command(command: &str, reporter: &str, harness: &str) -> String {
-    // Keep worker model scopes explicit here when pi gains a supported flag. Do not inherit or edit
-    // the user's ~/.pi model patterns: the harness owns that configuration.
     let body = format!("( {command}\n); plexi_worker_exit=$?; if [ $plexi_worker_exit -eq 0 ]; then plexi_worker_state=exited_unreported; else plexi_worker_state=failed; fi; {reporter} agent report --state $plexi_worker_state --agent {} --event HarnessExit --detail \"harness exited with code $plexi_worker_exit without agent done\"", shell_quote_arg(harness));
     format!("/bin/sh -c {}", shell_quote_arg(&body))
 }
@@ -3917,6 +3979,15 @@ mod agent_tests {
     }
 
     #[test]
+    fn pi_worker_uses_explicit_model_scope_without_changing_selected_model() {
+        let adapter = super::harness_adapter("pi").unwrap();
+        let command = adapter.spawn_command("task", Some("openai/gpt-4o"), None);
+        assert!(command.contains("--models '*'"), "{command}");
+        assert!(command.contains("--model openai/gpt-4o"), "{command}");
+        assert!(!command.contains(" -p"), "{command}");
+    }
+
+    #[test]
     fn supervised_worker_reports_nonzero_and_clean_exit_without_completion() {
         for (command, code) in [("exit 1", 1), ("true", 0), ("printf 'output\\n'; exit 7", 7)] {
             let wrapped = super::supervised_worker_command(command, "printf '%s\\n'", "script");
@@ -3988,7 +4059,7 @@ mod agent_tests {
         );
         assert_eq!(
             pi.spawn_command("audit module", None, None),
-            "pi --no-extensions --no-mcp 'audit module'"
+            "pi --no-extensions --no-mcp --models '*' 'audit module'"
         );
         assert_eq!(
             pi.capture_session_id(&serde_json::json!({"sessionId": "pi-7"})),
@@ -4046,7 +4117,7 @@ mod agent_tests {
                 .unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'You are a fast codebase researcher.\n\n# Plexi worker contract"
             ),
             "unexpected pi command: {pi_cmd}"
         );
@@ -4143,7 +4214,7 @@ mod agent_tests {
             super::build_agent_spawn_command(&default_def, pi_adapter, "do task").unwrap();
         assert!(
             default_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' --model sonnet --append-system-prompt 'Secret persona text that must not appear in flags log.\n\n# Plexi worker contract"
             ),
             "unexpected default pi command: {default_cmd}"
         );
@@ -4155,7 +4226,7 @@ mod agent_tests {
         );
         assert_eq!(
             default_flags,
-            "--no-extensions --no-mcp --model sonnet --append-system-prompt <AGENT.md>"
+            "--no-extensions --no-mcp --models '*' --model sonnet --append-system-prompt <AGENT.md>"
         );
         assert!(!default_flags.contains("Secret persona text"));
 
@@ -4167,7 +4238,7 @@ mod agent_tests {
         let ext_cmd = super::build_agent_spawn_command(&ext_def, pi_adapter, "do task").unwrap();
         assert!(
             ext_cmd.starts_with(
-                "pi --no-extensions --no-mcp -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
+                "pi --no-extensions --no-mcp --models '*' -e '/tmp/my ext.ts' -e builtin:plan-mode --append-system-prompt 'Secret persona text.\n\n# Plexi worker contract"
             ),
             "unexpected explicit-extension pi command: {ext_cmd}"
         );
@@ -4279,6 +4350,52 @@ mod agent_tests {
     }
 
     #[test]
+    fn workspace_definition_flows_through_spawn_fleet_next_and_runs() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_focused_terminal();
+        let root = h.workspace_root();
+        h.app.set_context_root(root.clone(), None);
+        let profile = h.profile_dir().to_path_buf();
+        for (dir, description) in [
+            (profile.join("agents/worker"), "user definition"),
+            (crate::agent::workspace_agents_dir(&root).join("worker"), "workspace definition"),
+        ] {
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("AGENT.md"), "Worker persona").unwrap();
+            fs::write(dir.join("settings.toml"), format!("[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\ndescription = \"{description}\"\n[harness]\ncli = \"script\"\n")).unwrap();
+        }
+        let list: serde_json::Value = serde_json::from_str(&super::agent_list_in(&profile, Some(&root), true).unwrap()).unwrap();
+        let row = list.as_array().unwrap().iter().find(|row| row["name"] == "worker").unwrap();
+        assert_eq!(row["description"], "workspace definition");
+        let show: serde_json::Value = serde_json::from_str(&super::agent_show_in("worker", &profile, Some(&root), true).unwrap()).unwrap();
+        assert_eq!(show["description"], "workspace definition");
+        let mut payload = super::resolve_agent_spawn_in_stopping_at("worker", &profile, &root, Some("sleep 30"), None, None, None, &[]).unwrap();
+        assert_eq!(payload["role"], "worker");
+        let reply_dir = tempfile::tempdir().unwrap();
+        let spawn_reply = reply_dir.path().join("spawn.json");
+        payload["response_file"] = serde_json::json!(spawn_reply);
+        h.inject_ipc(serde_json::from_value(payload).unwrap());
+        h.hidden_frame();
+        let spawned: serde_json::Value = serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();
+        assert_eq!(spawned["ok"], true, "{spawned}");
+        let pane_id = spawned["pane_id"].as_u64().unwrap();
+        let (win, _) = h.app.find_pane_in_any_window(pane_id).unwrap();
+        h.app.windows[win].panes.get_mut(&pane_id).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id, state: crate::protocol::AgentState::Blocked, agent: "script".into(), detail: None, session_id: None,
+        }));
+        let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
+        assert!(fleet.tasks.iter().flat_map(|task| &task.rows).any(|row| row.pane_id == pane_id && row.role == "worker"));
+        let next_reply = reply_dir.path().join("next.json");
+        h.app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentNext { response_file: next_reply.to_string_lossy().into_owned() });
+        let next: serde_json::Value = serde_json::from_slice(&fs::read(next_reply).unwrap()).unwrap();
+        assert_eq!(next["pane_id"], pane_id);
+        let run = crate::agent::runs::handle_request("spawn_run", &serde_json::json!({"workspace": root, "agent": "worker"}));
+        assert_eq!(run["ok"], true, "{run}");
+        assert_eq!(run["run"]["agent_id"], "worker");
+        assert_eq!(run["run"]["grants"], serde_json::json!([]));
+    }
+
+    #[test]
     fn agent_list_and_show_report_tiers_shadowing_and_spawn_command() {
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
@@ -4346,6 +4463,11 @@ mod agent_tests {
         .unwrap();
 
         let list_text = super::agent_list_in(profile.path(), Some(ws.path()), false).unwrap();
+        assert!(
+            !list_text.contains("Plexi Assistant"),
+            "the paused Assistant persona must leave the agent registry: {list_text}"
+        );
+        assert!(list_text.contains("default") && list_text.contains("built-in"));
         assert!(list_text.contains("researcher") && list_text.contains("workspace"));
         assert!(list_text.contains("pi (openrouter/~z-ai/glm-flash-latest)"));
         assert!(list_text.contains("[shadows global]"));
@@ -4356,7 +4478,35 @@ mod agent_tests {
         )
         .unwrap();
         let arr = list_json.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        // The two authored agents plus the built-in `default` (stint 1035).
+        assert_eq!(arr.len(), 3);
+        let builtin_default = arr.iter().find(|v| v["name"] == "default").unwrap();
+        assert_eq!(builtin_default["tier"], "built-in");
+        assert_eq!(builtin_default["cli"], "pi");
+        // Field types from the A2A v1 AgentCard and AgentSkill definitions.
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["name", "description", "skills", "capabilities", "supportedInterfaces", "version", "defaultInputModes", "defaultOutputModes"],
+            "properties": {
+                "name": {"type": "string"}, "description": {"type": "string"},
+                "version": {"type": "string"}, "capabilities": {"type": "object"},
+                "supportedInterfaces": {"type": "array"},
+                "defaultInputModes": {"type": "array", "items": {"type": "string"}},
+                "defaultOutputModes": {"type": "array", "items": {"type": "string"}},
+                "skills": {"type": "array", "items": {"type": "object", "required": ["id", "name", "description", "tags"],
+                    "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}}}
+            }
+        });
+        for card in arr {
+            assert!(crate::host::pane_result::validate_instance(&schema, card).is_ok(), "{card}");
+            assert!(card["description"].is_string());
+            assert!(card["skills"].is_array());
+            assert!(card["capabilities"].is_object());
+            assert_eq!(card["supportedInterfaces"], serde_json::json!([]));
+            assert!(card["version"].is_string());
+            assert!(card["defaultInputModes"].is_array());
+            assert!(card["defaultOutputModes"].is_array());
+        }
         let r = arr.iter().find(|v| v["name"] == "researcher").unwrap();
         assert_eq!(r["tier"], "workspace");
         assert_eq!(r["shadows_global"], true);
@@ -4369,9 +4519,105 @@ mod agent_tests {
         assert_eq!(show_json["tier"], "workspace");
         assert_eq!(show_json["shadows_global"], true);
         let spawn_cmd = show_json["spawn_command"].as_str().unwrap();
-        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
+        assert!(spawn_cmd.contains("pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt 'Workspace persona."));
         assert!(!spawn_cmd.contains(" -p"));
         assert!(spawn_cmd.contains("<TASK>"));
+    }
+
+    /// Stint 1036: `agent list` names the directories it will not load, each
+    /// with its path and the file that is missing or legacy, instead of
+    /// returning a shorter list with no explanation.
+    #[test]
+    fn agent_list_reports_unrecognised_agent_directories() {
+        let _channel = crate::config::set_test_channel("alpha");
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let legacy = ws.path().join(".plexi").join("agents").join("lead-120cadfb");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
+        let pane = ws.path().join(".plexi").join("agents").join("writer");
+        fs::create_dir_all(&pane).unwrap();
+        fs::write(pane.join("AGENT.md"), "legacy-writer-marker\n").unwrap();
+
+        let out = super::agent_list_in(profile.path(), Some(ws.path()), false).unwrap();
+        assert!(out.contains(&legacy.display().to_string()), "{out}");
+        assert!(out.contains("head.json"), "{out}");
+        assert!(out.contains(&pane.display().to_string()), "{out}");
+        assert!(out.contains("settings.toml"), "{out}");
+        assert!(
+            legacy.join("agent.json").is_file(),
+            "the list migrates the legacy authority record rather than only reporting it"
+        );
+    }
+
+    /// Stint 1035: `agent show default` used to refuse with the Assistant-persona
+    /// error; it must print a concrete Pi spawn command and hand the user the
+    /// workspace definition it seeds.
+    #[test]
+    fn agent_show_default_prints_a_pi_spawn_command_and_seeds_the_workspace_copy() {
+        let profile = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        fs::create_dir_all(ws.path().join(".git")).unwrap();
+
+        let json: serde_json::Value = serde_json::from_str(
+            &super::agent_show_in("default", profile.path(), Some(ws.path()), true).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(json["harness"]["cli"], "pi");
+        let spawn = json["spawn_command"]
+            .as_str()
+            .expect("a concrete spawn command, not the Assistant-persona refusal");
+        assert!(
+            spawn.starts_with("pi "),
+            "unexpected default spawn command: {spawn}"
+        );
+
+        let seeded = ws.path().join(".plexi").join("agents").join("default");
+        assert!(seeded.join("settings.toml").is_file());
+        assert!(seeded.join("persona.md").is_file());
+
+        // The human surface agrees with the JSON one.
+        let text = super::agent_show_in("default", profile.path(), Some(ws.path()), false).unwrap();
+        assert!(text.contains("CLI:           pi"), "{text}");
+        assert!(text.contains("Spawn command: pi "), "{text}");
+        assert!(!text.contains("Plexi Assistant"), "{text}");
+    }
+
+    /// Stint 1035: `spawn`/`start default` composes a Pi command and seeds the
+    /// workspace definition, including in a fresh checkout that has a `.git` but
+    /// no `.plexi/agents/` at all.
+    #[test]
+    fn agent_start_default_seeds_the_workspace_copy_and_composes_a_pi_command() {
+        let fake_home = tempfile::tempdir().unwrap();
+        let profile = fake_home.path().join(".plexi-alpha");
+        fs::create_dir_all(&profile).unwrap();
+        let repo = fake_home.path().join("src").join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        let stops = vec![fake_home.path().to_path_buf()];
+
+        let payload = super::resolve_agent_start_in_stopping_at(
+            "default",
+            &profile,
+            &repo,
+            None,
+            None,
+            &stops,
+        )
+        .expect("default resolves in a fresh checkout");
+        assert_eq!(payload["role"], "default");
+        assert_eq!(payload["harness"], "pi");
+        let cmd = payload["command"].as_str().unwrap();
+        assert!(cmd.starts_with("pi "), "unexpected default start command: {cmd}");
+        assert!(!cmd.contains(" -p"));
+        assert_eq!(payload["cwd"], repo.to_string_lossy().as_ref());
+
+        let seeded = repo.join(".plexi").join("agents").join("default");
+        assert!(
+            seeded.join("settings.toml").is_file(),
+            "spawn/start must seed {}",
+            seeded.display()
+        );
+        assert!(seeded.join("persona.md").is_file());
     }
 
     #[test]
@@ -4504,7 +4750,7 @@ mod agent_tests {
         let pi_cmd = super::build_agent_start_command(&pi_def, pi_adapter, None).unwrap();
         assert!(
             pi_cmd.starts_with(
-                "pi --no-extensions --no-mcp --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
+                "pi --no-extensions --no-mcp --models '*' --model 'openrouter/~z-ai/glm-flash-latest' --append-system-prompt "
             ),
             "unexpected pi start command: {pi_cmd}"
         );
@@ -4695,8 +4941,8 @@ mod agent_tests {
         )
         .unwrap_err();
         assert!(
-            err.contains("available agents: researcher, reviewer"),
-            "unknown agent error must list available agents: {err}"
+            err.contains("available agents: default, researcher, reviewer"),
+            "unknown agent error must list available agents (including the launchable built-in `default`, stint 1035): {err}"
         );
         assert!(
             super::resolve_agent_start_in_stopping_at("decoy", &profile, &proj, None, None, &stops)

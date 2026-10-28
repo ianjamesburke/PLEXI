@@ -116,6 +116,14 @@ Focus a pane and swap it with its directional neighbor.
 | `pane_id` | `integer` | yes |
 | `response_file` | `string` | yes |
 
+### `workspace_snapshot`
+
+Read the active workspace layout without pane content.
+
+| Field | Type | Required |
+|-------|------|----------|
+| `response_file` | `string` | yes |
+
 ### `reload_config`
 
 Reload the running host configuration from disk.

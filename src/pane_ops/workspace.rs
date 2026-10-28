@@ -1130,17 +1130,21 @@ impl PlexiApp {
         });
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
-        let strip_offset = {
-            let strip = self.ensure_authoritative_strip(ctx_id);
+        let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        if !strip.contains_pane(new_pane_id) {
+            let new_col_id = crate::strip::ColumnId(strip.column_count());
             strip.push_column(crate::strip::Column::new(
-                crate::strip::ColumnId(strip.column_count()),
+                new_col_id,
                 new_pane_id,
                 crate::strip::ColumnWidth::Preset(crate::app::zoom::ColumnWidthPreset::Child65),
             ));
-            strip.focus_pane(new_pane_id);
-            strip.scroll_offset
-        };
-        self.zoom.strip_offsets.insert(ctx_id, strip_offset);
+        }
+        strip.focus_pane(new_pane_id);
+        if let Some(col_idx) = strip.find_column_for_pane(new_pane_id) {
+            strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
+        }
         log::info!("strip: Cmd+N added authoritative column for pane {new_pane_id}");
         self.minimap.visible = true;
     }
@@ -1271,6 +1275,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn delete_context(&mut self, ws_index: usize) {
+        self.cancel_context_rename("context removal");
         if self.router.len() <= 1 {
             return;
         }
@@ -1610,13 +1615,7 @@ impl PlexiApp {
             self.active_window -= 1;
         }
 
-        if self.renaming_window == Some(index) {
-            self.renaming_window = None;
-        } else if let Some(r) = self.renaming_window {
-            if r > index {
-                self.renaming_window = Some(r - 1);
-            }
-        }
+        self.sync_context_rename_focus();
 
         // ── Compact the grid: shift columns left if a column becomes empty ──
         self.compact_workspace_grid(removed_ws_id);
@@ -1694,6 +1693,9 @@ impl PlexiApp {
     /// This is the standard path for context navigation. Focus-history traversal
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        if new_ctx_idx != self.router.active_idx() {
+            self.cancel_context_rename("context switch");
+        }
         // Record the outgoing focus so Cmd+[ can return here from any context.
         if let Some(w) = self.windows.get(self.active_window) {
             let old_window_id = w.window_id;
@@ -1733,19 +1735,12 @@ impl PlexiApp {
             self.zoom
                 .context_last_pane
                 .insert(new_ctx_id, active_pane_id);
-            let cols = self.columns_for_context(new_ctx_id);
-            if let Some(col) = cols.iter().find(|c| c.panes.contains(&active_pane_id)) {
-                self.zoom
-                    .column_last_pane
-                    .insert((new_ctx_id, col.index), active_pane_id);
-                let offset = self.zoom.strip_offset_for(new_ctx_id);
-                if col.index < offset {
-                    self.zoom.strip_offsets.insert(new_ctx_id, col.index);
-                } else if col.index >= offset + 2 {
-                    self.zoom
-                        .strip_offsets
-                        .insert(new_ctx_id, col.index.saturating_sub(1));
-                }
+            let vp = self.active_strip_viewport();
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+            let strip = self.ensure_authoritative_strip(new_ctx_id);
+            strip.focus_pane(active_pane_id);
+            if let Some(col_idx) = strip.find_column_for_pane(active_pane_id) {
+                strip.reveal_column_with_viewport(col_idx, viewport_w, gap);
             }
         }
         let page_count = self
@@ -1799,6 +1794,7 @@ impl PlexiApp {
 
     /// Park a specific context by index, moving focus to the nearest unparked neighbor.
     pub(crate) fn park_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context parked");
         if self.router.get(idx).parked {
             return;
         }
@@ -1820,6 +1816,7 @@ impl PlexiApp {
 
     /// Unpark a specific context by index and switch focus to it.
     pub(crate) fn unpark_context(&mut self, idx: usize) {
+        self.cancel_context_rename("context unparked");
         self.router.get_mut(idx).parked = false;
         log::info!(
             "context: unparked '{}' (idx={idx})",
@@ -2407,7 +2404,9 @@ impl PlexiApp {
         }
 
         let ws = WorkspaceFile {
-            version: 2,
+            version: 3,
+            conjoined_contexts: self.conjoined_contexts.clone(),
+            strips: self.router.iter().map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id))).collect(),
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),

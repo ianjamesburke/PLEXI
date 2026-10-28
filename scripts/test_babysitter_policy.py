@@ -59,7 +59,7 @@ class PolicyTests(unittest.TestCase):
         self.record = {
             "size": "S", "head": self.head, "base_head": self.base, "stints": ["0986"],
             "worker_alias": "agyf", "tester_alias": "cs", "exhausted": [],
-            "local": {"head": self.head, "build": True, "test": True, "clippy": True},
+            "local": {"head": self.head, "build": True, "test": True, "clippy": True, "test_scope": "full"},
             "checks_head": self.head,
             "validation": {"head": self.head, "verdict": "PASS", "install_head": self.head,
                            "worker_vendor": "gemini", "tester_vendor": "claude"},
@@ -86,6 +86,52 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(size=size):
                 selected = policy.route(settings, size)
                 self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
+
+    def test_live_worker_routes_use_terra_and_park_when_exhausted(self):
+        settings = policy.config()
+        engines = settings["engines"]
+        for size, role in (("S", "worker_small"), ("M", "worker_medium"),
+                           ("L", "worker_large")):
+            with self.subTest(size=size):
+                self.assertEqual(settings["roles"][role], ["com"])
+                selected = policy.route(settings, size)
+                self.assertEqual((selected["worker"], selected["worker_model"]),
+                                 ("com", "gpt-6.1-terra"))
+                self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
+                with self.assertRaisesRegex(policy.PolicyError, "no available independent"):
+                    policy.route(settings, size, ["com"])
+        prefixes = engines["alias_engine"]
+        engine = prefixes[max((p for p in prefixes if "com".startswith(p)), key=len)]
+        self.assertEqual(engines["launch"][engine], "{alias} {prompt}")
+
+    def test_pi_small_queue_is_explicit_only_and_never_a_default_fallback(self):
+        settings = policy.config()
+        self.assertEqual(settings["roles"].get("worker_small_explicit"), ["pi"])
+        for size in "SML":
+            with self.subTest(size=size):
+                self.assertEqual(policy.route(settings, size)["worker"], "com")
+                with self.assertRaisesRegex(policy.PolicyError, "no available independent"):
+                    policy.route(settings, size, ["com"])
+        for exhausted in ([], ["com"]):
+            selected = policy.route(settings, "S", exhausted, worker_alias="pi")
+            self.assertEqual(selected["worker"], "pi")
+            self.assertNotEqual(selected["worker_vendor"], selected["tester_vendor"])
+        for size in "ML":
+            with self.assertRaisesRegex(policy.PolicyError, "unavailable for this size"):
+                policy.route(settings, size, worker_alias="pi")
+        with self.assertRaisesRegex(policy.PolicyError, "unavailable for this size"):
+            policy.route(settings, "S", ["pi"], worker_alias="pi")
+
+    def test_explicit_pi_batch_preserves_independent_merge_gates(self):
+        settings = policy.config()
+        record = copy.deepcopy(self.record)
+        record.update(worker_alias="pi", tester_alias="agy")
+        record["validation"].update(worker_vendor="deepseek", tester_vendor="gemini")
+        self.assertEqual(policy.check_gate(settings, record, self.pr, self.checks,
+                                           self.base, "batch"), self.head)
+        record["validation"]["tester_vendor"] = "deepseek"
+        with self.assertRaisesRegex(policy.PolicyError, "self-validation"):
+            policy.check_gate(settings, record, self.pr, self.checks, self.base, "batch")
 
     def test_sizes_route_distinct_models_and_independent_vendors(self):
         for size, expected in (("S", "agyf"), ("M", "agyf"), ("L", "agyg")):
@@ -199,10 +245,37 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, self.record, self.pr, checks, self.base, "batch")
 
-    def test_after_alpha_host_ci_still_requires_full_local_and_independent_evidence(self):
+    def test_coderabbit_provider_is_excluded_but_other_checks_are_not(self):
+        for bucket in ("fail", "pending", "skipping"):
+            rabbit = {"name": "CodeRabbit", "bucket": bucket, "app_slug": "coderabbitai"}
+            self.assertEqual(policy.check_gate(self.settings, self.record, self.pr,
+                                               self.checks + [rabbit], self.base, "batch"), self.head)
+            for slug in ("github-actions", None):
+                with self.subTest(bucket=bucket, slug=slug):
+                    with self.assertRaises(policy.PolicyError):
+                        policy.check_gate(self.settings, self.record, self.pr,
+                                          self.checks + [dict(rabbit, app_slug=slug)],
+                                          self.base, "batch")
+
+    def test_check_provider_matching_requires_unique_exact_head_identity(self):
+        checks = [{"name": "CodeRabbit", "link": "https://example.test", "bucket": "skipping"}]
+        run = {"name": "CodeRabbit", "details_url": "https://example.test",
+               "app": {"slug": "coderabbitai"}}
+        response = subprocess.CompletedProcess([], 1, stdout=json.dumps(checks), stderr="")
+        with patch.object(policy.subprocess, "run", return_value=response), patch.object(
+            policy, "command", return_value=json.dumps([{"check_runs": [run]}])
+        ) as api:
+            self.assertEqual(policy.read_checks(123, self.head)[0]["app_slug"], "coderabbitai")
+            self.assertIn(self.head, api.call_args.args[-1])
+        with patch.object(policy.subprocess, "run", return_value=response), patch.object(
+            policy, "command", return_value=json.dumps([{"check_runs": [run, run]}])
+        ):
+            self.assertNotIn("app_slug", policy.read_checks(123, self.head)[0])
+
+    def test_after_alpha_host_ci_still_requires_local_and_independent_evidence(self):
         self.settings["ci"] = {"rust_host": "after_alpha"}
         self.record["local"]["test_scope"] = "full"
-        for key, value in (("test_scope", "scoped"), ("test", False), ("build", False),
+        for key, value in (("test_scope", "unknown"), ("test", False), ("build", False),
                            ("clippy", False), ("head", "stale")):
             record = copy.deepcopy(self.record)
             record["local"][key] = value
@@ -214,6 +287,75 @@ class PolicyTests(unittest.TestCase):
             record["validation"][key] = value
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, record, self.pr, [], self.base, "batch")
+
+    def scoped_record(self):
+        record = copy.deepcopy(self.record)
+        record["local"].update(test_scope="scoped", test_base=self.base,
+            test_paths=["src/cli/mod.rs"], test_evidence=[{
+                "command": "cargo test --bin plexi -- cli::tests::affected_command",
+                "covers": ["src/cli/mod.rs"], "passed": True, "matched": 1}])
+        record["validation"]["affected_behavior"] = "Installed CLI affected-command round trip passed"
+        return record
+
+    def test_batch_accepts_scoped_evidence_but_final_requires_full(self):
+        for host_ci in ("pr", "after_alpha"):
+            with self.subTest(host_ci=host_ci):
+                settings = copy.deepcopy(self.settings)
+                settings["ci"] = {"rust_host": host_ci}
+                record = self.scoped_record()
+                self.assertEqual(policy.check_gate(settings, record, self.pr, self.checks,
+                                                   self.base, "batch"), self.head)
+                final = {**record, "aggregate_head": self.head, "integrated_batches": [100]}
+                with self.assertRaisesRegex(policy.PolicyError, "final.*full"):
+                    policy.check_gate(settings, final, {**self.pr, "baseRefName": "alpha"},
+                                      self.checks, self.base, "final")
+                final["local"]["test_scope"] = "full"
+                self.assertEqual(policy.check_gate(settings, final, {**self.pr, "baseRefName": "alpha"},
+                                                   self.checks, self.base, "final"), self.head)
+
+    def test_scoped_evidence_rejects_missing_stale_empty_and_unrelated_proof(self):
+        for change in (
+            lambda r: r["local"].pop("test_scope"),
+            lambda r: r["local"].update(test_base="stale"),
+            lambda r: r["local"].update(test_evidence=[]),
+            lambda r: r["local"]["test_evidence"][0].update(passed=False),
+            lambda r: r["local"]["test_evidence"][0].update(matched=0),
+            lambda r: r["local"]["test_evidence"][0].update(covers=["src/unrelated.rs"]),
+            lambda r: r["local"]["test_evidence"][0].update(command="cargo test --bin plexi -- ::"),
+            lambda r: r["validation"].pop("affected_behavior"),
+            lambda r: r["validation"].update(install_head="stale"),
+        ):
+            record = self.scoped_record()
+            change(record)
+            with self.subTest(record=record), self.assertRaises(policy.PolicyError):
+                policy.check_gate(self.settings, record, self.pr, self.checks, self.base, "batch")
+
+    def test_scoped_paths_are_bound_to_actual_diff(self):
+        record = self.scoped_record()
+        with patch.object(policy, "command", return_value="src/cli/mod.rs\0"):
+            policy.verify_scoped_paths(record, "/tmp/aggregate")
+        for paths in ("src/cli/mod.rs\0src/host/model.rs\0", "src/unrelated.rs\0", ""):
+            with patch.object(policy, "command", return_value=paths), self.assertRaises(policy.PolicyError):
+                policy.verify_scoped_paths(record, "/tmp/aggregate")
+
+    def test_live_batch_gate_checks_scoped_diff_before_accepting(self):
+        record = self.scoped_record()
+        changed = ["src/cli/mod.rs\0"]
+        def command(*args):
+            if args[0] == "gh":
+                return json.dumps({**self.pr, "state": "OPEN"})
+            if args[:3] == ("git", "ls-remote", "origin"):
+                return self.base
+            if "diff" in args:
+                return changed[0]
+            raise AssertionError(args)
+        with patch.object(policy, "command", side_effect=command), patch.object(
+            policy, "read_checks", return_value=self.checks
+        ), patch.object(policy, "alpha_root", return_value=Path("/tmp/aggregate")):
+            self.assertEqual(policy.live_gate(self.settings, record, 100, "batch"), self.head)
+            changed[0] += "src/host/model.rs\0"
+            with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+                policy.live_gate(self.settings, record, 100, "batch")
 
     def test_missing_or_unknown_ci_policy_does_not_waive_checks(self):
         for mode in (None, "typo"):
@@ -339,7 +481,7 @@ class PolicyTests(unittest.TestCase):
             ) as preflight_mock:
                 self.assertEqual(policy.integrate(self.settings, self.record, 100, manifest), "d" * 40)
                 preflight_mock.assert_called_once_with(
-                    self.settings, root / ".stint/tasks", sprint, self.record["stints"])
+                    self.settings, root / ".stint/tasks", sprint, self.record["stints"], ())
                 self.assertIn(("gh", "pr", "merge", "100", "--squash", "--match-head-commit", self.head), commands)
                 self.assertEqual([cmd for cmd in commands if cmd[0] == "bash"], cleanup_commands)
                 for error in (subprocess.CalledProcessError(1, cleanup_commands[0]), OSError("cleanup unavailable")):
@@ -438,15 +580,138 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
             gate.write_text(gate.read_text().replace("status: todo", "status: done"))
-            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
-                             ["0986"])
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"], ["0986"])
             product.write_text(product.read_text().replace("status: todo", "status: in-progress"))
-            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"],
-                             ["0986"])
+            self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0986"])["tasks"], ["0986"])
             product.write_text(product.read_text().replace("blocked_by:\n", "blocked_by:\n  - 986\n"))
             with self.assertRaisesRegex(policy.PolicyError, "cycle"):
                 policy.preflight(self.settings, tasks, sprint, ["0986"])
 
+    def test_integrated_prerequisite_evidence_and_rejections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sprint = root / self.settings["topology"]["sprint"]
+            sprint.parent.mkdir(parents=True)
+            sprint.write_text("- [0986](../tasks/0986.md)\n- [0987](../tasks/0987.md)\n")
+            tasks = root / ".stint/tasks"
+            tasks.mkdir(parents=True)
+            (tasks / "0986-one.md").write_text("---\nstatus: in-progress\nsize: s\nblocked_by: []\n---\n## Done-When\n")
+            (tasks / "0987-two.md").write_text("---\nstatus: todo\nsize: s\nblocked_by:\n  - 986\n---\n## Done-When\n")
+            record = copy.deepcopy(self.record)
+            record["local"]["test_scope"] = "full"
+            (root / "record-0986-r1.json").write_text(json.dumps(record))
+            batch = {"pr": 100, "source_head": self.head, "base_before": self.base,
+                     "aggregate_head": "d" * 40, "actual_parent": self.base,
+                     "base_race": False, "stints": ["0986"]}
+            manifest = {"topology": "aggregate", "requested_stints": ["0986", "0987"],
+                        "batches": [batch], "parked": []}
+            path = root / "aggregate.json"
+            live = {"state": "MERGED", "baseRefName": "feature/alpha-cleanup",
+                    "headRefOid": self.head, "mergeCommit": {"oid": "d" * 40}}
+            def command(*args):
+                if args[:3] == ("git", "worktree", "list"):
+                    return "worktree /tmp/aggregate\nbranch refs/heads/feature/alpha-cleanup"
+                if args[:3] == ("git", "ls-remote", "origin"):
+                    return "d" * 40
+                if "diff" in args:
+                    return "src/cli/mod.rs\0"
+                if args[0] == "gh":
+                    return json.dumps(live)
+                if args[-1] == "HEAD":
+                    return "d" * 40
+                if args[-1].endswith("^"):
+                    return self.base
+                return ""
+            with patch.object(policy, "command", side_effect=command), patch.object(policy, "alpha_root", return_value=root):
+                path.write_text(json.dumps(manifest))
+                integrated = policy.integrated_prerequisites(self.settings, path)
+                grown = copy.deepcopy(manifest)
+                grown["requested_stints"] = ["0986"]
+                path.write_text(json.dumps(grown))
+                self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
+                self.assertEqual(policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)["tasks"], ["0987"])
+                with self.assertRaises(policy.PolicyError):
+                    policy.preflight(self.settings, tasks, sprint, ["0987"])
+                scoped = self.scoped_record()
+                (root / "record-0986-r1.json").write_text(json.dumps(scoped))
+                self.assertEqual(policy.integrated_prerequisites(self.settings, path), {"0986"})
+                with patch.object(policy, "verify_scoped_paths", side_effect=policy.PolicyError("stale actual PR diff")):
+                    with self.assertRaisesRegex(policy.PolicyError, "actual PR diff"):
+                        policy.integrated_prerequisites(self.settings, path)
+                (root / "record-0986-r1.json").write_text(json.dumps(record))
+                blocker = tasks / "0986-one.md"
+                original_task = blocker.read_text()
+                for status in ("todo", "blocked"):
+                    with self.subTest(blocker_status=status):
+                        blocker.write_text(original_task.replace("status: in-progress", f"status: {status}"))
+                        with self.assertRaisesRegex(policy.PolicyError, "blocked by 0986"):
+                            policy.preflight(self.settings, tasks, sprint, ["0987"], integrated)
+                blocker.write_text(original_task)
+                # A merged PR may advance the remote before its manifest is written.
+                recovery_record = copy.deepcopy(record)
+                recovery_record.update(stints=["0987"], base_head="d" * 40, head="f" * 40,
+                                       checks_head="f" * 40)
+                recovery_record["local"]["head"] = "f" * 40
+                recovery_record["validation"].update(head="f" * 40, install_head="f" * 40)
+                recovery_record["local"].update(test_scope="scoped", test_base="d" * 40,
+                    test_paths=scoped["local"]["test_paths"], test_evidence=scoped["local"]["test_evidence"])
+                recovery_record["validation"]["affected_behavior"] = "Installed affected command passed"
+                recovery_snapshot = {**live, "headRefOid": "f" * 40,
+                                     "mergeCommit": {"oid": "e" * 40}}
+                current_tip = ["d" * 40]
+                def recovery_command(*args):
+                    if args[:4] == ("gh", "pr", "view", "101"):
+                        return json.dumps(recovery_snapshot)
+                    if args[:3] == ("git", "ls-remote", "origin"):
+                        return "e" * 40
+                    if args[-1] == "HEAD":
+                        return current_tip[0]
+                    if args[-1] == "e" * 40 + "^":
+                        return "d" * 40
+                    if "merge" in args:
+                        current_tip[0] = "e" * 40
+                        return ""
+                    return command(*args)
+                for local_tip in ("d" * 40, "e" * 40):
+                    with self.subTest(recovery_local_tip=local_tip):
+                        current_tip[0] = local_tip
+                        path.write_text(json.dumps(grown))
+                        with patch.object(policy, "command", side_effect=recovery_command), patch.object(
+                            policy, "read_checks", return_value=self.checks
+                        ), patch.object(policy, "reap_after_merge"):
+                            self.assertEqual(policy.integrate_locked(
+                                self.settings, recovery_record, 101, path), "e" * 40)
+                        saved = json.loads(path.read_text())
+                        self.assertEqual(saved["requested_stints"], ["0986", "0987"])
+                        self.assertFalse(saved["batches"][-1]["base_race"])
+                variants = []
+                for field, value in (("base_race", True), ("base_race", None), ("actual_parent", "e" * 40),
+                                     ("aggregate_head", "e" * 40), ("stints", ["0987"])):
+                    bad = copy.deepcopy(manifest)
+                    bad["batches"][0][field] = value
+                    variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["parked"] = [{"stint": "0986", "reason": "blocked"}]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["batches"][0].update(base_race=True, recovery_head="e" * 40)
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0987"]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0986", "9999"]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["requested_stints"] = ["0986", "0986"]
+                variants.append(bad)
+                bad = copy.deepcopy(manifest)
+                bad["parked"] = [{"stint": "0999", "reason": "blocked"}]
+                variants.append(bad)
+                for bad in variants:
+                    path.write_text(json.dumps(bad))
+                    with self.assertRaises((policy.PolicyError, KeyError)):
+                        policy.integrated_prerequisites(self.settings, path)
     def test_preflight_accepts_pruned_0991_edge_only_once_0991_done(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

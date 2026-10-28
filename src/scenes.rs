@@ -2590,6 +2590,29 @@ impl HeadlessBackend {
                 }))
             }
             Step::DropFile { drop_file } => {
+                // A `host` target delivers a raw window drop through the same
+                // egui input the OS uses, so host overlays (QuickNote) receive
+                // it without a pane. Pane targets keep the IPC path.
+                if let InputTarget::Host = self.handles.resolve_input(&drop_file.target)? {
+                    if drop_file.expect_rejected {
+                        return Err(SceneError::new(
+                            "unsupported_scene_target",
+                            "a host file drop cannot observe rejection",
+                        ));
+                    }
+                    self.h
+                        .harness()
+                        .input_mut()
+                        .dropped_files
+                        .push(egui::DroppedFile {
+                            path: Some(resolve(&drop_file.value)),
+                            ..Default::default()
+                        });
+                    self.h.step();
+                    return Ok(Some(StepDetail::Message {
+                        message: "dropped file onto host".to_string(),
+                    }));
+                }
                 let pane_id = self.handles.resolve(&drop_file.target)?;
                 let response = self
                     .h

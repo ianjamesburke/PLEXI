@@ -38,7 +38,7 @@ System:
   host          Launch, stop, or check a headless-friendly Plexi host from the CLI
   lease         Acquire process-lifetime capacity before starting work. Pauses exit with code 2
   config        Check your Plexi config file for errors
-  note          Capture, list, and open notes
+  note          Capture, list, read, open, and delete notes
   doctor        Audit all installed apps for capability and config gaps
   debug         Inspect what the host recorded: per-session flight traces
   demo          Interactive keybinding tutorial — learn split and navigate in real time

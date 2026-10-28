@@ -100,9 +100,43 @@ pub(crate) struct NoteFrontmatter {
     pub title: Option<String>,
 }
 
+/// Keys the capture paths write into a note's `---` header block.
+const NOTE_METADATA_KEYS: [&str; 4] = ["title", "captured_at", "source", "cwd"];
+
+/// Split `content` into the Plexi capture metadata header and the body after it.
+///
+/// `None` unless the leading `---` block is one Plexi wrote: every line must be
+/// a `key: value` pair for a known [`NOTE_METADATA_KEYS`] key, and the block must
+/// be terminated. An absent, unterminated, empty, or unrecognized header is user
+/// text, so the whole content is the body — a delimiter block a person typed
+/// must never be silently dropped.
+fn split_note_metadata(content: &str) -> Option<(&str, &str)> {
+    let rest = content.strip_prefix("---\n")?;
+    let end = rest.find("\n---\n")?;
+    let header = &rest[..end];
+    let is_metadata = !header.trim().is_empty()
+        && header.lines().all(|line| {
+            line.split_once(':')
+                .is_some_and(|(key, _)| NOTE_METADATA_KEYS.contains(&key.trim()))
+        });
+    // `+ 5` skips the `\n---\n` terminator.
+    is_metadata.then_some((header, &rest[end + 5..]))
+}
+
+/// The user-authored body of a note: the file text minus a Plexi capture
+/// metadata envelope. This is what the picker previews and what copy/cut put on
+/// the clipboard, so storage provenance never leaks into pasted text.
+pub(crate) fn note_body(content: &str) -> &str {
+    split_note_metadata(content).map_or(content, |(_, body)| body)
+}
+
 /// Parse a `---\nkey: value\n---\nbody` note into its frontmatter and body.
 /// Returns an empty frontmatter and the full content as the body when the note
 /// does not have a YAML front-matter block.
+///
+/// Deliberately looser than [`note_body`]: this also parses generic Markdown
+/// frontmatter (`name:`, arbitrary keys) that a non-note file may carry, because
+/// the text editor titles any Markdown file from its `title:` line.
 pub(crate) fn parse_note(content: &str) -> (NoteFrontmatter, String) {
     let mut fm = NoteFrontmatter::default();
 
@@ -1389,6 +1423,57 @@ mod tests {
         let (fm, body) = parse_note(content);
         assert_eq!(fm.title.as_deref(), Some("My Note"));
         assert_eq!(body, "body\n");
+    }
+
+    /// The clipboard projection: a Plexi capture envelope is dropped, the body
+    /// after it is returned verbatim (Markdown, links, fenced code, newlines).
+    #[test]
+    fn note_body_strips_the_capture_envelope_and_keeps_the_body() {
+        let content = "---\ntitle: \"\"\ncaptured_at: \"2026-10-26T22:00:00Z\"\nsource: \"scratchpad\"\ncwd: \"/tmp\"\n---\n\n# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n";
+        let body = note_body(content);
+        assert!(!body.contains("captured_at"), "{body:?}");
+        assert!(!body.contains("source:"), "{body:?}");
+        assert_eq!(
+            body,
+            "\n# Heading\n\nsee [x](https://e.com)\n\n```rs\nlet a = 1;\n```\n"
+        );
+        // The parser's body and the clipboard projection agree.
+        assert_eq!(parse_note(content).1, body);
+    }
+
+    /// A plain note has no envelope; every byte is body.
+    #[test]
+    fn note_body_returns_plain_notes_unchanged() {
+        let content = "just a plain note\nsecond line\n";
+        assert_eq!(note_body(content), content);
+    }
+
+    /// A `---` block a person typed is not storage metadata. Neither an
+    /// unrecognized key nor a non-`key: value` line may be stripped, or the
+    /// clipboard would silently lose the top of the user's note.
+    #[test]
+    fn note_body_preserves_user_authored_delimiter_blocks() {
+        let frontmatter_like = "---\ntags: [a, b]\n---\nuser body\n";
+        assert_eq!(note_body(frontmatter_like), frontmatter_like);
+
+        let prose_header = "---\nchapter one\n---\nuser body\n";
+        assert_eq!(note_body(prose_header), prose_header);
+
+        // An empty block is not metadata either.
+        let empty = "---\n\n---\nuser body\n";
+        assert_eq!(note_body(empty), empty);
+    }
+
+    /// Unterminated or partially recognized headers are malformed metadata, not
+    /// a reason to drop text: the whole file is preserved.
+    #[test]
+    fn note_body_preserves_malformed_or_unterminated_headers() {
+        let unterminated = "---\ntitle: \"x\"\ncaptured_at: 2026-01-01\nbody without a close\n";
+        assert_eq!(note_body(unterminated), unterminated);
+
+        // One unrecognized line makes the whole block user text.
+        let mixed = "---\ntitle: \"x\"\nnot a pair\ncaptured_at: 2026-01-01\n---\nbody\n";
+        assert_eq!(note_body(mixed), mixed);
     }
 
     /// A rewrite keeps provenance lines the parser ignores — they are the record

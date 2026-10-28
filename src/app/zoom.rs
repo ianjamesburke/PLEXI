@@ -63,10 +63,12 @@ impl ColumnWidthPreset {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripColumn {
     pub index: usize,
+    pub column_id: crate::strip::ColumnId,
     pub context_id: u64,
     pub panes: Vec<PaneId>,
     pub preset: ColumnWidthPreset,
     pub width: crate::strip::ColumnWidth,
+    pub last_focused: Option<PaneId>,
 }
 
 /// Ghost marker recorded when zooming out from `ZoomLevel::Columns` ("you were here").
@@ -147,53 +149,12 @@ pub(crate) struct WindowStrip {
     pub children: Vec<TileId>,
     /// Authoritative width definition of each child's global column.
     pub widths: Vec<Option<crate::strip::ColumnWidth>>,
-    /// First of the two visible columns (always 0 when there are two or fewer).
+    /// First of the visible columns in window-local index coordinates.
     pub lo: usize,
-}
-
-/// Root `Linear` shares, in pixels, for a strip of `ratios.len()` columns whose
-/// visible pair starts at `lo` (`egui_tiles` normalizes shares by their sum, so
-/// pixel shares reproduce exactly these widths when `canvas_width` is the tree's
-/// width).
-///
-/// With more than two columns, each clipped group (left of `lo`, right of
-/// `lo + 2`) spans `STRIP_PEEK_W` plus the gap to its visible neighbour, slivers
-/// and inter-sliver gaps included, so the peek strip painted over the canvas
-/// edge covers the slivers exactly and the visible pair keeps the rest at preset
-/// ratio. A group of many columns holds a per-sliver floor instead, spilling
-/// past the strip but never into a visible pane.
-pub(crate) fn strip_shares(ratios: &[f32], lo: usize, gap: f32, canvas_width: f32) -> Vec<f32> {
-    let n = ratios.len();
-    if n <= 2 {
-        return ratios.iter().map(|r| r * 2.0).collect();
-    }
-    let left = lo;
-    let right = n - lo - 2;
-    let group_total = |count: usize| -> f32 {
-        if count == 0 {
-            0.0
-        } else {
-            (style::STRIP_PEEK_W + gap - count as f32 * gap)
-                .max(count as f32 * style::STRIP_MIN_SLIVER_W)
-        }
-    };
-    let (left_total, right_total) = (group_total(left), group_total(right));
-    let available = (canvas_width - gap * (n - 1) as f32).max(0.0);
-    let visible_total = (available - left_total - right_total).max(2.0);
-    let ratio_sum = (ratios[lo] + ratios[lo + 1]).max(f32::EPSILON);
-    ratios
-        .iter()
-        .enumerate()
-        .map(|(idx, ratio)| {
-            if idx < lo {
-                left_total / left as f32
-            } else if idx >= lo + 2 {
-                right_total / right as f32
-            } else {
-                (visible_total * ratio / ratio_sum).max(1.0)
-            }
-        })
-        .collect()
+    /// Window-local continuous horizontal scroll offset in logical points.
+    pub scroll_offset_px: f32,
+    /// Total unclipped width of this window's strip in logical points.
+    pub total_width_px: f32,
 }
 
 /// Geometry of the left and right `STRIP_PEEK_W` clipped-neighbor strips at
@@ -201,6 +162,7 @@ pub(crate) fn strip_shares(ratios: &[f32], lo: usize, gap: f32, canvas_width: f3
 /// focused pane's outer focus-frame rect, falling back to `canvas_rect` when
 /// absent) and clamps horizontally to `canvas_rect` so the strips never leave
 /// the tree canvas.
+#[cfg(test)]
 pub(crate) fn peek_strip_rects(
     canvas_rect: Rect,
     frame_outer: Option<Rect>,
@@ -262,22 +224,14 @@ pub struct AtlasEdge {
     pub kind: AtlasEdgeKind,
 }
 
-/// Complete zoom, column strip, sibling cards, and tree atlas state on `PlexiApp`.
+/// Complete zoom, sibling cards, and tree atlas state on `PlexiApp`.
+/// Authoritative column-strip state (`Strip` and `StripLayout`) lives in `HostModel`.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct ZoomState {
     pub level: ZoomLevel,
     /// Recorded origin when zooming out from `Columns`.
     pub ghost: Option<GhostMarker>,
-    /// Per-context horizontal scroll offset (index of leftmost visible column in the 2-column viewport).
-    pub strip_offsets: HashMap<u64, usize>,
-    /// Authoritative strip state for contexts that have entered column-strip handling.
-    ///
-    /// The tile tree remains the renderer adapter in this slice, but commands mutate this
-    /// state first; it is not a frame-local projection of the tree.
-    pub strips: HashMap<u64, crate::strip::Strip>,
-    /// Per-(context_id, column_idx) last focused pane (`SPEC.md` § Focus memory).
-    pub column_last_pane: HashMap<(u64, usize), PaneId>,
     /// Per-context last active pane (`SPEC.md` R36).
     pub context_last_pane: HashMap<u64, PaneId>,
     /// Focused context ID while at `ZoomLevel::SiblingCards`.
@@ -307,16 +261,12 @@ pub struct ZoomState {
     /// jump to their new rects at once, so terminals commit the new grid
     /// immediately instead of debouncing it like a divider drag.
     pub strip_layout_jump: bool,
-    /// Panes of the columns outside the two visible ones: clipped slivers that
-    /// paint a placeholder and never resize their terminal.
+    /// Panes in columns completely outside the viewport: they paint a placeholder
+    /// and never resize their terminal.
     pub off_strip_panes: HashSet<PaneId>,
 }
 
 impl ZoomState {
-    pub fn strip_offset_for(&self, context_id: u64) -> usize {
-        self.strip_offsets.get(&context_id).copied().unwrap_or(0)
-    }
-
     /// Current visual zoom progress (`0.0` = Columns, `1.0` = SiblingCards, `2.0` = TreeAtlas).
     pub fn visual_level_progress(&self, reduce_motion: bool) -> f32 {
         let target = match self.level {
@@ -335,7 +285,6 @@ impl ZoomState {
         let eased = style::ease_out_cubic(t);
         from + (to - from) * eased
     }
-
 }
 
 /// Collect visible non-portal leaf `PaneId`s under `tile_id` in top-to-bottom / left-to-right order.
@@ -373,6 +322,30 @@ pub(crate) fn collect_leaf_panes_in_tile(
     }
 }
 
+type StackShare = (TileId, PaneId, f32);
+type StackShares = (TileId, Vec<StackShare>);
+
+fn vertical_stack_shares(
+    tree: &egui_tiles::Tree<PaneId>,
+    panes: &HashMap<PaneId, crate::host::pane::Pane>,
+) -> Vec<StackShares> {
+    let Some(root) = tree.root() else { return Vec::new(); };
+    let candidates = match tree.tiles.get(root) {
+        Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => linear.children.clone(),
+        _ => vec![root],
+    };
+    candidates.into_iter().filter_map(|tile| {
+        let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get(tile) else { return None; };
+        if linear.dir != LinearDir::Vertical { return None; }
+        let rows = linear.children.iter().filter_map(|child| {
+            let mut leaves = Vec::new();
+            collect_leaf_panes_in_tile(tree, panes, *child, &mut leaves);
+            (leaves.len() == 1).then(|| (*child, leaves[0], linear.shares[*child]))
+        }).collect::<Vec<_>>();
+        (rows.len() == linear.children.len()).then_some((tile, rows))
+    }).collect()
+}
+
 impl PlexiApp {
     /// Record an edge attempt in `dir` without changing layout or starting an animation.
     pub fn record_edge_bump(&mut self, dir: Direction) {
@@ -384,6 +357,11 @@ impl PlexiApp {
         );
     }
 
+    /// Return the leading visible column index for `context_id` from the authoritative strip.
+    pub fn strip_offset_for(&self, context_id: u64) -> usize {
+        self.strip_for_context(context_id).scroll_offset
+    }
+
     /// Record the currently focused pane in both column memory and context memory.
     pub fn record_focused_pane_memory(&mut self) {
         let Some(pane_id) = self.active_focused_pane_id() else {
@@ -392,30 +370,13 @@ impl PlexiApp {
         let ctx_id = self.router.active().context_id;
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
 
-        let cols = self.columns_for_context(ctx_id);
-        if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
-            self.zoom
-                .column_last_pane
-                .insert((ctx_id, col.index), pane_id);
-            self.ensure_column_visible(ctx_id, col.index, cols.len());
-        }
-    }
-
-    /// Ensure `col_idx` is within the visible 2-column window (`strip_offset .. strip_offset + 2`).
-    pub fn ensure_column_visible(&mut self, context_id: u64, col_idx: usize, total_cols: usize) {
-        if total_cols <= 2 {
-            self.zoom.strip_offsets.insert(context_id, 0);
+        if Some(pane_id) == self.conjoined_parent() {
+            let strip = self.ensure_authoritative_strip(ctx_id);
+            strip.ensure_column_visible(0);
             return;
         }
-        let mut offset = self.zoom.strip_offset_for(context_id);
-        if col_idx < offset {
-            offset = col_idx;
-        } else if col_idx >= offset + 2 {
-            offset = col_idx.saturating_sub(1);
-        }
-        let max_offset = total_cols.saturating_sub(2);
-        offset = offset.min(max_offset);
-        self.zoom.strip_offsets.insert(context_id, offset);
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        let _ = strip.focus_pane(pane_id);
     }
 
     /// Create a context and backing window without spawning a PTY (for fast, deterministic tests
@@ -494,7 +455,7 @@ impl PlexiApp {
                 ));
             }
         }
-        self.zoom.strips.insert(context_id, strip);
+        self.host.insert_strip(context_id, strip);
         if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == context_id) {
             let target_pids: Vec<PaneId> = columns.iter().flatten().copied().collect();
             let mut moved_panes = Vec::new();
@@ -563,41 +524,12 @@ impl PlexiApp {
         self.record_focused_pane_memory();
     }
 
-    /// Derive the ordered horizontal strip of columns for `context_id`.
-    pub fn columns_for_context(&self, context_id: u64) -> Vec<StripColumn> {
-        if let Some(strip) = self.zoom.strips.get(&context_id) {
-            return strip
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(index, column)| StripColumn {
-                    index,
-                    context_id,
-                    panes: column.panes.clone(),
-                    preset: match column.width {
-                        crate::strip::ColumnWidth::Preset(preset) => preset,
-                        _ if strip.column_count() >= 2 && index == 0 => ColumnWidthPreset::Parent35,
-                        _ => ColumnWidthPreset::Child65,
-                    },
-                    width: column.width,
-                })
-                .collect();
-        }
-        let mut raw_cols: Vec<(u64, Vec<PaneId>)> = Vec::new();
-
-        // Include conjoined parent as column 0 when active in this child context.
-        if context_id == self.router.active().context_id {
-            if let Some(parent_pane_id) = self.conjoined_parent() {
-                let parent_ctx_id = self
-                    .find_pane_in_any_window(parent_pane_id)
-                    .map(|(wi, _)| self.windows[wi].context_id)
-                    .unwrap_or(context_id);
-                if parent_ctx_id != context_id {
-                    raw_cols.push((parent_ctx_id, vec![parent_pane_id]));
-                }
-            }
-        }
-
+    /// Extract ordered column stacks `(context_id, panes, heights)` from `self.windows` for `context_id`.
+    pub(crate) fn raw_window_columns_for_context(
+        &self,
+        context_id: u64,
+    ) -> Vec<(u64, Vec<PaneId>, Vec<f32>)> {
+        let mut raw_cols: Vec<(u64, Vec<PaneId>, Vec<f32>)> = Vec::new();
         let mut ctx_windows: Vec<(usize, &crate::host::context::Window)> = self
             .windows
             .iter()
@@ -618,7 +550,8 @@ impl PlexiApp {
                         let mut stack = Vec::new();
                         collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
                         if !stack.is_empty() {
-                            raw_cols.push((context_id, stack));
+                            let heights = vec![1.0; stack.len()];
+                            raw_cols.push((context_id, stack, heights));
                         }
                     }
                 }
@@ -627,7 +560,8 @@ impl PlexiApp {
                         let mut stack = Vec::new();
                         collect_leaf_panes_in_tile(&win.tree, &win.panes, col_tile, &mut stack);
                         if !stack.is_empty() {
-                            raw_cols.push((context_id, stack));
+                            let heights = vec![1.0; stack.len()];
+                            raw_cols.push((context_id, stack, heights));
                         }
                     }
                 }
@@ -635,35 +569,107 @@ impl PlexiApp {
                     let mut stack = Vec::new();
                     collect_leaf_panes_in_tile(&win.tree, &win.panes, root_id, &mut stack);
                     if !stack.is_empty() {
-                        raw_cols.push((context_id, stack));
+                        let heights = vec![1.0; stack.len()];
+                        raw_cols.push((context_id, stack, heights));
                     }
                 }
             }
         }
-
-        let total = raw_cols.len();
         raw_cols
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (col_ctx_id, panes))| {
-                let default_preset = if total >= 2 && idx == 0 {
-                    ColumnWidthPreset::Parent35
-                } else {
-                    ColumnWidthPreset::Child65
-                };
-                StripColumn {
-                    index: idx,
-                    context_id: col_ctx_id,
-                    panes,
-                    preset: default_preset,
-                    width: crate::strip::ColumnWidth::Preset(default_preset),
-                }
-            })
-            .collect()
     }
 
-    /// True if `pane_id` is in a column that is currently fully visible (not clipped off-screen)
-    /// at `ZoomLevel::Columns` and no overlay/queue owns input (`SPEC.md` R40).
+    /// Derive the ordered horizontal strip of columns for `context_id` from the single
+    /// authoritative strip model in `HostModel` (plus conjoined parent column when active).
+    pub fn columns_for_context(&self, context_id: u64) -> Vec<StripColumn> {
+        let mut out = Vec::new();
+        let mut base_index = 0usize;
+
+        // Include conjoined parent as column 0 when active in this child context.
+        if context_id == self.router.active().context_id {
+            if let Some(parent_pane_id) = self.conjoined_parent() {
+                let parent_ctx_id = self
+                    .find_pane_in_any_window(parent_pane_id)
+                    .map(|(wi, _)| self.windows[wi].context_id)
+                    .unwrap_or(context_id);
+                if parent_ctx_id != context_id {
+                    out.push(StripColumn {
+                        index: 0,
+                        column_id: crate::strip::ColumnId(usize::MAX),
+                        context_id: parent_ctx_id,
+                        panes: vec![parent_pane_id],
+                        preset: ColumnWidthPreset::Parent35,
+                        width: crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35),
+                        last_focused: Some(parent_pane_id),
+                    });
+                    base_index = 1;
+                }
+            }
+        }
+
+        let strip = self.strip_for_context(context_id);
+        let total = base_index + strip.column_count();
+        for (i, column) in strip.columns.iter().enumerate() {
+            let idx = base_index + i;
+            let preset = match column.width {
+                crate::strip::ColumnWidth::Preset(preset) => preset,
+                _ if total >= 2 && idx == 0 => ColumnWidthPreset::Parent35,
+                _ => ColumnWidthPreset::Child65,
+            };
+            out.push(StripColumn {
+                index: idx,
+                column_id: column.id,
+                context_id,
+                panes: column.panes.clone(),
+                preset,
+                width: column.width,
+                last_focused: column.remembered_or_first_pane(),
+            });
+        }
+        out
+    }
+
+    /// Resolve the active context's strip viewport.
+    pub fn active_strip_viewport(&self) -> crate::strip::StripViewport {
+        let ctx_id = self.router.active().context_id;
+        let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+        if let Some(cached) = self.host.strip_layout(ctx_id) {
+            if cached.canvas_rect.width() > 1.0 && cached.canvas_rect.height() > 1.0 {
+                return crate::strip::StripViewport::new(cached.canvas_rect, gap);
+            }
+        }
+        crate::strip::StripViewport::new(
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(style::STRIP_FALLBACK_CANVAS_W, 800.0)),
+            gap,
+        )
+    }
+
+    /// Project the context strip into the active window's local viewport.
+    fn active_window_layout(&self, strip: &crate::strip::Strip, vp: &crate::strip::StripViewport) -> crate::strip::StripLayout {
+        let Some(window) = self.windows.get(self.active_window) else {
+            return crate::strip::layout_strip(strip, vp);
+        };
+        let intervals = strip.column_intervals(vp.canvas_rect.width(), vp.gap);
+        let first = strip.columns.iter().position(|column| column.panes.iter().any(|pane| window.panes.contains_key(pane)));
+        let base_x = first.and_then(|index| intervals.get(index)).map_or(0.0, |(x, _)| *x);
+        let mut local = strip.clone();
+        local.columns.retain(|column| column.panes.iter().any(|pane| window.panes.contains_key(pane)));
+        let max_scroll = local.max_scroll_offset_px(vp.canvas_rect.width(), vp.gap);
+        local.scroll_offset_px = (strip.scroll_offset_px - base_x).clamp(0.0, max_scroll);
+        local.scroll_offset = 0;
+        local.last_synced_scroll_offset = 0;
+        crate::strip::layout_strip(&local, vp)
+    }
+
+    /// Compute the presentation snapshot for the active window's strip.
+    pub fn active_strip_layout(&self) -> crate::strip::StripLayout {
+        let ctx_id = self.router.active().context_id;
+        let strip = self.strip_for_context(ctx_id);
+        let vp = self.active_strip_viewport();
+        self.active_window_layout(&strip, &vp)
+    }
+
+    /// True if `pane_id` is the focused strip pane and no overlay owns input.
+    /// A manually scrolled-out pane keeps ownership until the next key reveals it.
     pub fn pane_qualifies_for_input(&self, pane_id: PaneId) -> bool {
         if self.zoom.level != ZoomLevel::Columns {
             return false;
@@ -677,25 +683,27 @@ impl PlexiApp {
         if self.active_focused_pane_id() != Some(pane_id) {
             return false;
         }
-        let ctx_id = self.router.active().context_id;
-        let cols = self.columns_for_context(ctx_id);
-        if cols.len() <= 2 {
+        if Some(pane_id) == self.conjoined_parent() {
             return true;
         }
-        let offset = self.zoom.strip_offset_for(ctx_id);
-        cols.iter()
-            .find(|c| c.panes.contains(&pane_id))
-            .is_some_and(|c| c.index >= offset && c.index < offset + 2)
+        let layout = self.active_strip_layout();
+        if layout.pane(pane_id).is_some() {
+            return true;
+        }
+        self.windows
+            .get(self.active_window)
+            .and_then(|w| w.panes.get(&pane_id))
+            .is_some_and(|p| matches!(p, crate::host::pane::Pane::Portal(_)))
     }
 
-    /// Focus `pane_id` inside its context and update column & context focus memory.
+    /// Focus `pane_id` inside its context and update column & context focus memory
+    /// in the single authoritative `Strip` in `HostModel`.
     pub fn focus_pane_in_strip(&mut self, pane_id: PaneId) -> bool {
         if Some(pane_id) == self.conjoined_parent() {
             self.conjoined_parent_focus = Some(pane_id);
             let ctx_id = self.router.active().context_id;
-            self.zoom.column_last_pane.insert((ctx_id, 0), pane_id);
-            let total = self.columns_for_context(ctx_id).len();
-            self.ensure_column_visible(ctx_id, 0, total);
+            let strip = self.ensure_authoritative_strip(ctx_id);
+            strip.ensure_column_visible(0);
             self.sync_attention_queue();
             return true;
         }
@@ -729,16 +737,12 @@ impl PlexiApp {
         self.mark_agent_seen(pane_id);
 
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
-        if let Some(strip) = self.zoom.strips.get_mut(&ctx_id) {
-            strip.focus_pane(pane_id);
-        }
-        let cols = self.columns_for_context(ctx_id);
-        if let Some(col) = cols.iter().find(|c| c.panes.contains(&pane_id)) {
-            self.zoom
-                .column_last_pane
-                .insert((ctx_id, col.index), pane_id);
-            self.ensure_column_visible(ctx_id, col.index, cols.len());
-        }
+        let vp = self.active_strip_viewport();
+        let strip = self.ensure_authoritative_strip(ctx_id);
+        strip.focus_pane(pane_id);
+        let strip = strip.clone();
+        let layout = self.active_window_layout(&strip, &vp);
+        self.host.set_strip_layout(ctx_id, layout);
         self.sync_attention_queue();
         true
     }
@@ -785,6 +789,7 @@ impl PlexiApp {
     /// at `ZoomLevel::Columns`. Stops at edges without wrapping (`SPEC.md` R32).
     pub fn navigate_columns_strip(&mut self, dir: Direction) -> bool {
         let ctx_id = self.router.active().context_id;
+        let _ = self.ensure_authoritative_strip(ctx_id);
         let cols = self.columns_for_context(ctx_id);
         if cols.is_empty() {
             self.record_edge_bump(dir);
@@ -799,11 +804,13 @@ impl PlexiApp {
             })
             .unwrap_or((0, 0));
 
-        // Record current pane in its column before moving.
+        // Record current pane in its authoritative column before moving.
         if let Some(pid) = focused_pid {
-            self.zoom
-                .column_last_pane
-                .insert((ctx_id, cur_col_idx), pid);
+            if let Some(strip) = self.host.strip_mut(ctx_id) {
+                if let Some(col_idx) = strip.find_column_for_pane(pid) {
+                    strip.columns[col_idx].focus_pane(pid);
+                }
+            }
         }
 
         match dir {
@@ -813,15 +820,11 @@ impl PlexiApp {
                     return false;
                 }
                 let target_col = &cols[cur_col_idx - 1];
-                let target_pid = self
-                    .zoom
-                    .column_last_pane
-                    .get(&(ctx_id, target_col.index))
-                    .copied()
+                let target_pid = target_col
+                    .last_focused
                     .filter(|pid| target_col.panes.contains(pid))
                     .unwrap_or(target_col.panes[0]);
                 self.focus_pane_in_strip(target_pid);
-                self.ensure_column_visible(ctx_id, target_col.index, cols.len());
                 true
             }
             Direction::Right => {
@@ -830,15 +833,11 @@ impl PlexiApp {
                     return false;
                 }
                 let target_col = &cols[cur_col_idx + 1];
-                let target_pid = self
-                    .zoom
-                    .column_last_pane
-                    .get(&(ctx_id, target_col.index))
-                    .copied()
+                let target_pid = target_col
+                    .last_focused
                     .filter(|pid| target_col.panes.contains(pid))
                     .unwrap_or(target_col.panes[0]);
                 self.focus_pane_in_strip(target_pid);
-                self.ensure_column_visible(ctx_id, target_col.index, cols.len());
                 true
             }
             Direction::Down => {
@@ -908,7 +907,7 @@ impl PlexiApp {
                     .find(|c| c.panes.contains(&pane_id))
                     .map(|c| c.index)
                     .unwrap_or(0);
-                let offset = self.zoom.strip_offset_for(ctx_id);
+                let offset = self.strip_offset_for(ctx_id);
                 self.zoom.ghost = Some(GhostMarker {
                     context_id: ctx_id,
                     parent_context_id: parent_id,
@@ -1082,9 +1081,9 @@ impl PlexiApp {
             self.focus_pane_in_strip(ghost.pane_id);
             let total = self.columns_for_context(ghost.context_id).len();
             let clamped_offset = ghost.strip_offset.min(total.saturating_sub(2));
-            self.zoom
-                .strip_offsets
-                .insert(ghost.context_id, clamped_offset);
+            let strip = self.ensure_authoritative_strip(ghost.context_id);
+            strip.ensure_column_visible(clamped_offset);
+            let _ = strip.focus_pane(ghost.pane_id);
             self.set_zoom_level_with_transition(ZoomLevel::Columns);
             return;
         }
@@ -1960,16 +1959,14 @@ impl PlexiApp {
 
     /// Strip view of the ACTIVE window's tree, in the window's own column indices.
     ///
-    /// A context can hold several windows (pages), each with its own tree, while
-    /// `columns_for_context` and `strip_offset_for` count columns across ALL of them.
-    /// Painting shares or clip indicators straight from those global indices starves
-    /// the columns of whichever window is active (the first window after a move back
-    /// from a later one rendered as 6% slivers next to one oversized pane). This is the
-    /// single place that maps global columns onto the active window's root children.
+    /// Maps the authoritative `Strip` in `HostModel` onto the active window's root
+    /// children, providing each column's intrinsic width and the window-local
+    /// continuous horizontal scroll offset.
     pub(crate) fn active_window_strip(&self) -> Option<WindowStrip> {
         let ctx_id = self.router.active().context_id;
+        let strip = self.strip_for_context(ctx_id);
         let cols = self.columns_for_context(ctx_id);
-        let offset = self.zoom.strip_offset_for(ctx_id);
+        let offset = strip.scroll_offset;
         let win = self.windows.get(self.active_window)?;
         let root_id = win.tree.root()?;
         let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get(root_id) else {
@@ -1981,15 +1978,26 @@ impl PlexiApp {
         let focused = self.active_focused_pane_id();
         let mut children = Vec::with_capacity(lin.children.len());
         let mut global = Vec::with_capacity(lin.children.len());
+        let mut strip_col_indices = Vec::with_capacity(lin.children.len());
         let mut focused_local = None;
         for (idx, &child) in lin.children.iter().enumerate() {
             let mut leaves = Vec::new();
             collect_leaf_panes_in_tile(&win.tree, &win.panes, child, &mut leaves);
-            if focused.is_some_and(|f| leaves.contains(&f)) {
+            let contains_focused_directly = focused.is_some_and(|f| {
+                leaves.contains(&f)
+                    || matches!(win.tree.tiles.get(child), Some(Tile::Pane(pid)) if *pid == f)
+            });
+            if contains_focused_directly {
                 focused_local = Some(idx);
             }
             global.push(
                 cols.iter()
+                    .position(|c| leaves.iter().any(|p| c.panes.contains(p))),
+            );
+            strip_col_indices.push(
+                strip
+                    .columns
+                    .iter()
                     .position(|c| leaves.iter().any(|p| c.panes.contains(p))),
             );
             children.push(child);
@@ -2012,107 +2020,191 @@ impl PlexiApp {
         if n <= 2 {
             lo = 0;
         }
-        let widths = global
+        let has_untracked_child = strip_col_indices.iter().any(|si| si.is_none());
+        let mut widths: Vec<Option<crate::strip::ColumnWidth>> = global
             .iter()
             .map(|g| g.and_then(|g| cols.get(g)).map(|c| c.width))
             .collect();
+        if has_untracked_child
+            && cols.len() == 1
+            && n >= 2
+            && widths.first()
+                == Some(&Some(crate::strip::ColumnWidth::Preset(
+                    ColumnWidthPreset::Child65,
+                )))
+        {
+            widths[0] = Some(crate::strip::ColumnWidth::Preset(
+                ColumnWidthPreset::Parent35,
+            ));
+        }
+
+        let vp = self.active_strip_viewport();
+        let gap = vp.gap;
+        let canvas_w = vp.canvas_rect.width().max(1.0);
+        let intervals = strip.column_intervals(canvas_w, gap);
+        let window_base_x = strip_col_indices
+            .first()
+            .copied()
+            .flatten()
+            .and_then(|si| intervals.get(si))
+            .map(|&(x, _)| x)
+            .unwrap_or(0.0);
+        let mut window_total_w = 0.0_f32;
+        let mut child_intervals = Vec::with_capacity(n);
+        for (idx, si_opt) in strip_col_indices.iter().enumerate() {
+            let w = if !has_untracked_child {
+                si_opt.and_then(|si| intervals.get(si)).map(|&(_, w)| w)
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                let pair_avail = (strip.width_resolution_basis(canvas_w) - gap).max(1.0);
+                let col_width = widths[idx].unwrap_or(if idx == 0 {
+                    crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35)
+                } else {
+                    crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+                });
+                col_width.resolve_px(pair_avail)
+            });
+            child_intervals.push((window_total_w, w));
+            window_total_w += w;
+            if idx + 1 < n {
+                window_total_w += gap;
+            }
+        }
+        let max_local_scroll = (window_total_w - canvas_w).max(0.0);
+        let mut local_scroll_px =
+            (strip.scroll_offset_px - window_base_x).clamp(0.0, max_local_scroll);
+        if has_untracked_child {
+            if let Some(f_idx) = focused_local {
+                if let Some(&(cx, cw)) = child_intervals.get(f_idx) {
+                    if cw >= canvas_w || cx < local_scroll_px {
+                        local_scroll_px = cx.clamp(0.0, max_local_scroll);
+                    } else if cx + cw > local_scroll_px + canvas_w {
+                        local_scroll_px = (cx + cw - canvas_w).clamp(0.0, max_local_scroll);
+                    }
+                }
+            }
+        }
+
         Some(WindowStrip {
             children,
             widths,
             lo,
+            scroll_offset_px: local_scroll_px,
+            total_width_px: window_total_w,
         })
     }
 
-    /// Synchronize the active window's horizontal root `Linear` container shares
-    /// with the Niri column strip presets (`35%` parent / `65%` child) and scroll offset,
-    /// using only the active window's own columns (see [`Self::active_window_strip`]).
-    ///
-    /// Shares are written in pixels of `canvas_width` (the tree's available width)
-    /// so the clipped groups come out exactly `STRIP_PEEK_W` wide. Also records
-    /// which panes are off-strip and whether the strip layout jumped this frame.
-    pub(crate) fn sync_strip_tree_shares(&mut self, canvas_width: Option<f32>) {
+    /// Synchronize the active context's authoritative `Strip` in `HostModel`, compute the
+    /// `StripLayout` presentation snapshot for this layout generation, and project intrinsic
+    /// column widths and stack height shares onto the active window's tile tree.
+    pub(crate) fn sync_strip_tree_shares_with_rect(&mut self, canvas_rect: Option<Rect>) {
         self.zoom.strip_layout_jump = false;
         self.zoom.off_strip_panes.clear();
         if self.zoom.level != ZoomLevel::Columns {
             return;
         }
         let ctx_id = self.router.active().context_id;
-        if !self.zoom.strips.contains_key(&ctx_id) {
-            // Keep legacy tile trees live until a strip command establishes the
-            // authoritative model. Applying peek shares here would resize an
-            // ordinary third terminal down to a sliver during a window drag.
-            self.zoom.last_strip_sig = None;
-            return;
+        let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+        let resolved_rect = canvas_rect
+            .filter(|r| r.width().is_finite() && r.width() > 0.0 && r.height() > 0.0)
+            .unwrap_or_else(|| {
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(style::STRIP_FALLBACK_CANVAS_W, 800.0))
+            });
+        let canvas_width = resolved_rect.width();
+
+        {
+            let strip = self.ensure_authoritative_strip(ctx_id);
+            strip.reference_gap_px = gap;
+            let prev_ref_w = strip.reference_width_px;
+            let viewport_changed = canvas_rect.is_some()
+                && prev_ref_w.is_none_or(|w| (w - canvas_width).abs() > 0.5);
+            if canvas_rect.is_some() {
+                strip.reference_width_px = Some(canvas_width);
+            }
+            if viewport_changed {
+                if let Some(prev_w) = prev_ref_w.filter(|w| *w > 0.0) {
+                    let max_px = strip.max_scroll_offset_px(canvas_width, gap);
+                    strip.scroll_offset_px =
+                        (strip.scroll_offset_px * (canvas_width / prev_w)).clamp(0.0, max_px);
+                }
+            }
+            if viewport_changed {
+                if let Some(col_idx) = strip.focused_pane.and_then(|pane| strip.find_column_for_pane(pane)) {
+                    strip.reveal_column_with_viewport(col_idx, canvas_width, gap);
+                }
+            }
         }
-        let Some(strip) = self.active_window_strip() else {
+
+        let authoritative_strip = self.strip_for_context(ctx_id);
+        let vp = crate::strip::StripViewport::new(resolved_rect, gap);
+        let layout = self.active_window_layout(&authoritative_strip, &vp);
+        self.host.set_strip_layout(ctx_id, layout.clone());
+
+        let stack_shares = {
+            let win = &self.windows[self.active_window];
+            vertical_stack_shares(&win.tree, &win.panes)
+        };
+        for (tile, rows) in stack_shares {
+            let updates: Vec<_> = rows.into_iter().filter_map(|(child, pane, _)| {
+                let (col, row) = authoritative_strip.find_pane_position(pane)?;
+                Some((child, *authoritative_strip.columns[col].heights.get(row)?))
+            }).collect();
+            if let Some(Tile::Container(Container::Linear(linear))) = self.windows[self.active_window].tree.tiles.get_mut(tile) {
+                for (child, share) in updates {
+                    if (linear.shares[child] - share).abs() > f32::EPSILON {
+                        linear.shares.set_share(child, share);
+                    }
+                }
+            }
+        }
+        let Some(w_strip) = self.active_window_strip() else {
             self.zoom.last_strip_sig = None;
             return;
         };
-        let n = strip.children.len();
-        let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
-        let canvas_width = canvas_width
-            .filter(|w| w.is_finite() && *w > 0.0)
-            .unwrap_or(style::STRIP_FALLBACK_CANVAS_W);
+        let n = w_strip.children.len();
         let Some(win) = self.windows.get(self.active_window) else {
             return;
         };
-        let sig = (win.window_id, strip.lo, strip.children.clone());
+        let sig = (win.window_id, w_strip.lo, w_strip.children.clone());
         let jump = self.zoom.last_strip_sig.as_ref() != Some(&sig);
         if jump {
             log::info!(
-                "strip layout jump: window={} lo={} columns={n}",
+                "strip layout jump: window={} lo={} columns={n} scroll_px={:.1}",
                 sig.0,
-                strip.lo
+                w_strip.lo,
+                w_strip.scroll_offset_px
             );
         }
         self.zoom.strip_layout_jump = jump;
         self.zoom.last_strip_sig = Some(sig);
 
+        // Off-strip panes come directly from the presentation snapshot: any pane whose
+        // intersection with the viewport (`clip_rect`) is empty is off-strip.
         let mut off_strip = HashSet::new();
-        if n > 2 {
-            let mut leaves = Vec::new();
-            for (idx, &child) in strip.children.iter().enumerate() {
-                if idx < strip.lo || idx >= strip.lo + 2 {
-                    collect_leaf_panes_in_tile(&win.tree, &win.panes, child, &mut leaves);
-                }
+        for p in &layout.panes {
+            if !p.is_visible {
+                off_strip.insert(p.pane_id);
             }
-            off_strip.extend(leaves);
         }
         self.zoom.off_strip_panes = off_strip;
 
-        let ratios: Vec<f32> = strip
+        let pair_avail = (authoritative_strip.width_resolution_basis(canvas_width) - gap).max(1.0);
+        let shares: Vec<f32> = w_strip
             .widths
             .iter()
             .enumerate()
             .map(|(idx, width)| {
-                width.map(|w| {
-                    let _ = w.is_custom();
-                    w.ratio()
-                }).unwrap_or(if idx == 0 || idx == strip.lo {
-                    style::COLUMN_WIDTH_PARENT
-                } else {
-                    style::COLUMN_WIDTH_CHILD
-                })
+                width
+                    .unwrap_or(if idx == 0 {
+                        crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35)
+                    } else {
+                        crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+                    })
+                    .resolve_px(pair_avail)
             })
             .collect();
-
-        let shares = strip_shares(&ratios, strip.lo, gap, canvas_width);
-
-        // Compute pure authoritative strip layout to validate geometry
-        let authoritative_strip = self.strip_for_context(ctx_id);
-        let vp = crate::strip::StripViewport::new(
-            Rect::from_min_size(Pos2::ZERO, Vec2::new(canvas_width, 800.0)),
-            gap,
-        );
-        let layout = crate::strip::layout_strip(&authoritative_strip, &vp);
-        if authoritative_strip.column_count() > 0 {
-            log::debug!(
-                "strip: authoritative layout computed cols={} panes={} dividers={}",
-                authoritative_strip.column_count(),
-                authoritative_strip.pane_count(),
-                layout.dividers.len()
-            );
-        }
 
         let Some(win) = self.windows.get_mut(self.active_window) else {
             return;
@@ -2121,14 +2213,87 @@ impl PlexiApp {
             return;
         };
         if let Some(Tile::Container(Container::Linear(lin))) = win.tree.tiles.get_mut(root_id) {
-            for (child_id, share) in strip.children.iter().copied().zip(shares) {
-                lin.shares.set_share(child_id, share);
+            for (child_id, share) in w_strip.children.iter().copied().zip(shares) {
+                if (lin.shares[child_id] - share).abs() > f32::EPSILON {
+                    lin.shares.set_share(child_id, share);
+                }
             }
         }
     }
 
+    /// Commit egui_tiles' divider changes to the strip before the next projection.
+    pub(crate) fn commit_strip_tree_resize(&mut self, canvas_width: f32) {
+        let context_id = self.router.active().context_id;
+        let window_strip = self.active_window_strip();
+        let win = &self.windows[self.active_window];
+        let stack_shares = vertical_stack_shares(&win.tree, &win.panes);
+        let mut changes = Vec::new();
+        if let (Some(window_strip), Some(root)) = (window_strip, win.tree.root()) {
+            if let Some(Tile::Container(Container::Linear(linear))) = win.tree.tiles.get(root) {
+                if linear.dir == LinearDir::Horizontal {
+                    for tile in &window_strip.children {
+                        let size = linear.shares[*tile];
+                        let mut panes = Vec::new();
+                        collect_leaf_panes_in_tile(&win.tree, &win.panes, *tile, &mut panes);
+                        if let Some(pane) = panes.first() { changes.push((*pane, size)); }
+                    }
+                }
+            }
+        }
+        let strip = self.ensure_authoritative_strip(context_id);
+        let old = strip.intrinsic_column_widths(canvas_width, strip.reference_gap_px);
+        for (pane, width) in changes {
+            if let Some(idx) = strip.find_column_for_pane(pane) {
+                if (old[idx] - width).abs() > 0.5 {
+                    strip.columns[idx].width = crate::strip::ColumnWidth::CustomPixels(width);
+                    log::info!("strip: resized context={context_id} column={idx} width={width:.1}");
+                }
+            }
+        }
+        for (_, rows) in stack_shares {
+            for (_, pane, share) in rows {
+                if let Some((col, row)) = strip.find_pane_position(pane) {
+                    if let Some(height) = strip.columns[col].heights.get_mut(row) { *height = share; }
+                }
+            }
+        }
+        self.mark_workspace_dirty();
+        log::info!("strip: committed divider shares context={context_id}");
+    }
+
+    pub(crate) fn reset_strip_divider(
+        &mut self,
+        divider: crate::strip::layout::DividerLayout,
+        layout: &crate::strip::StripLayout,
+    ) {
+        let context = self.router.active().context_id;
+        let strip = self.ensure_authoritative_strip(context);
+        if divider.is_vertical {
+            for id in [divider.left_col, divider.right_col].into_iter().flatten() {
+                if let Some(index) = strip.columns.iter().position(|col| col.id == id) {
+                    let preset = if index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 };
+                    strip.columns[index].width = crate::strip::ColumnWidth::Preset(preset);
+                }
+            }
+        } else if let Some(id) = divider.left_col {
+            if let Some(col) = strip.columns.iter_mut().find(|col| col.id == id) {
+                let above = layout.panes.iter().find(|pane| pane.column_id == id && (pane.outer_rect.max.y - divider.rect.min.y).abs() < 1.0);
+                if let Some(row) = above.and_then(|pane| col.panes.iter().position(|id| *id == pane.pane_id)) {
+                    if row + 1 < col.heights.len() {
+                        let mean = (col.heights[row] + col.heights[row + 1]) * 0.5;
+                        col.heights[row] = mean;
+                        col.heights[row + 1] = mean;
+                    }
+                }
+            }
+        }
+        self.mark_workspace_dirty();
+        log::info!("strip: reset divider context={context} vertical={}", divider.is_vertical);
+    }
+
     /// Returns `(has_left_clipped, has_right_clipped)` for the active window's column strip,
     /// accounting for multi-window pages and off-screen columns across the context.
+    #[cfg(test)]
     pub(crate) fn active_strip_clipped_neighbors(&self) -> (bool, bool) {
         if self.zoom.level != ZoomLevel::Columns {
             return (false, false);
@@ -2139,38 +2304,28 @@ impl PlexiApp {
             return (false, false);
         }
 
-        // If active window contains a multi-column horizontal strip, use window strip indices
         if let Some(w_strip) = self.active_window_strip() {
             if w_strip.children.len() > 2 {
-                let has_left = w_strip.lo > 0;
+                let has_left = w_strip.lo > 0 || w_strip.scroll_offset_px > 0.5;
                 let has_right = w_strip.lo + 2 < w_strip.children.len();
-                log::info!(
-                    "strip: active_strip_clipped_neighbors window-local lo={} cols={} has_left={has_left} has_right={has_right}",
-                    w_strip.lo,
-                    w_strip.children.len()
-                );
                 return (has_left, has_right);
             }
         }
 
-        // Otherwise check context-wide columns (e.g. across multiple windows / pages)
         let active_col = strip
             .focused_pane
             .and_then(|p| strip.find_column_for_pane(p))
             .unwrap_or(0);
         let has_left = active_col > 0;
         let has_right = active_col + 1 < strip.column_count();
-        log::info!(
-            "strip: active_strip_clipped_neighbors context-wide active_col={active_col} total_cols={} has_left={has_left} has_right={has_right}",
-            strip.column_count()
-        );
         (has_left, has_right)
     }
 
-    /// Handle click activation on a left or right peek strip, navigating directly to the nearest off-screen column.
+    /// Handle click activation on a left or right peek indicator, navigating directly to the nearest off-screen column.
+    #[cfg(test)]
     pub fn handle_peek_click(&mut self, is_left: bool) -> bool {
         let ctx_id = self.router.active().context_id;
-        let (target_col, target_pane, scroll_offset) = {
+        let (target_col, target_pane) = {
             let strip = self.ensure_authoritative_strip(ctx_id);
             let has_left = strip.has_left_clipped();
             let has_right = strip.has_right_clipped();
@@ -2185,13 +2340,12 @@ impl PlexiApp {
                 return false;
             };
             strip.ensure_column_visible(target_col);
-            let target_pane = strip.columns[target_col].panes.first().copied();
+            let target_pane = strip.columns[target_col].remembered_or_first_pane();
             if let Some(pane_id) = target_pane {
                 strip.focus_pane(pane_id);
             }
-            (target_col, target_pane, strip.scroll_offset)
+            (target_col, target_pane)
         };
-        self.zoom.strip_offsets.insert(ctx_id, scroll_offset);
         if let Some(pane_id) = target_pane {
             self.focus_pane_in_strip(pane_id);
         }
@@ -2205,6 +2359,7 @@ impl PlexiApp {
     }
 
     /// Set a custom width ratio on a column in `context_id`.
+    #[cfg(test)]
     pub fn set_column_width_ratio(&mut self, context_id: u64, col_idx: usize, ratio: f32) {
         let r = ratio.clamp(0.05, 0.95);
         let width = crate::strip::ColumnWidth::CustomRatio(r);
@@ -2218,92 +2373,169 @@ impl PlexiApp {
     }
 
     /// Reset column widths in `context_id` back to default presets.
+    #[cfg(test)]
     pub fn reset_column_widths(&mut self, context_id: u64) {
-        self.set_column_width_ratio(context_id, 0, style::COLUMN_WIDTH_PARENT);
         let strip = self.ensure_authoritative_strip(context_id);
         strip.reset_column_widths();
         log::info!("strip: column widths reset context={context_id}");
     }
 
-    /// Build the authoritative `Strip` model for `context_id`.
+    /// Build or reconcile the authoritative `Strip` model for `context_id` against live windows.
     pub fn strip_for_context(&self, context_id: u64) -> crate::strip::Strip {
-        if let Some(strip) = self.zoom.strips.get(&context_id) {
-            return strip.clone();
-        }
-        let cols = self.columns_for_context(context_id);
-        let mut strip = crate::strip::Strip::new(context_id);
-        strip.scroll_offset = self.zoom.strip_offset_for(context_id).min(strip.max_scroll_offset());
-        strip.focused_pane = self.active_focused_pane_id();
-        for col in cols {
-            let mut column = if col.panes.len() > 1 {
-                crate::strip::Column::new_stacked(
-                    crate::strip::ColumnId(col.index),
-                    col.panes,
-                    col.width,
-                )
-            } else if let Some(&first) = col.panes.first() {
-                crate::strip::Column::new(
-                    crate::strip::ColumnId(col.index),
-                    first,
-                    col.width,
-                )
-            } else {
-                continue;
-            };
-            if let Some(focused) = strip.focused_pane {
-                column.focus_pane(focused);
+        let raw_cols = self.raw_window_columns_for_context(context_id);
+        let existing = self.host.strip(context_id);
+
+        if let Some(prev) = existing {
+            let structure_matches = prev.columns.len() == raw_cols.len()
+                && prev
+                    .columns
+                    .iter()
+                    .zip(&raw_cols)
+                    .all(|(col, (_, panes, _))| col.panes == *panes);
+            if structure_matches {
+                let mut strip = prev.clone();
+                let win_focus = if context_id == self.router.active().context_id {
+                    self.active_focused_pane_id()
+                } else {
+                    self.windows
+                        .iter()
+                        .find(|w| w.context_id == context_id)
+                        .and_then(|w| {
+                            w.focused_pane.and_then(|t| match w.tree.tiles.get(t) {
+                                Some(Tile::Pane(pid)) => Some(*pid),
+                                _ => None,
+                            })
+                        })
+                };
+                if let Some(fpid) = win_focus {
+                    if strip.contains_pane(fpid) && strip.focused_pane != Some(fpid) {
+                        strip.focus_pane(fpid);
+                    }
+                }
+                return strip;
             }
-            strip.push_column(column);
         }
-        if let Some(focused) = strip.focused_pane {
+
+        let mut strip = crate::strip::Strip::new(context_id);
+        if let Some(prev) = existing {
+            strip.next_column_id = prev.next_column_id;
+            strip.reference_width_px = prev.reference_width_px;
+            strip.reference_gap_px = prev.reference_gap_px;
+            strip.scroll_offset_px = prev.scroll_offset_px;
+            strip.scroll_offset = prev.scroll_offset;
+            strip.last_synced_scroll_offset = prev.last_synced_scroll_offset;
+            strip.focused_pane = prev.focused_pane;
+        }
+
+        let mut available_old: Vec<crate::strip::Column> = existing
+            .map(|s| s.columns.clone())
+            .unwrap_or_default();
+        let old_count = available_old.len();
+        let total = raw_cols.len();
+
+        for (col_idx, (_, panes, heights)) in raw_cols.into_iter().enumerate() {
+            if panes.is_empty() {
+                continue;
+            }
+            let exact_match_pos = available_old.iter().position(|c| c.panes == panes);
+            let overlap_match_pos = exact_match_pos.or_else(|| {
+                available_old
+                    .iter()
+                    .position(|c| c.panes.iter().any(|p| panes.contains(p)))
+            });
+
+            if let Some(pos) = overlap_match_pos {
+                let old_col = available_old.remove(pos);
+                let mut width = old_col.width;
+                if total >= 2
+                    && old_count == 1
+                    && col_idx == 0
+                    && width == crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Child65)
+                {
+                    width = crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
+                }
+                let resolved_heights = panes.iter().enumerate().map(|(row, pane)| {
+                    old_col.panes.iter().position(|old| old == pane)
+                        .and_then(|old_row| old_col.heights.get(old_row).copied())
+                        .unwrap_or_else(|| heights.get(row).copied().unwrap_or(1.0))
+                }).collect();
+                let last_focused = old_col
+                    .last_focused
+                    .filter(|p| panes.contains(p))
+                    .or_else(|| panes.first().copied());
+                strip.push_column(crate::strip::Column {
+                    id: old_col.id,
+                    width,
+                    panes,
+                    heights: resolved_heights,
+                    last_focused,
+                });
+            } else {
+                let id = strip.alloc_column_id();
+                let default_preset = if total >= 2 && col_idx == 0 && old_count == 0 {
+                    ColumnWidthPreset::Parent35
+                } else {
+                    ColumnWidthPreset::Child65
+                };
+                let mut col = if panes.len() > 1 {
+                    crate::strip::Column::new_stacked(
+                        id,
+                        panes,
+                        crate::strip::ColumnWidth::Preset(default_preset),
+                    )
+                } else {
+                    crate::strip::Column::new(
+                        id,
+                        panes[0],
+                        crate::strip::ColumnWidth::Preset(default_preset),
+                    )
+                };
+                col.heights = heights;
+                strip.push_column(col);
+            }
+        }
+
+        let win_focus = if context_id == self.router.active().context_id {
+            self.active_focused_pane_id()
+        } else {
+            self.windows
+                .iter()
+                .find(|w| w.context_id == context_id)
+                .and_then(|w| {
+                    w.focused_pane.and_then(|t| match w.tree.tiles.get(t) {
+                        Some(Tile::Pane(pid)) => Some(*pid),
+                        _ => None,
+                    })
+                })
+        };
+
+        if let Some(focused) = win_focus.or(strip.focused_pane) {
             if strip.contains_pane(focused) {
                 strip.focus_pane(focused);
+            } else {
+                strip.focused_pane = strip
+                    .columns
+                    .first()
+                    .and_then(|c| c.remembered_or_first_pane());
             }
+        } else {
+            strip.focused_pane = strip
+                .columns
+                .first()
+                .and_then(|c| c.remembered_or_first_pane());
         }
         strip
     }
 
-    /// Return the stored strip for `context_id`, projecting the current tree only once for
-    /// legacy contexts that have not yet received a strip command.
+    /// Return the authoritative `Strip` in `HostModel` for `context_id`, reconciling with
+    /// the live window trees so every context (including legacy and restored contexts) is
+    /// always backed by `HostModel`.
     pub fn ensure_authoritative_strip(&mut self, context_id: u64) -> &mut crate::strip::Strip {
-        if !self.zoom.strips.contains_key(&context_id) {
-            let strip = self.strip_for_context(context_id);
-            self.zoom.strips.insert(context_id, strip);
-        }
-        self.zoom
-            .strips
-            .get_mut(&context_id)
+        let reconciled = self.strip_for_context(context_id);
+        self.host.insert_strip(context_id, reconciled);
+        self.host
+            .strip_mut(context_id)
             .expect("strip inserted for context")
-    }
-
-    /// Paint the `28px` clipped neighbor indicator strips at the left/right edges
-    /// of the `ZoomLevel::Columns` viewport when off-screen columns exist.
-    pub(crate) fn paint_clipped_neighbor_edges(
-        painter: &egui::Painter,
-        canvas_rect: Rect,
-        frame_outer: Option<Rect>,
-        has_left: bool,
-        has_right: bool,
-        colors: crate::ui::theme::Colors,
-    ) {
-        let (left, right) = peek_strip_rects(canvas_rect, frame_outer, has_left, has_right);
-        for (strip, glyph) in [(left, "‹"), (right, "›")] {
-            let Some(strip) = strip else { continue };
-            painter.rect_filled(strip, style::RADIUS_MOTORWAYS, colors.depth_tint(1));
-            painter.rect_stroke(
-                strip,
-                style::RADIUS_MOTORWAYS,
-                Stroke::new(1.0_f32, colors.border),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                strip.center(),
-                Align2::CENTER_CENTER,
-                glyph,
-                FontId::new(style::TEXT_BODY, FontFamily::Proportional),
-                colors.text_dim,
-            );
-        }
     }
 
     /// Render the single 1-line Path Bar at the top of the window (`34px` height):
@@ -2378,7 +2610,7 @@ impl PlexiApp {
                             // Position pips for columns (Niri strip scroll indicator)
                             if self.zoom.level == ZoomLevel::Columns && !cols.is_empty() {
                                 ui.add_space(style::SPACE_SM);
-                                let offset = self.zoom.strip_offset_for(active_ctx_id);
+                                let offset = self.strip_offset_for(active_ctx_id);
                                 for col in &cols {
                                     let is_focused_col = col.index == active_col_idx;
                                     let is_visible =
