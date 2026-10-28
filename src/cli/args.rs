@@ -430,13 +430,16 @@ pub enum Commands {
     /// Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
     ///
     /// An agent is a directory containing `AGENT.md` (persona / system prompt) and
-    /// `settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
+    /// `settings.toml` (`[agent]` metadata + a `[harness]` table naming the CLI the agent runs on).
     ///
     /// Two tiers exist, and workspace definitions shadow global ones with the same name:
     ///   - Workspace: `<workspace>/.plexi/agents/<name>/`
     ///   - Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
     ///
-    /// End-to-end worker workflow:
+    /// The agent model — harness vs agent, identity vs authority, lifetimes — is documented in
+    /// `src/agent/AGENTS.md`.
+    ///
+    /// End-to-end agent workflow:
     ///   plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest \
     ///     --persona "You are a researcher." \
     ///     --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
@@ -445,7 +448,7 @@ pub enum Commands {
     ///
     /// `agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches;
     /// only an explicitly configured Script job is one-shot.
-    /// Spawn returns immediately with a pane id, before the worker is done.
+    /// Spawn returns immediately with a pane id, before the agent is done.
     /// Wait in bounded slices with `plexi agent wait` without capture/send polling.
     /// Exit 0 means done; exit 2 means report progress and re-run the same wait;
     /// exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
@@ -2368,7 +2371,7 @@ pub enum PaneCmd {
     /// Read a pane's validated structured result.
     ///
     /// Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`).
-    /// The worker agent returns its structured JSON once via
+    /// The agent returns its structured JSON once via
     /// `plexi agent done --result <json>`: the host validates it against the
     /// declared schema synchronously and rejects malformed or schema-violating
     /// payloads back to the agent (exit 1 with the validation error) so the
@@ -3037,7 +3040,7 @@ pub enum AgentCmd {
         /// Optional JSON Schema string or path to a schema file enforced on `plexi agent done`
         #[arg(long = "result-schema")]
         result_schema: Option<String>,
-        /// Auto-close the worker pane on clean exit (`0`)
+        /// Auto-close the agent's pane on clean exit (`0`)
         #[arg(long)]
         ephemeral: bool,
         /// Human-facing display name in `[agent]` (defaults to `<name>`)
@@ -3139,7 +3142,7 @@ pub enum AgentCmd {
         #[arg(long)]
         cwd: Option<String>,
     },
-    /// Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+    /// Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
     ///
     /// Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without
     /// a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`,
@@ -3175,7 +3178,7 @@ pub enum AgentCmd {
     ///
     /// Validates `--result` against the pane's `result_schema` (when present), writes
     /// the `completed` and `summary` pane slots, and transitions the pane to `Idle` so
-    /// an ephemeral worker can exit `0` and trigger sub-context auto-collapse.
+    /// an ephemeral run can exit `0` and trigger sub-context auto-collapse.
     ///
     /// Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit complete"
     Done {
