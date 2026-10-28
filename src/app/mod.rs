@@ -47,6 +47,7 @@ pub mod secrets_app;
 mod sync;
 mod team;
 pub mod text_editor_app;
+pub(crate) mod debounce;
 pub(crate) mod ui_mailbox;
 pub(crate) mod ui_scale;
 pub mod video_player_app;

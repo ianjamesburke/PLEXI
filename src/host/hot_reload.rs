@@ -23,11 +23,13 @@
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::path::Path;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use crate::spatial::tiling::PaneId;
@@ -157,7 +159,7 @@ impl HotReloadWatcher {
         let sender = self.sender.clone();
 
         // Internal channel: notify watcher → debouncer thread.
-        let (raw_tx, raw_rx) = mpsc::channel::<Event>();
+        let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
         // Canonicalize for classification only (never for the actual
         // `watcher.watch` call below): on macOS `/var` is a symlink to
@@ -204,7 +206,7 @@ impl HotReloadWatcher {
                         }
                         return;
                     }
-                    let _ = raw_tx.send(ev);
+                    let _ = raw_tx.send(());
                 }
                 Err(e) => log::warn!("hot_reload: watcher error: {e}"),
             }
@@ -225,7 +227,15 @@ impl HotReloadWatcher {
 
         let app_dir_log = app_dir.to_path_buf();
         let thread = thread::spawn(move || {
-            debounce_loop(pane_id, raw_rx, sender, cancel_thread, app_dir_log);
+            crate::app::debounce::run(
+                raw_rx,
+                cancel_thread,
+                Duration::from_millis(DEBOUNCE_MS),
+                |_| {
+                    log::info!("hot_reload: debounced reload for pane {pane_id} ({app_dir_log:?})");
+                    sender.send(ReloadRequest { pane_id }).is_ok()
+                },
+            );
         });
 
         self.watchers.insert(
@@ -257,53 +267,6 @@ impl HotReloadWatcher {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.watchers.len()
-    }
-}
-
-/// Debounce loop: collect events into a window, emit one `ReloadRequest`
-/// when the window closes (no new events within `DEBOUNCE_MS`).
-///
-/// The loop polls every 50ms so cancellation can be observed promptly even
-/// when the watcher is silent.
-fn debounce_loop(
-    pane_id: PaneId,
-    rx: Receiver<Event>,
-    sender: UiMailbox<ReloadRequest>,
-    cancel: Arc<Mutex<bool>>,
-    app_dir: PathBuf,
-) {
-    let mut last_event: Option<Instant> = None;
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
-    let poll = Duration::from_millis(50);
-
-    loop {
-        // Cancellation check.
-        if cancel.lock().map(|g| *g).unwrap_or(true) {
-            return;
-        }
-
-        match rx.try_recv() {
-            Ok(_ev) => {
-                last_event = Some(Instant::now());
-            }
-            Err(TryRecvError::Disconnected) => {
-                // Watcher dropped — exit cleanly.
-                return;
-            }
-            Err(TryRecvError::Empty) => {
-                if let Some(t) = last_event {
-                    if t.elapsed() >= debounce {
-                        log::info!("hot_reload: debounced reload for pane {pane_id} ({app_dir:?})");
-                        if sender.send(ReloadRequest { pane_id }).is_err() {
-                            // Host receiver dropped — nothing more to do.
-                            return;
-                        }
-                        last_event = None;
-                    }
-                }
-                thread::sleep(poll);
-            }
-        }
     }
 }
 

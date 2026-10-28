@@ -29,10 +29,12 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use crate::app::ui_mailbox::{MailboxReceiver, UiMailbox, UiWake};
 use crate::host::state_scope::StateScope;
@@ -213,7 +215,18 @@ impl StateWatcher {
         }
 
         let thread = thread::spawn(move || {
-            debounce_loop(pane_id, raw_rx, sender, cancel_thread);
+            crate::app::debounce::run(
+                raw_rx,
+                cancel_thread,
+                Duration::from_millis(DEBOUNCE_MS),
+                |scope| {
+                    log::info!(
+                        "state_watch: debounced state change for pane {pane_id} scope={}",
+                        scope.as_str()
+                    );
+                    sender.send(StateChangedNotice { pane_id, scope }).is_ok()
+                },
+            );
         });
 
         self.watchers.insert(
@@ -232,56 +245,6 @@ impl StateWatcher {
     pub fn unwatch(&mut self, pane_id: PaneId) {
         if self.watchers.remove(&pane_id).is_some() {
             log::info!("state_watch: stopped watching pane {pane_id}");
-        }
-    }
-}
-
-/// Debounce loop: collect per-scope events into a window, emit one
-/// `StateChangedNotice` per changed scope when the window closes (no new
-/// events within `DEBOUNCE_MS`). Polls every 50ms so cancellation is observed
-/// promptly even when the watchers are silent.
-fn debounce_loop(
-    pane_id: PaneId,
-    rx: Receiver<StateScope>,
-    sender: UiMailbox<StateChangedNotice>,
-    cancel: Arc<Mutex<bool>>,
-) {
-    let mut pending: HashMap<StateScope, Instant> = HashMap::new();
-    let debounce = Duration::from_millis(DEBOUNCE_MS);
-    let poll = Duration::from_millis(50);
-
-    loop {
-        if cancel.lock().map(|g| *g).unwrap_or(true) {
-            return;
-        }
-
-        match rx.try_recv() {
-            Ok(scope) => {
-                pending.insert(scope, Instant::now());
-            }
-            Err(TryRecvError::Disconnected) => {
-                // All watchers dropped — exit cleanly.
-                return;
-            }
-            Err(TryRecvError::Empty) => {
-                let due: Vec<StateScope> = pending
-                    .iter()
-                    .filter(|(_, t)| t.elapsed() >= debounce)
-                    .map(|(scope, _)| *scope)
-                    .collect();
-                for scope in due {
-                    pending.remove(&scope);
-                    log::info!(
-                        "state_watch: debounced state change for pane {pane_id} scope={}",
-                        scope.as_str()
-                    );
-                    if sender.send(StateChangedNotice { pane_id, scope }).is_err() {
-                        // Host receiver dropped — nothing more to do.
-                        return;
-                    }
-                }
-                thread::sleep(poll);
-            }
         }
     }
 }
