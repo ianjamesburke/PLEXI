@@ -240,21 +240,32 @@ impl Capability {
     /// These are withheld (treated as Yellow) when no stored decision exists,
     /// so the app must send a CapabilityRequest to trigger the consent modal.
     pub fn is_sensitive(self) -> bool {
-        matches!(
-            self,
+        // List both groups explicitly so new capabilities require a consent decision.
+        match self {
             Self::PanesSpawn
-                | Self::PanesRead
-                | Self::PanesControl
-                | Self::PermissionsManage
-                | Self::SpawnApp
-                | Self::AiQuery
-                | Self::Llm
-                | Self::AudioRecord
-                | Self::TerminalBindings
-                | Self::FsWrite
-                | Self::SecretsGet
-                | Self::NetHttp
-        )
+            | Self::PanesRead
+            | Self::PanesControl
+            | Self::PermissionsManage
+            | Self::SpawnApp
+            | Self::AiQuery
+            | Self::Llm
+            | Self::AudioRecord
+            | Self::TerminalBindings
+            | Self::FsWrite
+            | Self::SecretsGet
+            | Self::NetHttp => true,
+            Self::FsRead
+            | Self::PipeOpen
+            | Self::AudioPlayback
+            | Self::GpuRender
+            | Self::VideoPlayback
+            | Self::Timer
+            | Self::MidiIn
+            | Self::MidiOut
+            | Self::FsPick
+            | Self::LogsRead
+            | Self::McpClient => false,
+        }
     }
 }
 
