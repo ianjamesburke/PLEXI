@@ -96,7 +96,7 @@ impl PlexiApp {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
         log::info!(
-            "assistant_host_tool: {HOST_TOOL_NET_FETCH} {method} {url} origin_pane={origin_pane_id} allowed_hosts={}",
+            "assistant_host_tool: {HOST_TOOL_NET_FETCH} {method} origin_pane={origin_pane_id} allowed_hosts={}",
             if allowed_hosts.is_empty() {
                 "unrestricted".to_string()
             } else {
@@ -116,13 +116,13 @@ impl PlexiApp {
                     MAX_FETCH_BODY_BYTES,
                 );
                 let outcome = if let Some(error) = response.error {
-                    log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} failed: {error}");
+                    log::warn!("assistant_host_tool: {HOST_TOOL_NET_FETCH} failed error_chars={}", error.chars().count());
                     ToolCallResult::err(format!("fetch_failed: {error}"))
                 } else {
                     let (text, char_truncated) = truncate_fetch_body(&response.body);
                     let truncated = response.truncated || char_truncated;
                     log::info!(
-                        "assistant_host_tool: {HOST_TOOL_NET_FETCH} {url} status={} bytes={} truncated={truncated}",
+                        "assistant_host_tool: {HOST_TOOL_NET_FETCH} status={} bytes={} truncated={truncated}",
                         response.status,
                         response.body.len()
                     );
@@ -777,7 +777,7 @@ impl PlexiApp {
             return Err(format!("terminal pane {terminal_pane_id} not found"));
         }
         log::info!(
-            "assistant_host_tool: terminal.bindings inject origin={origin_pane_id} terminal={terminal_pane_id} command={command:?} echo=true"
+            "assistant_host_tool: terminal.bindings inject origin={origin_pane_id} terminal={terminal_pane_id} command_chars={} echo=true", command.chars().count()
         );
         // Reuse the production DrawCommand execution path; its link check is
         // the terminal.bindings capability boundary for app-originated input.

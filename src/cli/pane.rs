@@ -22,7 +22,7 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
             }
         }
     };
-    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name={name:?}");
+    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}", name.chars().count());
     send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,

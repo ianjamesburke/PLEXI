@@ -255,7 +255,7 @@ pub(crate) fn openrouter_api_root() -> String {
                 return DEFAULT_OPENROUTER_ROOT.to_string();
             }
             if root != DEFAULT_OPENROUTER_ROOT {
-                log::info!("openrouter: base url override {root}");
+                log::info!("openrouter: base url override configured");
             }
             root
         }
@@ -386,8 +386,8 @@ pub(super) fn stream_openai_compatible(
             // OpenRouter error shape: {"error":{"code":N,"message":"…",
             // "metadata":{"raw":"<the upstream provider's actual error>"}}}.
             // "Provider returned error" alone is undiagnosable — always
-            // surface metadata.raw when present and log the full body.
-            log::warn!("openai_compat[{endpoint}]: http {status} error body: {body}");
+            // surface metadata.raw when present while keeping the log free of response content.
+            log::warn!("openai_compat: http status={status} error_body_bytes={}", body.len());
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
             let message = parsed
                 .as_ref()
@@ -443,7 +443,7 @@ pub(super) fn stream_openai_compatible(
             }
         };
         let (input_tokens, output_tokens, cost_usd) = deliver_json_completion(&parsed, gen_id, &tx);
-        log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+        log_usage_capture(input_tokens, output_tokens, cost_usd);
         return;
     }
 
@@ -464,7 +464,7 @@ pub(super) fn stream_openai_compatible(
         // the token. Stop reading and drop `tx` — the turn loop returns the
         // partial text accumulated so far rather than draining the full stream.
         if request.cancel.is_cancelled() {
-            log::info!("openai_compat[{endpoint}]: stream cancelled by caller — aborting read mid-stream");
+            log::info!("openai_compat: stream cancelled by caller — aborting read mid-stream");
             return;
         }
         let line = match line_result {
@@ -589,7 +589,7 @@ pub(super) fn stream_openai_compatible(
         cost_usd,
         generation_id: gen_id,
     });
-    log_usage_capture(endpoint, input_tokens, output_tokens, cost_usd);
+    log_usage_capture(input_tokens, output_tokens, cost_usd);
 }
 
 /// Emit one non-streaming chat completion: assistant text, then `Done`
@@ -619,18 +619,17 @@ fn deliver_json_completion(
 }
 
 fn log_usage_capture(
-    endpoint: &str,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     cost_usd: Option<f64>,
 ) {
     if input_tokens.is_some() || output_tokens.is_some() || cost_usd.is_some() {
         log::info!(
-            "openai_compat[{endpoint}]: captured usage prompt={input_tokens:?} completion={output_tokens:?} cost_usd={cost_usd:?}"
+            "openai_compat: captured usage prompt={input_tokens:?} completion={output_tokens:?} cost_usd={cost_usd:?}"
         );
     } else {
         log::info!(
-            "openai_compat[{endpoint}]: response completed without usage metadata; ledger will record unknown token counts and cost"
+            "openai_compat: response completed without usage metadata; ledger will record unknown token counts and cost"
         );
     }
 }

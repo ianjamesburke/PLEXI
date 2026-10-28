@@ -524,15 +524,15 @@ impl McpConnection {
         }
 
         log::info!(
-            "mcp_client: spawning server_id={server_id} command={} args={:?} cwd={}",
-            config.command,
-            config.args,
+            "mcp_client: spawning server_id={server_id} command_chars={} argc={} cwd={}",
+            config.command.chars().count(),
+            config.args.len(),
             cwd.display()
         );
         let mut child = command.spawn().inspect_err(|e| {
             log::warn!(
-                "mcp_client: spawn failed server_id={server_id} command={}: {e}",
-                config.command
+                "mcp_client: spawn failed server_id={server_id} command_chars={}: {e}",
+                config.command.chars().count()
             );
         })?;
 
@@ -593,7 +593,7 @@ impl McpConnection {
                                     continue;
                                 }
                                 if admit(&mut budget) {
-                                    log::info!("mcp_client: [{id}] stderr: {trimmed}");
+                                    log::info!("mcp_client: [{id}] stderr_chars={}", trimmed.chars().count());
                                 }
                                 if let Ok(mut slot) = sink.lock() {
                                     *slot = trimmed.to_string();

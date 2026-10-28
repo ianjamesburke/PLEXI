@@ -84,8 +84,9 @@ pub fn record_in(
     context_id: Option<u64>,
     pane_id: Option<u64>,
     call_id: Option<&str>,
-    data: Value,
+    mut data: Value,
 ) {
+    redact_content(kind, &mut data);
     let key = crate::platform::path::canonical_or_self(profile);
     let pending = Pending {
         ts: crate::platform::clock::now_rfc3339(),
@@ -108,6 +109,53 @@ pub fn record_in(
             }
             slot.backlog.push(pending);
         }
+    }
+}
+
+/// Session traces retain routing and provenance, but not arbitrary tool or
+/// app content. Those fields can contain credentials even under innocent keys.
+fn redact_content(kind: &str, data: &mut Value) {
+    fn hide(data: &mut Value, field: &str) {
+        if let Some(value) = data.get_mut(field).filter(|v| !v.is_null()) {
+            let len = value.as_str().map_or_else(|| value.to_string().chars().count(), |s| s.chars().count());
+            *value = json!(format!("<{len} chars>"));
+        }
+    }
+    match kind {
+        "tool_call_requested" => hide(data, "input"),
+        "tool_call_completed" => {
+            hide(data, "output");
+            hide(data, "error");
+        }
+        "timeline_event" => {
+            hide(data, "summary");
+            hide(data, "rollback_token");
+            if let Some(payload) = data.get_mut("payload").filter(|v| !v.is_null()) {
+                let session = payload.pointer("/provenance/session_id").cloned();
+                let len = payload.to_string().chars().count();
+                *payload = json!({"redacted_chars": len});
+                if let Some(session) = session {
+                    payload["provenance"] = json!({"session_id": session});
+                }
+            }
+        }
+        "host_event" => {
+            for field in ["title", "context_description", "pty_title", "pane_name", "name"] {
+                hide(data, field);
+            }
+        }
+        "agent_done_event" => {
+            hide(data, "summary");
+            hide(data, "result_json");
+        }
+        "child_results_delivered" => hide(data, "batch_text"),
+        "team_start" => hide(data, "question"),
+        "team_finish" => {
+            for field in ["error", "member_summaries", "ballots", "report"] {
+                hide(data, field);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -478,6 +526,20 @@ pub(crate) fn cli_calls(rows: Vec<Value>, pane: Option<u64>) -> Vec<Value> {
 #[cfg(test)]
 mod cli_trace_tests {
     use super::*;
+
+    #[test]
+    fn session_trace_redacts_tool_and_event_content() {
+        let dir = tempfile::tempdir().unwrap();
+        adopt_session(dir.path(), "sess-content");
+        let sentinel = "SENTINEL_SECRET_0948_DO_NOT_LEAK";
+        record_in(dir.path(), "tool_call_requested", None, None, None, json!({"input": {"text": sentinel}}));
+        record_in(dir.path(), "tool_call_completed", None, None, None, json!({"output": sentinel, "error": sentinel}));
+        record_in(dir.path(), "timeline_event", None, None, None, json!({"summary": sentinel, "payload": {"text": sentinel}, "rollback_token": sentinel}));
+        record_in(dir.path(), "host_event", None, None, None, json!({"kind":"focus_changed", "pty_title":sentinel}));
+        let trace = std::fs::read_to_string(dir.path().join("sessions/sess-content.jsonl")).unwrap();
+        assert!(!trace.contains(sentinel), "trace leaked content");
+        assert!(trace.contains(&format!("<{} chars>", sentinel.chars().count())));
+    }
 
     #[test]
     fn cli_trace_records_redacted_calls_and_actual_exit_status() {

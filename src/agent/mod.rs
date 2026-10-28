@@ -1139,7 +1139,6 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     fn push_transcript(&mut self, role: &str, text: String) {
         log::info!("{}", transcript_info_log_message(&self.def.id, role, &text));
-        log::trace!("agent[{}] {role}: {text}", self.def.id);
         self.transcript.push(TranscriptEntry {
             role: role.to_string(),
             text,
@@ -1818,6 +1817,91 @@ default = "ask"
         let message = transcript_info_log_message("reviewer", "agent", sentinel);
         assert!(!message.contains(sentinel), "{message}");
         assert_eq!(message, "agent[reviewer] agent: len=26");
+    }
+
+    #[test]
+    fn transcript_logging_never_emits_raw_turns_at_trace_level() {
+        let source = include_str!("mod.rs");
+        let implementation = source.split("impl AgentRuntime {").nth(1).unwrap()
+            .split("fn transcript_info_log_message").next().unwrap();
+        assert!(!implementation.contains("log::trace!"));
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn logging_sentinel_stays_out_of_log_and_session_trace() {
+        const SENTINEL: &str = "SENTINEL_SECRET_0948_DO_NOT_LEAK";
+        const CHILD: &str = "PLEXI_0948_SENTINEL_PROFILE";
+        if let Some(profile) = std::env::var_os(CHILD) {
+            let profile = std::path::PathBuf::from(profile);
+            let _guard = crate::config::set_test_profile_dir(profile.clone());
+            crate::platform::logging::init(log::LevelFilter::Trace, 30, false);
+            let def = AgentDefinition::parse("prompt", "[agent]\nid='audit'\ndisplay_name='Audit'\ndefault_tier='medium'\n[permissions]\ndefault_posture='ask'\n").unwrap();
+            let mut runtime = AgentRuntime { def, subscription_ids: vec![], transcript: vec![], in_flight: 0 };
+            runtime.push_transcript("user", SENTINEL.to_string());
+            let mut harness = crate::testing::HostHarness::new();
+            let terminal = harness.add_focused_terminal();
+            let sender = harness.app.windows[0].panes.iter()
+                .find_map(|(&id, pane)| pane.as_app().map(|_| id)).unwrap();
+            harness.app.windows[0].panes.get_mut(&sender).unwrap().as_app_mut().unwrap().linked_pane_id = Some(terminal);
+            harness.terminal_backend(terminal).enable_input_tap();
+            harness.app.dispatch_run_in_linked_terminal(sender, terminal, SENTINEL.to_string(), true);
+            assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
+            harness.app.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                pane_id: terminal, text: SENTINEL.to_string(), submit: false, paste: false,
+                response_file: None, peer_ancestry: None,
+            });
+            assert_eq!(harness.terminal_backend(terminal).take_input_tap(), SENTINEL.as_bytes());
+            use crate::workspace::secrets::SecretStore;
+            let workspace = tempfile::tempdir().unwrap();
+            let config = workspace.path().join(crate::config::workspace_channel_dir());
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(config.join("workspace.toml"), "id='audit'\n").unwrap();
+            std::fs::write(config.join("secrets.toml"), "fallback=true\n[terminal.env]\ninject=['SERVICE_TOKEN']\n").unwrap();
+            let store = crate::workspace::secrets::InMemoryKeychain::new();
+            store.set("plexi:audit:SERVICE_TOKEN", SENTINEL).unwrap();
+            let injected = crate::workspace::secrets::resolve_terminal_env(workspace.path(), &store).unwrap();
+            assert_eq!(injected.get("SERVICE_TOKEN").map(|v| v.as_str()), Some(SENTINEL));
+            let mut env = std::collections::HashMap::from([("PLEXI_PERMISSION_MAC".to_string(), SENTINEL.to_string())]);
+            crate::broker::seal::scrub_pane_env(&mut env, true);
+            assert!(!env.contains_key("PLEXI_PERMISSION_MAC"));
+            crate::host::flight_recorder::adopt_session(&profile, "sess-sentinel");
+            crate::host::flight_recorder::record_in(&profile, "tool_call_requested", None, Some(42), None,
+                serde_json::json!({"input": {"text": SENTINEL}}));
+            crate::host::flight_recorder::record_in(&profile, "tool_call_completed", None, Some(42), None,
+                serde_json::json!({"output": {"value": SENTINEL}, "error": SENTINEL}));
+            crate::host::flight_recorder::record_in(&profile, "timeline_event", None, Some(42), None,
+                serde_json::json!({"summary": SENTINEL, "payload": {"text": SENTINEL}, "rollback_token": SENTINEL}));
+            for args in [
+                vec!["plexi", "pane", "send", "42", SENTINEL],
+                vec!["plexi", "pane", "submit", "42", SENTINEL],
+                vec!["plexi", "agent", "ask", "--pane-id", "42", SENTINEL],
+                vec!["plexi", "secret", "set", "SERVICE_TOKEN", SENTINEL],
+                vec!["plexi", "pane", "new", "--env", &format!("KEY={SENTINEL}")],
+            ] {
+                let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
+                crate::host::flight_recorder::handle_cli_trace(&profile, &serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
+                    "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
+                })).unwrap();
+            }
+            log::logger().flush();
+            let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
+            let trace = std::fs::read_to_string(profile.join("sessions/sess-sentinel.jsonl")).unwrap();
+            assert!(!log.contains(SENTINEL), "sentinel leaked to log");
+            assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
+            assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
+            assert!(log.contains(&format!("payload_len={}", SENTINEL.chars().count() + 1)));
+            assert!(trace.contains(&format!("len={}", SENTINEL.chars().count())));
+            return;
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::tests::logging_sentinel_stays_out_of_log_and_session_trace", "--ignored", "--nocapture"])
+            .env(CHILD, profile.path())
+            .env_remove("PLEXI_TRACE_CAPTURE_CONTENT")
+            .output().unwrap();
+        assert!(output.status.success(), "child failed: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
 
     #[test]

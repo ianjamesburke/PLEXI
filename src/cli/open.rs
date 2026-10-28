@@ -270,8 +270,8 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
             payload["result_schema"] = schema.clone();
         }
         log::info!(
-            "pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd={:?} worktree={worktree:?} has_result_schema={}",
-            agent.map(|a| &a.command),
+            "pane_new:cli: sending via socket type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} context_name={context_name:?} agent_cmd_chars={:?} worktree={worktree:?} has_result_schema={}",
+            agent.map(|a| a.command.chars().count()),
             parsed_result_schema.is_some()
         );
         let response_file = match super::send_request(payload, "spawn-pane-response", "pane") {
@@ -773,7 +773,7 @@ fn open_app_by_path(
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} args={args:?} layout={layout:?} from_pane_id={from_pane_id:?}");
+        log::info!("open_app_by_path: sending via socket path={abs_path} argc={} layout={layout:?} from_pane_id={from_pane_id:?}", args.len());
         let code = send_to_socket(payload);
         if code != 0 {
             return code;

@@ -306,10 +306,10 @@ impl PlexiApp {
             self.pending_slot_waits = live;
             for wait in expired {
                 log::info!(
-                    "pane_slot_wait: pane_id={} slot={:?} pattern={:?} timed out",
+                    "pane_slot_wait: pane_id={} slot={:?} pattern_chars={} timed out",
                     wait.pane_id,
                     wait.slot_name,
-                    wait.pattern.as_str()
+                    wait.pattern.as_str().chars().count()
                 );
                 crate::rpc::write_json_response(
                     &format!("{}.err", wait.response_file),
@@ -387,15 +387,15 @@ impl PlexiApp {
                 // Nothing to park a reply on: the alias is launched, and a
                 // caller that asked for no response cannot be told about boot.
                 log::info!(
-                    "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched with no response file; not waiting for boot",
-                    agent.command
+                    "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched with no response file; not waiting for boot",
+                    agent.command.chars().count()
                 );
                 return;
             };
             let requested_at = Instant::now();
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} launched, waiting up to {:.1}s for an idle report",
-                agent.command,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} launched, waiting up to {:.1}s for an idle report",
+                agent.command.chars().count(),
                 agent.timeout.as_secs_f64()
             );
             self.pending_agent_boots.push(PendingAgentBoot {
@@ -539,9 +539,9 @@ impl PlexiApp {
                     boot.agent_cmd
                 );
                 log::warn!(
-                    "pane_agent_boot: pane_id={} agent_cmd={:?} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
+                    "pane_agent_boot: pane_id={} agent_cmd_chars={} fail-fast unsupported interpreter={interpreter:?} script={script:?}",
                     boot.pane_id,
-                    boot.agent_cmd
+                    boot.agent_cmd.chars().count()
                 );
                 crate::rpc::write_json_response(
                     &boot.response_file,
@@ -580,9 +580,9 @@ impl PlexiApp {
                 let timed_out = self.pane_exists(boot.pane_id);
                 let error = if timed_out {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} timed out after {elapsed:.2}s",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} timed out after {elapsed:.2}s",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "timed out after {elapsed:.1}s waiting for `{}` to report ready in pane {}",
@@ -590,9 +590,9 @@ impl PlexiApp {
                     )
                 } else {
                     log::info!(
-                        "pane_agent_boot: pane_id={} agent_cmd={:?} pane closed after {elapsed:.2}s before reporting ready",
+                        "pane_agent_boot: pane_id={} agent_cmd_chars={} pane closed after {elapsed:.2}s before reporting ready",
                         boot.pane_id,
-                        boot.agent_cmd
+                        boot.agent_cmd.chars().count()
                     );
                     format!(
                         "pane {} closed after {elapsed:.1}s before `{}` reported ready",
@@ -650,8 +650,8 @@ impl PlexiApp {
         let payload = self.spawn_pane_success_json(pane_id);
         for boot in booted {
             log::info!(
-                "pane_agent_boot: pane_id={pane_id} agent_cmd={:?} reported ready after {:.2}s",
-                boot.agent_cmd,
+                "pane_agent_boot: pane_id={pane_id} agent_cmd_chars={} reported ready after {:.2}s",
+                boot.agent_cmd.chars().count(),
                 boot.requested_at.elapsed().as_secs_f64()
             );
             crate::rpc::write_json_response(&boot.response_file, payload.clone());
@@ -908,8 +908,8 @@ impl PlexiApp {
         self.pending_slot_waits = live;
         for wait in matched {
             log::info!(
-                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern={:?} matched {} bytes",
-                wait.pattern.as_str(),
+                "pane_slot_wait: pane_id={pane_id} slot={slot_name:?} pattern_chars={} matched {} bytes",
+                wait.pattern.as_str().chars().count(),
                 bytes.len()
             );
             crate::rpc::write_response(&wait.response_file, &bytes);

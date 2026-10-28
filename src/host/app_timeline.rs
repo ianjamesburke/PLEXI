@@ -788,9 +788,7 @@ impl AppTimeline {
         if ckpt.revision_after == current_revision {
             ckpt.status = CheckpointStatus::RolledBack;
             log::info!(
-                "app_timeline: rollback verified for {checkpoint_id} — issuing apply \
-                 (token '{}')",
-                ckpt.rollback_token
+                "app_timeline: rollback verified for {checkpoint_id} — issuing apply"
             );
             Ok(RollbackVerdict::Apply {
                 checkpoint_id: ckpt.checkpoint_id.clone(),

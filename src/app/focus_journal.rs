@@ -15,7 +15,9 @@ pub(crate) struct FocusJournalEntry {
     pub context_description: String,
     pub context_root: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing)]
     pub pty_title: Option<String>,
+    #[serde(default, skip_serializing)]
     pub pane_name: Option<String>,
     pub app_type_id: Option<String>,
     /// ISO-8601 timestamp when this focus segment started.
@@ -211,14 +213,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("focus-journal.jsonl");
 
-        let entry = make_entry("2024-06-15T10:00:00Z");
+        let mut entry = make_entry("2024-06-15T10:00:00Z");
+        entry.pane_name = Some("SENTINEL_0948_OSC_SECRET".to_string());
         write_checkpoint(&path, &entry);
 
         assert!(path.exists());
         let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("nvim"));
+        assert!(!content.contains("SENTINEL_0948_OSC_SECRET"));
         let parsed: FocusJournalEntry = serde_json::from_str(content.trim()).unwrap();
         assert_eq!(parsed.pane_id, 42);
         assert_eq!(parsed.context_name, "my-project");
+        assert!(parsed.pty_title.is_none());
+        assert!(parsed.pane_name.is_none());
     }
 
     #[test]

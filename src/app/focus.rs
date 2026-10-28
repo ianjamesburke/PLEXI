@@ -359,13 +359,11 @@ impl PlexiApp {
         };
 
         log::info!(
-            "focus_changed: pane_id={} reason={} context={:?} context_root={:?} duration_secs={duration_secs} pty_title={:?} pane_name={:?} app_type_id={:?}",
+            "focus_changed: pane_id={} reason={} context={:?} context_root={:?} duration_secs={duration_secs} app_type_id={:?}",
             meta.pane_id,
             reason.as_str(),
             meta.context_name,
             meta.context_root,
-            meta.pty_title,
-            meta.pane_name,
             meta.app_type_id,
         );
         // On a clean close the journal is no longer needed — delete it so we
@@ -853,12 +851,7 @@ impl PlexiApp {
 
         let warnings: Vec<_> = all_diags.iter().filter(|d| !d.is_error()).collect();
         if !warnings.is_empty() {
-            let body = warnings
-                .iter()
-                .map(|d| d.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            log::warn!("config: unknown keys found:\n{body}");
+            log::warn!("config: unknown keys found count={}", warnings.len());
         }
 
         if has_errors {
@@ -868,7 +861,7 @@ impl PlexiApp {
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            log::warn!("config: parse error, keeping current config:\n{error_msg}");
+            log::warn!("config: parse error, keeping current config count={}", all_diags.iter().filter(|d| d.is_error()).count());
             let notify_id = crate::app::notifications::new_notify_id("config-error");
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,

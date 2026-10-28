@@ -11,7 +11,7 @@ pub fn generate() -> String {
         .as_str()
         .expect("package version");
     let header = format!(
-        "name: plexi-cli\ndescription: \"Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.\"\nskill_version: \"6.1.3\"\nplexi_version: {version:?}\nlast_verified: \"2026-10-26\"\ndisable-model-invocation: true\n"
+        "name: plexi-cli\ndescription: \"Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination.\"\nskill_version: \"6.1.4\"\nplexi_version: {version:?}\nlast_verified: \"2026-10-26\"\ndisable-model-invocation: true\n"
     );
     let parsed: serde_yaml::Value = serde_yaml::from_str(&header).expect("valid skill frontmatter");
     for key in ["name", "description", "plexi_version"] {
