@@ -1034,3 +1034,55 @@ fn legacy_zero_window_id_receives_stable_identity() {
     assert_eq!(migrated.context_active_window[&context], window_id);
     assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
 }
+
+#[test]
+fn legacy_deleted_context_active_window_is_migrated_without_losing_workspace() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    h.app.focus_pane_in_strip(pane);
+    h.app.save_workspace_now();
+    let profile = h.profile_dir().to_path_buf();
+    let path = crate::workspace::workspace_path_in(&profile);
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    legacy["version"] = 2.into();
+    legacy.as_object_mut().unwrap().remove("strips");
+    legacy.as_object_mut().unwrap().remove("conjoined_contexts");
+    let mut conflicting = legacy.clone();
+    conflicting["context_active_window"]["999999"] = legacy["windows"][0]["window_id"].clone();
+    let conflicting_bytes = serde_json::to_vec(&conflicting).unwrap();
+    std::fs::write(&path, &conflicting_bytes).unwrap();
+    assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), conflicting_bytes);
+    legacy["context_active_window"]["999999"] = 999998.into();
+    let original = serde_json::to_vec(&legacy).unwrap();
+    std::fs::write(&path, &original).unwrap();
+
+    let migrated = crate::workspace::WorkspaceFile::load_from(&profile)
+        .expect("a deleted context's obsolete focus entry must not prevent migration");
+    assert_eq!(migrated.version, 3);
+    assert!(!migrated.context_active_window.contains_key(&999999));
+    assert!(migrated.windows.iter().any(|window| {
+        window.context_id == context && window.panes.iter().any(|saved| saved.id == pane)
+    }));
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
+    migrated
+        .save_to(&profile)
+        .expect("migrated workspace can be saved again");
+    let rollback_parent = tempfile::tempdir().unwrap();
+    let rollback_profile = rollback_parent.path().join("rollback");
+    crate::workspace::export_v2_rollback(&profile, &rollback_profile).unwrap();
+    assert_eq!(
+        std::fs::read(crate::workspace::workspace_path_in(&rollback_profile)).unwrap(),
+        original
+    );
+    let restored = HostHarness::from_profile_dir(profile);
+    assert!(restored.app.windows.iter().any(|window| {
+        window.context_id == context && window.panes.contains_key(&pane)
+    }));
+}
