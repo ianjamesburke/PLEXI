@@ -2229,14 +2229,18 @@ impl PlexiApp {
         let was_clean = !self.workspace_dirty;
         self.workspace_dirty = true;
         if was_clean {
-            let wake = std::sync::Arc::clone(&self.ui_wake);
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(
-                    crate::app::render::WORKSPACE_SAVE_DEBOUNCE_MS,
-                ));
-                wake.wake("workspace_dirty_flush");
-            });
+            self.schedule_workspace_save_wake(std::time::Duration::from_millis(
+                crate::app::render::WORKSPACE_SAVE_DEBOUNCE_MS,
+            ));
         }
+    }
+
+    pub(crate) fn schedule_workspace_save_wake(&self, delay: std::time::Duration) {
+        let wake = std::sync::Arc::clone(&self.ui_wake);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            wake.wake("workspace_dirty_flush");
+        });
     }
 
     pub(crate) fn record_closed_agent_pane(
@@ -2273,7 +2277,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn save_workspace_now(&self) {
+    pub(crate) fn save_workspace_now(&self) -> bool {
         let save_start = std::time::Instant::now();
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
@@ -2419,9 +2423,11 @@ impl PlexiApp {
 
         if let Err(e) = ws.save() {
             log::error!("Failed to save workspace: {e}");
+            false
         } else {
             let save_duration = save_start.elapsed();
             log::info!("save_workspace_now: saved workspace in {save_duration:?}");
+            true
         }
     }
 }

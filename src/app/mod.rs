@@ -528,6 +528,8 @@ pub struct PlexiApp {
     /// Last time the workspace was flushed to disk, for the debounce tick in
     /// `update_preamble`.
     pub(crate) last_workspace_save: std::time::Instant,
+    /// Earliest retry after a failed workspace write.
+    pub(crate) workspace_save_retry_at: Option<std::time::Instant>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
@@ -1803,6 +1805,7 @@ impl PlexiApp {
                     registry_watchers,
                     workspace_dirty: false,
                     last_workspace_save: std::time::Instant::now(),
+                    workspace_save_retry_at: None,
                     minimap: crate::render::minimap::MinimapState::with_visible(
                         restored.minimap_visible,
                     ),
@@ -2075,6 +2078,7 @@ impl PlexiApp {
             registry_watchers: default_registry_watchers,
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
+            workspace_save_retry_at: None,
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -3041,6 +3045,7 @@ impl PlexiApp {
             registry_watchers: HashMap::new(),
             workspace_dirty: false,
             last_workspace_save: std::time::Instant::now(),
+            workspace_save_retry_at: None,
             minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
@@ -4360,9 +4365,10 @@ impl eframe::App for PlexiApp {
                         // will run — a debounced `mark_workspace_dirty()`
                         // never gets a later tick to flush, so quit paths
                         // save synchronously (stint 0548).
-                        self.save_workspace_now();
-                        self.workspace_dirty = false;
-                        log::info!("workspace: synchronous save (quit)");
+                        if self.save_workspace_now() {
+                            self.workspace_dirty = false;
+                            log::info!("workspace: synchronous save (quit)");
+                        }
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     } else {
                         let now = std::time::Instant::now();
@@ -4379,9 +4385,10 @@ impl eframe::App for PlexiApp {
                             self.quit_press_count = 0;
                             self.quit_last_press = None;
                             self.quitting = true;
-                            self.save_workspace_now();
-                            self.workspace_dirty = false;
-                            log::info!("workspace: synchronous save (quit)");
+                            if self.save_workspace_now() {
+                                self.workspace_dirty = false;
+                                log::info!("workspace: synchronous save (quit)");
+                            }
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     }
@@ -4658,17 +4665,19 @@ impl eframe::App for PlexiApp {
                 // Triple-tap already completed and the window is closing this
                 // frame — no later tick will run the debounce flush, so save
                 // synchronously (stint 0548).
-                self.save_workspace_now();
-                self.workspace_dirty = false;
-                log::info!("workspace: synchronous save (quit)");
+                if self.save_workspace_now() {
+                    self.workspace_dirty = false;
+                    log::info!("workspace: synchronous save (quit)");
+                }
             } else if self.confirm_quit() && self.quit_press_count > 0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             } else {
                 // X button / system close with no triple-tap in progress —
                 // the window closes immediately, same reasoning as above.
-                self.save_workspace_now();
-                self.workspace_dirty = false;
-                log::info!("workspace: synchronous save (quit)");
+                if self.save_workspace_now() {
+                    self.workspace_dirty = false;
+                    log::info!("workspace: synchronous save (quit)");
+                }
             }
         }
 

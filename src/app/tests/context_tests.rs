@@ -2,6 +2,37 @@ use super::super::*;
 use crate::host::context::Window;
 
 #[test]
+fn failed_workspace_save_remains_dirty_for_retry() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    let path = crate::workspace::workspace_path_in(h.profile_dir());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"invalid workspace").unwrap();
+    h.app.workspace_dirty = true;
+    h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.last_notify_poll = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.hidden_frame();
+    assert!(h.app.workspace_dirty, "a failed save must remain pending");
+    assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+    assert!(h.app.workspace_save_retry_at.is_some());
+
+    std::fs::remove_file(&path).unwrap();
+    h.app.last_notify_poll = std::time::Instant::now();
+    h.app.last_workspace_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.workspace_save_retry_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    h.hidden_frame();
+    assert!(
+        !h.app.workspace_dirty,
+        "a successful retry clears the dirty flag"
+    );
+    assert!(h.app.workspace_save_retry_at.is_none());
+    assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+}
+
+#[test]
 fn deleting_context_preserves_workspace_save_and_restore() {
     let mut h = crate::testing::HostHarness::new();
     let pane = h.add_test_pane();
