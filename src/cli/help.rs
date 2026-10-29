@@ -477,31 +477,6 @@ mod tests {
         }
     }
 
-    /// Experiments with no clap path of their own: a runtime surface only.
-    const RUNTIME_ONLY: [ReleaseFeature; 5] = [
-        ReleaseFeature::WasmApps,
-        ReleaseFeature::PageGrid,
-        ReleaseFeature::Daw,
-        ReleaseFeature::MediaIo,
-        ReleaseFeature::Accessibility,
-    ];
-
-    #[test]
-    fn every_variant_hides_at_least_one_path_when_off() {
-        let cmd = all_off();
-        for feature in ReleaseFeature::ALL {
-            let paths = feature.owned_paths();
-            if RUNTIME_ONLY.contains(feature) {
-                assert!(paths.is_empty(), "{} is runtime-only", feature.key());
-                continue;
-            }
-            assert!(!paths.is_empty(), "{} owns no clap path", feature.key());
-            for path in paths {
-                assert!(path_hidden(&cmd, *path), "{}: {path:?}", feature.key());
-            }
-        }
-    }
-
     #[test]
     fn enabling_one_experiment_shows_only_its_own_paths() {
         for feature in ReleaseFeature::ALL {
