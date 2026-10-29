@@ -1,7 +1,7 @@
 {
   "SplitHorizontal": {
     "cli": "pane new --right",
-    "note": ""
+    "note": "CLI creates a sibling directly. The zoomed desktop shortcut first wraps the pane into a child context."
   },
   "SplitVertical": {
     "cli": "pane new --down",
@@ -207,12 +207,18 @@
   },
   "ZoomIn": {
     "cli": "context zoom 42",
-    "note": "CLI targets an explicit context id; the shortcut steps in one level toward the ghost on the zoom ladder."
+    "note": "CLI targets an existing context id. The desktop shortcut also wraps multiple selected panes or toggles pane zoom; those selection gestures are UI-only."
   },
   "ToggleMinimap": {
     "ui-only": "Toggles a visual navigation overlay."
   },
   "SendPane": {
     "ui-only": "Focus-preserving spatial layout gesture; pane swap exposes the corresponding layout move with focus following."
+  },
+  "SelectPane": {
+    "ui-only": "Extends the transient desktop selection highlight; selection gestures have no CLI state."
+  },
+  "CancelPaneSelection": {
+    "ui-only": "Clears transient desktop selection without changing pane ownership or layout."
   }
 }
