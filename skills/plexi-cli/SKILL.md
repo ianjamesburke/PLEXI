@@ -392,7 +392,7 @@ pane count (`--json` is supported).
 - `plexi agent message`: Reply through a child agent's structured mailbox
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
 - `plexi agent start`: Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
-- `plexi agent spawn`: Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
+- `plexi agent spawn`: Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly
 - `plexi agent result`: Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`)
 - `plexi agent wait`: Wait for one or more child agent panes to finish via `plexi agent done` and pull their results
