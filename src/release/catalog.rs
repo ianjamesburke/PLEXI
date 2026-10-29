@@ -21,6 +21,7 @@ pub enum ReleaseFeature {
     FolderSecrets,
     WasmApps,
     PageGrid,
+    TreeAtlas,
     Marketplace,
     Daw,
     MediaIo,
@@ -41,6 +42,7 @@ impl ReleaseFeature {
         Self::FolderSecrets,
         Self::WasmApps,
         Self::PageGrid,
+        Self::TreeAtlas,
         Self::Marketplace,
         Self::Daw,
         Self::MediaIo,
@@ -62,6 +64,7 @@ impl ReleaseFeature {
             Self::FolderSecrets => "folder_secrets",
             Self::WasmApps => "wasm_apps",
             Self::PageGrid => "page_grid",
+            Self::TreeAtlas => "tree_atlas",
             Self::Marketplace => "marketplace",
             Self::Daw => "daw",
             Self::MediaIo => "media_io",
@@ -87,6 +90,7 @@ impl ReleaseFeature {
             Self::FolderSecrets => "Secrets injected per folder, with grants",
             Self::WasmApps => "Native Rust/WASM apps and the GPU canvas",
             Self::PageGrid => "2D page-grid minimap",
+            Self::TreeAtlas => "Context tree overview at root with Cmd+Escape",
             Self::Marketplace => "App marketplace: browse, search, publish",
             Self::Daw => "DAW engine proof of concept",
             Self::MediaIo => "Audio and video player panes",
@@ -129,7 +133,7 @@ impl ReleaseFeature {
             ],
             Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["app", "open"], "mcp")],
             Self::Routines => &[Sub(&["routine"])],
-            Self::WasmApps | Self::PageGrid | Self::Daw | Self::MediaIo | Self::Accessibility => {
+            Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
                 &[]
             }
         }

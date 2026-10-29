@@ -140,12 +140,12 @@ impl PlexiApp {
 
                                     crate::ui::shortcuts::key_combo(
                                         ui,
-                                        &["\u{2318}", "\u{21A9}"],
+                                        &["cmd", "escape"],
                                         colors,
                                     );
                                     shortcut_description(
                                         ui,
-                                        "Toggle zoom (Esc passes to pane)",
+                                        "Go to parent context",
                                         colors,
                                     );
                                     ui.end_row();

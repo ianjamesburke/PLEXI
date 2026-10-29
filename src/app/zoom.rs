@@ -1,4 +1,4 @@
-//! Tiled windows, zoom ladder, sibling context cards, and tree atlas.
+//! Tiled windows, parent-scope navigation, and the experimental tree atlas.
 //! (`SPEC.md` R31–R36, R40, R42).
 
 use crate::app::app_trait::KeyDisposition;
@@ -16,18 +16,13 @@ use egui_tiles::{Container, LinearDir, Tile, TileId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Minimum height under a sibling card's header block for the mini column tiles.
-const SIBLING_BODY_MIN_H: f32 = 120.0;
-
-/// The three zoom levels on the ladder (`SPEC.md` § Levels).
+/// Pane view and the experimental workspace overview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ZoomLevel {
     /// Default tiled window view inside a context. The serialized name is retained.
     /// The ONLY level where a pane takes keyboard input.
     #[default]
     Columns,
-    /// Current context plus its siblings (same `parent_id`), in creation order.
-    SiblingCards,
     /// Whole-workspace context graph: top-down tidy tree with Motorways road edges.
     TreeAtlas,
 }
@@ -36,7 +31,6 @@ impl ZoomLevel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Columns => "columns",
-            Self::SiblingCards => "sibling_cards",
             Self::TreeAtlas => "tree_atlas",
         }
     }
@@ -79,67 +73,6 @@ pub struct GhostMarker {
     pub column_idx: usize,
     pub pane_id: PaneId,
     pub strip_offset: usize,
-}
-
-/// Measured geometry for the origin marker ("you were here" circle + label).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OriginMarkerGeometry {
-    pub circle_center: Pos2,
-    pub circle_radius: f32,
-    pub circle_stroke_width: f32,
-    pub text_pos: Pos2,
-    pub text_size: Vec2,
-    pub total_rect: Rect,
-}
-
-pub const ORIGIN_MARKER_TEXT: &str = "you were here";
-pub const ORIGIN_MARKER_CIRCLE_RADIUS: f32 = 3.5;
-pub const ORIGIN_MARKER_CIRCLE_STROKE: f32 = 1.2;
-pub const ORIGIN_MARKER_GAP: f32 = 6.0;
-
-/// Paints the origin marker ("you were here" circle + text) using shared measured geometry.
-/// `anchor_bottom_left` is the bottom-left anchor position within its container.
-pub fn paint_origin_marker(
-    painter: &egui::Painter,
-    anchor_bottom_left: Pos2,
-    color: egui::Color32,
-) -> OriginMarkerGeometry {
-    let font = FontId::new(style::TEXT_HINT, FontFamily::Proportional);
-    let galley = painter.layout_no_wrap(ORIGIN_MARKER_TEXT.to_string(), font, color);
-    let text_size = galley.size();
-    let text_h = text_size.y;
-    let circle_radius = ORIGIN_MARKER_CIRCLE_RADIUS;
-    let circle_stroke_width = ORIGIN_MARKER_CIRCLE_STROKE;
-    let gap = ORIGIN_MARKER_GAP;
-
-    let top_y = anchor_bottom_left.y - text_h;
-    let mid_y = top_y + text_h * 0.5;
-
-    let circle_center = Pos2::new(anchor_bottom_left.x + circle_radius, mid_y);
-    let text_pos = Pos2::new(anchor_bottom_left.x + circle_radius * 2.0 + gap, top_y);
-
-    painter.circle_stroke(
-        circle_center,
-        circle_radius,
-        Stroke::new(circle_stroke_width, color),
-    );
-    painter.galley(text_pos, galley, color);
-
-    let total_w = circle_radius * 2.0 + gap + text_size.x;
-    let total_h = text_h.max(circle_radius * 2.0);
-    let total_rect = Rect::from_min_size(
-        Pos2::new(anchor_bottom_left.x, top_y.min(mid_y - circle_radius)),
-        Vec2::new(total_w, total_h),
-    );
-
-    OriginMarkerGeometry {
-        circle_center,
-        circle_radius,
-        circle_stroke_width,
-        text_pos,
-        text_size,
-        total_rect,
-    }
 }
 
 /// Geometry of the left and right `STRIP_PEEK_W` clipped-neighbor strips at
@@ -209,7 +142,7 @@ pub struct AtlasEdge {
     pub kind: AtlasEdgeKind,
 }
 
-/// Complete zoom, sibling cards, and tree atlas state on `PlexiApp`.
+/// Complete pane zoom and tree atlas state on `PlexiApp`.
 /// Authoritative column-strip state (`Strip` and `StripLayout`) lives in `HostModel`.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
@@ -219,12 +152,6 @@ pub struct ZoomState {
     pub ghost: Option<GhostMarker>,
     /// Per-context last active pane (`SPEC.md` R36).
     pub context_last_pane: HashMap<u64, PaneId>,
-    /// Focused context ID while at `ZoomLevel::SiblingCards`.
-    pub cards_focused_context: Option<u64>,
-    /// Explicit horizontal viewport scroll offset (center X in content coordinates) for `ZoomLevel::SiblingCards`.
-    pub cards_viewport_offset: f32,
-    /// Last context ID for which cards viewport offset was synchronized with focus.
-    pub cards_last_focused_context: Option<u64>,
     /// Focused context ID while at `ZoomLevel::TreeAtlas`.
     pub atlas_focused_context: Option<u64>,
     /// Per-parent context last-visited child context in the atlas (`j` / `k` child memory).
@@ -242,12 +169,11 @@ pub struct ZoomState {
 }
 
 impl ZoomState {
-    /// Current visual zoom progress (`0.0` = Columns, `1.0` = SiblingCards, `2.0` = TreeAtlas).
+    /// Current visual zoom progress (`0.0` = Columns, `1.0` = TreeAtlas).
     pub fn visual_level_progress(&self, reduce_motion: bool) -> f32 {
         let target = match self.level {
             ZoomLevel::Columns => 0.0,
-            ZoomLevel::SiblingCards => 1.0,
-            ZoomLevel::TreeAtlas => 2.0,
+            ZoomLevel::TreeAtlas => 1.0,
         };
         if reduce_motion || cfg!(test) {
             return target;
@@ -754,11 +680,16 @@ impl PlexiApp {
     }
 
     pub(crate) fn set_zoom_level_with_transition(&mut self, next_level: ZoomLevel) {
+        if next_level == ZoomLevel::TreeAtlas
+            && !crate::release::feature_enabled(crate::release::ReleaseFeature::TreeAtlas)
+        {
+            crate::release::log_feature_blocked(crate::release::ReleaseFeature::TreeAtlas);
+            return;
+        }
         let from_progress = self.zoom.visual_level_progress(false);
         let to_progress = match next_level {
             ZoomLevel::Columns => 0.0,
-            ZoomLevel::SiblingCards => 1.0,
-            ZoomLevel::TreeAtlas => 2.0,
+            ZoomLevel::TreeAtlas => 1.0,
         };
         self.zoom.level = next_level;
         self.zoom.transition = Some((from_progress, to_progress, Instant::now()));
@@ -766,8 +697,8 @@ impl PlexiApp {
 
     /// `Cmd+Esc`:
     /// 1. Closes innermost Plexi surface (`DecisionOverlay`, `AttentionQueue` list, or atlas `Peek`).
-    /// 2. Else zooms out one level (`Columns -> SiblingCards -> TreeAtlas`).
-    /// 3. At `TreeAtlas` with no open surface: no-op with edge bump (`SPEC.md` R31).
+    /// 2. Moves to the immediate parent context. At root, stays in panes.
+    /// 3. With the atlas experiment enabled, root opens the overview directly.
     pub fn zoom_out_or_close_surface(&mut self) -> bool {
         if self.attention_queue.decision_overlay.is_some() {
             self.attention_queue.decision_overlay = None;
@@ -787,6 +718,15 @@ impl PlexiApp {
 
         match self.zoom.level {
             ZoomLevel::Columns => {
+                if self.zoom_out_of_context() {
+                    return true;
+                }
+                if self.router.active().parent_id.is_some()
+                    || !crate::release::feature_enabled(crate::release::ReleaseFeature::TreeAtlas)
+                {
+                    log::info!("context_navigation: Cmd+Esc stayed at context={}", self.router.active().context_id);
+                    return false;
+                }
                 self.record_focused_pane_memory();
                 let ctx_id = self.router.active().context_id;
                 let parent_id = self.router.active().parent_id;
@@ -805,24 +745,10 @@ impl PlexiApp {
                     pane_id,
                     strip_offset: offset,
                 });
-                self.zoom.cards_focused_context = Some(ctx_id);
-                self.zoom.cards_last_focused_context = None;
-                self.zoom.cards_viewport_offset = 0.0;
-                self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
-                log::info!(
-                    "zoom: Columns -> SiblingCards (ghost ctx={ctx_id} col={col_idx} pane={pane_id})"
-                );
-                true
-            }
-            ZoomLevel::SiblingCards => {
-                let focus_ctx = self
-                    .zoom
-                    .cards_focused_context
-                    .unwrap_or_else(|| self.router.active().context_id);
-                self.zoom.atlas_focused_context = Some(focus_ctx);
+                self.zoom.atlas_focused_context = Some(ctx_id);
                 self.zoom.atlas_peek_open = false;
                 self.set_zoom_level_with_transition(ZoomLevel::TreeAtlas);
-                log::info!("zoom: SiblingCards -> TreeAtlas (focus_ctx={focus_ctx})");
+                log::info!("zoom: opened experimental tree atlas context={ctx_id}");
                 true
             }
             ZoomLevel::TreeAtlas => {
@@ -908,57 +834,22 @@ impl PlexiApp {
         }
     }
 
-    /// `Cmd+Enter`:
-    /// Zooms in one level back toward the ghost (`TreeAtlas -> SiblingCards -> Columns`).
-    /// At `Columns`: toggles fullscreen zoom of the focused pane.
+    /// Enter the selected atlas context, or toggle the focused pane's zoom.
     pub fn zoom_in_level(&mut self) -> bool {
         match self.zoom.level {
             ZoomLevel::Columns => self.toggle_columns_pane_zoom(),
-            ZoomLevel::SiblingCards => {
-                let selected = self.zoom.cards_focused_context;
-                let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
-                if selected.is_none() || selected == ghost_ctx {
-                    self.restore_ghost_or_active_columns();
-                } else {
-                    // Selection moved off the origin: same path as bare Enter.
-                    self.enter_focused_sibling_card();
-                }
-                log::info!("zoom: SiblingCards -> Columns (selected={selected:?})");
-                true
-            }
-            ZoomLevel::TreeAtlas => {
-                self.zoom.atlas_peek_open = false;
-                let target_ctx = self
-                    .zoom
-                    .atlas_focused_context
-                    .or_else(|| self.zoom.ghost.as_ref().map(|g| g.context_id))
-                    .unwrap_or_else(|| self.router.active().context_id);
-                if let Some(r_idx) = self
-                    .router
-                    .as_slice()
-                    .iter()
-                    .position(|c| c.context_id == target_ctx)
-                {
-                    self.router.set_active(r_idx);
-                }
-                self.zoom.cards_focused_context = Some(target_ctx);
-                self.zoom.cards_last_focused_context = None;
-                self.zoom.cards_viewport_offset = 0.0;
-                self.set_zoom_level_with_transition(ZoomLevel::SiblingCards);
-                log::info!("zoom: TreeAtlas -> SiblingCards (ctx={target_ctx})");
-                true
-            }
+            ZoomLevel::TreeAtlas => self.dive_from_tree_atlas(),
         }
     }
 
-    /// Restore the ghost marker (`q` in atlas or `Cmd+Enter` from `SiblingCards`).
+    /// Restore the ghost marker (`q` in atlas).
     /// If the ghost target died, falls back to column neighbour -> adjacent column -> parent context (`SPEC.md` Q7).
     pub fn restore_ghost_or_active_columns(&mut self) {
         self.zoom.atlas_peek_open = false;
         let Some(ghost) = self.zoom.ghost.take() else {
             let ctx_id = self
                 .zoom
-                .cards_focused_context
+                .atlas_focused_context
                 .unwrap_or_else(|| self.router.active().context_id);
             self.switch_to_context_restoring_last_pane(ctx_id);
             self.set_zoom_level_with_transition(ZoomLevel::Columns);
@@ -1006,97 +897,12 @@ impl PlexiApp {
         self.set_zoom_level_with_transition(ZoomLevel::Columns);
     }
 
-    /// Sibling contexts for the current `SiblingCards` view: same `parent_id`, in creation order.
-    pub fn sibling_card_contexts(&self) -> Vec<u64> {
-        let anchor_id = self
-            .zoom
-            .cards_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        let parent_id = self
-            .router
-            .as_slice()
-            .iter()
-            .find(|c| c.context_id == anchor_id)
-            .and_then(|c| c.parent_id);
-        let siblings: Vec<u64> = self
-            .router
-            .as_slice()
-            .iter()
-            .filter(|c| !c.parked && c.parent_id == parent_id)
-            .map(|c| c.context_id)
-            .collect();
-        if siblings.is_empty() {
-            vec![self.router.active().context_id]
-        } else {
-            siblings
-        }
-    }
-
     /// Handle directional movement (`Cmd+H/J/K/L`) at the current zoom level.
     pub fn navigate_at_current_zoom_level(&mut self, dir: Direction) -> bool {
         match self.zoom.level {
             ZoomLevel::Columns => self.navigate_columns_strip(dir),
-            ZoomLevel::SiblingCards => self.navigate_sibling_cards(dir),
             ZoomLevel::TreeAtlas => self.navigate_tree_atlas_dir(dir),
         }
-    }
-
-    pub fn navigate_sibling_cards(&mut self, dir: Direction) -> bool {
-        let siblings = self.sibling_card_contexts();
-        if siblings.is_empty() {
-            self.record_edge_bump(dir);
-            return false;
-        }
-        let cur_ctx = self
-            .zoom
-            .cards_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        let cur_idx = siblings.iter().position(|&c| c == cur_ctx).unwrap_or(0);
-
-        let new_idx = match dir {
-            Direction::Left => {
-                if cur_idx == 0 {
-                    self.record_edge_bump(Direction::Left);
-                    return false;
-                }
-                cur_idx - 1
-            }
-            Direction::Right => {
-                if cur_idx + 1 >= siblings.len() {
-                    self.record_edge_bump(Direction::Right);
-                    return false;
-                }
-                cur_idx + 1
-            }
-            Direction::Up | Direction::Down => {
-                self.record_edge_bump(dir);
-                return false;
-            }
-        };
-
-        let target_ctx = siblings[new_idx];
-        self.zoom.cards_focused_context = Some(target_ctx);
-        self.zoom.cards_viewport_offset =
-            (new_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
-        self.zoom.cards_last_focused_context = Some(target_ctx);
-        log::info!(
-            "zoom: sibling cards navigate dir={dir:?} target_ctx={target_ctx} idx={new_idx} offset={:.1}",
-            self.zoom.cards_viewport_offset
-        );
-        true
-    }
-
-    /// Enter the currently focused sibling card at its last active pane.
-    pub fn enter_focused_sibling_card(&mut self) -> bool {
-        let target_ctx = self
-            .zoom
-            .cards_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        self.zoom.ghost = None;
-        self.switch_to_context_restoring_last_pane(target_ctx);
-        self.set_zoom_level_with_transition(ZoomLevel::Columns);
-        log::info!("zoom: enter sibling card target_ctx={target_ctx}");
-        true
     }
 
     /// Bounding rect of the top-center virtual hub pill shown when `ZoomLevel::TreeAtlas`
@@ -1401,16 +1207,6 @@ impl PlexiApp {
         state
     }
 
-    /// One-sentence body for a context card: its first ask, else the first
-    /// agent's live activity.
-    pub(crate) fn context_card_detail(&self, context_id: u64) -> String {
-        self.context_preview_lines(context_id, 1)
-            .into_iter()
-            .next()
-            .map(|l| l.trim_start_matches("◆ ").to_string())
-            .unwrap_or_default()
-    }
-
     pub(crate) fn context_preview_lines(&self, context_id: u64, max_lines: usize) -> Vec<String> {
         let mut out = Vec::new();
         if let Some(ask) = self.attention_queue.first_ask_for_context(context_id) {
@@ -1705,10 +1501,11 @@ impl PlexiApp {
 
         self.switch_to_context_restoring_last_pane(target_ctx);
         self.set_zoom_level_with_transition(ZoomLevel::Columns);
+        log::info!("zoom: entered atlas context={target_ctx}");
         true
     }
 
-    /// Handle bare keys on Plexi-owned zoom levels (`SiblingCards` and `TreeAtlas`).
+    /// Handle bare keys on Plexi-owned zoom levels (`TreeAtlas`).
     /// Swallows all unbound bare keys and `Cmd+V` so nothing leaks to any pane (`SPEC.md` R34, R35, R40).
     pub(crate) fn handle_zoom_surface_input(&mut self, input: &mut PlexiInput) -> KeyDisposition {
         if self.zoom.level == ZoomLevel::Columns {
@@ -1724,54 +1521,6 @@ impl PlexiApp {
         }
 
         match self.zoom.level {
-            ZoomLevel::SiblingCards => {
-                let mut move_dir: Option<Direction> = None;
-                let mut enter = false;
-
-                for ev in input.events() {
-                    if let egui::Event::Key {
-                        key,
-                        pressed: true,
-                        repeat,
-                        modifiers,
-                        ..
-                    } = ev
-                    {
-                        if modifiers.alt {
-                            continue;
-                        }
-                        if (modifiers.command || modifiers.ctrl) && !modifiers.shift {
-                            match key {
-                                Key::H | Key::ArrowLeft => move_dir = Some(Direction::Left),
-                                Key::L | Key::ArrowRight => move_dir = Some(Direction::Right),
-                                Key::J | Key::ArrowDown => move_dir = Some(Direction::Down),
-                                Key::K | Key::ArrowUp => move_dir = Some(Direction::Up),
-                                _ => {}
-                            }
-                            continue;
-                        }
-                        if modifiers.command || modifiers.ctrl {
-                            continue;
-                        }
-                        match key {
-                            Key::H | Key::ArrowLeft => move_dir = Some(Direction::Left),
-                            Key::L | Key::ArrowRight => move_dir = Some(Direction::Right),
-                            Key::J | Key::ArrowDown => move_dir = Some(Direction::Down),
-                            Key::K | Key::ArrowUp => move_dir = Some(Direction::Up),
-                            Key::Enter if !*repeat => enter = true,
-                            _ => {}
-                        }
-                    }
-                }
-
-                if enter {
-                    self.enter_focused_sibling_card();
-                } else if let Some(d) = move_dir {
-                    self.navigate_sibling_cards(d);
-                }
-                input.clear();
-                KeyDisposition::Consumed
-            }
             ZoomLevel::TreeAtlas => {
                 let mut move_dir: Option<Direction> = None;
                 let mut sib_forward: Option<bool> = None;
@@ -2021,17 +1770,13 @@ impl PlexiApp {
 
     /// Render the single 1-line Path Bar at the top of the window (`34px` height):
     /// - Left: Context breadcrumb (`root › child`) + current zoom level badge when zoomed out
-    /// - Center: Niri-style column strip position pips (`• ● •`) at `Columns`, or sibling/atlas count
+    /// - Center: Niri-style column strip position pips (`• ● •`) at `Columns`, or atlas count
     /// - Right: Calm Attention Queue pill (`◆N · total` + top bar preview, clickable to toggle `Cmd+I`)
     pub(crate) fn draw_zoom_path_bar(&mut self, ui: &mut egui::Ui) {
         self.sync_attention_queue();
         let colors = self.colors;
         let active_ctx_id = match self.zoom.level {
             ZoomLevel::Columns => self.router.active().context_id,
-            ZoomLevel::SiblingCards => self
-                .zoom
-                .cards_focused_context
-                .unwrap_or_else(|| self.router.active().context_id),
             ZoomLevel::TreeAtlas => self
                 .zoom
                 .atlas_focused_context
@@ -2062,13 +1807,6 @@ impl PlexiApp {
                             // Level badge when zoomed out
                             match self.zoom.level {
                                 ZoomLevel::Columns => {}
-                                ZoomLevel::SiblingCards => {
-                                    ui.label(
-                                        RichText::new("· SIBLING CARDS")
-                                            .size(style::TEXT_META)
-                                            .color(colors.accent),
-                                    );
-                                }
                                 ZoomLevel::TreeAtlas => {
                                     ui.label(
                                         RichText::new("· TREE ATLAS")
@@ -2104,259 +1842,6 @@ impl PlexiApp {
                     );
                 });
             });
-    }
-
-    /// Render the `ZoomLevel::SiblingCards` view inside the central canvas.
-    pub(crate) fn draw_sibling_cards_canvas(&mut self, ui: &mut egui::Ui) {
-        self.sync_attention_queue();
-        let colors = self.colors;
-        let rect = ui.available_rect_before_wrap();
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, CornerRadius::ZERO, colors.bg_darkest);
-
-        let siblings = self.sibling_card_contexts();
-        let focused_ctx = self
-            .zoom
-            .cards_focused_context
-            .unwrap_or_else(|| self.router.active().context_id);
-        let ghost_ctx = self.zoom.ghost.as_ref().map(|g| g.context_id);
-        let focused_idx = siblings
-            .iter()
-            .position(|&cid| cid == focused_ctx)
-            .unwrap_or_default();
-
-        let total_w = if siblings.is_empty() {
-            0.0
-        } else {
-            (siblings.len() as f32) * style::CARD_W
-                + (siblings.len().saturating_sub(1) as f32) * style::CARD_GAP
-        };
-        let horizontal_margin = 24.0;
-        let is_overflow = total_w > rect.width() - horizontal_margin * 2.0;
-
-        let ideal_offset = if !is_overflow {
-            total_w * 0.5
-        } else {
-            (focused_idx as f32) * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5
-        };
-
-        // Selection-follow behavior: keep selected card visible and centered.
-        if self.zoom.cards_last_focused_context != Some(focused_ctx) {
-            self.zoom.cards_last_focused_context = Some(focused_ctx);
-            self.zoom.cards_viewport_offset = ideal_offset;
-            log::info!(
-                "zoom: sibling cards selection follow ctx={focused_ctx} idx={focused_idx} offset={:.1}",
-                self.zoom.cards_viewport_offset
-            );
-        } else if !is_overflow && self.zoom.cards_viewport_offset == 0.0 {
-            self.zoom.cards_viewport_offset = ideal_offset;
-        }
-
-        // Pointer scrolling & drag handling
-        let min_offset = style::CARD_W * 0.5;
-        let max_offset = (siblings.len().saturating_sub(1) as f32) * (style::CARD_W + style::CARD_GAP)
-            + style::CARD_W * 0.5;
-
-        let bg_resp = ui.interact(rect, egui::Id::new("sibling_cards_canvas_drag"), Sense::drag());
-        if bg_resp.dragged() {
-            let drag_x = bg_resp.drag_delta().x;
-            if drag_x.abs() > 0.0 {
-                self.zoom.cards_viewport_offset -= drag_x;
-                if is_overflow {
-                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
-                        min_offset.min(max_offset),
-                        min_offset.max(max_offset),
-                    );
-                }
-                log::info!(
-                    "zoom: sibling cards pointer drag delta={drag_x:.1} offset={:.1}",
-                    self.zoom.cards_viewport_offset
-                );
-            }
-        }
-
-        if ui.rect_contains_pointer(rect) {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            let delta_x = if scroll_delta.x.abs() > 0.0 {
-                scroll_delta.x
-            } else {
-                scroll_delta.y
-            };
-            if delta_x.abs() > 0.0 {
-                self.zoom.cards_viewport_offset -= delta_x;
-                if is_overflow {
-                    self.zoom.cards_viewport_offset = self.zoom.cards_viewport_offset.clamp(
-                        min_offset.min(max_offset),
-                        min_offset.max(max_offset),
-                    );
-                }
-                log::info!(
-                    "zoom: sibling cards pointer scroll delta={delta_x:.1} offset={:.1}",
-                    self.zoom.cards_viewport_offset
-                );
-            }
-        }
-
-        let start_x = rect.center().x - self.zoom.cards_viewport_offset;
-        let center_y = rect.center().y;
-
-        let mut clicked_ctx: Option<u64> = None;
-        #[cfg(test)]
-        let mut painted_origin_geom: Option<OriginMarkerGeometry> = None;
-        #[cfg(test)]
-        let mut painted_cards = Vec::with_capacity(siblings.len());
-
-        for (idx, &cid) in siblings.iter().enumerate() {
-            let is_focused = cid == focused_ctx;
-            let is_ghost = Some(cid) == ghost_ctx;
-            let depth = self
-                .router
-                .as_slice()
-                .iter()
-                .find(|c| c.context_id == cid)
-                .map(|c| c.depth as usize)
-                .unwrap_or(0);
-            let asks = self.attention_queue.ask_count_for_context(cid);
-            let ctx_name = self
-                .router
-                .as_slice()
-                .iter()
-                .find(|c| c.context_id == cid)
-                .map(|c| c.name.displayed().to_string())
-                .unwrap_or_else(|| format!("Context {cid}"));
-            let cols = self.columns_for_context(cid);
-            let pane_total: usize = cols.iter().map(|c| c.panes.len()).sum();
-            let subtitle = format!("{pane_total} pane{}", if pane_total == 1 { "" } else { "s" });
-            let detail = self.context_card_detail(cid);
-            let spec = CardSpec {
-                state: self.context_card_state(cid),
-                title: &ctx_name,
-                subtitle: &subtitle,
-                detail: &detail,
-                badge: (asks > 0).then(|| (format!("◆{asks}"), colors.zoom_needs)),
-            };
-            let layout = layout_card(ui.ctx(), CardForm::Sibling, &spec, style::CARD_W);
-            let header_h = layout.height;
-            let card_h = style::CARD_H.max(header_h + SIBLING_BODY_MIN_H);
-            let card_min = Pos2::new(
-                start_x + (idx as f32) * (style::CARD_W + style::CARD_GAP),
-                center_y - card_h * 0.5,
-            );
-            let card_rect = Rect::from_min_size(card_min, Vec2::new(style::CARD_W, card_h));
-            #[cfg(test)]
-            painted_cards.push((cid, card_rect, is_focused));
-            paint_card(
-                &painter,
-                card_rect,
-                &layout,
-                &spec,
-                &colors,
-                colors.depth_tint(depth),
-                is_focused,
-            );
-            let card_painter = painter.with_clip_rect(card_rect.shrink(1.0));
-
-            if is_ghost {
-                let _geom = paint_origin_marker(
-                    &card_painter,
-                    Pos2::new(card_rect.min.x + 14.0, card_rect.max.y - 12.0),
-                    colors.accent,
-                );
-                #[cfg(test)]
-                {
-                    painted_origin_geom = Some(_geom);
-                }
-            }
-
-            // Mini column tiles inside the card, below the header block.
-            let inner_top = card_rect.min.y + header_h + 6.0;
-            let inner_h = (card_rect.max.y - 30.0 - inner_top).max(40.0);
-            let inner_w = card_rect.width() - 28.0;
-            let col_count = cols.len().max(1);
-            let col_w = (inner_w - ((col_count - 1) as f32) * 6.0) / (col_count as f32);
-
-            for (c_idx, col) in cols.iter().enumerate() {
-                let cx = card_rect.min.x + 14.0 + (c_idx as f32) * (col_w + 6.0);
-                let stack_len = col.panes.len().max(1);
-                let ph = (inner_h - ((stack_len - 1) as f32) * 4.0) / (stack_len as f32);
-                for (r_idx, &pid) in col.panes.iter().enumerate() {
-                    let py = inner_top + (r_idx as f32) * (ph + 4.0);
-                    let mini_rect = Rect::from_min_size(Pos2::new(cx, py), Vec2::new(col_w, ph));
-                    let has_ask = self.attention_queue.first_ask_for_pane(pid).is_some();
-                    painter.rect_filled(mini_rect, style::RADIUS_SM, colors.tile_bg);
-                    painter.rect_stroke(
-                        mini_rect,
-                        style::RADIUS_SM,
-                        Stroke::new(
-                            1.0_f32,
-                            if has_ask {
-                                colors.zoom_needs
-                            } else {
-                                colors.border
-                            },
-                        ),
-                        egui::StrokeKind::Inside,
-                    );
-                    let (_, pname, _) = self.describe_pane_for_queue(pid);
-                    let mini_font = FontId::new(style::TEXT_META, FontFamily::Monospace);
-                    let name_lines = wrap_text(
-                        ui.ctx(),
-                        &pname,
-                        mini_font.clone(),
-                        (mini_rect.width() - 12.0).max(1.0),
-                        Some(((ph - 8.0) / (style::TEXT_META * 1.25)).floor().max(1.0) as usize),
-                    );
-                    painter
-                        .with_clip_rect(mini_rect.shrink(1.0))
-                        .text(
-                            Pos2::new(mini_rect.min.x + 6.0, mini_rect.min.y + 6.0),
-                            Align2::LEFT_TOP,
-                            name_lines.join("\n"),
-                            mini_font,
-                            colors.text_dim,
-                        );
-                }
-            }
-
-            let resp = ui.interact(
-                card_rect,
-                egui::Id::new(("sibling_card", cid)),
-                Sense::click(),
-            );
-            if resp.clicked() {
-                clicked_ctx = Some(cid);
-            }
-        }
-
-        // Bottom key legend
-        painter.text(
-            Pos2::new(rect.center().x, rect.max.y - 16.0),
-            Align2::CENTER_BOTTOM,
-            "h/l move card · Enter enter context · Cmd+Esc tree atlas · Cmd+Enter back to ghost",
-            FontId::new(style::TEXT_HINT, FontFamily::Proportional),
-            colors.text_dim,
-        );
-
-        if let Some(cid) = clicked_ctx {
-            self.zoom.cards_focused_context = Some(cid);
-            self.enter_focused_sibling_card();
-        }
-
-        #[cfg(test)]
-        ui.ctx().data_mut(|data| {
-            data.insert_temp(
-                egui::Id::new("sibling_cards_painted_geometry"),
-                (rect, painted_cards),
-            );
-            data.insert_temp(
-                egui::Id::new("sibling_cards_viewport_offset"),
-                self.zoom.cards_viewport_offset,
-            );
-            data.insert_temp(
-                egui::Id::new("sibling_cards_origin_marker_geometry"),
-                painted_origin_geom,
-            );
-        });
     }
 
     /// Render the `ZoomLevel::TreeAtlas` view inside the central canvas (Mini Motorways style).

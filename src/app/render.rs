@@ -349,10 +349,6 @@ impl PlexiApp {
                     return;
                 }
                 match self.zoom.level {
-                    crate::app::zoom::ZoomLevel::SiblingCards => {
-                        self.draw_sibling_cards_canvas(ui);
-                        return;
-                    }
                     crate::app::zoom::ZoomLevel::TreeAtlas => {
                         self.draw_tree_atlas_canvas(ui);
                         return;

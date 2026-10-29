@@ -1,11 +1,10 @@
-//! Tests for the Zoom Ladder, Niri Scrolling Columns, Sibling Cards, Tree Atlas,
+//! Tests for pane zoom, experimental Tree Atlas,
 //! Attention Queue Focus-Lock Rule, Decision Overlay, Context Restore, and Strict Input Ownership
 //! (`SPEC.md` R31–R42).
 
 use crate::app::attention_queue::{QueueCategory, QueueOption, OVERLAY_QUESTION};
 use crate::app::input_router::PlexiInput;
 use crate::app::zoom::{ColumnWidthPreset, ZoomLevel};
-use crate::host::keys::Direction;
 use crate::testing::HostHarness;
 use crate::ui::style;
 use egui::{Color32, Event, Key, Modifiers, Pos2, Rect, Vec2};
@@ -32,11 +31,12 @@ fn send_key(h: &mut HostHarness, modifiers: Modifiers, key: Key) {
     }
 }
 
-/// R31: Zoom ladder round-trip (`Columns -> SiblingCards -> TreeAtlas -> SiblingCards -> Columns`)
+/// R31: Zoom ladder round-trip (`Columns -> TreeAtlas -> Columns`)
 /// records the ghost marker on zoom-out and restores the exact origin pane and scroll offset on return.
 /// Both ends of the ladder no-op with an edge bump.
 #[test]
 fn zoom_ladder_round_trip_and_ghost_restore_r31() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -58,17 +58,14 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
-    // Cmd+Esc: Columns -> SiblingCards, recording ghost marker at (ctx_id, col=1, pane=p2).
+    // Cmd+Esc: Columns -> TreeAtlas, recording ghost marker at (ctx_id, col=1, pane=p2).
     assert!(h.app.zoom_out_or_close_surface());
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     let ghost = h.app.zoom.ghost.clone().expect("ghost recorded");
     assert_eq!(ghost.context_id, ctx_id);
     assert_eq!(ghost.column_idx, 1);
     assert_eq!(ghost.pane_id, p2);
 
-    // Cmd+Esc again: SiblingCards -> TreeAtlas.
-    assert!(h.app.zoom_out_or_close_surface());
-    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 
     // Cmd+Esc at TreeAtlas -> no-op + edge bump.
     let bumps_atlas = h.app.zoom.edge_bump_count;
@@ -76,11 +73,8 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     assert_eq!(h.app.zoom.edge_bump_count, bumps_atlas + 1);
 
-    // Cmd+Enter: TreeAtlas -> SiblingCards.
-    assert!(h.app.zoom_in_level());
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
 
-    // Cmd+Enter: SiblingCards -> Columns, restoring exact ghost pane p2.
+    // Cmd+Enter: TreeAtlas -> Columns, restoring exact ghost pane p2.
     assert!(h.app.zoom_in_level());
     assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
     assert_eq!(h.app.active_focused_pane_id(), Some(p2));
@@ -91,6 +85,7 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
 /// pressing `q` falls back cleanly to a surviving column neighbour in that context.
 #[test]
 fn ghost_restore_falls_back_when_origin_pane_closed_r31() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -98,7 +93,6 @@ fn ghost_restore_falls_back_when_origin_pane_closed_r31() {
     h.app.set_context_columns(ctx_id, vec![vec![p1, p2]]);
     h.app.focus_pane_in_strip(p2);
 
-    h.app.zoom_out_or_close_surface();
     h.app.zoom_out_or_close_surface();
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 
@@ -134,94 +128,12 @@ fn column_width_presets_and_tile_content_tiers_r33() {
     assert_eq!(cols[1].preset.ratio(), 0.65);
 }
 
-/// R34 & R36: Sibling Context Cards (`SiblingCards`) traversal with bare `h`/`l`
-/// and `Enter` restoring the target context's last active pane.
-#[test]
-fn sibling_cards_navigation_and_context_restore_r34_r36() {
-    let mut h = HostHarness::new();
-    let ctx0_p1 = h.add_test_pane();
-    let ctx0_p2 = h.add_test_pane();
-    let ctx0_id = h.app.router.active().context_id;
-    h.app
-        .set_context_columns(ctx0_id, vec![vec![ctx0_p1], vec![ctx0_p2]]);
-    h.app.focus_pane_in_strip(ctx0_p2);
-
-    // Create a sibling context (ctx1) with two panes and focus its second pane.
-    let ctx1_id = h.app.create_context_without_pty("ctx-1", None);
-    let ctx1_p1 = h.add_test_pane();
-    let ctx1_p2 = h.add_test_pane();
-    h.app
-        .set_context_columns(ctx1_id, vec![vec![ctx1_p1], vec![ctx1_p2]]);
-    h.app.focus_pane_in_strip(ctx1_p2);
-
-    // Switch back to ctx0 -> R36 must restore ctx0_p2!
-    h.app.switch_to_context_restoring_last_pane(ctx0_id);
-    assert_eq!(h.app.router.active().context_id, ctx0_id);
-    assert_eq!(h.app.active_focused_pane_id(), Some(ctx0_p2));
-
-    // Zoom out to SiblingCards.
-    h.app.zoom_out_or_close_surface();
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
-    assert_eq!(h.app.sibling_card_contexts(), vec![ctx0_id, ctx1_id]);
-    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
-
-    // Bare `h` at leftmost card -> edge bump.
-    let b = h.app.zoom.edge_bump_count;
-    send_key(&mut h, Modifiers::NONE, Key::H);
-    assert_eq!(h.app.zoom.edge_bump_count, b + 1);
-
-    // Bare `l` moves card focus to ctx1_id; bare `Enter` enters ctx1 at ctx1_p2!
-    send_key(&mut h, Modifiers::NONE, Key::L);
-    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx1_id));
-    send_key(&mut h, Modifiers::NONE, Key::Enter);
-    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
-    assert_eq!(h.app.router.active().context_id, ctx1_id);
-    assert_eq!(h.app.active_focused_pane_id(), Some(ctx1_p2));
-}
-
-/// Stint 0988: Sibling cards selection-follow updates viewport offset, and pointer scrolling can be recovered by navigation.
-#[test]
-fn sibling_cards_selection_follow_and_pointer_scrolling() {
-    let mut h = HostHarness::new();
-    let ctx0_id = h.app.router.active().context_id;
-    let p0 = h.add_test_pane();
-    h.app.set_context_columns(ctx0_id, vec![vec![p0]]);
-
-    let mut sibs = vec![ctx0_id];
-    for i in 1..5 {
-        let cid = h.app.create_context_without_pty(&format!("ctx-{i}"), None);
-        let pid = h.add_test_pane();
-        h.app.set_context_columns(cid, vec![vec![pid]]);
-        sibs.push(cid);
-    }
-
-    h.app.switch_to_context_restoring_last_pane(ctx0_id);
-    h.app.zoom_out_or_close_surface();
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
-    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
-
-    // Move Right with L to card 1
-    assert!(h.app.navigate_sibling_cards(Direction::Right));
-    assert_eq!(h.app.zoom.cards_focused_context, Some(sibs[1]));
-    let expected_offset_1 = 1.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
-    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1);
-
-    // Simulate pointer scroll adjusting viewport offset
-    h.app.zoom.cards_viewport_offset += 50.0;
-    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_1 + 50.0);
-
-    // Navigating with keyboard (Left to card 0) triggers selection-follow and snaps back to centered card 0!
-    assert!(h.app.navigate_sibling_cards(Direction::Left));
-    assert_eq!(h.app.zoom.cards_focused_context, Some(ctx0_id));
-    let expected_offset_0 = 0.0 * (style::CARD_W + style::CARD_GAP) + style::CARD_W * 0.5;
-    assert_eq!(h.app.zoom.cards_viewport_offset, expected_offset_0);
-}
-
 /// R35: Tree Atlas left-to-right tidy tree (`parent.x < child.x`), `h`/`l`/`j`/`k`,
 /// `[`/`]` sibling wrap, `n`/`N` needs-you wrap, `p` peek, `q` ghost return,
 /// and `Enter` dive (asking node -> asking pane + DecisionOverlay open; calm node -> last active pane).
 #[test]
 fn tree_atlas_layout_traversal_and_dive_r35() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let root_pane = h.add_test_pane();
     let root_ctx_id = h.app.router.active().context_id;
@@ -260,7 +172,6 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
 
     // Return to root_ctx_id and zoom out twice to TreeAtlas.
     h.app.switch_to_context_restoring_last_pane(root_ctx_id);
-    h.app.zoom_out_or_close_surface();
     h.app.zoom_out_or_close_surface();
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(root_ctx_id));
@@ -347,6 +258,7 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
 
 #[test]
 fn tree_atlas_layout_multi_root_hub_top_down() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let root1_pane = h.add_test_pane();
     let root1_id = h.app.router.active().context_id;
@@ -362,7 +274,6 @@ fn tree_atlas_layout_multi_root_hub_top_down() {
     h.app.set_context_columns(root2_id, vec![vec![root2_pane]]);
 
     h.app.switch_to_context_restoring_last_pane(root1_id);
-    h.app.zoom_out_or_close_surface();
     h.app.zoom_out_or_close_surface();
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 
@@ -571,6 +482,7 @@ fn decision_overlay_verdict_and_esc_handling_r39() {
 /// R40: Strict input ownership across zoom levels and overlays, and R41/R42 checks.
 #[test]
 fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -596,11 +508,7 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     h.app.toggle_attention_queue_list();
     assert!(h.app.pane_qualifies_for_input(p1));
 
-    // At SiblingCards and TreeAtlas: no pane qualifies for input.
-    h.app.zoom_out_or_close_surface();
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
-    assert!(!h.app.pane_qualifies_for_input(p1));
-
+    // At TreeAtlas: no pane qualifies for input.
     h.app.zoom_out_or_close_surface();
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     assert!(!h.app.pane_qualifies_for_input(p1));
@@ -773,42 +681,13 @@ fn esc_swallowed_when_overlay_open() {
     );
 }
 
-#[test]
-fn cmd_esc_still_zooms_out_when_nothing_open() {
-    let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    let ctx_id = h.app.router.active().context_id;
-    h.app.set_context_columns(ctx_id, vec![vec![pane]]);
-    h.app.focus_pane_in_strip(pane);
 
-    assert!(!h.app.attention_queue.open);
-    assert!(h.app.attention_queue.decision_overlay.is_none());
-    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
 
-    // Cmd+Esc zooms out from Columns -> SiblingCards -> TreeAtlas when neither queue nor overlay is open.
-    h.press_key(Key::Escape, Modifiers::COMMAND);
-    assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
-
-    // Release Escape so the next press is not treated by egui as key-repeat.
-    h.frame(egui::RawInput {
-        events: vec![Event::Key {
-            key: Key::Escape,
-            physical_key: None,
-            pressed: false,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }],
-        ..Default::default()
-    });
-
-    h.press_key(Key::Escape, Modifiers::COMMAND);
-    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
-}
-
-/// Cmd+Enter in SiblingCards must dive into the highlighted card, exactly like bare Enter,
+/// Cmd+Enter in TreeAtlas must dive into the highlighted context, exactly like bare Enter,
 /// even after the selection moved off the context that was focused when zooming out.
 #[test]
-fn cmd_enter_zooms_into_selected_card_like_enter() {
+fn cmd_enter_enters_selected_atlas_context_like_enter() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let ctx0_p = h.add_test_pane();
     let ctx0_id = h.app.router.active().context_id;
@@ -824,10 +703,10 @@ fn cmd_enter_zooms_into_selected_card_like_enter() {
         h.app.switch_to_context_restoring_last_pane(ctx0_id);
         h.app.set_zoom_level_with_transition(ZoomLevel::Columns);
         h.app.zoom_out_or_close_surface();
-        assert_eq!(h.app.zoom.level, ZoomLevel::SiblingCards);
+        assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
         send_key(&mut h, Modifiers::NONE, Key::L);
         send_key(&mut h, Modifiers::NONE, Key::L);
-        assert_eq!(h.app.zoom.cards_focused_context, Some(ctx2_id));
+        assert_eq!(h.app.zoom.atlas_focused_context, Some(ctx2_id));
         if chord == Modifiers::NONE {
             send_key(&mut h, chord, Key::Enter);
         } else {
@@ -1012,6 +891,7 @@ fn cmd_enter_toggles_focused_pane_zoom_and_restores_geometry_focus_and_scroll() 
 
 #[test]
 fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
+    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     // Root 1 (active)
     let r1_pane = h.add_test_pane();
@@ -1069,7 +949,6 @@ fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
 
     // Switch to root 1 and zoom out to TreeAtlas
     h.app.switch_to_context_restoring_last_pane(r1_id);
-    h.app.zoom_out_or_close_surface();
     h.app.zoom_out_or_close_surface();
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
 
@@ -1212,4 +1091,94 @@ fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
     // Down from c1a remembers g1a1
     send_key(&mut h, Modifiers::NONE, Key::J);
     assert_eq!(h.app.zoom.atlas_focused_context, Some(g1a1_id));
+}
+
+#[test]
+fn cmd_escape_returns_to_parent_and_stays_at_root() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app
+        .push_pane_to_subcontext(Some("Child".into()), Some(pane));
+    assert_ne!(h.app.router.active().context_id, root);
+    let (_, parent_window, parent_focus) = *h.app.router.depth_stack.last().unwrap();
+    h.press_key(Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+    assert_eq!(h.app.windows[h.app.active_window].window_id, parent_window);
+    assert_eq!(
+        h.app.windows[h.app.active_window].focused_pane,
+        parent_focus
+    );
+    let window = h.app.windows[h.app.active_window].window_id;
+    let focus = h.app.windows[h.app.active_window].focused_pane;
+    assert!(!h.app.zoom_out_or_close_surface());
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.windows[h.app.active_window].window_id, window);
+    assert_eq!(h.app.windows[h.app.active_window].focused_pane, focus);
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+}
+
+#[test]
+fn cmd_escape_returns_to_parent_without_navigation_history() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app
+        .push_pane_to_subcontext(Some("Child".into()), Some(pane));
+    h.app.router.depth_stack.clear();
+    h.press_key(Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+}
+
+#[test]
+fn cmd_escape_climbs_one_level_despite_stale_history() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    let child = h.app.create_context_without_pty("child", Some(root));
+    let grandchild = h.app.create_context_without_pty("grandchild", Some(child));
+    let unrelated = h.app.create_context_without_pty("other", None);
+    let other_window = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == unrelated)
+        .unwrap()
+        .window_id;
+    h.app.router.push_depth(unrelated, other_window, None);
+    let index = h
+        .app
+        .router
+        .position(|c| c.context_id == grandchild)
+        .unwrap();
+    h.app.switch_workspace(index);
+    h.press_key(Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+    assert!(h.app.zoom_out_or_close_surface());
+    assert_eq!(h.app.router.active().context_id, root);
+    assert!(!h.app.zoom_out_or_close_surface());
+    assert_eq!(h.app.router.active().context_id, root);
+}
+
+#[test]
+fn tree_atlas_is_gated_and_skips_sibling_cards() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+    {
+        let _off = crate::release::set_test_experiments(&[]);
+        h.app.set_zoom_level_with_transition(ZoomLevel::TreeAtlas);
+        assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+        press_and_release_key(&mut h, Key::Escape, Modifiers::COMMAND);
+        assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
+    }
+    let _on = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    press_and_release_key(&mut h, Key::Escape, Modifiers::COMMAND);
+    assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
+    press_and_release_key(&mut h, Key::Enter, Modifiers::COMMAND);
+    assert_eq!(h.app.zoom.level, ZoomLevel::Columns);
 }

@@ -1109,11 +1109,12 @@ mod tests {
         assert_eq!(app_font(&h, app_id), crate::ui::style::TEXT_HINT, "Cmd+Alt+0 resets app font");
     }
 
-    /// Cmd+= / Cmd+- in Sibling Cards and Tree Atlas adjusts only the remembered
+    /// Cmd+= / Cmd+- in Tree Atlas adjusts only the remembered
     /// active pane for the highlighted context, keeps the overlay open, and
     /// returning to Columns shows the pane with its updated font size.
     #[test]
-    fn cmd_plus_minus_in_sibling_cards_and_tree_atlas() {
+    fn cmd_plus_minus_in_tree_atlas() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
         let (ctx_a, pane_a, ctx_b, pane_b) = h.with_app_mut(|app| {
@@ -1167,20 +1168,20 @@ mod tests {
         });
         h.run_steps(3);
 
-        // 1. Enter SiblingCards, highlight context B
+        // 1. Enter TreeAtlas, highlight context B
         h.with_app_mut(|app| {
-            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
-            app.zoom.cards_focused_context = Some(ctx_b);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
+            app.zoom.atlas_focused_context = Some(ctx_b);
         });
         h.run_steps(3);
-        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::SiblingCards);
+        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::TreeAtlas);
 
-        // Cmd+= in SiblingCards
+        // Cmd+= in TreeAtlas
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
         h.run_steps(3);
 
-        // View remains SiblingCards!
-        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::SiblingCards);
+        // View remains TreeAtlas!
+        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::TreeAtlas);
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
 
         // Pane B font size changed to 15.0, Pane A remained 14.0!
@@ -1236,7 +1237,8 @@ mod tests {
     /// Cmd+Shift+/- updates global ui_scale by 0.1 at every zoom level, respects
     /// bounds, persists to disk, and Cmd+Shift+0 resets without opening Quick Note.
     #[test]
-    fn cmd_shift_plus_minus_updates_global_ui_scale_from_columns_cards_and_atlas() {
+    fn cmd_shift_plus_minus_updates_global_ui_scale_from_columns_and_atlas() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
         add_focused_pane(&mut h);
@@ -1251,18 +1253,18 @@ mod tests {
         h.run_steps(3);
         assert!((h.with_app(|a| a.ui_scale) - 1.1).abs() < 1e-4);
 
-        // 2. In SiblingCards: Cmd+Shift+= steps from 1.1 to 1.2
+        // 2. In TreeAtlas: Cmd+Shift+= steps from 1.1 to 1.2
         h.with_app_mut(|app| {
-            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
+            app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::TreeAtlas);
         });
         h.run_steps(3);
-        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::SiblingCards);
+        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::TreeAtlas);
         h.harness().key_press_modifiers(
             egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
             egui::Key::Equals,
         );
         h.run_steps(3);
-        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::SiblingCards);
+        assert_eq!(h.with_app(|a| a.zoom.level), crate::app::zoom::ZoomLevel::TreeAtlas);
         assert!((h.with_app(|a| a.ui_scale) - 1.2).abs() < 1e-4);
 
         // 3. In TreeAtlas: Cmd+Shift+- steps from 1.2 to 1.1
@@ -1446,72 +1448,11 @@ mod tests {
         assert_eq!(font_stepped, font_after_plus + 1.0, "Cmd+Alt+= custom override steps font");
     }
 
-    /// Renders realistic seeded screenshots of crowded Cards (12 siblings) and
-    /// crowded Atlas at scales 1.0 and 1.3 for visual verification.
+    /// Renders realistic seeded screenshots of crowded Atlas at scales 1.0 and 1.3 for visual verification.
     #[test]
-    fn screenshot_crowded_cards_and_atlas_scales() {
+    fn screenshot_crowded_atlas_scales() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
         for scale in [1.0, 1.3] {
-            // Crowded cards (12 siblings)
-            {
-                let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
-                let selected_context = h.with_app_mut(|app| {
-                    app.sidebar_visible = false;
-                    let root = app.create_context_without_pty("root", None);
-                    let mut siblings = Vec::new();
-                    for i in 1..=12 {
-                        let name = format!("sibling-{i:02}");
-                        let cid = app.create_context_without_pty(&name, Some(root));
-                        let win_idx = app.windows.len() - 1;
-                        let pid = app.host.alloc_pane_id();
-                        let term = crate::host::pane::TerminalPane::new(
-                            pid,
-                            app.ctx.clone(),
-                            app.pty_event_tx.clone(),
-                            egui_term::BackendSettings {
-                                shell: "/bin/sh".into(),
-                                working_directory: Some(app.router.active().root.clone()),
-                                ..Default::default()
-                            },
-                            14.0,
-                        )
-                        .expect("spawn terminal");
-                        let win = &mut app.windows[win_idx];
-                        win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-                        let tile = win.tree.tiles.insert_pane(pid);
-                        win.tree.root = Some(tile);
-                        win.focused_pane = Some(tile);
-                        app.zoom.context_last_pane.insert(cid, pid);
-                        siblings.push(cid);
-                    }
-                    app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
-                    app.zoom.cards_focused_context = Some(siblings[5]);
-                    siblings[5]
-                });
-                h.run_steps(6);
-                let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
-                    app.ctx
-                        .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
-                        .expect("Cards render must report its painted geometry")
-                });
-                let selected = cards
-                    .iter()
-                    .find(|(context_id, _, _)| *context_id == selected_context)
-                    .expect("selected Cards context must be painted");
-                assert!(selected.2, "selected Cards context must retain focus treatment");
-                assert!(
-                    canvas.contains_rect(selected.1),
-                    "selected Cards rect {:?} must be wholly visible in {:?}",
-                    selected.1,
-                    canvas
-                );
-                let path = format!("/tmp/plexi_crowded_cards_scale_{scale:.1}.png");
-                h.save_screenshot(&path).unwrap();
-                assert!(std::path::Path::new(&path).exists());
-                if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-                    let _ = std::fs::remove_file(&path);
-                }
-            }
-
             // Crowded atlas
             {
                 let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
@@ -1558,379 +1499,13 @@ mod tests {
         }
     }
 
-    /// Stint 0988: Fixtures with 1, 3 and 12 siblings keep each selected card visible and
-    /// centered at narrow widths and high UI scale.
-    #[test]
-    fn sibling_cards_visible_and_centered_fixtures_1_3_12() {
-        // Fixture 1: 1 sibling at narrow width and high scale
-        {
-            let mut h = PlexiUiHarness::new_sized_scaled(700.0, 700.0, 1.5);
-            let ctx = h.with_app_mut(|app| {
-                app.sidebar_visible = false;
-                let root = app.router.active().context_id;
-                let pid = app.host.alloc_pane_id();
-                let win_idx = app.windows.len() - 1;
-                let term = crate::host::pane::TerminalPane::new(
-                    pid,
-                    app.ctx.clone(),
-                    app.pty_event_tx.clone(),
-                    egui_term::BackendSettings {
-                        shell: "/bin/sh".into(),
-                        working_directory: Some(app.router.active().root.clone()),
-                        ..Default::default()
-                    },
-                    14.0,
-                )
-                .expect("spawn terminal");
-                let win = &mut app.windows[win_idx];
-                win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-                let tile = win.tree.tiles.insert_pane(pid);
-                win.tree.root = Some(tile);
-                win.focused_pane = Some(tile);
-                app.zoom.context_last_pane.insert(root, pid);
-                app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
-                app.zoom.cards_focused_context = Some(root);
-                root
-            });
-            h.run_steps(4);
-            let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
-                app.ctx
-                    .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
-                    .expect("Cards geometry reported")
-            });
-            assert_eq!(cards.len(), 1);
-            let card = &cards[0];
-            assert_eq!(card.0, ctx);
-            assert!(card.2, "1 sibling must be focused");
-            assert!((card.1.center().x - canvas.center().x).abs() <= 1.0, "1 sibling must be centered in canvas");
-            assert!(canvas.contains_rect(card.1), "1 sibling card must be wholly visible in canvas");
-        }
 
-        // Fixture 2: 3 siblings at narrow width and high scale
-        {
-            for target_idx in 0..3 {
-                let mut h = PlexiUiHarness::new_sized_scaled(750.0, 700.0, 1.4);
-                let (target_ctx, _all) = h.with_app_mut(|app| {
-                    app.sidebar_visible = false;
-                    let root = app.create_context_without_pty("root", None);
-                    let mut sibs = Vec::new();
-                    for i in 0..3 {
-                        let cid = app.create_context_without_pty(&format!("sib-{i}"), Some(root));
-                        let pid = app.host.alloc_pane_id();
-                        let win_idx = app.windows.len() - 1;
-                        let term = crate::host::pane::TerminalPane::new(
-                            pid,
-                            app.ctx.clone(),
-                            app.pty_event_tx.clone(),
-                            egui_term::BackendSettings {
-                                shell: "/bin/sh".into(),
-                                working_directory: Some(app.router.active().root.clone()),
-                                ..Default::default()
-                            },
-                            14.0,
-                        )
-                        .expect("spawn terminal");
-                        let win = &mut app.windows[win_idx];
-                        win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-                        let tile = win.tree.tiles.insert_pane(pid);
-                        win.tree.root = Some(tile);
-                        win.focused_pane = Some(tile);
-                        app.zoom.context_last_pane.insert(cid, pid);
-                        sibs.push(cid);
-                    }
-                    app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
-                    app.zoom.cards_focused_context = Some(sibs[target_idx]);
-                    (sibs[target_idx], sibs)
-                });
-                h.run_steps(4);
-                let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
-                    app.ctx
-                        .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
-                        .expect("Cards geometry reported")
-                });
-                let selected = cards.iter().find(|(cid, _, _)| *cid == target_ctx).expect("target card painted");
-                assert!(selected.2, "target card {target_idx} must be focused");
-                assert!(
-                    (selected.1.center().x - canvas.center().x).abs() <= 1.0,
-                    "target card {target_idx} must be centered in canvas (card center: {}, canvas center: {})",
-                    selected.1.center().x,
-                    canvas.center().x
-                );
-                assert!(canvas.contains_rect(selected.1), "target card {target_idx} must be wholly visible in canvas");
-            }
-        }
-
-        // Fixture 3: 12 siblings at narrow width and standard width with high scale
-        {
-            for target_idx in [0, 5, 11] {
-                let mut h = PlexiUiHarness::new_sized_scaled(750.0, 700.0, 1.3);
-                let (target_ctx, _all) = h.with_app_mut(|app| {
-                    app.sidebar_visible = false;
-                    let root = app.create_context_without_pty("root", None);
-                    let mut sibs = Vec::new();
-                    for i in 0..12 {
-                        let cid = app.create_context_without_pty(&format!("sib-{i}"), Some(root));
-                        let pid = app.host.alloc_pane_id();
-                        let win_idx = app.windows.len() - 1;
-                        let term = crate::host::pane::TerminalPane::new(
-                            pid,
-                            app.ctx.clone(),
-                            app.pty_event_tx.clone(),
-                            egui_term::BackendSettings {
-                                shell: "/bin/sh".into(),
-                                working_directory: Some(app.router.active().root.clone()),
-                                ..Default::default()
-                            },
-                            14.0,
-                        )
-                        .expect("spawn terminal");
-                        let win = &mut app.windows[win_idx];
-                        win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-                        let tile = win.tree.tiles.insert_pane(pid);
-                        win.tree.root = Some(tile);
-                        win.focused_pane = Some(tile);
-                        app.zoom.context_last_pane.insert(cid, pid);
-                        sibs.push(cid);
-                    }
-                    app.set_zoom_level_with_transition(crate::app::zoom::ZoomLevel::SiblingCards);
-                    app.zoom.cards_focused_context = Some(sibs[target_idx]);
-                    (sibs[target_idx], sibs)
-                });
-                h.run_steps(4);
-                let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
-                    app.ctx
-                        .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
-                        .expect("Cards geometry reported")
-                });
-                let selected = cards.iter().find(|(cid, _, _)| *cid == target_ctx).expect("target card painted");
-                assert!(selected.2, "target card {target_idx} must be focused");
-                assert!(
-                    (selected.1.center().x - canvas.center().x).abs() <= 1.0,
-                    "target card {target_idx} must be centered in canvas"
-                );
-                assert!(canvas.contains_rect(selected.1), "target card {target_idx} must be wholly visible in canvas");
-            }
-        }
-    }
 
     /// Stint 0988: Enter opens the selected context; the marker stays on the origin context.
-    #[test]
-    fn sibling_cards_origin_marker_and_enter_selection() {
-        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
-        let (origin_ctx, sib_b, sib_c) = h.with_app_mut(|app| {
-            app.sidebar_visible = false;
-            let root = app.router.active().context_id;
-            let pid = app.host.alloc_pane_id();
-            let win_idx = app.windows.len() - 1;
-            let term = crate::host::pane::TerminalPane::new(
-                pid,
-                app.ctx.clone(),
-                app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(),
-                    working_directory: Some(app.router.active().root.clone()),
-                    ..Default::default()
-                },
-                14.0,
-            )
-            .expect("spawn terminal");
-            let win = &mut app.windows[win_idx];
-            win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-            let tile = win.tree.tiles.insert_pane(pid);
-            win.tree.root = Some(tile);
-            win.focused_pane = Some(tile);
-            app.zoom.context_last_pane.insert(root, pid);
 
-            // Sibling B
-            let b = app.create_context_without_pty("sib-b", None);
-            let pid_b = app.host.alloc_pane_id();
-            let win_b = app.windows.len() - 1;
-            let term_b = crate::host::pane::TerminalPane::new(
-                pid_b,
-                app.ctx.clone(),
-                app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(),
-                    working_directory: Some(app.router.active().root.clone()),
-                    ..Default::default()
-                },
-                14.0,
-            )
-            .expect("spawn terminal");
-            app.windows[win_b].panes.insert(pid_b, Pane::Terminal(Box::new(term_b)));
-            let tile_b = app.windows[win_b].tree.tiles.insert_pane(pid_b);
-            app.windows[win_b].tree.root = Some(tile_b);
-            app.windows[win_b].focused_pane = Some(tile_b);
-            app.zoom.context_last_pane.insert(b, pid_b);
-
-            // Sibling C
-            let c = app.create_context_without_pty("sib-c", None);
-            let pid_c = app.host.alloc_pane_id();
-            let win_c = app.windows.len() - 1;
-            let term_c = crate::host::pane::TerminalPane::new(
-                pid_c,
-                app.ctx.clone(),
-                app.pty_event_tx.clone(),
-                egui_term::BackendSettings {
-                    shell: "/bin/sh".into(),
-                    working_directory: Some(app.router.active().root.clone()),
-                    ..Default::default()
-                },
-                14.0,
-            )
-            .expect("spawn terminal");
-            app.windows[win_c].panes.insert(pid_c, Pane::Terminal(Box::new(term_c)));
-            let tile_c = app.windows[win_c].tree.tiles.insert_pane(pid_c);
-            app.windows[win_c].tree.root = Some(tile_c);
-            app.windows[win_c].focused_pane = Some(tile_c);
-            app.zoom.context_last_pane.insert(c, pid_c);
-
-            // Switch to origin context
-            app.switch_to_context_restoring_last_pane(root);
-            (root, b, c)
-        });
-        h.run_steps(3);
-
-        // Zoom out from origin to SiblingCards
-        h.with_app_mut(|app| {
-            app.zoom_out_or_close_surface();
-        });
-        h.run_steps(3);
-
-        // Verify origin marker is on origin_ctx
-        let (geom, ghost_cid) = h.with_app(|app| {
-            let geom: Option<crate::app::zoom::OriginMarkerGeometry> = app
-                .ctx
-                .data(|d| d.get_temp(egui::Id::new("sibling_cards_origin_marker_geometry")))
-                .flatten();
-            let ghost_cid = app.zoom.ghost.as_ref().map(|g| g.context_id);
-            (geom, ghost_cid)
-        });
-        assert_eq!(ghost_cid, Some(origin_ctx), "ghost must be on origin context");
-        let geom = geom.expect("origin marker geometry must be present");
-        assert!(
-            (geom.circle_center.y - (geom.text_pos.y + geom.text_size.y * 0.5)).abs() <= 1.0,
-            "circle center y and text center y must be vertically aligned"
-        );
-        assert!(
-            geom.circle_center.x + geom.circle_radius < geom.text_pos.x,
-            "circle must be to the left of text"
-        );
-
-        // Navigate with l to Sibling B
-        h.harness().key_press(egui::Key::L);
-        h.run_steps(3);
-        assert_eq!(h.with_app(|app| app.zoom.cards_focused_context), Some(sib_b));
-        // Marker still on origin_ctx!
-        assert_eq!(h.with_app(|app| app.zoom.ghost.as_ref().map(|g| g.context_id)), Some(origin_ctx));
-
-        // Navigate with l to Sibling C
-        h.harness().key_press(egui::Key::L);
-        h.run_steps(3);
-        assert_eq!(h.with_app(|app| app.zoom.cards_focused_context), Some(sib_c));
-        // Marker still on origin_ctx!
-        assert_eq!(h.with_app(|app| app.zoom.ghost.as_ref().map(|g| g.context_id)), Some(origin_ctx));
-
-        // Press Enter to open Sibling C
-        h.harness().key_press(egui::Key::Enter);
-        h.run_steps(3);
-        assert_eq!(h.with_app(|app| app.zoom.level), crate::app::zoom::ZoomLevel::Columns);
-        assert_eq!(h.with_app(|app| app.router.active().context_id), sib_c, "Enter must open selected context C");
-    }
 
     /// Stint 0988: Realistic screenshot verifying overflow, marker alignment and Reduce Motion behavior.
-    #[test]
-    fn screenshot_sibling_cards_overflow_marker_alignment_and_reduce_motion() {
-        for reduce_motion in [false, true] {
-            let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, 1.2);
-            let (_origin_ctx, target_ctx) = h.with_app_mut(|app| {
-                app.sidebar_visible = false;
-                let root = app.router.active().context_id;
-                let mut sibs = vec![root];
-                for i in 1..12 {
-                    let name = format!("service-{i:02}");
-                    let cid = app.create_context_without_pty(&name, None);
-                    let pid = app.host.alloc_pane_id();
-                    let win_idx = app.windows.len() - 1;
-                    let term = crate::host::pane::TerminalPane::new(
-                        pid,
-                        app.ctx.clone(),
-                        app.pty_event_tx.clone(),
-                        egui_term::BackendSettings {
-                            shell: "/bin/sh".into(),
-                            working_directory: Some(app.router.active().root.clone()),
-                            ..Default::default()
-                        },
-                        14.0,
-                    )
-                    .expect("spawn terminal");
-                    let win = &mut app.windows[win_idx];
-                    win.panes.insert(pid, Pane::Terminal(Box::new(term)));
-                    let tile = win.tree.tiles.insert_pane(pid);
-                    win.tree.root = Some(tile);
-                    win.focused_pane = Some(tile);
-                    app.zoom.context_last_pane.insert(cid, pid);
-                    sibs.push(cid);
-                }
 
-                // Switch back to root (origin)
-                app.switch_to_context_restoring_last_pane(root);
-                // Zoom out to SiblingCards
-                app.zoom_out_or_close_surface();
-                (root, sibs[6])
-            });
-            h.run_steps(4);
-
-            // Step 1: verify origin marker on origin card when visible
-            let origin_geom: Option<crate::app::zoom::OriginMarkerGeometry> = h.with_app(|app| {
-                app.ctx
-                    .data(|d| d.get_temp(egui::Id::new("sibling_cards_origin_marker_geometry")))
-                    .flatten()
-            });
-            let geom = origin_geom.expect("origin marker geometry must be recorded on origin context");
-            assert!(
-                (geom.circle_center.y - (geom.text_pos.y + geom.text_size.y * 0.5)).abs() <= 1.0,
-                "circle center and text center must be aligned"
-            );
-
-            let marker_path = format!("/tmp/plexi_sibling_cards_marker_rm_{reduce_motion}.png");
-            h.save_screenshot(&marker_path).unwrap();
-            assert!(std::path::Path::new(&marker_path).exists());
-            if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-                let _ = std::fs::remove_file(&marker_path);
-            }
-
-            // Step 2: Navigate to sibling 6 (causes overflow)
-            h.with_app_mut(|app| {
-                app.zoom.cards_focused_context = Some(target_ctx);
-            });
-            h.run_steps(4);
-
-            let (canvas, cards): (egui::Rect, Vec<(u64, egui::Rect, bool)>) = h.with_app(|app| {
-                app.ctx
-                    .data(|data| data.get_temp(egui::Id::new("sibling_cards_painted_geometry")))
-                    .expect("Cards geometry reported")
-            });
-            let selected = cards.iter().find(|(cid, _, _)| *cid == target_ctx).expect("target card painted");
-            assert!(selected.2, "selected card must have focus");
-            assert!(
-                (selected.1.center().x - canvas.center().x).abs() <= 1.0,
-                "selected card in overflow must be centered"
-            );
-            assert!(canvas.contains_rect(selected.1), "selected card must be wholly visible in canvas");
-
-            // Verify visual progress with reduce_motion
-            let progress = h.with_app(|app| app.zoom.visual_level_progress(reduce_motion));
-            assert_eq!(progress, 1.0, "visual progress at SiblingCards must be 1.0");
-
-            let overflow_path = format!("/tmp/plexi_sibling_cards_overflow_rm_{reduce_motion}.png");
-            h.save_screenshot(&overflow_path).unwrap();
-            assert!(std::path::Path::new(&overflow_path).exists());
-            if std::env::var("PLEXI_KEEP_SCREENSHOTS").is_err() {
-                let _ = std::fs::remove_file(&overflow_path);
-            }
-        }
-    }
 
     /// Stint 0989: Tree Atlas directional navigation follows top-down hierarchy:
     /// - up: parent
@@ -1941,6 +1516,7 @@ mod tests {
     /// uneven multi-root, leaf-root, and missing-parent fixtures.
     #[test]
     fn screenshot_tree_atlas_directional_navigation_hierarchy() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
         let mut h = PlexiUiHarness::new_sized(1440.0, 900.0);
         let tap_key = |h: &mut PlexiUiHarness, key: egui::Key, modifiers: egui::Modifiers| {
             h.harness().input_mut().events.push(egui::Event::Key {
@@ -2103,6 +1679,7 @@ mod tests {
 
     #[test]
     fn screenshot_ui_scale_atlas() {
+        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
         let scale = ui_scale_shot();
         let mut h = PlexiUiHarness::new_sized_scaled(1440.0, 900.0, scale);
         add_focused_pane(&mut h);
@@ -2280,9 +1857,10 @@ mod tests {
         h.save_screenshot(&evidence_png!("_view")).unwrap();
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Escape);
         h.run_steps(2);
-        // Cmd+Esc is the zoom-out ladder now: it leaves the column strip for
-        // the sibling cards rather than popping the conjoined view.
-        h.with_app(|app| assert_eq!(app.zoom.level, crate::app::zoom::ZoomLevel::SiblingCards));
+        h.with_app(|app| {
+            assert_eq!(app.zoom.level, crate::app::zoom::ZoomLevel::Columns);
+            assert!(app.router.active().parent_id.is_none());
+        });
     }
 
     fn wait_for_lineage_fixture(h: &mut PlexiUiHarness, panes: &[u64]) {

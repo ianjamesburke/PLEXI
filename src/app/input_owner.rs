@@ -41,8 +41,6 @@ pub(crate) enum OverlaySurface {
     DecisionOverlay,
     /// Attention queue list (`Cmd+I`).
     AttentionQueue,
-    /// Sibling context cards level (`ZoomLevel::SiblingCards`).
-    SiblingCards,
     /// Tree atlas level (`ZoomLevel::TreeAtlas`).
     TreeAtlas,
 }
@@ -64,7 +62,6 @@ impl PlexiApp {
         }
         match self.zoom.level {
             crate::app::zoom::ZoomLevel::Columns => None,
-            crate::app::zoom::ZoomLevel::SiblingCards => Some(OverlaySurface::SiblingCards),
             crate::app::zoom::ZoomLevel::TreeAtlas => Some(OverlaySurface::TreeAtlas),
         }
     }
