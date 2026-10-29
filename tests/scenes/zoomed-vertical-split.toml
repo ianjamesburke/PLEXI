@@ -5,6 +5,8 @@ sizes = [[1280.0, 800.0], [720.0, 600.0]]
 [[steps]]
 open = { kind = "builtin", id = "text-editor", as = "plan", args = ["{tmp}/plan.md"] }
 [[steps]]
+key = { target = "plan", value = "cmd+a" }
+[[steps]]
 paste = { target = "plan", value = "# Build plan\n\nSplit this fullscreen pane vertically into a subcontext.\n\nKeep these notes above the new shell.\n" }
 [[steps]]
 key = { target = "plan", value = "cmd+s" }
