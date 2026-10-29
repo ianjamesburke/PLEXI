@@ -197,15 +197,19 @@ Each value is a string like `"cmd+p"` or `"cmd+shift+w"`.
 | `navigate_down` | navigate down |
 | `navigate_up` | navigate up |
 | `navigate_right` | navigate right |
+| `select_pane_left` | Extend pane selection left (default Cmd+Shift+H). |
+| `select_pane_down` | Extend pane selection down (default Cmd+Shift+J). |
+| `select_pane_up` | Extend pane selection up (default Cmd+Shift+K). |
+| `select_pane_right` | Extend pane selection right (default Cmd+Shift+L). |
 | `new_tab` | new tab |
-| `next_tab` | next tab |
-| `prev_tab` | prev tab |
-| `next_context` | next context |
-| `prev_context` | prev context |
+| `next_tab` | Next tab (default Cmd+]). |
+| `prev_tab` | Previous tab (default Cmd+[). |
+| `next_context` | Next context (unbound by default). |
+| `prev_context` | Previous context (unbound by default). |
 | `move_context_up` | move context up |
 | `move_context_down` | move context down |
-| `nav_back` | nav back |
-| `focus_history_forward` | focus history forward |
+| `nav_back` | Pane navigation or focus history back (unbound by default). |
+| `focus_history_forward` | Focus history forward (unbound by default). |
 | `toggle_sidebar` | toggle sidebar |
 | `toggle_zoom` | toggle zoom |
 | `toggle_shortcuts` | toggle shortcuts |
@@ -365,7 +369,13 @@ ghost_opacity = 0.75
 # Manage with `plexi experiments list|enable|disable`. Global config only.
 # assistant = true
 
+# Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
+# Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.
 # [keybindings]
+# select_pane_left = "cmd+shift+h"
+# select_pane_down = "cmd+shift+j"
+# select_pane_up = "cmd+shift+k"
+# select_pane_right = "cmd+shift+l"
 # open_agents = "cmd+alt+a"
 # next_blocked_agent = "cmd+alt+b"
 # focus_approval = "cmd+alt+p"

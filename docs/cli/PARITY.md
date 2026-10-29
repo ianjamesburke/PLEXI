@@ -6,11 +6,13 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 
 | Action | CLI or waiver | Notes |
 |---|---|---|
-| `SplitHorizontal` | `plexi pane new --right` |  |
+| `SplitHorizontal` | `plexi pane new --right` | CLI creates a sibling directly. The zoomed desktop shortcut first wraps the pane into a child context. |
 | `SplitVertical` | `plexi pane new --down` |  |
 | `SplitRight` | `plexi pane new --right` | CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type. |
 | `SplitDown` | `plexi pane new --down` | CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type. |
 | `Navigate` | `plexi pane focus 42` | Select the destination by pane id rather than relative direction. |
+| `SelectPane` | ui-only: Extends the transient desktop selection highlight; selection gestures have no CLI state. |  |
+| `CancelPaneSelection` | ui-only: Clears transient desktop selection without changing pane ownership or layout. |  |
 | `ClosePane` | `plexi pane close 42` |  |
 | `NewTab` | `plexi pane new --tab` |  |
 | `SwitchContext` | `plexi context zoom 42` | CLI uses a stable context id rather than the sidebar index. |
@@ -45,7 +47,7 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `OpenAssistant` | `plexi app open assistant` |  |
 | `RenameContext` | `plexi context rename name --context-id 42` |  |
 | `ToggleAttentionQueue` | ui-only: Toggles the desktop attention queue list; agents inspect needs-you and notification records. |  |
-| `ZoomIn` | `plexi context zoom 42` | CLI targets an explicit context id; the shortcut steps in one level toward the ghost on the zoom ladder. |
+| `ZoomIn` | `plexi context zoom 42` | CLI targets an existing context id. The desktop shortcut also wraps multiple selected panes or toggles pane zoom; those selection gestures are UI-only. |
 | `ForceReloadApp` | ui-only: Developer recovery gesture for a focused app; normal source edits reload through the file watcher. |  |
 | `NewPageRight` | `plexi pane new --window` |  |
 | `NewContext` | `plexi context new name` |  |

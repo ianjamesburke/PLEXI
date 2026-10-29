@@ -798,6 +798,10 @@ impl PlexiApp {
         let Some(window) = self.windows.get(ctx_idx) else { return };
         let Some(Tile::Pane(pane_id)) = window.tree.tiles.get(tile_id) else { return };
         if !window.panes.contains_key(pane_id) { return; }
+        let window_id = window.window_id;
+        if self.host.pane_selection(window_id).is_some_and(|s| s.panes.contains(pane_id)) {
+            self.host.clear_pane_selection(window_id);
+        }
         self.observe_pane_spawns();
         // Resolved up front, before Phase 3 takes a mutable borrow of
         // `self.windows[ctx_idx]` that would otherwise conflict with a

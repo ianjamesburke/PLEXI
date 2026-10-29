@@ -1,0 +1,91 @@
+# Select three panes in a 2x2 layout, wrap them, then split a zoomed sibling.
+macos_only = true
+sizes = [[1280.0, 800.0], [720.0, 600.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "plan", args = ["{tmp}/plan.md"] }
+[[steps]]
+paste = { target = "plan", value = "# Build plan\n\nKeep the review outside this group.\n\n- Preserve the nested layout\n- Keep every pane running\n- Return through the portal\n" }
+[[steps]]
+key = { target = "plan", value = "cmd+s" }
+[[steps]]
+key = { target = "host", value = "cmd+d" }
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "review", args = ["{tmp}/review.md"] }
+[[steps]]
+paste = { target = "review", value = "# Review\n\nThis pane stays in the parent context.\n\nCheck the selection tint and the portal placement.\n" }
+[[steps]]
+key = { target = "review", value = "cmd+s" }
+[[steps]]
+focus = "plan"
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "notes", args = ["{tmp}/notes.md"] }
+[[steps]]
+paste = { target = "notes", value = "# Working notes\n\nThese notes belong with the plan and shell.\n\nThe left-hand stack should stay together.\n" }
+[[steps]]
+key = { target = "notes", value = "cmd+s" }
+[[steps]]
+focus = "plan"
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 4, context_count = 1 }
+[[steps]]
+key = { target = "host", value = "cmd+shift+j" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+k" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+l" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+j" }
+[[steps]]
+key = { target = "host", value = "cmd+enter" }
+[[steps]]
+assert = { pane_count = 4, context_count = 1 }
+[[steps]]
+assert_label = { target = "host", label = "Leave at least one pane outside the subcontext." }
+[[steps]]
+shot = "wrap-rejected.png"
+[[steps]]
+focus = "plan"
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+j" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+k" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+l" }
+[[steps]]
+shot = "wrap-selected.png"
+[[steps]]
+key = { target = "host", value = "cmd+enter" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 3, context_count = 2, portal_count = 1 }
+[[steps]]
+expect = { target = "plan", source_text_contains = "Build plan" }
+[[steps]]
+expect = { target = "notes", source_text_contains = "Working notes" }
+[[steps]]
+shot = "wrap-child.png"
+[[steps]]
+switch_context = 0
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 2, portal_count = 1 }
+[[steps]]
+shot = "wrap-parent.png"
+[[steps]]
+focus = "review"
+[[steps]]
+key = { target = "host", value = "cmd+enter" }
+[[steps]]
+key = { target = "host", value = "cmd+d" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 2, context_count = 3, portal_count = 2 }
+[[steps]]
+shot = "wrap-zoomed-split.png"

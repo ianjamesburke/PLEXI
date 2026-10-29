@@ -114,40 +114,19 @@ impl PlexiApp {
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[
-                                            &["\u{2318}", "\u{21E7}", "L"],
-                                            &["\u{2318}", "\u{21E7}", "H"],
-                                        ],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "]"], &["cmd", "["]], None, colors,
                                     );
                                     shortcut_description(ui, "Next / prev tab", colors);
                                     ui.end_row();
-
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[
-                                            &["\u{2318}", "\u{21E7}", "K"],
-                                            &["\u{2318}", "\u{21E7}", "J"],
-                                        ],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "shift", "H", "J", "K", "L"]], None, colors,
                                     );
-                                    shortcut_description(ui, "First / last tab", colors);
+                                    shortcut_description(ui, "Extend pane selection", colors);
                                     ui.end_row();
-
                                     crate::ui::shortcuts::key_combo_list(
-                                        ui,
-                                        &[&["\u{2318}", "["], &["\u{2318}", "]"]],
-                                        None,
-                                        colors,
+                                        ui, &[&["cmd", "enter"]], None, colors,
                                     );
-                                    shortcut_description(
-                                        ui,
-                                        "Focus history back / forward",
-                                        colors,
-                                    );
+                                    shortcut_description(ui, "Wrap selection / zoom / enter portal", colors);
                                     ui.end_row();
 
                                     crate::ui::shortcuts::key_combo_list(

@@ -74,7 +74,13 @@ ghost_opacity = 0.75
 # Manage with `plexi experiments list|enable|disable`. Global config only.
 # assistant = true
 
+# Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
+# Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.
 # [keybindings]
+# select_pane_left = "cmd+shift+h"
+# select_pane_down = "cmd+shift+j"
+# select_pane_up = "cmd+shift+k"
+# select_pane_right = "cmd+shift+l"
 # open_agents = "cmd+alt+a"
 # next_blocked_agent = "cmd+alt+b"
 # focus_approval = "cmd+alt+p"

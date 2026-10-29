@@ -164,3 +164,59 @@ fn rebound_command_palette_toggle_also_dismisses_the_palette() {
         "rebound chord must dismiss the palette it opened"
     );
 }
+
+#[test]
+fn selection_chords_replace_tab_and_context_defaults() {
+    let table = default_table();
+    for (key, direction) in [
+        (egui::Key::H, Direction::Left),
+        (egui::Key::J, Direction::Down),
+        (egui::Key::K, Direction::Up),
+        (egui::Key::L, Direction::Right),
+    ] {
+        let matched: Vec<_> = table
+            .iter()
+            .filter(|entry| {
+                entry.key == key
+                    && entry.modifiers == (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT)
+            })
+            .collect();
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].action, Action::SelectPane(direction));
+        assert!(matched[0].exact);
+    }
+    for (action, key) in [
+        (Action::NextTab, egui::Key::CloseBracket),
+        (Action::PrevTab, egui::Key::OpenBracket),
+    ] {
+        let entry = table.iter().find(|entry| entry.action == action).unwrap();
+        assert_eq!(entry.key, key);
+        assert_eq!(entry.modifiers, egui::Modifiers::COMMAND);
+    }
+    for action in [
+        Action::NextContext,
+        Action::PrevContext,
+        Action::NavBackApp,
+        Action::FocusHistoryForward,
+    ] {
+        assert!(!table.iter().any(|entry| entry.action == action));
+    }
+    let overrides = crate::config::KeybindingsConfig {
+        next_context: Some("alt+j".into()),
+        prev_context: Some("alt+k".into()),
+        nav_back: Some("alt+h".into()),
+        focus_history_forward: Some("alt+l".into()),
+        ..Default::default()
+    };
+    let table = build_binding_table(&build_key_bindings(Some(&overrides)));
+    for action in [
+        Action::NextContext,
+        Action::PrevContext,
+        Action::NavBackApp,
+        Action::FocusHistoryForward,
+    ] {
+        assert!(table
+            .iter()
+            .any(|entry| entry.action == action && entry.modifiers.alt));
+    }
+}

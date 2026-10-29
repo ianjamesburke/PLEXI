@@ -15,6 +15,7 @@ pub(crate) mod create;
 mod events;
 mod layout;
 mod workspace;
+mod wrap;
 
 pub(crate) use create::cli_open_placement;
 #[cfg(test)]

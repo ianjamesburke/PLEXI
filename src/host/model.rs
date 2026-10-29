@@ -11,8 +11,7 @@ pub struct HostPane {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HostContext {
     pub panes: Vec<HostPane>,
     pub focused_pane: Option<PaneId>,
@@ -24,10 +23,16 @@ pub struct HostContext {
     pub parent_id: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneSelection {
+    pub anchor: PaneId,
+    pub panes: Vec<PaneId>,
+}
 
 #[derive(Debug, Default)]
 pub struct HostModel {
     contexts: Vec<HostContext>,
+    pane_selections: HashMap<u64, PaneSelection>,
     active_context: usize,
     next_pane_id: PaneId,
     pub(crate) pane_lifecycle: HashMap<PaneId, crate::host::pane_lifecycle::PaneLifecycleState>,
@@ -45,9 +50,40 @@ pub(crate) struct PublishedStripSnapshot {
 }
 
 impl HostModel {
+    pub(crate) fn pane_selection(&self, window: u64) -> Option<&PaneSelection> {
+        self.pane_selections.get(&window)
+    }
+
+    pub(crate) fn extend_pane_selection(&mut self, window: u64, start: PaneId, next: PaneId) {
+        let selection = self
+            .pane_selections
+            .entry(window)
+            .or_insert_with(|| PaneSelection {
+                anchor: start,
+                panes: vec![start],
+            });
+        if !selection.panes.contains(&next) {
+            selection.panes.push(next);
+        }
+        log::info!(
+            "pane_selection: window={window} anchor={} panes={:?}",
+            selection.anchor,
+            selection.panes
+        );
+    }
+
+    pub(crate) fn clear_pane_selection(&mut self, window: u64) -> Option<PaneSelection> {
+        let selection = self.pane_selections.remove(&window);
+        if selection.is_some() {
+            log::info!("pane_selection: cleared window={window}");
+        }
+        selection
+    }
+
     pub fn new() -> Self {
         let mut model = Self {
             contexts: vec![HostContext::default()],
+            pane_selections: HashMap::new(),
             active_context: 0,
             next_pane_id: 1,
             pane_lifecycle: HashMap::new(),
@@ -174,7 +210,10 @@ impl HostModel {
 
     /// Commit a reserved split identity after its runtime has been created.
     pub(crate) fn commit_split_pane(&mut self, pane_id: PaneId) {
-        self.context_mut().panes.push(HostPane { id: pane_id, group: None });
+        self.context_mut().panes.push(HostPane {
+            id: pane_id,
+            group: None,
+        });
         self.context_mut().focused_pane = Some(pane_id);
     }
 
@@ -301,21 +340,38 @@ impl HostModel {
 
     /// Return the latest presentation snapshot for `context_id`.
     pub fn strip_layout(&self, context_id: u64) -> Option<&crate::strip::StripLayout> {
-        self.strip_layouts.get(&context_id).map(|snapshot| &snapshot.layout)
+        self.strip_layouts
+            .get(&context_id)
+            .map(|snapshot| &snapshot.layout)
     }
 
-    pub(crate) fn published_strip_snapshot(&self, context_id: u64) -> Option<&PublishedStripSnapshot> {
+    pub(crate) fn published_strip_snapshot(
+        &self,
+        context_id: u64,
+    ) -> Option<&PublishedStripSnapshot> {
         self.strip_layouts.get(&context_id)
     }
 
     /// Store the latest presentation snapshot for `context_id`.
     pub fn set_strip_layout(&mut self, context_id: u64, layout: crate::strip::StripLayout) {
-        let Some(strip) = self.strips.get(&context_id) else { return };
+        let Some(strip) = self.strips.get(&context_id) else {
+            return;
+        };
         let generation = self.strip_layouts.get(&context_id).map_or(1, |previous| {
-            if previous.layout == layout && previous.strip == *strip { previous.generation }
-            else { previous.generation.saturating_add(1) }
+            if previous.layout == layout && previous.strip == *strip {
+                previous.generation
+            } else {
+                previous.generation.saturating_add(1)
+            }
         });
-        self.strip_layouts.insert(context_id, PublishedStripSnapshot { generation, strip: strip.clone(), layout });
+        self.strip_layouts.insert(
+            context_id,
+            PublishedStripSnapshot {
+                generation,
+                strip: strip.clone(),
+                layout,
+            },
+        );
     }
 }
 

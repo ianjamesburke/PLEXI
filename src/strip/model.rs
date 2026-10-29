@@ -349,6 +349,39 @@ impl Strip {
         true
     }
 
+    /// Extract selected panes in column/row order, retaining widths and height shares.
+    pub fn extract_panes(
+        &mut self,
+        selected: &std::collections::HashSet<PaneId>,
+        context_id: u64,
+    ) -> Self {
+        let mut extracted = Self::new(context_id);
+        extracted.reference_width_px = self.reference_width_px;
+        extracted.reference_gap_px = self.reference_gap_px;
+        for column in &self.columns {
+            let mut kept = column.clone();
+            let excluded: Vec<_> = column
+                .panes
+                .iter()
+                .copied()
+                .filter(|id| !selected.contains(id))
+                .collect();
+            for id in excluded {
+                kept.remove_pane(id);
+            }
+            if !kept.panes.is_empty() {
+                extracted.push_column(kept);
+            }
+        }
+        if let Some(focused) = self.focused_pane.filter(|id| selected.contains(id)) {
+            extracted.focus_pane(focused);
+        }
+        for id in selected {
+            self.remove_pane(*id);
+        }
+        extracted
+    }
+
     /// Find column index containing `pane_id`.
     pub fn find_column_for_pane(&self, pane_id: PaneId) -> Option<usize> {
         self.columns
