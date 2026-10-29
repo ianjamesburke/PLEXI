@@ -177,10 +177,7 @@ pub(crate) fn insert_split_tile(
     };
     let mut target = raw_target;
     while let Some(parent_id) = tree.tiles.parent_of(target) {
-        let promote = match tree.tiles.get(parent_id) {
-            Some(Tile::Container(Container::Tabs(_))) => true,
-            _ => false,
-        };
+        let promote = matches!(tree.tiles.get(parent_id), Some(Tile::Container(Container::Tabs(_))));
         if !promote { break; }
         target = parent_id;
     }

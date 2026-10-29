@@ -1,6 +1,6 @@
 //! Legacy workspace metadata compatibility and persistence regressions.
 
-use crate::strip::{layout_strip, ColumnWidth, StripViewport};
+use crate::strip::ColumnWidth;
 use crate::testing::HostHarness;
 use egui_tiles::{Container, Tile};
 
@@ -27,11 +27,10 @@ fn regression_authoritative_strip_model_matches_host() {
     assert_eq!(strip.columns[0].width, ColumnWidth::CustomRatio(0.40));
     assert_eq!(strip.focused_pane, Some(p2));
 
-    let vp = StripViewport::default();
-    let layout = layout_strip(&strip, &vp);
+    let layout = h.app.active_strip_layout();
     assert_eq!(layout.panes.len(), 3);
-    assert_eq!(layout.dividers.len(), 2); // 1 column divider + 1 vertical stack divider
-    assert!(layout.focus_frame.is_some());
+    assert!(layout.panes.iter().all(|pane| pane.is_visible));
+
 }
 
 /// Stint 1039 baseline-red regression:
@@ -91,7 +90,8 @@ fn stack_shares_survive_split_and_close_by_pane_identity() {
     h.run_frames(2);
     let strip = h.app.strip_for_context(context);
     for (pane, expected) in [(first, 2.0), (second, 3.0)] {
-        let (col, row) = strip.find_pane_position(pane).unwrap();
+        let col = strip.find_column_for_pane(pane).unwrap();
+        let row = strip.columns[col].panes.iter().position(|id| *id == pane).unwrap();
         assert_eq!(strip.columns[col].heights[row], expected, "share after split pane={pane}");
     }
     assert_eq!(h.app.focused_pane_id(), Some(inserted));
@@ -99,7 +99,8 @@ fn stack_shares_survive_split_and_close_by_pane_identity() {
     h.run_frames(2);
     let strip = h.app.strip_for_context(context);
     for (pane, expected) in [(first, 2.0), (second, 3.0)] {
-        let (col, row) = strip.find_pane_position(pane).unwrap();
+        let col = strip.find_column_for_pane(pane).unwrap();
+        let row = strip.columns[col].panes.iter().position(|id| *id == pane).unwrap();
         assert_eq!(strip.columns[col].heights[row], expected, "share after close pane={pane}");
     }
 }
@@ -119,7 +120,8 @@ fn saved_strip_restores_width_scroll_and_focus() {
         let strip = h.app.ensure_authoritative_strip(context);
         strip.columns[0].width = ColumnWidth::CustomPixels(500.0);
         strip.columns[1].width = ColumnWidth::CustomPixels(700.0);
-        strip.set_scroll_offset_px(200.0, Some(600.0));
+        strip.scroll_offset_px = 200.0;
+        strip.reference_width_px = Some(600.0);
     }
     let expected = h.app.strip_for_context(context);
     let profile = h.profile_dir().to_path_buf();
@@ -187,7 +189,8 @@ fn restored_strip_keeps_scroll_after_first_frame() {
     {
         let strip = h.app.ensure_authoritative_strip(context);
         for column in &mut strip.columns { column.width = ColumnWidth::CustomPixels(700.0); }
-        strip.set_scroll_offset_px(450.0, Some(canvas));
+        strip.scroll_offset_px = 450.0;
+        strip.reference_width_px = Some(canvas);
     }
     let expected = h.app.strip_for_context(context).scroll_offset_px;
     let profile = h.profile_dir().to_path_buf();

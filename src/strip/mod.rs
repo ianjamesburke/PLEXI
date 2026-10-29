@@ -1,8 +1,5 @@
-//! Authoritative Niri-style scrolling column strip model and layout engine (`SPEC.md` R31–R36, R40, R42).
-//!
-//! Provides the tested authority boundary for strip state:
-//! - Columns, stacks, widths, and focus
-//! - Pure layout calculations for panes, dividers, peeks, and focus frames
+//! Legacy workspace metadata and the pane geometry snapshot exposed by the host.
+//! Live layout is computed by each window's tile tree.
 
 pub mod layout;
 pub mod model;
@@ -10,5 +7,5 @@ pub mod model;
 #[cfg(test)]
 pub mod tests;
 
-pub use layout::{layout_strip, StripLayout, StripViewport};
+pub use layout::{StripLayout, StripViewport};
 pub use model::{Column, ColumnId, ColumnWidth, Strip};

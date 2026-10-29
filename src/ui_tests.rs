@@ -6339,7 +6339,6 @@ mod tests {
         println!("Screenshot saved to {}", evidence_png!());
     }
 
-
     #[test]
     fn screenshot_state_presets_and_attention_styles() {
         use crate::protocol::AgentState;
@@ -9905,10 +9904,6 @@ mod tests {
         });
     }
 
-
-
-
-
     #[derive(Default)]
     struct StripWheelSnapshot { offset: egui::Vec2, raw_y: f32, keys: usize }
     struct StripWheelFixture { horizontal: bool, state: Arc<std::sync::Mutex<StripWheelSnapshot>> }
@@ -9970,10 +9965,6 @@ mod tests {
             assert!((h.with_app(|app| app.active_strip_layout().scroll_offset_px) - before).abs() < 0.5, "pane control must consume its gesture");
         }
     }
-
-
-
-
 
     #[test]
     fn screenshot_populated_tiled_windows() {
@@ -10118,10 +10109,6 @@ mod tests {
         });
         assert_eq!(heights, vec![1.5, 1.5, 4.0]);
     }
-
-
-
-
 
     #[test]
     fn tiled_nested_editors_pointer_input_and_screenshots() {

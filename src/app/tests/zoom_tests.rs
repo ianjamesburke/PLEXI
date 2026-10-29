@@ -117,9 +117,6 @@ fn ghost_restore_falls_back_when_origin_pane_closed_r31() {
 /// R32: Niri-style column strip navigation (`Cmd+H/L` across columns, `Cmd+J/K` within a vertical stack),
 /// per-column last-focused pane memory, viewport scrolling (`strip_offsets`), and edge bumps without wrapping.
 
-
-
-
 /// R33: Fixed column width presets (`35%` parent / `65%` child) and tile content tiers.
 #[test]
 fn column_width_presets_and_tile_content_tiers_r33() {
@@ -584,10 +581,14 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     h.app.focus_pane_in_strip(p1);
 
     // At ZoomLevel::Columns with no overlay open: focused visible pane p1 qualifies for input;
-    // unfocused p2 and off-screen clipped p3 do not.
+    // unfocused p2 and p3 do not.
     assert!(h.app.pane_qualifies_for_input(p1));
     assert!(!h.app.pane_qualifies_for_input(p2));
     assert!(!h.app.pane_qualifies_for_input(p3));
+    h.app.windows[0].panes.get_mut(&p1).unwrap().set_hidden(true);
+    assert!(!h.app.pane_qualifies_for_input(p1));
+    h.app.windows[0].panes.get_mut(&p1).unwrap().set_hidden(false);
+    assert!(h.app.pane_qualifies_for_input(p1));
 
     // When AttentionQueue list is open: no pane qualifies for input.
     h.app.toggle_attention_queue_list();

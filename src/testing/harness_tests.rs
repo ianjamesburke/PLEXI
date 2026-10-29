@@ -15416,8 +15416,6 @@ mod program_status_agent {
     }
 }
 
-
-
 #[cfg(test)]
 mod tiled_navigation_frame_tests {
     use super::*;
@@ -15444,26 +15442,6 @@ mod tiled_navigation_frame_tests {
         h.run_frames(6);
         terminals
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn swap_pane_uses_geometric_neighbors_and_keeps_focus() {

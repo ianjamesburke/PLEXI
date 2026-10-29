@@ -1,4 +1,4 @@
-//! Zoom Ladder, Niri-Style Scrolling Column Strip, Sibling Context Cards, and Tree Atlas
+//! Tiled windows, zoom ladder, sibling context cards, and tree atlas.
 //! (`SPEC.md` R31–R36, R40, R42).
 
 use crate::app::app_trait::KeyDisposition;
@@ -22,7 +22,7 @@ const SIBLING_BODY_MIN_H: f32 = 120.0;
 /// The three zoom levels on the ladder (`SPEC.md` § Levels).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ZoomLevel {
-    /// Default level inside a context: Niri-style scrolling column strip.
+    /// Default tiled window view inside a context. The serialized name is retained.
     /// The ONLY level where a pane takes keyboard input.
     #[default]
     Columns,
@@ -643,8 +643,7 @@ impl PlexiApp {
         }
     }
 
-    /// True if `pane_id` is the focused strip pane and no overlay owns input.
-    /// A manually scrolled-out pane keeps ownership until the next key reveals it.
+    /// True if the focused, visible pane in the active window can receive input.
     pub fn pane_qualifies_for_input(&self, pane_id: PaneId) -> bool {
         if self.zoom.level != ZoomLevel::Columns {
             return false;
@@ -662,7 +661,7 @@ impl PlexiApp {
             return true;
         }
         self.windows.get(self.active_window).is_some_and(|window| {
-            window.panes.contains_key(&pane_id)
+            window.panes.get(&pane_id).is_some_and(|pane| !pane.is_hidden())
                 && window.tree.tiles.find_pane(&pane_id).is_some_and(|tile| window.tree.active_tiles().contains(&tile))
         })
     }
@@ -1861,9 +1860,6 @@ impl PlexiApp {
         }
         log::info!("strip: column width updated context={context_id} col={col_idx} ratio={r:.3}");
     }
-
-    /// Reset column widths in `context_id` back to default presets.
-
 
     /// Build or reconcile the authoritative `Strip` model for `context_id` against live windows.
     pub fn strip_for_context(&self, context_id: u64) -> crate::strip::Strip {
