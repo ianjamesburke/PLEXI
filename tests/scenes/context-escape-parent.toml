@@ -9,7 +9,11 @@ paste = { target = "plan", value = "# Context navigation\n\nCmd+Escape returns t
 [[steps]]
 key = { target = "plan", value = "cmd+s" }
 [[steps]]
-key = { target = "host", value = "cmd+d" }
+open = { kind = "builtin", id = "text-editor", as = "overview", args = ["{tmp}/overview.md"] }
+[[steps]]
+paste = { target = "overview", value = "# Root overview\n\nThis note stays at the root.\nCmd+Escape stops here.\n" }
+[[steps]]
+key = { target = "overview", value = "cmd+s" }
 [[steps]]
 focus = "plan"
 [[steps]]
@@ -17,7 +21,11 @@ push_to_subcontext = "Work"
 [[steps]]
 assert = { pane_count = 1, context_count = 2 }
 [[steps]]
-key = { target = "host", value = "cmd+d" }
+open = { kind = "builtin", id = "text-editor", as = "work", args = ["{tmp}/work.md"] }
+[[steps]]
+paste = { target = "work", value = "# Working context\n\nThe detail lives one level below.\nCmd+Escape returns here first.\n" }
+[[steps]]
+key = { target = "work", value = "cmd+s" }
 [[steps]]
 focus = "plan"
 [[steps]]
@@ -42,3 +50,9 @@ key = { target = "host", value = "cmd+escape" }
 assert = { pane_count = 2, context_count = 3 }
 [[steps]]
 shot = "context-root-stays.png"
+[[steps]]
+key = { target = "host", value = "cmd+/" }
+[[steps]]
+assert_label = { target = "host", label = "Go to parent context" }
+[[steps]]
+shot = "context-shortcuts.png"
