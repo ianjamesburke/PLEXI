@@ -1,0 +1,32 @@
+# Plexi
+
+> Plexi is a tiling terminal for vibecoding: an agent cockpit with terminal sessions and local apps in one workspace.
+
+Run your terminal-based coding agents beside shells, notes, and small tools. Plexi provides panes, project contexts, agent status hooks, and a CLI for controlling the host. Agents use their own provider accounts or API keys; Plexi does not supply a model subscription. Local apps can be built with the Python SDK.
+
+Install on macOS using the command from the download page:
+
+```sh
+curl -fsSL https://plexiapp.com/install | bash
+```
+
+See the download page for current platform availability and release guidance.
+
+## Start here
+
+- [Plexi](https://plexiapp.com/): Product overview.
+- [Download](https://plexiapp.com/download): Install command and release guidance.
+- [Getting started](https://plexiapp.com/docs/getting-started): Installation, first session, and channels.
+
+## Documentation
+
+- [Docs](https://plexiapp.com/docs): Documentation index.
+- [Panes](https://plexiapp.com/docs/panes): Splits and keyboard navigation.
+- [CLI](https://plexiapp.com/docs/cli): Host commands, agent tools, and status reporting.
+- [Local apps](https://plexiapp.com/docs/apps): Create and open apps inside Plexi.
+- [Python SDK](https://plexiapp.com/docs/sdk): App authoring reference.
+
+## Optional
+
+- [Blog](https://plexiapp.com/blog): Published writing from the build.
+- [Source](https://github.com/ianjamesburke/PLEXI): Source code and releases.
