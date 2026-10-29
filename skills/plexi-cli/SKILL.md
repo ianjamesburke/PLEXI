@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "6.1.3"
+skill_version: "6.1.4"
 plexi_version: "0.4.0"
 last_verified: "2026-10-26"
 disable-model-invocation: true
@@ -183,10 +183,11 @@ sharing a capacity limit.
 ## Draft a workflow from a session
 
 The host captures CLI argv with caller pane, agent session, timestamps and the
-CLI exit code. Secret-setting values, secret options, known secret names and
-uppercase environment assignments such as `API_KEY=value` are redacted before
-recording. Ordinary grants such as `agents.ping=allow` remain readable. Interrupted calls, including a host shutdown,
-retain an unknown exit status. This diagnostic trace is not an authorization log.
+CLI exit code. [Logging for app developers](https://plexiapp.com/docs/apps/#logging)
+describes content and secret redaction and the content-capture opt-in. Ordinary
+grants such as `agents.ping=allow` remain readable. Interrupted calls, including
+a host shutdown, retain an unknown exit status. This diagnostic trace is not an
+authorization log.
 
 ```bash
 plexi debug session show --cli
@@ -391,7 +392,7 @@ pane count (`--json` is supported).
 - `plexi agent message`: Reply through a child agent's structured mailbox
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
 - `plexi agent start`: Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
-- `plexi agent spawn`: Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
+- `plexi agent spawn`: Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly
 - `plexi agent result`: Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`)
 - `plexi agent wait`: Wait for one or more child agent panes to finish via `plexi agent done` and pull their results

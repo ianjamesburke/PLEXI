@@ -805,12 +805,15 @@ test("Stint 1026: orient reports registered agents from the one gather it alread
     if (cmd === "agent list") {
       return {
         exitCode: 0,
-        stdout: JSON.stringify([
-          { name: "default", tier: "built-in", harness: "pi" },
-          { name: "paul", display_name: "Paul", tier: "global", harness: "claude" },
-          { name: "paul", display_name: "Paul", tier: "workspace", harness: "pi" },
-          { name: "researcher", display_name: "Researcher", tier: "workspace", harness: "pi" },
-        ]),
+        stdout: JSON.stringify({
+          agents: [
+            { name: "default", tier: "built-in", harness: "pi" },
+            { name: "paul", display_name: "Paul", tier: "global", harness: "claude" },
+            { name: "paul", display_name: "Paul", tier: "workspace", harness: "pi" },
+            { name: "researcher", display_name: "Researcher", tier: "workspace", harness: "pi" },
+          ],
+          unrecognised_agent_directories: [],
+        }),
         stderr: "",
       };
     }

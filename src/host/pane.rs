@@ -1120,11 +1120,10 @@ impl TerminalPane {
             self.last_resumed_command = Some(resume_cmd.clone());
         }
         log::info!(
-            "standby: resumed agent pane {} harness={} session_id={:?} cmd={:?}",
+            "standby: resumed agent pane {} harness={} session_id={:?}",
             self.id,
             standby.harness,
-            standby.session_id,
-            cmd
+            standby.session_id
         );
         Some(cmd.unwrap_or(standby.harness))
     }

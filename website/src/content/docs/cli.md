@@ -563,13 +563,16 @@ Disable a routine without deleting it (sets `enabled = false`; it never fires un
 Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
 
 An agent is a directory containing `AGENT.md` (persona / system prompt) and
-`settings.toml` (`[agent]` metadata + `[harness]` CLI worker config).
+`settings.toml` (`[agent]` metadata + a `[harness]` table naming the CLI the agent runs on).
 
 Two tiers exist, and workspace definitions shadow global ones with the same name:
 - Workspace: `<workspace>/.plexi/agents/<name>/`
 - Global:    `~/.plexi-<channel>/agents/<name>/` (pass `--global` to `create`)
 
-End-to-end worker workflow:
+The agent model — harness vs agent, identity vs authority, lifetimes — is documented in
+`src/agent/AGENTS.md`.
+
+End-to-end agent workflow:
 plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest \
 --persona "You are a researcher." \
 --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'
@@ -578,7 +581,7 @@ plexi agent wait "$PANE" --timeout 300
 
 `agent start` without a first message and task-seeded `agent spawn` are both interactive adapter launches;
 only an explicitly configured Script job is one-shot.
-Spawn returns immediately with a pane id, before the worker is done.
+Spawn returns immediately with a pane id, before the agent is done.
 Wait in bounded slices with `plexi agent wait` without capture/send polling.
 Exit 0 means done; exit 2 means report progress and re-run the same wait;
 exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
@@ -596,7 +599,7 @@ exit 1 is an error to inspect. Never use one long wait or respawn on timeout.
 | `message` | Reply through a child agent's structured mailbox |
 | `handoff` | Transfer the current task to a permitted successor role |
 | `start` | Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
-| `spawn` | Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
+| `spawn` | Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global) |
 | `done` | Validate a worker's structured result against its schema, write completion slots, and exit cleanly |
 | `result` | Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`) |
 | `wait` | Wait for one or more child agent panes to finish via `plexi agent done` and pull their results |
@@ -709,7 +712,7 @@ result_schema = '{"type":"object","required":["answer"],"properties":{"answer":{
 | `--persona` | string | no | Inline persona text written to `AGENT.md` (mutually exclusive with `--persona-file`) |
 | `--persona-file` | string | no | Path to a markdown file whose contents are written to `AGENT.md` (mutually exclusive with `--persona`) |
 | `--result-schema` | string | no | Optional JSON Schema string or path to a schema file enforced on `plexi agent done` |
-| `--ephemeral` | flag | no | Auto-close the worker pane on clean exit (`0`) |
+| `--ephemeral` | flag | no | Auto-close the agent's pane on clean exit (`0`) |
 | `--display-name` | string | no | Human-facing display name in `[agent]` (defaults to `<name>`) |
 | `--global` | flag | no | Write to the global profile registry (`~/.plexi-<channel>/agents/<name>/`) instead of the workspace |
 | `--cwd` | string | no | Directory used to resolve the workspace root (defaults to current working directory) |
@@ -796,7 +799,7 @@ Example: plexi agent start researcher
 
 ### `plexi agent spawn`
 
-Spawn a CLI worker agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
+Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global).
 
 Loads `<name>` through `AgentRegistry` (workspace shadowing global), refuses agents without a `[harness]` table, composes the CLI command with persona and `# Plexi worker contract`, and launches the worker pane. Codex workers (including calls and team members) use `codex --sandbox workspace-write -c sandbox_workspace_write.network_access=true`. They can write in their workspace and use the network; Plexi adds no profile writable root.
 
@@ -817,7 +820,7 @@ Example: plexi agent spawn researcher --task "Audit auth module" --subcontext au
 
 Validate a worker's structured result against its schema, write completion slots, and exit cleanly.
 
-Validates `--result` against the pane's `result_schema` (when present), writes the `completed` and `summary` pane slots, and transitions the pane to `Idle` so an ephemeral worker can exit `0` and trigger sub-context auto-collapse.
+Validates `--result` against the pane's `result_schema` (when present), writes the `completed` and `summary` pane slots, and transitions the pane to `Idle` so an ephemeral run can exit `0` and trigger sub-context auto-collapse.
 
 Example: plexi agent done --result '{"status":"pass"}' --summary "Auth audit complete"
 
@@ -1932,7 +1935,7 @@ Defaults to `PLEXI_PANE_ID`. With `--timeout N` or `--wait`, blocks host-side wi
 
 Read a pane's validated structured result.
 
-Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`). The worker agent returns its structured JSON once via `plexi agent done --result <json>`: the host validates it against the declared schema synchronously and rejects malformed or schema-violating payloads back to the agent (exit 1 with the validation error) so the agent can self-correct before any consumer sees it.
+Spawners declare the JSON Schema at spawn (`plexi pane new --result-schema <schema>`). The agent returns its structured JSON once via `plexi agent done --result <json>`: the host validates it against the declared schema synchronously and rejects malformed or schema-violating payloads back to the agent (exit 1 with the validation error) so the agent can self-correct before any consumer sees it.
 
 Reading via `plexi pane result <id>` (or `plexi pane result read <id>`) prints the validated JSON object to stdout and exits 0, or exits 2 with `error_code: "no_result_yet"` when no result has been written yet (or on `--wait` timeout), or exits 1 with `error_code: "invalid_result"` when the last attempted write was rejected and no valid result has been committed yet.
 

@@ -277,7 +277,13 @@ impl EventLog {
     /// `ScopeOrigin`/context-root it already resolved nearby (this function
     /// performs no resolution of its own). Non-blocking — drops the event
     /// (incrementing `dropped_count`) if the channel is at capacity.
-    pub fn emit_scoped(&self, event: HostEvent, context_root: Option<&std::path::Path>) {
+    pub fn emit_scoped(&self, mut event: HostEvent, context_root: Option<&std::path::Path>) {
+        // Terminal OSC titles can contain shell input, and the pane name may
+        // have been derived from that same title. Keep both out of files.
+        if let HostEvent::FocusChanged { pty_title, pane_name, .. } = &mut event {
+            *pty_title = None;
+            *pane_name = None;
+        }
         let source = format!("plexi/{}", env!("CARGO_CRATE_NAME"));
         let envelope = EventEnvelope { source, event };
         let msg = EmitMessage {
@@ -431,6 +437,26 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn focus_event_file_redacts_terminal_and_pane_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let log = EventLog::new(path.clone());
+        let sentinel = "SENTINEL_0948_OSC_SECRET";
+        log.emit_scoped(HostEvent::FocusChanged {
+            pane_id: 42, context_name: "work".into(), context_description: String::new(),
+            context_root: None, cwd: None, pty_title: Some(sentinel.into()),
+            pane_name: Some(sentinel.into()), app_type_id: None, reason: Some("shutdown".into()),
+            duration_secs: 3, timestamp: now_timestamp(),
+        }, None);
+        let rows = wait_for_line(&path);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0]["pty_title"].is_null());
+        assert!(rows[0]["pane_name"].is_null());
+        assert_eq!(rows[0]["pane_id"], 42);
+        assert!(!std::fs::read_to_string(path).unwrap().contains(sentinel));
     }
 
     /// Stint 0724 Phase E: per-record attribution replaces the old

@@ -538,7 +538,7 @@ impl PublishClient {
             return Err(PublishError::NotConfigured);
         };
         log::info!(
-            "marketplace: submitting '{}' v{} to {url}",
+            "marketplace: submitting '{}' v{}",
             submission.entry.id,
             submission.entry.version
         );
@@ -553,7 +553,7 @@ impl PublishClient {
         let text = resp
             .into_string()
             .map_err(|e| PublishError::Upload(e.to_string()))?;
-        log::info!("marketplace: submission accepted: {text}");
+        log::info!("marketplace: submission accepted response_bytes={}", text.len());
         Ok(SubmissionState::Submitted)
     }
 }

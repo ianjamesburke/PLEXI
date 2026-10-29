@@ -320,11 +320,11 @@ where
         let step_num = idx + 1;
         let rendered = substitute_step_args(raw_step, extra_args);
         let parsed = parse_step(&rendered);
-        log::info!("commands: running step {step_num}/{total}: {rendered}");
+        log::info!("commands: running step={step_num}/{total} command_chars={}", rendered.chars().count());
         let code = runner(step_num, &rendered, &parsed);
         if code != 0 {
             let msg = format!("step {step_num}/{total} failed: {rendered} (exit {code})");
-            log::warn!("commands: {msg}");
+            log::warn!("commands: failed step={step_num}/{total} exit={code}");
             eprintln!("error: {msg}");
             return StepRunReport {
                 exit_code: code,

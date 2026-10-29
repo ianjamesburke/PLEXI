@@ -6,11 +6,12 @@ description: "Operate a live Plexi workspace from Pi: resolve registered agents 
 # Plexi Workspace Skill for Pi
 
 Use the installed `plexi-cli` skill (or its channel-specific `plexi-cli-<channel>`
-name) for CLI commands, channel routing, agent creation and bounded worker waits.
-Install it with `plexi skill install --agent pi` if it is missing.
+name) for CLI commands, channel routing, agent creation and bounded agent waits.
+Install it with `plexi skill install --agent pi` if it is missing. For what an agent
+is — harness vs agent, identity vs authority, lifetimes — see `src/agent/AGENTS.md`.
 
 When the registered `plexi_*` tools are available, use them for workspace and
-app operations. Print-mode workers may have extensions disabled; follow the
+app operations. Print-mode agents may have extensions disabled; follow the
 CLI workflows in `plexi-cli` in that case.
 
 1. **Orient first**:
@@ -41,6 +42,6 @@ CLI workflows in `plexi-cli` in that case.
 
 For a registry role with `can_call` or `can_handoff`, the extension registers
 `agent_call_<role>`, `agent_message`, and `agent_handoff` from that role's
-allowlists. Isolated Pi workers must explicitly include the extension in their
+allowlists. Isolated Pi agents must explicitly include the extension in their
 harness `extensions` list to use these tools. Follow `plexi-cli` for the
 corresponding CLI workflows and result collection.

@@ -137,7 +137,7 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let resp = match agent.get(url).call() {
         Ok(r) => r,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- not reachable: {e}");
+            log::debug!("cli:doctor: llm probe not reachable error_chars={}", e.to_string().chars().count());
             return None;
         }
     };
@@ -145,7 +145,7 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let text = match resp.into_string() {
         Ok(t) => t,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- read error: {e}");
+            log::debug!("cli:doctor: llm probe read error: {e}");
             return None;
         }
     };
@@ -153,7 +153,7 @@ fn probe_llm_server(url: &str) -> Option<Vec<String>> {
     let body: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            log::debug!("cli:doctor: llm probe {url} -- bad JSON: {e}");
+            log::debug!("cli:doctor: llm probe bad JSON: {e}");
             return None;
         }
     };

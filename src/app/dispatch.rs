@@ -1007,7 +1007,7 @@ impl PlexiApp {
                             (active, tile)
                         };
                         log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} initial_cmd={initial_cmd:?} target_win={target_win}"
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} target_win={target_win}"
                         );
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.

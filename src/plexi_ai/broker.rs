@@ -632,7 +632,7 @@ fn run_turn_and_respond(
                     );
                     break;
                 }
-                log::warn!("ai_broker[{}]: turn failed: {e}", request.app_id);
+                log::warn!("ai_broker[{}]: turn failed error_chars={}", request.app_id, e.to_string().chars().count());
                 let message = match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
                     TurnError::StreamError(s) => format!("stream error: {s}"),
@@ -1043,7 +1043,7 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let body: serde_json::Value = match serde_json::from_str(&body_str) {
             Ok(v) => v,
             Err(e) => {
-                log::debug!("ai_broker: generation response parse error: {e} — body={body_str}");
+                log::debug!("ai_broker: generation response parse error: {e} body_bytes={}", body_str.len());
                 return None;
             }
         };
@@ -1051,7 +1051,7 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
             Some(d) if !d.is_null() => d,
             _ => {
                 log::debug!(
-                    "ai_broker: generation response missing 'data' field — body={body_str}"
+                    "ai_broker: generation response missing 'data' field body_bytes={}", body_str.len()
                 );
                 return None;
             }

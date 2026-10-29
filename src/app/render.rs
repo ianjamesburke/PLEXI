@@ -319,19 +319,6 @@ impl PlexiApp {
 
         // Sidebar
         if self.sidebar_visible {
-            ctx.input(|i| {
-                for e in &i.events {
-                    if let egui::Event::Key {
-                        key: egui::Key::A,
-                        pressed: true,
-                        modifiers: m,
-                        ..
-                    } = e
-                    {
-                        log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
-                    }
-                }
-            });
             self.show_sidebar_panel(ui);
         }
 

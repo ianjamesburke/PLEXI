@@ -2045,7 +2045,7 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
 /// The host delivers a `PlexiEvent::Action { action, args }` to the target app pane.
 /// Returns 0 on success, 1 on error.
 pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
-    log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
+    log::info!("app_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
 
     let mut payload = serde_json::json!({
         "type": "send_app_action",

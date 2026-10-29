@@ -1,0 +1,65 @@
+[
+  {
+    "capabilities": {},
+    "cli": "pi",
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "The workspace's default agent, launched on the Pi harness",
+    "display_name": "Default agent",
+    "harness": "pi",
+    "model": null,
+    "name": "default",
+    "path": null,
+    "shadows_global": false,
+    "skills": [],
+    "supportedInterfaces": [],
+    "tier": "built-in",
+    "version": "0.4.0"
+  },
+  {
+    "capabilities": {},
+    "cli": "script",
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "Global reviewer",
+    "display_name": "Reviewer",
+    "harness": "script",
+    "model": null,
+    "name": "reviewer",
+    "path": "<PROFILE>/agents/reviewer",
+    "shadows_global": false,
+    "skills": [],
+    "supportedInterfaces": [],
+    "tier": "global",
+    "version": "0.4.0"
+  },
+  {
+    "capabilities": {},
+    "cli": "script",
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "Workspace worker",
+    "display_name": "Worker",
+    "harness": "script",
+    "model": null,
+    "name": "worker",
+    "path": "<WS>/.plexi/agents/worker",
+    "shadows_global": false,
+    "skills": [],
+    "supportedInterfaces": [],
+    "tier": "workspace",
+    "version": "0.4.0"
+  }
+]

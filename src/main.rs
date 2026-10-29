@@ -1134,7 +1134,7 @@ fn main() -> eframe::Result {
                                 args,
                             } => {
                                 let pane_id = resolve_pane(&pane_id);
-                                log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
+                                log::info!("app_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
                                 cli::trace::exit(cli::app_action_cli(pane_id, &action, &args));
                             }
                             AppCmd::Call {

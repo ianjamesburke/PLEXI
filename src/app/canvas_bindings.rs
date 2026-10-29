@@ -138,7 +138,7 @@ impl PlexiApp {
     /// revision can suppress echo via shell-aware injection (e.g. set
     /// `stty -echo` first), but that surface bleeds into shell internals
     /// and is out of scope for v3.5.
-    pub(super) fn dispatch_run_in_linked_terminal(
+    pub(crate) fn dispatch_run_in_linked_terminal(
         &mut self,
         sender_pane_id: PaneId,
         terminal_pane_id: PaneId,
@@ -262,7 +262,7 @@ impl PlexiApp {
             .unwrap_or_default();
 
         log::debug!(
-            "RequestCommandPreview: pane {terminal_pane_id} command={command:?} cwd={cwd:?}"
+            "RequestCommandPreview: pane {terminal_pane_id} command_chars={} cwd={cwd:?}", command.chars().count()
         );
         self.queue_event_to_pane(
             sender_pane_id,

@@ -970,7 +970,7 @@ impl PlexiApp {
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!(
-            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}",
+            "create_page_at({grid_x},{grid_y}): cwd={} context_id={context_id} close_on_exit={close_on_exit}",
             cwd.display()
         );
         let context_env = self.pane_context_env_for_context(context_id);
@@ -1106,7 +1106,7 @@ impl PlexiApp {
         };
         let window_id = self.windows[active].window_id;
         log::info!(
-            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) initial_cmd={initial_cmd:?} close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
+            "seed_root_pane: seeded root pane_id={pane_id} into empty window_id={window_id} (windowless-boot spawn fallback) close_on_exit={close_on_exit} inject_folder_secrets={inject_folder_secrets}"
         );
         Some(pane_id)
     }

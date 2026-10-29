@@ -113,7 +113,7 @@ Common capabilities: `secrets.get`, `net.http`, `fs.read`, `fs.write`, `ai.query
 
 ## Logging
 
-Use `plexi_sdk.log` from `init()` or `update()`. Log lines are tagged with the app process in the host log.
+Use `plexi_sdk.log` from `init()` or `update()`:
 
 ```python
 from plexi_sdk import log
@@ -123,5 +123,15 @@ def init(size, args):
     log.info("my-app initialized")
     return []
 ```
+
+On macOS and Linux the channel log is `~/.plexi-<channel>/plexi.log`; stable uses `~/.plexi/plexi.log`. On Windows it is `plexi.log` in the corresponding `.plexi-<channel>` directory under the user's home directory. Plexi rolls the live file by day or size. Dated archives are named `plexi-YYYY-MM-DD.log` (with a numeric suffix when needed), and `[log] retention_days` defaults to 30.
+
+Set `[log] level` in the channel's `config.toml` to `error`, `warn`, `info`, `debug`, or `trace`. A config reload applies the level to the running host. Third-party targets stay at warning level. Logs can contain anything an app explicitly writes, so never put secrets or user input in an app log or stderr.
+
+SDK log messages appear with an `app::<id>:` message prefix and the host runtime's log target. Guest stderr lines carry an `app::<id> CPython WASM stderr` prefix; traceback lines are recorded at error level. Open the Logs app to tail, filter, and search the channel log. Its `logs.query` assistant tool returns matching lines, and `logs.set_filter` changes the displayed level.
+
+`plexi debug session list` lists recorded sessions; `plexi debug session show latest` reads the latest session, even after the host exits. Use `--pane <id>` to narrow the view and `--cli` for CLI calls. Session records live under the channel profile's `sessions/` directory. CLI content arguments are replaced by length and digest placeholders, and secret values and environment assignments are redacted. Tool inputs and outputs and app event content are recorded as lengths, while routing and session provenance remain available. `--join-agents` also reads external agent transcripts, which have their own content and privacy rules.
+
+To record CLI content deliberately, set `PLEXI_TRACE_CAPTURE_CONTENT=1` in both the host and the calling CLI process. Secret-named options and environment assignments remain redacted, but other content may contain sensitive text. Invalid CLI calls stay redacted. Existing trace files are not rewritten when this setting changes.
 
 See also: [PGAP](/docs/pgap), [Secrets](/docs/secrets)
