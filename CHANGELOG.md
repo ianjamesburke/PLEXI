@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.1] — 2026-10-29
+
+### Changes
+- fix: land stints 1098, 0948, 1032 onto alpha (#2969)
+- fix(panes): wrap zoomed vertical splits into subcontexts (#2968)
+- fix(context): make Cmd-Escape return to parent (#2967)
 ## [0.4.0] — 2026-10-17
 
 ### Changes
