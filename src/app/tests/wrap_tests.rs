@@ -100,18 +100,65 @@ fn wrap_selection_preserves_layout_portal_and_workspace_roundtrip() {
     );
 }
 
-#[test]
-fn wrap_zoomed_split_enters_child_with_two_panes() {
+fn assert_zoomed_split(vertical: bool) {
     let mut h = HostHarness::new();
     let panes = grid(&mut h);
     let parent = h.app.router.active().context_id;
     h.app.toggle_pane_zoom();
-    h.press_key(egui::Key::D, command());
-    assert_ne!(h.app.router.active().context_id, parent);
+    let modifiers = if vertical {
+        command() | egui::Modifiers::SHIFT
+    } else {
+        command()
+    };
+    h.press_key(egui::Key::D, modifiers);
+    h.run_frames(2);
+    let child_id = h.app.router.active().context_id;
+    assert_ne!(child_id, parent);
     let child = &h.app.windows[h.app.active_window];
     assert_eq!(child.panes.len(), 2);
     assert!(child.panes.contains_key(&panes[0]));
     assert!(child.zoomed_pane.is_none());
+    let second = *child.panes.keys().find(|&&id| id != panes[0]).unwrap();
+    let rect = |id| {
+        child
+            .tree
+            .tiles
+            .rect(child.tree.tiles.find_pane(&id).unwrap())
+            .unwrap()
+    };
+    let (first, second) = (rect(panes[0]), rect(second));
+    if vertical {
+        assert!(first.bottom() <= second.top());
+        assert!((first.left() - second.left()).abs() < 1.0);
+    } else {
+        assert!(first.right() <= second.left());
+        assert!((first.top() - second.top()).abs() < 1.0);
+    }
+    let parent_window = h
+        .app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent)
+        .unwrap();
+    assert_eq!(parent_window.panes.len(), 4);
+    for pane in &panes[1..] {
+        assert!(parent_window.panes.contains_key(pane));
+    }
+    assert!(parent_window.panes.values().any(|p| p
+        .as_portal()
+        .is_some_and(|p| p.target_context_id == child_id)));
+    h.press_key(egui::Key::Escape, command());
+    assert_eq!(h.app.router.active().context_id, parent);
+}
+
+#[test]
+fn wrap_zoomed_split_enters_child_with_two_panes() {
+    assert_zoomed_split(false);
+}
+
+#[test]
+fn wrap_zoomed_vertical_split_enters_child_with_stacked_panes() {
+    assert_zoomed_split(true);
 }
 
 #[test]
@@ -210,24 +257,82 @@ fn wrap_selection_single_pane_enter_keeps_zoom_behavior_and_clears_selection() {
 
 #[test]
 fn wrap_zoomed_only_pane_is_rejected_without_splitting() {
+    for modifiers in [command(), command() | egui::Modifiers::SHIFT] {
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        h.app.focus_pane_in_strip(pane);
+        // A zoomed window can lose its other panes through background closure.
+        let tile = h.app.windows[0].focused_pane.unwrap();
+        h.app.windows[0].zoom_to(tile);
+        h.press_key(egui::Key::D, modifiers);
+        assert_eq!(h.app.router.len(), 1);
+        assert_eq!(h.app.windows[0].panes.len(), 1);
+        assert!(h.app.windows[0].zoomed_pane.is_some());
+        assert!(h
+            .app
+            .attention_queue
+            .transient_hint
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("Leave at least one"));
+    }
+}
+
+#[test]
+fn wrap_zoomed_portal_is_rejected_without_splitting() {
+    for modifiers in [command(), command() | egui::Modifiers::SHIFT] {
+        let mut h = HostHarness::new();
+        let panes = grid(&mut h);
+        let parent = h.app.router.active().context_id;
+        assert!(h.app.wrap_panes_to_subcontext(&[panes[0]], panes[0], None));
+        h.press_key(egui::Key::Escape, command());
+        let portal = *h.app.windows[h.app.active_window]
+            .panes
+            .iter()
+            .find(|(_, pane)| pane.as_portal().is_some())
+            .unwrap()
+            .0;
+        h.app.focus_pane_in_strip(portal);
+        let window = &mut h.app.windows[h.app.active_window];
+        window.zoom_to(window.tree.tiles.find_pane(&portal).unwrap());
+        h.press_key(egui::Key::D, modifiers);
+        assert_eq!(h.app.router.active().context_id, parent);
+        assert_eq!(h.app.router.len(), 2);
+        assert_eq!(h.app.windows[h.app.active_window].panes.len(), 4);
+        assert!(h.app.windows[h.app.active_window].zoomed_pane.is_some());
+        assert!(h
+            .app
+            .attention_queue
+            .transient_hint
+            .as_ref()
+            .unwrap()
+            .0
+            .contains("portal"));
+    }
+}
+
+#[test]
+fn wrap_unzoomed_vertical_split_stays_in_parent() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane();
-    h.app.focus_pane_in_strip(pane);
-    // A zoomed window can lose its other panes through background closure.
-    let tile = h.app.windows[0].focused_pane.unwrap();
-    h.app.windows[0].zoom_to(tile);
-    h.press_key(egui::Key::D, command());
+    let panes = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    h.press_key(egui::Key::D, command() | egui::Modifiers::SHIFT);
+    h.run_frames(2);
+    assert_eq!(h.app.router.active().context_id, parent);
     assert_eq!(h.app.router.len(), 1);
-    assert_eq!(h.app.windows[0].panes.len(), 1);
-    assert!(h.app.windows[0].zoomed_pane.is_some());
-    assert!(h
-        .app
-        .attention_queue
-        .transient_hint
-        .as_ref()
-        .unwrap()
-        .0
-        .contains("Leave at least one"));
+    let window = &h.app.windows[h.app.active_window];
+    assert_eq!(window.panes.len(), 5);
+    let second = *window.panes.keys().find(|id| !panes.contains(id)).unwrap();
+    let rect = |id| {
+        window
+            .tree
+            .tiles
+            .rect(window.tree.tiles.find_pane(&id).unwrap())
+            .unwrap()
+    };
+    assert!(rect(panes[0]).bottom() <= rect(second).top());
+    assert!((rect(panes[0]).left() - rect(second).left()).abs() < 1.0);
 }
 
 #[test]
