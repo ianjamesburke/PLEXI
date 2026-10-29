@@ -405,7 +405,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ParkContext), name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ContextZoomOut), name: "Go to parent context", description: "Return to the parent context", search_text: "parent context zoom out back" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New pane", description: "Create a new pane beside the selected pane", search_text: "new pane page window right" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },

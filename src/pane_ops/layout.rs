@@ -175,7 +175,27 @@ pub(crate) fn insert_split_tile(
     } else {
         LinearDir::Vertical
     };
-    let target = raw_target;
+    let mut target = raw_target;
+    while let Some(parent_id) = tree.tiles.parent_of(target) {
+        let promote = match tree.tiles.get(parent_id) {
+            Some(Tile::Container(Container::Tabs(_))) => true,
+            _ => false,
+        };
+        if !promote { break; }
+        target = parent_id;
+    }
+
+    if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(target) {
+        if linear.dir == split_dir {
+            if new_pane_first {
+                linear.children.insert(0, new_tile);
+            } else {
+                linear.children.push(new_tile);
+            }
+            linear.shares.set_share(new_tile, share.numerator);
+            return new_tile;
+        }
+    }
     let parent = tree.tiles.parent_of(target);
 
     let inserted_as_sibling = if let Some(parent_id) = parent {
@@ -2171,7 +2191,7 @@ mod insert_split_tile_tests {
     use egui_tiles::{Container, LinearDir, Tile, Tiles, Tree};
 
     #[test]
-    fn column_split_promotes_tab_wrapped_vertical_stack() {
+    fn column_split_stays_inside_tab_wrapped_vertical_stack() {
         let mut tiles = Tiles::default();
         let first = tiles.insert_pane(1);
         let focused = tiles.insert_pane(2);
@@ -2182,13 +2202,16 @@ mod insert_split_tile_tests {
         let new_tile = insert_split_tile(&mut tree, Some(focused), 3, true, ShareRatio::new(1.0, 2.0).unwrap(), false);
         match tree.tiles.get(tree.root().unwrap()).unwrap() {
             Tile::Container(Container::Linear(linear)) => {
-                assert_eq!(linear.dir, LinearDir::Horizontal);
-                assert_eq!(linear.children, vec![stack, new_tile]);
+                assert_eq!(linear.dir, LinearDir::Vertical);
+                assert_eq!(linear.children[0], first_tab);
+                let Some(Tile::Container(Container::Linear(pair))) = tree.tiles.get(linear.children[1]) else { panic!("nested pair") };
+                assert_eq!(pair.dir, LinearDir::Horizontal);
+                assert_eq!(pair.children, vec![focused_tab, new_tile]);
             }
             other => panic!("expected horizontal columns, got {other:?}"),
         }
         assert_eq!(tree.tiles.parent_of(focused), Some(focused_tab));
-        assert_eq!(tree.tiles.parent_of(focused_tab), Some(stack));
+        assert_ne!(tree.tiles.parent_of(focused_tab), Some(stack));
     }
 
     #[test]

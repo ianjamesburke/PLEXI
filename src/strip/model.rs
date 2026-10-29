@@ -607,24 +607,7 @@ impl Strip {
         self.sync_index_from_px(cw, gap);
     }
 
-    /// True if strip content extends to the left of the current horizontal scroll offset.
-    #[cfg(test)]
-    pub fn has_left_clipped(&self) -> bool {
-        if self.scroll_offset != self.last_synced_scroll_offset {
-            return self.columns.len() > 2 && self.scroll_offset > 0;
-        }
-        self.scroll_offset_px > 0.5
-    }
 
-    /// True if strip content extends to the right of the current horizontal scroll offset.
-    #[cfg(test)]
-    pub fn has_right_clipped(&self) -> bool {
-        if self.scroll_offset != self.last_synced_scroll_offset {
-            return self.columns.len() > 2 && self.scroll_offset + 2 < self.columns.len();
-        }
-        let cw = self.effective_viewport_width(None);
-        let gap = self.reference_gap_px;
-        let max_px = self.max_scroll_offset_px(cw, gap);
-        self.scroll_offset_px + 0.5 < max_px
-    }
+
+
 }

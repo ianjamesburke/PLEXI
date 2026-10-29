@@ -4,7 +4,7 @@ use super::{ClickFlash, PlexiApp};
 use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, Stroke, StrokeKind, Vec2};
-use egui_tiles::{Container, Tile, TileId};
+use egui_tiles::{Tile, TileId};
 use std::collections::HashMap;
 
 const FLASH_DUR: f32 = 0.4;
@@ -1169,6 +1169,11 @@ impl PlexiApp {
                     self.mark_workspace_dirty();
                     log::info!("pane layout: divider resized window={}", self.windows[self.active_window].window_id);
                 }
+
+                let context_id = self.router.active().context_id;
+                self.ensure_authoritative_strip(context_id);
+                let layout = self.active_strip_layout();
+                self.host.set_strip_layout(context_id, layout);
 
                 // ── Pane swap animation overlays ────────────────────────────────────────
                 {

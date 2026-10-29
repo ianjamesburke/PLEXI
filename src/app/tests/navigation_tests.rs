@@ -323,7 +323,7 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
 }
 
 #[test]
-fn close_focused_pane_prefers_window_local_history_and_keeps_strip_visible() {
+fn close_focused_pane_prefers_window_local_history_and_keeps_successor_visible() {
     let mut h = HostHarness::new();
     let a = h.add_test_pane();
     let b = h.add_test_pane();
@@ -345,6 +345,7 @@ fn close_focused_pane_prefers_window_local_history_and_keeps_strip_visible() {
     let other_window_id = h.app.windows[1].window_id;
 
     h.app.focus_pane_in_strip(a);
+    h.run_frames(2);
     assert!(h.app.navigate_columns_strip(Direction::Right));
     assert_eq!(h.app.active_focused_pane_id(), Some(b));
     let b_tile = h.app.windows[0].tree.tiles.find_pane(&b).unwrap();
