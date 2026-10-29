@@ -73,6 +73,7 @@ ghost_opacity = 0.75
 # Features outside the stable v1 surface. All off by default on every channel.
 # Manage with `plexi experiments list|enable|disable`. Global config only.
 # assistant = true
+# tree_atlas = true # Context tree overview from the root with Cmd+Escape
 
 # Pane selection: Cmd+Shift+H/J/K/L; wrap selection: Cmd+Enter.
 # Next/previous tab: Cmd+] / Cmd+[. Context/history navigation is unbound.

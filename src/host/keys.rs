@@ -19,6 +19,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
 // Cmd+Enter                   — wrap selected panes, enter portal, or toggle pane zoom
+// Cmd+Escape                  — close current surface, then go to parent context
 // Cmd+/                       — toggle shortcuts overlay
 // Cmd+P                       — command palette
 // Cmd+R                       — rename pane

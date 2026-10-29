@@ -1348,28 +1348,74 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
-    /// Pop the depth stack and return to the parent context/window/focus.
-    /// Shared body of Cmd+Escape (`Action::ContextZoomOut`) and the
-    /// `ZoomOutOfContext` IPC request. Returns true when a switch happened.
+    /// Return to the immediate parent, restoring its entry window and focus when available.
+    /// Ancestry is authoritative; navigation history is optional and may be stale after a switch.
     pub(crate) fn zoom_out_of_context(&mut self) -> bool {
+        let child_id = self.router.active().context_id;
+        let Some(parent_id) = self.router.active().parent_id else {
+            log::info!("context_navigation: already at root context={child_id}");
+            return false;
+        };
+        let Some(parent_idx) = self.router.position(|c| c.context_id == parent_id) else {
+            log::warn!("context_navigation: missing parent={parent_id} child={child_id}");
+            return false;
+        };
+        let entry = self
+            .router
+            .depth_stack
+            .iter()
+            .rposition(|(ctx, _, _)| *ctx == parent_id)
+            .map(|index| {
+                self.router.depth_stack.truncate(index + 1);
+                self.router.pop_depth().expect("matching entry retained")
+            });
         self.conjoined_parent_focus = None;
-        if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
-            if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
-                self.switch_workspace(ctx_idx);
-                if let Some(win_idx) = self
-                    .windows
-                    .iter()
-                    .position(|w| w.window_id == parent_win_id)
+        self.switch_workspace(parent_idx);
+        if let Some((_, window_id, focus)) = entry {
+            if let Some(index) = self
+                .windows
+                .iter()
+                .position(|w| w.window_id == window_id && w.context_id == parent_id)
+            {
+                self.active_window = index;
+                self.context_active_window.insert(parent_id, window_id);
+                if let Some(tile) =
+                    focus.filter(|tile| self.windows[index].tree.tiles.get(*tile).is_some())
                 {
-                    self.active_window = win_idx;
-                    self.windows[win_idx].focused_pane = focused_tile;
+                    self.windows[index].navigate_to(tile);
+                    log::info!("context_navigation: child={child_id} parent={parent_id} restored entry window={window_id}");
+                    return true;
                 }
-                return true;
             }
         }
-        false
+        // Direct switches and restored workspaces have no entry history. Prefer the portal
+        // back to the child, then retain the parent's remembered window and focus.
+        let portal = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.context_id == parent_id)
+            .find_map(|(index, w)| {
+                w.panes.iter().find_map(|(id, pane)| match pane {
+                    crate::host::pane::Pane::Portal(portal)
+                        if portal.target_context_id == child_id =>
+                    {
+                        w.tree.tiles.find_pane(id).map(|tile| (index, tile))
+                    }
+                    _ => None,
+                })
+            });
+        if let Some((index, tile)) = portal {
+            self.active_window = index;
+            self.windows[index].navigate_to(tile);
+            self.context_active_window
+                .insert(parent_id, self.windows[index].window_id);
+        }
+        log::info!(
+            "context_navigation: child={child_id} parent={parent_id} restored from ancestry"
+        );
+        true
     }
-
     /// If `ctx_id` names a subcontext whose windows are now all empty, delete
     /// it. When it was the active context, first zoom back out to the parent
     /// exactly as if Cmd+Escape had been pressed. Root contexts are never

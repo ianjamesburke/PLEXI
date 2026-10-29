@@ -4065,7 +4065,7 @@ impl eframe::App for PlexiApp {
             ));
         }
         // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
-        // Attention Queue list, Sibling Cards, Tree Atlas) after Global chords
+        // Attention Queue list, Tree Atlas) after Global chords
         // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
         // `poll_actions` above, swallowing all remaining bare keys and `Cmd+V`
         // so nothing leaks to any underlying pane (R40).
@@ -4755,7 +4755,7 @@ fn read_display_version() -> String {
 
 impl PlexiApp {
     /// Adjust the font size of the active pane in Columns, or the remembered active pane
-    /// of the selected context while Sibling Cards or Tree Atlas is visible.
+    /// of the selected context while Tree Atlas is visible.
     pub(crate) fn adjust_active_or_remembered_pane_font_size(&mut self, delta: f32) {
         let pane_id = self.resolve_active_or_remembered_pane_id();
         let Some(pane_id) = pane_id else {
@@ -4765,7 +4765,7 @@ impl PlexiApp {
     }
 
     /// Reset the font size of the active pane in Columns, or the remembered active pane
-    /// of the selected context while Sibling Cards or Tree Atlas is visible.
+    /// of the selected context while Tree Atlas is visible.
     pub(crate) fn reset_active_or_remembered_pane_font_size(&mut self) {
         let pane_id = self.resolve_active_or_remembered_pane_id();
         let Some(pane_id) = pane_id else {
@@ -4793,13 +4793,6 @@ impl PlexiApp {
                     }
                     None => None,
                 }
-            }
-            crate::app::zoom::ZoomLevel::SiblingCards => {
-                let ctx_id = self
-                    .zoom
-                    .cards_focused_context
-                    .unwrap_or_else(|| self.router.active().context_id);
-                self.resolve_remembered_pane_for_context(ctx_id)
             }
             crate::app::zoom::ZoomLevel::TreeAtlas => {
                 let ctx_id = self

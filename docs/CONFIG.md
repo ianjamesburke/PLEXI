@@ -148,6 +148,11 @@ behavior. Escape, plain Cmd+H/J/K/L, or closing a selected pane clears selection
 Portals cannot be wrapped, and at least one pane must remain outside the child.
 Cmd+D on a zoomed pane wraps it and creates a second pane beside it in the child.
 
+`context_zoom_out` (Cmd+Escape) closes an open Plexi surface first, then moves
+up one context level. At the root it stays in panes. The `tree_atlas` experiment
+is off by default; when enabled, Cmd+Escape at the root opens the context tree
+and Enter or Cmd+Enter opens the selected context directly.
+
 Next/previous tab use Cmd+] / Cmd+[. `next_context`, `prev_context`, `nav_back`,
 and `focus_history_forward` have no default shortcuts; they can be assigned in
 `[keybindings]`.
