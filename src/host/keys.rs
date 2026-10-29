@@ -13,18 +13,17 @@ use crate::config::KeybindingsConfig;
 // Cmd+Ctrl+Opt+H/J/K/L        — send focused pane in direction (focus stays)
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
-// Cmd+Shift+L/H               — next/prev tab
-// Cmd+Shift+J/K               — next/prev context
+// Cmd+] / Cmd+[               — next/prev tab
+// Cmd+Shift+H/J/K/L           — extend pane selection
 // Cmd+Shift+Ctrl+J/K           — move context down/up
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
-// Cmd+Enter                   — zoom into sub-context (Portal focus) or toggle pane zoom
+// Cmd+Enter                   — wrap selected panes, enter portal, or toggle pane zoom
 // Cmd+/                       — toggle shortcuts overlay
 // Cmd+P                       — command palette
 // Cmd+R                       — rename pane
 // Cmd+Shift+R                 — rename context
-// Cmd+[                       — nav back / focus history back
-// Cmd+]                       — focus history forward
+// Context and focus-history navigation have no default chords.
 // Cmd+Shift+Up / Cmd+Shift+Down — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
@@ -63,6 +62,8 @@ pub enum Action {
     /// Bound to Cmd+Shift+\. If no pane is focused, creates a full-size terminal.
     SplitDown,
     Navigate(Direction),
+    SelectPane(Direction),
+    CancelPaneSelection,
     ClosePane,
     NewTab,
     SwitchContext(usize),
@@ -187,15 +188,19 @@ pub struct KeyBindings {
     pub navigate_down: (egui::Modifiers, egui::Key),
     pub navigate_up: (egui::Modifiers, egui::Key),
     pub navigate_right: (egui::Modifiers, egui::Key),
+    pub select_pane_left: (egui::Modifiers, egui::Key),
+    pub select_pane_down: (egui::Modifiers, egui::Key),
+    pub select_pane_up: (egui::Modifiers, egui::Key),
+    pub select_pane_right: (egui::Modifiers, egui::Key),
     pub new_tab: (egui::Modifiers, egui::Key),
     pub next_tab: (egui::Modifiers, egui::Key),
     pub prev_tab: (egui::Modifiers, egui::Key),
-    pub next_context: (egui::Modifiers, egui::Key),
-    pub prev_context: (egui::Modifiers, egui::Key),
+    pub next_context: Option<(egui::Modifiers, egui::Key)>,
+    pub prev_context: Option<(egui::Modifiers, egui::Key)>,
     pub move_context_up: (egui::Modifiers, egui::Key),
     pub move_context_down: (egui::Modifiers, egui::Key),
-    pub nav_back: (egui::Modifiers, egui::Key),
-    pub focus_history_forward: (egui::Modifiers, egui::Key),
+    pub nav_back: Option<(egui::Modifiers, egui::Key)>,
+    pub focus_history_forward: Option<(egui::Modifiers, egui::Key)>,
     pub toggle_sidebar: (egui::Modifiers, egui::Key),
     pub toggle_zoom: (egui::Modifiers, egui::Key),
     pub toggle_shortcuts: (egui::Modifiers, egui::Key),
@@ -301,15 +306,19 @@ impl Default for KeyBindings {
             navigate_down: (cmd(), egui::Key::J),
             navigate_up: (cmd(), egui::Key::K),
             navigate_right: (cmd(), egui::Key::L),
+            select_pane_left: (cmd_shift(), egui::Key::H),
+            select_pane_down: (cmd_shift(), egui::Key::J),
+            select_pane_up: (cmd_shift(), egui::Key::K),
+            select_pane_right: (cmd_shift(), egui::Key::L),
             new_tab: (cmd(), egui::Key::T),
-            next_tab: (cmd_shift(), egui::Key::L),
-            prev_tab: (cmd_shift(), egui::Key::H),
-            next_context: (cmd_shift(), egui::Key::J),
-            prev_context: (cmd_shift(), egui::Key::K),
+            next_tab: (cmd(), egui::Key::CloseBracket),
+            prev_tab: (cmd(), egui::Key::OpenBracket),
+            next_context: None,
+            prev_context: None,
             move_context_up: (cmd_shift_ctrl(), egui::Key::K),
             move_context_down: (cmd_shift_ctrl(), egui::Key::J),
-            nav_back: (cmd(), egui::Key::OpenBracket),
-            focus_history_forward: (cmd(), egui::Key::CloseBracket),
+            nav_back: None,
+            focus_history_forward: None,
             toggle_sidebar: (cmd(), egui::Key::B),
             toggle_zoom: (cmd_shift(), egui::Key::Enter),
             toggle_shortcuts: (cmd(), egui::Key::Slash),
@@ -494,15 +503,47 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(navigate_down, "navigate_down");
     apply_override!(navigate_up, "navigate_up");
     apply_override!(navigate_right, "navigate_right");
+    apply_override!(select_pane_left, "select_pane_left");
+    apply_override!(select_pane_down, "select_pane_down");
+    apply_override!(select_pane_up, "select_pane_up");
+    apply_override!(select_pane_right, "select_pane_right");
     apply_override!(new_tab, "new_tab");
     apply_override!(next_tab, "next_tab");
     apply_override!(prev_tab, "prev_tab");
-    apply_override!(next_context, "next_context");
-    apply_override!(prev_context, "prev_context");
+    if let Some(value) = cfg.next_context.as_deref() {
+        if let Some(combo) = parse_key_combo(value) {
+            bindings.next_context = Some(combo);
+            override_count += 1;
+        } else {
+            log::warn!("keybindings: invalid combo '{value}' for 'next_context'");
+        }
+    }
+    if let Some(value) = cfg.prev_context.as_deref() {
+        if let Some(combo) = parse_key_combo(value) {
+            bindings.prev_context = Some(combo);
+            override_count += 1;
+        } else {
+            log::warn!("keybindings: invalid combo '{value}' for 'prev_context'");
+        }
+    }
     apply_override!(move_context_up, "move_context_up");
     apply_override!(move_context_down, "move_context_down");
-    apply_override!(nav_back, "nav_back");
-    apply_override!(focus_history_forward, "focus_history_forward");
+    if let Some(value) = cfg.nav_back.as_deref() {
+        if let Some(combo) = parse_key_combo(value) {
+            bindings.nav_back = Some(combo);
+            override_count += 1;
+        } else {
+            log::warn!("keybindings: invalid combo '{value}' for 'nav_back'");
+        }
+    }
+    if let Some(value) = cfg.focus_history_forward.as_deref() {
+        if let Some(combo) = parse_key_combo(value) {
+            bindings.focus_history_forward = Some(combo);
+            override_count += 1;
+        } else {
+            log::warn!("keybindings: invalid combo '{value}' for 'focus_history_forward'");
+        }
+    }
     apply_override!(toggle_sidebar, "toggle_sidebar");
     apply_override!(toggle_zoom, "toggle_zoom");
     apply_override!(toggle_shortcuts, "toggle_shortcuts");
@@ -541,7 +582,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(close_context, "close_context");
 
     // Conflict detection
-    let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
+    let mut named = vec![
         ("quit", bindings.quit),
         ("close_pane", bindings.close_pane),
         ("toggle_command_palette", bindings.toggle_command_palette),
@@ -561,15 +602,15 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("navigate_down", bindings.navigate_down),
         ("navigate_up", bindings.navigate_up),
         ("navigate_right", bindings.navigate_right),
+        ("select_pane_left", bindings.select_pane_left),
+        ("select_pane_down", bindings.select_pane_down),
+        ("select_pane_up", bindings.select_pane_up),
+        ("select_pane_right", bindings.select_pane_right),
         ("new_tab", bindings.new_tab),
         ("next_tab", bindings.next_tab),
         ("prev_tab", bindings.prev_tab),
-        ("next_context", bindings.next_context),
-        ("prev_context", bindings.prev_context),
         ("move_context_up", bindings.move_context_up),
         ("move_context_down", bindings.move_context_down),
-        ("nav_back", bindings.nav_back),
-        ("focus_history_forward", bindings.focus_history_forward),
         ("toggle_sidebar", bindings.toggle_sidebar),
         ("toggle_zoom", bindings.toggle_zoom),
         ("toggle_shortcuts", bindings.toggle_shortcuts),
@@ -611,8 +652,18 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("close_context", bindings.close_context),
     ];
 
+    for (name, binding) in [
+        ("next_context", bindings.next_context),
+        ("prev_context", bindings.prev_context),
+        ("nav_back", bindings.nav_back),
+        ("focus_history_forward", bindings.focus_history_forward),
+    ] {
+        if let Some(binding) = binding {
+            named.push((name, binding));
+        }
+    }
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
-    for (name, (mods, key)) in named {
+    for (name, (mods, key)) in &named {
         let id = binding_id(*mods, *key);
         if let Some(other) = seen.insert(id, name) {
             log::error!(
@@ -636,7 +687,7 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
     let mut reserved = std::collections::HashMap::new();
     for (source, b) in [("default", &defaults), ("configured", bindings)] {
         let _ = source;
-        let entries: &[(&'static str, (egui::Modifiers, egui::Key))] = &[
+        let mut entries = vec![
             ("quit", b.quit),
             ("close_pane", b.close_pane),
             ("toggle_command_palette", b.toggle_command_palette),
@@ -656,15 +707,15 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("navigate_down", b.navigate_down),
             ("navigate_up", b.navigate_up),
             ("navigate_right", b.navigate_right),
+            ("select_pane_left", b.select_pane_left),
+            ("select_pane_down", b.select_pane_down),
+            ("select_pane_up", b.select_pane_up),
+            ("select_pane_right", b.select_pane_right),
             ("new_tab", b.new_tab),
             ("next_tab", b.next_tab),
             ("prev_tab", b.prev_tab),
-            ("next_context", b.next_context),
-            ("prev_context", b.prev_context),
             ("move_context_up", b.move_context_up),
             ("move_context_down", b.move_context_down),
-            ("nav_back", b.nav_back),
-            ("focus_history_forward", b.focus_history_forward),
             ("toggle_sidebar", b.toggle_sidebar),
             ("toggle_zoom", b.toggle_zoom),
             ("toggle_shortcuts", b.toggle_shortcuts),
@@ -703,7 +754,17 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("open_notes_picker", b.open_notes_picker),
             ("close_context", b.close_context),
         ];
-        for (name, (mods, key)) in entries {
+        for (name, binding) in [
+            ("next_context", b.next_context),
+            ("prev_context", b.prev_context),
+            ("nav_back", b.nav_back),
+            ("focus_history_forward", b.focus_history_forward),
+        ] {
+            if let Some(binding) = binding {
+                entries.push((name, binding));
+            }
+        }
+        for (name, (mods, key)) in &entries {
             reserved.insert(binding_id(*mods, *key), *name);
         }
     }
@@ -1081,7 +1142,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry {
             modifiers: b.next_tab.0,
             key: b.next_tab.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
             context: BindingContext::Normal,
             action: Action::NextTab,
@@ -1089,26 +1150,10 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry {
             modifiers: b.prev_tab.0,
             key: b.prev_tab.1,
-            exact: false,
+            exact: true,
             no_repeat: false,
             context: BindingContext::Normal,
             action: Action::PrevTab,
-        },
-        BindingEntry {
-            modifiers: b.next_context.0,
-            key: b.next_context.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::NextContext,
-        },
-        BindingEntry {
-            modifiers: b.prev_context.0,
-            key: b.prev_context.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::PrevContext,
         },
         BindingEntry {
             modifiers: b.move_context_up.0,
@@ -1157,22 +1202,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             no_repeat: false,
             context: BindingContext::Normal,
             action: Action::Navigate(Direction::Right),
-        },
-        BindingEntry {
-            modifiers: b.nav_back.0,
-            key: b.nav_back.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::NavBackApp,
-        },
-        BindingEntry {
-            modifiers: b.focus_history_forward.0,
-            key: b.focus_history_forward.1,
-            exact: false,
-            no_repeat: false,
-            context: BindingContext::Normal,
-            action: Action::FocusHistoryForward,
         },
         BindingEntry {
             modifiers: b.toggle_sidebar.0,
@@ -1435,6 +1464,37 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         },
     ];
 
+    for (binding, action) in [
+        (b.next_context, Action::NextContext),
+        (b.prev_context, Action::PrevContext),
+        (b.nav_back, Action::NavBackApp),
+        (b.focus_history_forward, Action::FocusHistoryForward),
+        (
+            Some(b.select_pane_left),
+            Action::SelectPane(Direction::Left),
+        ),
+        (
+            Some(b.select_pane_down),
+            Action::SelectPane(Direction::Down),
+        ),
+        (Some(b.select_pane_up), Action::SelectPane(Direction::Up)),
+        (
+            Some(b.select_pane_right),
+            Action::SelectPane(Direction::Right),
+        ),
+    ] {
+        if let Some((modifiers, key)) = binding {
+            entries.push(BindingEntry {
+                modifiers,
+                key,
+                exact: true,
+                no_repeat: false,
+                context: BindingContext::Normal,
+                action,
+            });
+        }
+    }
+
     for ((modifiers, key), cmd_name) in &b.user_commands {
         entries.push(BindingEntry {
             modifiers: *modifiers,
@@ -1668,7 +1728,10 @@ mod tests {
             .position(|e| e.action == Action::OpenQuickNote)
             .unwrap();
         assert!(table[reset].exact);
-        assert!(reset < quick, "exact reset must sort before subset quick note");
+        assert!(
+            reset < quick,
+            "exact reset must sort before subset quick note"
+        );
     }
 
     #[test]
@@ -1758,30 +1821,29 @@ mod tests {
         let table = build_binding_table(&KeyBindings::default());
         let ctx = egui::Context::default();
         let mut claimed_key_releases = std::collections::HashSet::new();
-        let poll = |
-            events: Vec<egui::Event>,
-            overlay_open: bool,
-            claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
-        | {
-            let mut raw = egui::RawInput::default();
-            raw.events = events;
-            let mut actions = Vec::new();
-            let mut remaining_events = 0;
-            let _ = ctx.run_ui(raw, |ui| {
-                let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
-                actions = poll_actions(
-                    &mut input,
-                    &table,
-                    claimed_key_releases,
-                    /* app_active */ true,
-                    /* keyboard_capture */ false,
-                    overlay_open,
-                    /* shortcuts_overlay_open */ false,
-                );
-                remaining_events = input.events().len();
-            });
-            (actions, remaining_events)
-        };
+        let poll =
+            |events: Vec<egui::Event>,
+             overlay_open: bool,
+             claimed_key_releases: &mut std::collections::HashSet<egui::Key>| {
+                let mut raw = egui::RawInput::default();
+                raw.events = events;
+                let mut actions = Vec::new();
+                let mut remaining_events = 0;
+                let _ = ctx.run_ui(raw, |ui| {
+                    let mut input = crate::app::input_router::PlexiInput::take_from(ui.ctx());
+                    actions = poll_actions(
+                        &mut input,
+                        &table,
+                        claimed_key_releases,
+                        /* app_active */ true,
+                        /* keyboard_capture */ false,
+                        overlay_open,
+                        /* shortcuts_overlay_open */ false,
+                    );
+                    remaining_events = input.events().len();
+                });
+                (actions, remaining_events)
+            };
         let key_event = |key, pressed, repeat, modifiers| egui::Event::Key {
             key,
             physical_key: Some(key),
@@ -1796,15 +1858,29 @@ mod tests {
             &mut claimed_key_releases,
         );
         assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
-        assert_eq!(remaining, 0, "font-size press must not reach the focused pane");
+        assert_eq!(
+            remaining, 0,
+            "font-size press must not reach the focused pane"
+        );
 
         let (actions, remaining) = poll(
-            vec![key_event(egui::Key::Equals, false, false, egui::Modifiers::NONE)],
+            vec![key_event(
+                egui::Key::Equals,
+                false,
+                false,
+                egui::Modifiers::NONE,
+            )],
             false,
             &mut claimed_key_releases,
         );
-        assert!(actions.is_empty(), "key release must not trigger a second action");
-        assert_eq!(remaining, 0, "font-size release must not leak to the focused pane");
+        assert!(
+            actions.is_empty(),
+            "key release must not trigger a second action"
+        );
+        assert_eq!(
+            remaining, 0,
+            "font-size release must not leak to the focused pane"
+        );
 
         let (actions, remaining) = poll(
             vec![key_event(egui::Key::Equals, true, true, cmd())],
@@ -1812,7 +1888,10 @@ mod tests {
             &mut claimed_key_releases,
         );
         assert_eq!(actions, vec![Action::IncreasePaneFontSize]);
-        assert_eq!(remaining, 0, "font-size repeat must be claimed exactly once");
+        assert_eq!(
+            remaining, 0,
+            "font-size repeat must be claimed exactly once"
+        );
 
         let (actions, remaining) = poll(
             vec![key_event(egui::Key::Plus, true, false, cmd_shift())],
@@ -1820,15 +1899,29 @@ mod tests {
             &mut claimed_key_releases,
         );
         assert_eq!(actions, vec![Action::UiScaleUp]);
-        assert_eq!(remaining, 0, "modal ui-scale chord must not leak to the focused pane");
+        assert_eq!(
+            remaining, 0,
+            "modal ui-scale chord must not leak to the focused pane"
+        );
 
         let (actions, remaining) = poll(
-            vec![key_event(egui::Key::Plus, false, false, egui::Modifiers::NONE)],
+            vec![key_event(
+                egui::Key::Plus,
+                false,
+                false,
+                egui::Modifiers::NONE,
+            )],
             true,
             &mut claimed_key_releases,
         );
-        assert!(actions.is_empty(), "modal key release must not trigger a second action");
-        assert_eq!(remaining, 0, "modal ui-scale release must not leak to the focused pane");
+        assert!(
+            actions.is_empty(),
+            "modal key release must not trigger a second action"
+        );
+        assert_eq!(
+            remaining, 0,
+            "modal ui-scale release must not leak to the focused pane"
+        );
     }
 
     #[test]

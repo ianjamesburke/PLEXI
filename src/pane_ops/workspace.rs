@@ -39,7 +39,7 @@ pub(crate) struct NewContextTiming {
 /// state is personal, single-user, local data). Idempotent; preserves any
 /// existing user rules. Every path that creates or rewrites a context root
 /// calls this.
-fn ensure_context_state_ignore(root: &std::path::Path) {
+pub(super) fn ensure_context_state_ignore(root: &std::path::Path) {
     if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
         log::warn!(
             "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
@@ -580,130 +580,9 @@ impl PlexiApp {
                 (win_idx, focused_tile)
             }
         };
-        let parent_ctx_id = self.windows[parent_win_idx].context_id;
-        let parent_depth = self
-            .router
-            .iter()
-            .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| c.depth)
-            .unwrap_or(0);
-
-        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(target_tile) {
-            Some(egui_tiles::Tile::Pane(pid)) => *pid,
-            _ => {
-                log::warn!("push_pane_to_subcontext: target tile is not a pane");
-                return;
-            }
-        };
-
-        if self.windows[parent_win_idx]
-            .panes
-            .get(&pane_id)
-            .map(|p| p.as_portal().is_some())
-            .unwrap_or(false)
-        {
-            log::warn!("push_pane_to_subcontext: cannot push a portal pane");
-            return;
-        }
-
-        let pane_name = self.windows[parent_win_idx]
-            .panes
-            .get(&pane_id)
-            .and_then(|p| {
-                p.as_terminal()
-                    .and_then(|t| t.name.clone())
-                    .or_else(|| p.as_app().map(|a| a.name.clone()))
-            });
-        let ctx_name = name
-            .or(pane_name)
-            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
-
-        let parent_root = self
-            .router
-            .iter()
-            .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| c.root.clone())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-
-        let ctx_id = self.next_window_id;
-        self.next_window_id += 1;
-        let win_id = self.next_window_id;
-        self.next_window_id += 1;
-        let child_depth = parent_depth + 1;
-
-        log::info!(
-            "push_pane_to_subcontext: pane_id={pane_id} ctx_name={ctx_name} \
-             parent_ctx_id={parent_ctx_id} child_depth={child_depth}"
-        );
-
-        let pane = match self.windows[parent_win_idx].panes.remove(&pane_id) {
-            Some(p) => p,
-            None => {
-                log::error!("push_pane_to_subcontext: pane not found in parent window");
-                return;
-            }
-        };
-
-        let portal_pane_id = self.host.alloc_pane_id();
-        if let Some(egui_tiles::Tile::Pane(slot)) =
-            self.windows[parent_win_idx].tree.tiles.get_mut(target_tile)
-        {
-            *slot = portal_pane_id;
-        }
-        self.windows[parent_win_idx].panes.insert(
-            portal_pane_id,
-            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                pane_id: portal_pane_id,
-                target_context_id: ctx_id,
-                context_state: None,
-                hidden: false,
-            })),
-        );
-
-        let mut child_tiles = egui_tiles::Tiles::default();
-        let child_tile_id = child_tiles.insert_pane(pane_id);
-        let child_tree = egui_tiles::Tree::new("child_tree", child_tile_id, child_tiles);
-        let child_root_tile = child_tree.root.unwrap();
-        let mut child_panes = std::collections::HashMap::new();
-        child_panes.insert(pane_id, pane);
-
-        ensure_context_state_ignore(&parent_root);
-        self.router.insert_after_subtree(
-            parent_ctx_id,
-            crate::host::context::Context {
-                name: ContextName::custom(ctx_name),
-                root: parent_root.clone(),
-                description: None,
-                context_id: ctx_id,
-                parent_id: Some(parent_ctx_id),
-                depth: child_depth,
-                parked: false,
-            },
-        );
-        self.windows.push(Window {
-            name: String::new(),
-            path: parent_root,
-            tree: child_tree,
-            panes: child_panes,
-            focused_pane: Some(child_root_tile),
-            zoomed_pane: None,
-            grid_x: 0,
-            grid_y: 0,
-            window_id: win_id,
-            context_id: ctx_id,
-        });
-        self.context_active_window.insert(ctx_id, win_id);
-
-        let current_win_id = self.windows[parent_win_idx].window_id;
-        self.router
-            .push_depth(parent_ctx_id, current_win_id, Some(target_tile));
-        let new_ctx_idx = self
-            .router
-            .position(|c| c.context_id == ctx_id)
-            .expect("just-inserted subcontext must be in router");
-        self.switch_workspace(new_ctx_idx);
-
-        self.mark_workspace_dirty();
+        let Some(egui_tiles::Tile::Pane(pane_id)) = self.windows[parent_win_idx].tree.tiles.get(target_tile) else { return };
+        let pane_id = *pane_id;
+        self.wrap_panes_to_subcontext(&[pane_id], pane_id, name);
     }
 
     pub(crate) fn new_context(&mut self) {

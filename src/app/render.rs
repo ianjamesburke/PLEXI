@@ -885,6 +885,19 @@ impl PlexiApp {
                     }
                 }
 
+                if zoomed_pane.is_none() {
+                    if let Some(selection) = self.host.pane_selection(ctx.window_id) {
+                        for pane in &selection.panes {
+                            if let Some(rect) = ctx.tree.tiles.find_pane(pane).and_then(|tile| ctx.tree.tiles.rect(tile)) {
+                                let painter = focus_painter.with_clip_rect(canvas_full_rect);
+                                let radius = crate::ui::style::pane_radius(behavior.pane_corner_radius, rect);
+                                painter.rect_filled(rect, radius, self.colors.accent.gamma_multiply(0.12));
+                                painter.rect_stroke(rect, radius, Stroke::new(crate::ui::style::PANE_FOCUS_WIDTH, self.colors.accent), StrokeKind::Inside);
+                            }
+                        }
+                    }
+                }
+
                 // Expire click_flash once FLASH_DUR has elapsed.
                 if let Some(ref flash) = self.click_flash {
                     if flash.started_at.elapsed().as_secs_f32() >= FLASH_DUR {

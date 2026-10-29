@@ -4053,6 +4053,17 @@ impl eframe::App for PlexiApp {
                 self.show_shortcuts,
             ));
         }
+        if self.host.pane_selection(self.windows[self.active_window].window_id).is_some() {
+            poll_actions_result.extend(keys::poll_actions(
+                &mut router_input,
+                &[keys::BindingEntry {
+                    modifiers: egui::Modifiers::NONE, key: egui::Key::Escape,
+                    exact: true, no_repeat: true, context: keys::BindingContext::Normal,
+                    action: Action::CancelPaneSelection,
+                }],
+                &mut self.claimed_host_key_releases, false, keyboard_capture_active, overlay_open, self.show_shortcuts,
+            ));
+        }
         // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
         // Attention Queue list, Sibling Cards, Tree Atlas) after Global chords
         // (`Cmd+Esc`, `Cmd+Enter`, `Cmd+I`, `Cmd+Alt+B`) have been claimed by
@@ -4195,6 +4206,16 @@ impl eframe::App for PlexiApp {
         for action in poll_actions_result {
             match action {
                 Action::SplitHorizontal => {
+                    if let Some(tile) = self.windows[self.active_window].zoomed_pane {
+                        if let Some(egui_tiles::Tile::Pane(pane)) = self.windows[self.active_window].tree.tiles.get(tile) {
+                            let pane = *pane;
+                            if self.wrap_panes_to_subcontext(&[pane], pane, None) {
+                                log::info!("wrap_panes: zoomed split pane={pane}");
+                                self.split_focused(false, None, false, false, None);
+                            }
+                        }
+                        continue;
+                    }
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused(false, None, false, false, None);
                     self.mark_workspace_dirty();
@@ -4214,7 +4235,12 @@ impl eframe::App for PlexiApp {
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                     self.mark_workspace_dirty();
                 }
+                Action::SelectPane(dir) => self.extend_pane_selection(dir),
+                Action::CancelPaneSelection => {
+                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
+                }
                 Action::Navigate(dir) => {
+                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
                     let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
@@ -4550,7 +4576,7 @@ impl eframe::App for PlexiApp {
                     self.toggle_attention_queue_list();
                 }
                 Action::ZoomIn => {
-                    self.zoom_in_level();
+                    self.wrap_selection_or_zoom_in();
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();

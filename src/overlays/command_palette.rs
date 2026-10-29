@@ -410,6 +410,9 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane", search_text: "zoom restore pane fullscreen" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NextTab), name: "Next tab", description: "Focus the next tab", search_text: "next tab forward" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::PrevTab), name: "Previous tab", description: "Focus the previous tab", search_text: "previous tab back" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackApp), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
 ];
 
@@ -959,12 +962,14 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::ParkContext) => bindings.park_context,
         PaletteCommand::Host(Action::ContextZoomOut) => bindings.context_zoom_out,
         PaletteCommand::Host(Action::NewTab) => bindings.new_tab,
+        PaletteCommand::Host(Action::NextTab) => bindings.next_tab,
+        PaletteCommand::Host(Action::PrevTab) => bindings.prev_tab,
         PaletteCommand::Host(Action::NewPageRight) => bindings.new_page_right,
         PaletteCommand::Host(Action::RenamePane) => bindings.rename_pane,
         PaletteCommand::Host(Action::ClosePane) => bindings.close_pane,
         PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
-        PaletteCommand::Host(Action::NavBackApp) => bindings.nav_back,
+        PaletteCommand::Host(Action::NavBackApp) => return bindings.nav_back,
         PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
         PaletteCommand::Host(Action::IncreasePaneFontSize) => bindings.increase_font_size,
         PaletteCommand::Host(Action::DecreasePaneFontSize) => bindings.decrease_font_size,
@@ -2035,6 +2040,8 @@ impl PlexiApp {
             crate::host::keys::Action::ContextZoomOut => {
                 self.zoom_out_of_context();
             }
+            crate::host::keys::Action::NextTab => { self.cycle_tab(true); }
+            crate::host::keys::Action::PrevTab => { self.cycle_tab(false); }
             crate::host::keys::Action::NewTab => {
                 self.new_tab(self.active_window, None, false, None, false, true);
                 self.mark_workspace_dirty();
@@ -2068,7 +2075,7 @@ impl PlexiApp {
                 );
             }
             crate::host::keys::Action::ZoomIn => {
-                self.zoom_in_level();
+                self.wrap_selection_or_zoom_in();
             }
             other => log::warn!("palette: unsupported host binding {other:?}"),
         }
@@ -3094,6 +3101,9 @@ mod tests {
                         palette_host_binding(&bindings, &entry.command).is_none(),
                         "workspace config / edit commands are palette-only handoffs with no host chord"
                     );
+                }
+                PaletteCommand::Host(Action::NavBackApp | Action::FocusHistoryForward | Action::NextContext | Action::PrevContext) => {
+                    assert!(palette_host_binding(&bindings, &entry.command).is_none());
                 }
                 PaletteCommand::Host(action) => {
                     let label = palette_host_binding(&bindings, &entry.command).map(shortcut_label);

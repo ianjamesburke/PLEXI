@@ -217,6 +217,10 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "navigate_down",
     "navigate_up",
     "navigate_right",
+    "select_pane_left",
+    "select_pane_down",
+    "select_pane_up",
+    "select_pane_right",
     "new_tab",
     "next_tab",
     "prev_tab",
@@ -624,14 +628,28 @@ pub struct KeybindingsConfig {
     pub navigate_down: Option<String>,
     pub navigate_up: Option<String>,
     pub navigate_right: Option<String>,
+    /// Extend pane selection left (Cmd+Shift+H/J/K/L).
+    pub select_pane_left: Option<String>,
+    /// Extend pane selection down (Cmd+Shift+H/J/K/L).
+    pub select_pane_down: Option<String>,
+    /// Extend pane selection up (Cmd+Shift+H/J/K/L).
+    pub select_pane_up: Option<String>,
+    /// Extend pane selection right (Cmd+Shift+H/J/K/L).
+    pub select_pane_right: Option<String>,
     pub new_tab: Option<String>,
+    /// Next tab (default Cmd+]).
     pub next_tab: Option<String>,
+    /// Previous tab (default Cmd+[).
     pub prev_tab: Option<String>,
+    /// Next context (unbound by default).
     pub next_context: Option<String>,
+    /// Previous context (unbound by default).
     pub prev_context: Option<String>,
     pub move_context_up: Option<String>,
     pub move_context_down: Option<String>,
+    /// Pane navigation or focus history back (unbound by default).
     pub nav_back: Option<String>,
+    /// Focus history forward (unbound by default).
     pub focus_history_forward: Option<String>,
     pub toggle_sidebar: Option<String>,
     pub toggle_zoom: Option<String>,
@@ -708,6 +726,10 @@ impl KeybindingsConfig {
         overlay_field!(navigate_down);
         overlay_field!(navigate_up);
         overlay_field!(navigate_right);
+        overlay_field!(select_pane_left);
+        overlay_field!(select_pane_down);
+        overlay_field!(select_pane_up);
+        overlay_field!(select_pane_right);
         overlay_field!(new_tab);
         overlay_field!(next_tab);
         overlay_field!(prev_tab);
