@@ -4205,24 +4205,20 @@ impl eframe::App for PlexiApp {
         router_input.give_back(ctx);
         for action in poll_actions_result {
             match action {
-                Action::SplitHorizontal => {
+                Action::SplitHorizontal | Action::SplitVertical => {
+                    let vertical = matches!(action, Action::SplitVertical);
                     if let Some(tile) = self.windows[self.active_window].zoomed_pane {
                         if let Some(egui_tiles::Tile::Pane(pane)) = self.windows[self.active_window].tree.tiles.get(tile) {
                             let pane = *pane;
                             if self.wrap_panes_to_subcontext(&[pane], pane, None) {
-                                log::info!("wrap_panes: zoomed split pane={pane}");
-                                self.split_focused(false, None, false, false, None);
+                                log::info!("wrap_panes: zoomed split pane={pane} vertical={vertical}");
+                                self.split_focused(vertical, None, false, false, None);
                             }
                         }
                         continue;
                     }
                     self.windows[self.active_window].clear_zoom();
-                    self.split_focused(false, None, false, false, None);
-                    self.mark_workspace_dirty();
-                }
-                Action::SplitVertical => {
-                    self.windows[self.active_window].clear_zoom();
-                    self.split_focused(true, None, false, false, None);
+                    self.split_focused(vertical, None, false, false, None);
                     self.mark_workspace_dirty();
                 }
                 Action::SplitRight => {

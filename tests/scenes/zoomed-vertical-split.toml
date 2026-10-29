@@ -1,0 +1,38 @@
+# Splitting a zoomed pane vertically keeps its sibling in the parent.
+macos_only = true
+sizes = [[1280.0, 800.0], [720.0, 600.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "plan", args = ["{tmp}/plan.md"] }
+[[steps]]
+key = { target = "plan", value = "cmd+a" }
+[[steps]]
+paste = { target = "plan", value = "# Build plan\n\nSplit this fullscreen pane vertically into a subcontext.\n\nKeep these notes above the new shell.\n" }
+[[steps]]
+key = { target = "plan", value = "cmd+s" }
+[[steps]]
+key = { target = "host", value = "cmd+d" }
+[[steps]]
+assert = { pane_count = 2, context_count = 1 }
+[[steps]]
+focus = "plan"
+[[steps]]
+key = { target = "host", value = "cmd+enter" }
+[[steps]]
+key = { target = "host", value = "cmd+shift+d" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 2, context_count = 2, portal_count = 1 }
+[[steps]]
+expect = { target = "plan", source_text_contains = "Build plan" }
+[[steps]]
+shot = "vertical-child.png"
+[[steps]]
+key = { target = "host", value = "cmd+escape" }
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { pane_count = 2, context_count = 2, portal_count = 1 }
+[[steps]]
+shot = "vertical-parent.png"
