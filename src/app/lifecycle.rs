@@ -1720,6 +1720,14 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::WorkspaceSnapshot { response_file } => {
                 let context_id = self.router.active().context_id;
+                // Focus and visibility can change while the host is occluded. Refresh
+                // the snapshot from the last rendered tile rects without waiting for UI.
+                let window = &self.windows[self.active_window];
+                if window.tree.root().and_then(|root| window.tree.tiles.rect(root)).is_some() {
+                    self.ensure_authoritative_strip(context_id);
+                    let layout = self.active_strip_layout();
+                    self.host.set_strip_layout(context_id, layout);
+                }
                 let owner = match self.input_owner(&self.ctx) {
                     crate::app::input_owner::InputOwner::Pane(pane_id) => serde_json::json!({"kind":"pane", "pane_id":pane_id}),
                     crate::app::input_owner::InputOwner::Overlay(_) => serde_json::json!({"kind":"overlay"}),

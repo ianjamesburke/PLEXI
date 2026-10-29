@@ -1,0 +1,63 @@
+# Ordinary splits stay within the selected pane; Cmd+N creates a context window.
+macos_only = true
+sizes = [[1280.0, 800.0], [720.0, 600.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "plan", args = ["{tmp}/plan.md"] }
+
+[[steps]]
+paste = { target = "plan", value = "# Alpha improvement plan\n\nRestore ordinary splits and context windows.\n\n- Split beside or below the selected pane\n- Resize without losing the layout\n- Open another window with Command-N\n" }
+
+[[steps]]
+key = { target = "plan", value = "cmd+s" }
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+d" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 2, window_count = 1, target = "plan", focused = false }
+
+[[steps]]
+key = { target = "host", value = "cmd+d" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 3, window_count = 1 }
+
+[[steps]]
+key = { target = "host", value = "cmd+k" }
+
+[[steps]]
+assert = { target = "plan", focused = true }
+
+[[steps]]
+shot = "ordinary-nested-splits.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+n" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1, window_count = 2, context_count = 1 }
+
+[[steps]]
+shot = "ordinary-new-window.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+h" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 3, window_count = 2, target = "plan", focused = true }
+
+[[steps]]
+expect = { target = "plan", source_text_contains = "Alpha improvement plan" }

@@ -714,9 +714,6 @@ fn validate_saved_tree(
         egui_tiles::Tile::Container(egui_tiles::Container::Grid(_)) => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} uses an unsupported grid layout", window.window_id)));
         }
-        egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear)) if linear.dir == egui_tiles::LinearDir::Horizontal && window.tree.root() != Some(tile_id) => {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} uses an unsupported nested horizontal split", window.window_id)));
-        }
         egui_tiles::Tile::Container(container) => {
             for &child in container.children() {
                 validate_saved_tree(window, child, owners, visited)?;

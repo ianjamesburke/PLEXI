@@ -1,11 +1,5 @@
-//! Authoritative Niri-style continuous scrolling column strip model (`SPEC.md` R31–R36, R40, R42).
-//!
-//! Provides the single source of truth for:
-//! - Columns in a context with stable `ColumnId`
-//! - Panes stacked within each column and their relative height shares
-//! - Intrinsic column widths (presets, custom user ratios, or fixed logical points)
-//! - Single active focused pane within the strip and per-column `last_focused` memory
-//! - Continuous logical-point horizontal viewport scroll offset (`scroll_offset_px`)
+//! Compatibility model for persisted strip-era workspace data and context summaries.
+//! Pane geometry and split shares are owned by each window's tile tree.
 
 use crate::app::zoom::ColumnWidthPreset;
 use crate::spatial::tiling::PaneId;
@@ -16,7 +10,9 @@ fn default_strip_gap() -> f32 {
 }
 
 /// Unique, stable identifier for a column within a strip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ColumnId(pub usize);
 
 /// Column width definition: preset ratio (35/65), custom ratio, or fixed logical points.
@@ -47,15 +43,6 @@ impl ColumnWidth {
             Self::CustomRatio(r) => (pair_avail_w * r.clamp(0.05, 0.95)).max(1.0),
             Self::CustomPixels(px) | Self::FixedPx(px) => px.max(1.0),
         }
-    }
-
-    /// True if this column width is currently a custom user override.
-    #[cfg(test)]
-    pub fn is_custom(&self) -> bool {
-        matches!(
-            self,
-            Self::CustomRatio(_) | Self::CustomPixels(_) | Self::FixedPx(_)
-        )
     }
 }
 
@@ -137,32 +124,6 @@ impl Column {
             false
         }
     }
-
-    /// Append a pane to the bottom of this vertical stack.
-    pub fn push_pane(&mut self, pane_id: PaneId) {
-        if !self.panes.contains(&pane_id) {
-            self.panes.push(pane_id);
-            self.heights.push(1.0);
-            self.last_focused = Some(pane_id);
-        }
-    }
-
-    /// Insert `new_pane` immediately below `after_pane` in this vertical stack.
-    pub fn insert_pane_below(&mut self, after_pane: PaneId, new_pane: PaneId) -> bool {
-        if self.panes.contains(&new_pane) {
-            self.last_focused = Some(new_pane);
-            return true;
-        }
-        let Some(pos) = self.panes.iter().position(|&p| p == after_pane) else {
-            return false;
-        };
-        let insert_at = (pos + 1).min(self.panes.len());
-        self.panes.insert(insert_at, new_pane);
-        let h_at = insert_at.min(self.heights.len());
-        self.heights.insert(h_at, 1.0);
-        self.last_focused = Some(new_pane);
-        true
-    }
 }
 
 /// The authoritative continuous horizontal strip for a context.
@@ -188,8 +149,7 @@ pub struct Strip {
     /// Reference inter-column gap in logical points.
     #[serde(default = "default_strip_gap")]
     pub reference_gap_px: f32,
-    /// Tracks the last `scroll_offset` produced by `Strip` methods so direct field assignment in
-    /// unit tests (`strip.scroll_offset = k`) is respected by `layout_strip`.
+    /// Legacy synchronization marker retained for saved-workspace compatibility.
     #[serde(default)]
     pub last_synced_scroll_offset: usize,
 }
@@ -236,7 +196,9 @@ impl Strip {
     pub fn effective_viewport_width(&self, override_w: Option<f32>) -> f32 {
         override_w
             .filter(|w| w.is_finite() && *w > 0.0)
-            .or(self.reference_width_px.filter(|w| w.is_finite() && *w > 0.0))
+            .or(self
+                .reference_width_px
+                .filter(|w| w.is_finite() && *w > 0.0))
             .unwrap_or(style::STRIP_FALLBACK_CANVAS_W)
     }
 
@@ -314,15 +276,6 @@ impl Strip {
         self.last_synced_scroll_offset = idx;
     }
 
-    /// Set continuous scroll offset in logical points, clamped to valid strip bounds.
-    pub fn set_scroll_offset_px(&mut self, offset_px: f32, canvas_w: Option<f32>) {
-        let cw = self.effective_viewport_width(canvas_w);
-        let gap = self.reference_gap_px;
-        let max_px = self.max_scroll_offset_px(cw, gap);
-        self.scroll_offset_px = offset_px.clamp(0.0, max_px);
-        self.sync_index_from_px(cw, gap);
-    }
-
     /// Reveal column `col_idx` using the smallest `scroll_offset_px` change that brings
     /// the column inside `[scroll_offset_px, scroll_offset_px + canvas_w]`.
     /// An oversized column (`width > canvas_w`) aligns its leading edge.
@@ -357,39 +310,6 @@ impl Strip {
         self.sync_index_from_px(canvas_w, gap);
     }
 
-    /// Reveal the interval spanning `[col_a, col_b]` when both fit within the viewport;
-    /// otherwise reveal `col_b` (the newly created / primary target column).
-    pub fn reveal_pair_with_viewport(
-        &mut self,
-        col_a: usize,
-        col_b: usize,
-        canvas_w: f32,
-        gap: f32,
-    ) {
-        if self.columns.is_empty() {
-            return;
-        }
-        let left_idx = col_a.min(col_b).min(self.columns.len() - 1);
-        let right_idx = col_a.max(col_b).min(self.columns.len() - 1);
-        let intervals = self.column_intervals(canvas_w, gap);
-        let (left_x, _) = intervals[left_idx];
-        let (right_x, right_w) = intervals[right_idx];
-        let span_w = (right_x + right_w) - left_x;
-        if span_w <= canvas_w + 0.5 {
-            let max_px = self.max_scroll_offset_px(canvas_w, gap);
-            let mut next_px = self.scroll_offset_px.clamp(0.0, max_px);
-            if left_x < next_px {
-                next_px = left_x;
-            } else if right_x + right_w > next_px + canvas_w {
-                next_px = (right_x + right_w) - canvas_w;
-            }
-            self.scroll_offset_px = next_px.clamp(0.0, max_px);
-            self.sync_index_from_px(canvas_w, gap);
-        } else {
-            self.reveal_column_with_viewport(col_b, canvas_w, gap);
-        }
-    }
-
     /// Remove a pane from the strip, removing the column if empty while preserving
     /// every remaining column's stable `ColumnId`.
     pub fn remove_pane(&mut self, pane_id: PaneId) -> bool {
@@ -411,7 +331,11 @@ impl Strip {
                         .and_then(|i| self.columns.get(i))
                         .and_then(|c| c.remembered_or_first_pane())
                 })
-                .or_else(|| self.columns.last().and_then(|c| c.remembered_or_first_pane()));
+                .or_else(|| {
+                    self.columns
+                        .last()
+                        .and_then(|c| c.remembered_or_first_pane())
+                });
             self.focused_pane = next_focus;
             if let Some(pid) = next_focus {
                 let _ = self.focus_pane(pid);
@@ -427,23 +351,9 @@ impl Strip {
 
     /// Find column index containing `pane_id`.
     pub fn find_column_for_pane(&self, pane_id: PaneId) -> Option<usize> {
-        self.columns.iter().position(|col| col.contains_pane(pane_id))
-    }
-
-    /// Find `(col_idx, row_idx)` for `pane_id`.
-    pub fn find_pane_position(&self, pane_id: PaneId) -> Option<(usize, usize)> {
-        for (col_idx, col) in self.columns.iter().enumerate() {
-            if let Some(row_idx) = col.panes.iter().position(|&p| p == pane_id) {
-                return Some((col_idx, row_idx));
-            }
-        }
-        None
-    }
-
-    /// Find column index by stable `ColumnId`.
-    #[cfg(test)]
-    pub fn find_column_by_id(&self, id: ColumnId) -> Option<usize> {
-        self.columns.iter().position(|col| col.id == id)
+        self.columns
+            .iter()
+            .position(|col| col.contains_pane(pane_id))
     }
 
     /// Return true if the strip contains `pane_id`.
@@ -488,96 +398,6 @@ impl Strip {
         self.columns.push(col);
     }
 
-    /// Insert a new full-height column immediately to the right of `col_idx`, preserving
-    /// all existing columns' stable `ColumnId`s and `last_focused` memory, focusing `pane_id`,
-    /// and revealing the `(col_idx, insert_idx)` pair when it fits.
-    pub fn insert_column_right_of(
-        &mut self,
-        col_idx: usize,
-        pane_id: PaneId,
-        width: ColumnWidth,
-    ) -> usize {
-        if self.columns.len() == 1 && matches!(self.columns[0].width, ColumnWidth::Preset(_)) {
-            self.columns[0].width = ColumnWidth::Preset(ColumnWidthPreset::Parent35);
-        }
-        let insert_idx = (col_idx + 1).min(self.columns.len());
-        let new_id = self.alloc_column_id();
-        let new_col = Column::new(new_id, pane_id, width);
-        self.columns.insert(insert_idx, new_col);
-        self.columns[insert_idx].focus_pane(pane_id);
-        self.focused_pane = Some(pane_id);
-        let cw = self.effective_viewport_width(None);
-        let gap = self.reference_gap_px;
-        if col_idx < insert_idx
-            && matches!(self.columns[col_idx].width, ColumnWidth::CustomRatio(_) | ColumnWidth::CustomPixels(_) | ColumnWidth::FixedPx(_))
-        {
-            let widths = self.intrinsic_column_widths(cw, gap);
-            if widths[col_idx] + gap + widths[insert_idx] > cw {
-                let pair_width = ((cw - gap).max(2.0)) / 2.0;
-                self.columns[col_idx].width = ColumnWidth::CustomPixels(pair_width);
-                self.columns[insert_idx].width = ColumnWidth::CustomPixels(pair_width);
-                log::info!("strip: adjusted oversized split pair context={} source={} new={} width={pair_width:.1}", self.context_id, col_idx, insert_idx);
-            }
-        }
-        self.reveal_pair_with_viewport(col_idx.min(insert_idx), insert_idx, cw, gap);
-        insert_idx
-    }
-
-    /// Insert `new_pane` immediately below `source_pane` in its column's vertical stack
-    /// and focus `new_pane`.
-    pub fn insert_pane_below_in_column(&mut self, source_pane: PaneId, new_pane: PaneId) -> bool {
-        let Some(col_idx) = self.find_column_for_pane(source_pane) else {
-            return false;
-        };
-        if !self.columns[col_idx].insert_pane_below(source_pane, new_pane) {
-            return false;
-        }
-        self.focused_pane = Some(new_pane);
-        self.ensure_column_visible(col_idx);
-        true
-    }
-
-    /// Swap the positions of `pane_a` and `pane_b` in the strip (across columns or within
-    /// a stack) without creating/destroying columns or moving whole stacks when a single
-    /// stacked pane is swapped horizontally. Focus stays on whichever moved pane was focused.
-    pub fn swap_panes(&mut self, pane_a: PaneId, pane_b: PaneId) -> bool {
-        if pane_a == pane_b {
-            return false;
-        }
-        let Some((col_a, row_a)) = self.find_pane_position(pane_a) else {
-            return false;
-        };
-        let Some((col_b, row_b)) = self.find_pane_position(pane_b) else {
-            return false;
-        };
-        self.columns[col_a].panes[row_a] = pane_b;
-        self.columns[col_b].panes[row_b] = pane_a;
-
-        if col_a == col_b {
-            if row_a < self.columns[col_a].heights.len()
-                && row_b < self.columns[col_a].heights.len()
-            {
-                self.columns[col_a].heights.swap(row_a, row_b);
-            }
-        } else {
-            if self.columns[col_a].last_focused == Some(pane_a) {
-                self.columns[col_a].last_focused = Some(pane_b);
-            }
-            if self.columns[col_b].last_focused == Some(pane_b) {
-                self.columns[col_b].last_focused = Some(pane_a);
-            }
-        }
-
-        if self.focused_pane == Some(pane_a) {
-            self.columns[col_b].last_focused = Some(pane_a);
-            self.ensure_column_visible(col_b);
-        } else if self.focused_pane == Some(pane_b) {
-            self.columns[col_a].last_focused = Some(pane_b);
-            self.ensure_column_visible(col_a);
-        }
-        true
-    }
-
     /// Set a custom width on column `col_idx`.
     #[cfg(test)]
     pub fn set_column_width(&mut self, col_idx: usize, width: ColumnWidth) -> bool {
@@ -587,44 +407,5 @@ impl Strip {
         } else {
             false
         }
-    }
-
-    /// Reset all column widths in the strip to their default presets (col 0: 35%, others: 65%).
-    #[cfg(test)]
-    pub fn reset_column_widths(&mut self) {
-        for (idx, col) in self.columns.iter_mut().enumerate() {
-            let preset = if idx == 0 {
-                ColumnWidthPreset::Parent35
-            } else {
-                ColumnWidthPreset::Child65
-            };
-            col.width = ColumnWidth::Preset(preset);
-        }
-        let cw = self.effective_viewport_width(None);
-        let gap = self.reference_gap_px;
-        let max_px = self.max_scroll_offset_px(cw, gap);
-        self.scroll_offset_px = self.scroll_offset_px.clamp(0.0, max_px);
-        self.sync_index_from_px(cw, gap);
-    }
-
-    /// True if strip content extends to the left of the current horizontal scroll offset.
-    #[cfg(test)]
-    pub fn has_left_clipped(&self) -> bool {
-        if self.scroll_offset != self.last_synced_scroll_offset {
-            return self.columns.len() > 2 && self.scroll_offset > 0;
-        }
-        self.scroll_offset_px > 0.5
-    }
-
-    /// True if strip content extends to the right of the current horizontal scroll offset.
-    #[cfg(test)]
-    pub fn has_right_clipped(&self) -> bool {
-        if self.scroll_offset != self.last_synced_scroll_offset {
-            return self.columns.len() > 2 && self.scroll_offset + 2 < self.columns.len();
-        }
-        let cw = self.effective_viewport_width(None);
-        let gap = self.reference_gap_px;
-        let max_px = self.max_scroll_offset_px(cw, gap);
-        self.scroll_offset_px + 0.5 < max_px
     }
 }

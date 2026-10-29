@@ -5084,13 +5084,7 @@ mod tests {
             terminals.len() >= 2,
             "need several real terminals for the drag to be meaningful"
         );
-        let visible_terminals: Vec<_> = h.with_app(|app| {
-            terminals
-                .iter()
-                .copied()
-                .filter(|id| !app.zoom.off_strip_panes.contains(id))
-                .collect()
-        });
+        let visible_terminals = terminals.clone();
         assert!(
             !visible_terminals.is_empty(),
             "need a visible terminal for the drag to be meaningful"
@@ -6344,7 +6338,6 @@ mod tests {
         );
         println!("Screenshot saved to {}", evidence_png!());
     }
-
 
     #[test]
     fn screenshot_state_presets_and_attention_styles() {
@@ -9812,7 +9805,7 @@ mod tests {
         }
     }
     #[test]
-    fn strip_divider_drag_survives_repaint() {
+    fn tiled_divider_drag_survives_repaint() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.step();
         let first = add_focused_pane(&mut h);
@@ -9838,7 +9831,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_stack_drag_survives_repaint() {
+    fn tiled_stack_drag_survives_repaint() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.step();
         let first = add_focused_pane(&mut h);
@@ -9864,8 +9857,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_double_click_resets_only_adjacent_columns() {
-        use crate::strip::ColumnWidth;
+    fn tiled_double_click_resets_only_adjacent_columns() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.step();
         let first = add_focused_pane(&mut h);
@@ -9875,9 +9867,10 @@ mod tests {
         let third = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
         h.run_steps(2);
         h.with_app_mut(|app| {
-            let context = app.router.active().context_id;
-            let strip = app.ensure_authoritative_strip(context);
-            for (col, width) in strip.columns.iter_mut().zip([300.0, 400.0, 700.0]) { col.width = ColumnWidth::CustomPixels(width); }
+            let window = &mut app.windows[app.active_window];
+            let root = window.tree.root().unwrap();
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) = window.tree.tiles.get_mut(root) else { panic!("columns") };
+            for (&tile, share) in linear.children.iter().zip([3.0, 4.0, 7.0]) { linear.shares.set_share(tile, share); }
             app.focus_pane_in_strip(first);
         });
         h.run_steps(3);
@@ -9901,79 +9894,13 @@ mod tests {
         }
         h.run_steps(3);
         h.with_app(|app| {
-            let strip = app.strip_for_context(app.router.active().context_id);
-            assert!(!strip.columns[strip.find_column_for_pane(first).unwrap()].width.is_custom());
-            assert!(!strip.columns[strip.find_column_for_pane(second).unwrap()].width.is_custom());
-            assert_eq!(strip.columns[strip.find_column_for_pane(third).unwrap()].width, ColumnWidth::CustomPixels(700.0));
-        });
-    }
+            let window = &app.windows[app.active_window];
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) = window.tree.tiles.get(window.tree.root().unwrap()) else { panic!("columns") };
+            assert!((linear.shares[linear.children[0]] - linear.shares[linear.children[1]]).abs() < 0.01);
+            assert!((linear.shares[linear.children[2]] - 7.0).abs() < 0.01);
+            let layout = app.active_strip_layout();
+            assert!(layout.pane(second).unwrap().is_visible && layout.pane(third).unwrap().is_visible);
 
-    #[test]
-    fn strip_wheel_scroll_preserves_focus_and_key_reveals_it() {
-        use crate::app::input_owner::InputOwner;
-        use crate::strip::ColumnWidth;
-        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
-        h.step();
-        add_focused_pane(&mut h);
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| {
-            let context = app.router.active().context_id;
-            let strip = app.ensure_authoritative_strip(context);
-            for col in &mut strip.columns { col.width = ColumnWidth::CustomPixels(700.0); }
-            strip.focus_pane(focused);
-        });
-        h.run_steps(3);
-        let (before, pos) = h.with_app(|app| (app.active_strip_layout().scroll_offset_px, app.active_strip_layout().canvas_rect.center()));
-        h.with_app_mut(|app| app.workspace_dirty = false);
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(pos),
-            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(900.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
-        ]);
-        h.step();
-        assert!(h.with_app(|app| app.workspace_dirty), "scroll must schedule workspace persistence");
-        h.run_steps(7);
-        h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            assert!(layout.scroll_offset_px < before - 100.0, "wheel must scroll: {before} -> {}", layout.scroll_offset_px);
-            assert_eq!(app.focused_pane_id(), Some(focused));
-            assert_eq!(app.host_input_owner(), InputOwner::Pane(focused));
-            assert!(!layout.pane(focused).unwrap().is_on_screen);
-        });
-        h.harness().input_mut().events.push(egui::Event::Text("x".into()));
-        h.run_steps(3);
-        h.with_app(|app| assert!(app.active_strip_layout().pane(focused).unwrap().is_on_screen));
-    }
-
-    #[test]
-    fn strip_overflow_control_scrolls_outside_pane_hits() {
-        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
-        h.step();
-        add_focused_pane(&mut h);
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        let focused = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(3);
-        let (before, click) = h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            (layout.scroll_offset_px, egui::pos2(layout.canvas_rect.left() + 20.0, layout.canvas_rect.bottom() + 6.0))
-        });
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(click),
-            egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
-        ]);
-        h.step();
-        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: click, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
-        h.run_steps(3);
-        h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            assert!(layout.scroll_offset_px < before - 10.0, "overflow control did not scroll: {before} -> {}", layout.scroll_offset_px);
-            assert_eq!(app.focused_pane_id(), Some(focused));
-            assert!(layout.panes.iter().all(|pane| !pane.hit_rect.contains(click)));
         });
     }
 
@@ -10040,70 +9967,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_scrolled_out_app_receives_key_after_reveal() {
-        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
-        h.step();
-        let first = add_focused_pane(&mut h);
-        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
-        h.with_app_mut(|app| {
-            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
-            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
-        });
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
-        h.run_steps(3);
-        let pos = h.with_app(|app| app.active_strip_layout().pane(first).unwrap().clip_rect.center());
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(pos),
-            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-1800.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
-        ]);
-        h.run_steps(12);
-        assert!(!h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_visible));
-        h.harness().input_mut().events.push(egui::Event::Key { key: egui::Key::X, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
-        h.run_steps(2);
-        assert_eq!(state.lock().unwrap().keys, 1);
-        assert!(h.with_app(|app| app.active_strip_layout().pane(first).unwrap().is_on_screen));
-    }
-
-    #[test]
-    fn strip_shift_wheel_scrolls_without_vertical_delivery() {
-        let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
-        h.step();
-        let first = add_focused_pane(&mut h);
-        let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
-        h.with_app_mut(|app| {
-            let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
-            pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal: false, state: state.clone() }));
-        });
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| { app.focus_pane_in_strip(first); });
-        h.run_steps(3);
-        let (before, pos) = h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            (layout.scroll_offset_px, layout.pane(first).unwrap().clip_rect.min + egui::vec2(80.0, 80.0))
-        });
-        let modifiers = egui::Modifiers { shift: true, ..egui::Modifiers::NONE };
-        h.harness().input_mut().modifiers = modifiers;
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(pos),
-            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -200.0), modifiers, phase: egui::TouchPhase::Move },
-        ]);
-        h.run_steps(8);
-        assert!(h.with_app(|app| app.active_strip_layout().scroll_offset_px) > before + 20.0);
-        assert_eq!(state.lock().unwrap().raw_y, 0.0, "shift-wheel must not also reach pane as vertical wheel");
-        assert_eq!(h.with_app(|app| app.focused_pane_id()), Some(first));
-    }
-
-    #[test]
-    fn screenshot_populated_strip_overflow() {
+    fn screenshot_populated_tiled_windows() {
         for (width, height, scale, suffix) in [(1200.0, 700.0, 1.0, "_wide"), (900.0, 700.0, 1.5, "_narrow")] {
             let mut h = PlexiUiHarness::new_sized_scaled(width, height, scale);
             for index in 0..3 {
@@ -10120,7 +9984,7 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_saved_workspace_strip_and_windows() {
+    fn screenshot_saved_workspace_tiles_and_windows() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         for (name, layout) in [("first", "split_h"), ("second", "split_h")] {
             let path = h.workspace.path().join(format!("{name}.md"));
@@ -10204,20 +10068,21 @@ mod tests {
     }
 
     #[test]
-    fn strip_stack_double_click_resets_only_adjacent_shares() {
+    fn tiled_stack_double_click_resets_only_adjacent_shares() {
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
         h.step();
-        let first = add_focused_pane(&mut h);
+        add_focused_pane(&mut h);
         h.run_steps(2);
         h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
         h.run_steps(2);
         h.with_app_mut(|app| app.split_focused(true, None, false, false, None)).unwrap();
         h.run_steps(2);
         h.with_app_mut(|app| {
-            let context = app.router.active().context_id;
-            let strip = app.ensure_authoritative_strip(context);
-            let col = strip.find_column_for_pane(first).unwrap();
-            strip.columns[col].heights = vec![1.0, 2.0, 4.0];
+            let window = &mut app.windows[app.active_window];
+            let root = window.tree.root().unwrap();
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) = window.tree.tiles.get_mut(root) else { panic!("rows") };
+            for (&tile, share) in linear.children.iter().zip([1.0, 2.0, 4.0]) { linear.shares.set_share(tile, share); }
+
         });
         h.run_steps(3);
         let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| !d.is_vertical).unwrap().rect.center());
@@ -10237,82 +10102,58 @@ mod tests {
         }
         h.run_steps(3);
         let heights = h.with_app(|app| {
-            let strip = app.strip_for_context(app.router.active().context_id);
-            strip.columns[strip.find_column_for_pane(first).unwrap()].heights.clone()
+            let window = &app.windows[app.active_window];
+            let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear))) = window.tree.tiles.get(window.tree.root().unwrap()) else { panic!("rows") };
+            linear.children.iter().map(|tile| linear.shares[*tile]).collect::<Vec<_>>()
+
         });
         assert_eq!(heights, vec![1.5, 1.5, 4.0]);
     }
 
     #[test]
-    fn strip_underfilled_custom_widths_match_rendered_tiles() {
-        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
-        h.step();
-        let first = add_focused_pane(&mut h);
-        h.run_steps(2);
-        let second = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        let third = h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();
-        h.run_steps(2);
-        h.with_app_mut(|app| {
-            let context = app.router.active().context_id;
-            let strip = app.ensure_authoritative_strip(context);
-            for (col, width) in strip.columns.iter_mut().zip([200.0, 300.0, 300.0]) { col.width = crate::strip::ColumnWidth::CustomPixels(width); }
-            app.focus_pane_in_strip(first);
-        });
-        h.run_steps(3);
-        h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            let win = &app.windows[app.active_window];
-            for pane in [first, second, third] {
-                let tile = win.tree.tiles.find_pane(&pane).unwrap();
-                let actual = win.tree.tiles.rect(tile).unwrap();
-                let expected = layout.pane(pane).unwrap().outer_rect;
-                assert!((actual.width() - expected.width()).abs() < 1.0, "pane {pane}: tile={actual:?} model={expected:?}");
+    fn tiled_nested_editors_pointer_input_and_screenshots() {
+        for (width, height, scale, suffix) in [(1280.0, 800.0, 1.0, "_wide"), (720.0, 600.0, 1.0, "_narrow"), (1280.0, 800.0, 2.0, "_ppp2")] {
+            let mut h = PlexiUiHarness::new_sized_ppp(width, height, scale);
+            let mut editors = Vec::new();
+            for (index, layout) in ["split_h", "split_v", "split_h"].into_iter().enumerate() {
+                let path = h.workspace.path().join(format!("plan-{index}.md"));
+                std::fs::write(&path, format!("# Project {}\n\nOrdinary split workspace.\n\n- Review the implementation\n- Check the running build\n- Record the next step\n", index + 1)).unwrap();
+                h.with_app_mut(|app| app.launch_app_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
+                h.run_steps(3);
+                editors.push((h.with_app(|app| app.active_focused_pane_id().unwrap()), path));
             }
-        });
-        let pos = h.with_app(|app| app.active_strip_layout().dividers.iter().find(|d| d.is_vertical).unwrap().rect.center());
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(pos),
-            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
-        ]);
-        h.step();
-        let moved = pos + egui::vec2(50.0, 0.0);
-        h.harness().input_mut().events.push(egui::Event::PointerMoved(moved));
-        h.step();
-        h.harness().input_mut().events.push(egui::Event::PointerButton { pos: moved, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
-        h.run_steps(3);
-        h.with_app(|app| {
-            let strip = app.strip_for_context(app.router.active().context_id);
-            assert_eq!(strip.columns[strip.find_column_for_pane(third).unwrap()].width, crate::strip::ColumnWidth::CustomPixels(300.0));
-            assert!(strip.intrinsic_column_widths(app.active_strip_viewport().canvas_rect.width(), app.active_strip_viewport().gap)[strip.find_column_for_pane(first).unwrap()] > 230.0);
-        });
-    }
-
-    #[test]
-    fn strip_single_oversized_column_scrolls_rendered_content() {
-        let mut h = PlexiUiHarness::new_sized(800.0, 600.0);
-        h.step();
-        let pane = add_focused_pane(&mut h);
-        h.run_steps(2);
-        h.with_app_mut(|app| {
-            let context = app.router.active().context_id;
-            app.ensure_authoritative_strip(context).columns[0].width = crate::strip::ColumnWidth::CustomPixels(1400.0);
-        });
-        h.run_steps(3);
-        let pos = h.with_app(|app| app.active_strip_layout().canvas_rect.center());
-        h.harness().input_mut().events.extend([
-            egui::Event::PointerMoved(pos),
-            egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-300.0, 0.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move },
-        ]);
-        h.run_steps(8);
-        h.with_app(|app| {
-            let layout = app.active_strip_layout();
-            assert!(layout.scroll_offset_px > 50.0);
-            let win = &app.windows[app.active_window];
-            let actual = win.tree.tiles.rect(win.tree.tiles.find_pane(&pane).unwrap()).unwrap();
-            let expected = layout.pane(pane).unwrap().outer_rect;
-            assert!((actual.left() - expected.left()).abs() < 1.0 && (actual.width() - expected.width()).abs() < 1.0, "tile={actual:?} model={expected:?} root={:?} window_strip={:?}", win.tree.tiles.get(win.tree.root().unwrap()), app.active_window_strip());
-        });
+            h.with_app(|app| {
+                let layout = app.active_strip_layout();
+                let top = layout.pane(editors[0].0).unwrap().outer_rect;
+                let left = layout.pane(editors[1].0).unwrap().outer_rect;
+                let right = layout.pane(editors[2].0).unwrap().outer_rect;
+                assert!(top.bottom() <= left.top() + 1.0 && top.bottom() <= right.top() + 1.0);
+                assert!(left.right() <= right.left() + 1.0);
+                for pane in &layout.panes {
+                    assert!(layout.canvas_rect.expand(1.0).contains_rect(pane.outer_rect), "pane outside tiled canvas: {pane:?}");
+                }
+            });
+            for (index, (pane, path)) in editors.iter().enumerate() {
+                let pos = h.with_app(|app| app.active_strip_layout().pane(*pane).unwrap().hit_rect.center());
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+                ]);
+                h.run_steps(2);
+                h.with_app(|app| assert_eq!(app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(*pane)));
+                let marker = format!("typed-in-pane-{index}");
+                h.harness().input_mut().events.push(egui::Event::Text(marker.clone()));
+                h.run_steps(2);
+                h.harness().key_press_modifiers(egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND, egui::Key::S);
+                h.run_steps(2);
+                assert!(std::fs::read_to_string(path).unwrap().contains(&marker));
+                for (other, (_, other_path)) in editors.iter().enumerate() {
+                    if other != index { assert!(!std::fs::read_to_string(other_path).unwrap().contains(&marker)); }
+                }
+            }
+            h.save_screenshot(&evidence_png!(suffix)).unwrap();
+        }
     }
 
 }

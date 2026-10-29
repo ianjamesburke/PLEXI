@@ -353,7 +353,7 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 
 ## Tiling layout
 
-Split panes, navigate, and zoom with keyboard shortcuts. Press `Cmd+/` for the full shortcut list at any time.
+Split the selected pane beside or below itself; nested splits fit within the current window. Create additional internal windows in the same context with `Cmd+N`. Press `Cmd+/` for the full shortcut list at any time.
 
 | Shortcut | Action |
 |----------|--------|
@@ -366,7 +366,7 @@ Split panes, navigate, and zoom with keyboard shortcuts. Press `Cmd+/` for the f
 | `Cmd+W` | Close focused pane |
 | `Cmd+P` | Command palette |
 | `Cmd+T` | New tab |
-| `Cmd+N` | New page (right) |
+| `Cmd+N` | New internal window in the current context |
 | `Cmd+R` | Rename pane |
 | `Cmd+[` / `Cmd+]` | Focus history — back / forward |
 

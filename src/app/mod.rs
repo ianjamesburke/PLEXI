@@ -3996,22 +3996,6 @@ impl eframe::App for PlexiApp {
             crate::app::app_trait::KeyDisposition::Passthrough
         };
 
-        // Manual strip scrolling keeps focus. Reveal its pane before a pane-directed key
-        // is dispatched, while leaving host shortcuts free to navigate normally.
-        let pane_key = ctx.input(|input| input.events.iter().any(|event| match event {
-            egui::Event::Text(_) => true,
-            egui::Event::Key { pressed: true, modifiers, .. } => !modifiers.command && !modifiers.ctrl && !modifiers.alt,
-            _ => false,
-        }));
-        if pane_key && self.overlay_surface().is_none() {
-            if let Some(pane) = self.active_focused_pane_id() {
-                if self.active_strip_layout().pane(pane).is_some_and(|layout| !layout.is_on_screen) {
-                    self.focus_pane_in_strip(pane);
-                    log::info!("strip: revealed focused pane {pane} before keyboard input");
-                }
-            }
-        }
-
         // Host bindings own their chords before an app can classify raw key
         // events. This is the structural guard against one physical Cmd+D
         // both splitting the pane and reaching a PGAP app as its bare `d`
