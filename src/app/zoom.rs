@@ -686,24 +686,16 @@ impl PlexiApp {
         if Some(pane_id) == self.conjoined_parent() {
             return true;
         }
-        let layout = self.active_strip_layout();
-        if layout.pane(pane_id).is_some() {
-            return true;
-        }
-        self.windows
-            .get(self.active_window)
-            .and_then(|w| w.panes.get(&pane_id))
-            .is_some_and(|p| matches!(p, crate::host::pane::Pane::Portal(_)))
+        self.windows.get(self.active_window).is_some_and(|window| {
+            window.panes.contains_key(&pane_id)
+                && window.tree.tiles.find_pane(&pane_id).is_some_and(|tile| window.tree.active_tiles().contains(&tile))
+        })
     }
-
     /// Focus `pane_id` inside its context and update column & context focus memory
     /// in the single authoritative `Strip` in `HostModel`.
     pub fn focus_pane_in_strip(&mut self, pane_id: PaneId) -> bool {
         if Some(pane_id) == self.conjoined_parent() {
             self.conjoined_parent_focus = Some(pane_id);
-            let ctx_id = self.router.active().context_id;
-            let strip = self.ensure_authoritative_strip(ctx_id);
-            strip.ensure_column_visible(0);
             self.sync_attention_queue();
             return true;
         }
@@ -737,12 +729,6 @@ impl PlexiApp {
         self.mark_agent_seen(pane_id);
 
         self.zoom.context_last_pane.insert(ctx_id, pane_id);
-        let vp = self.active_strip_viewport();
-        let strip = self.ensure_authoritative_strip(ctx_id);
-        strip.focus_pane(pane_id);
-        let strip = strip.clone();
-        let layout = self.active_window_layout(&strip, &vp);
-        self.host.set_strip_layout(ctx_id, layout);
         self.sync_attention_queue();
         true
     }
@@ -1145,7 +1131,7 @@ impl PlexiApp {
     /// Handle directional movement (`Cmd+H/J/K/L`) at the current zoom level.
     pub fn navigate_at_current_zoom_level(&mut self, dir: Direction) -> bool {
         match self.zoom.level {
-            ZoomLevel::Columns => self.navigate_columns_strip(dir),
+            ZoomLevel::Columns => self.navigate(dir),
             ZoomLevel::SiblingCards => self.navigate_sibling_cards(dir),
             ZoomLevel::TreeAtlas => self.navigate_tree_atlas_dir(dir),
         }
