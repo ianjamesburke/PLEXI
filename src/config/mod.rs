@@ -628,13 +628,13 @@ pub struct KeybindingsConfig {
     pub navigate_down: Option<String>,
     pub navigate_up: Option<String>,
     pub navigate_right: Option<String>,
-    /// Extend pane selection left (Cmd+Shift+H/J/K/L).
+    /// Extend pane selection left (default Cmd+Shift+H).
     pub select_pane_left: Option<String>,
-    /// Extend pane selection down (Cmd+Shift+H/J/K/L).
+    /// Extend pane selection down (default Cmd+Shift+J).
     pub select_pane_down: Option<String>,
-    /// Extend pane selection up (Cmd+Shift+H/J/K/L).
+    /// Extend pane selection up (default Cmd+Shift+K).
     pub select_pane_up: Option<String>,
-    /// Extend pane selection right (Cmd+Shift+H/J/K/L).
+    /// Extend pane selection right (default Cmd+Shift+L).
     pub select_pane_right: Option<String>,
     pub new_tab: Option<String>,
     /// Next tab (default Cmd+]).

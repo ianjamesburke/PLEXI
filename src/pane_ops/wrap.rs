@@ -113,6 +113,16 @@ impl PlexiApp {
         };
         let mut child_tiles = parent.tree.tiles.clone();
         prune_tiles(&mut child_tiles, child_root, &selected);
+        let mut child_tree = Tree::new(
+            egui::Id::new(("child_tree", self.next_window_id + 1)),
+            child_root,
+            child_tiles,
+        );
+        child_tree.simplify(&egui_tiles::SimplificationOptions {
+            join_nested_linear_containers: false,
+            all_panes_must_have_tabs: true,
+            ..Default::default()
+        });
         let context_id = self.next_window_id;
         let window_id = context_id + 1;
         self.next_window_id += 2;
@@ -184,7 +194,7 @@ impl PlexiApp {
         self.windows.push(Window {
             name: String::new(),
             path: root,
-            tree: Tree::new(format!("child_tree_{window_id}"), child_root, child_tiles),
+            tree: child_tree,
             panes: child_panes,
             focused_pane: Some(anchor_tile),
             zoomed_pane: None,
@@ -199,6 +209,7 @@ impl PlexiApp {
         if let Some(index) = self.router.position(|c| c.context_id == context_id) {
             self.switch_workspace(index);
         }
+        self.attention_queue.transient_hint = None;
         log::info!("wrap_panes: panes={pane_ids:?} anchor={anchor} parent={parent_context} child={context_id} portal={portal_id}");
         self.mark_workspace_dirty();
         true
@@ -222,7 +233,9 @@ impl PlexiApp {
         let next = *next;
         self.host
             .extend_pane_selection(window.window_id, start, next);
+        self.windows[self.active_window].clear_zoom();
         self.windows[self.active_window].navigate_to(target);
+        self.attention_queue.transient_hint = None;
         self.ctx.request_repaint();
     }
 

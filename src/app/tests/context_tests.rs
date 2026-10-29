@@ -2508,6 +2508,7 @@ fn push_pane_ipc_targets_caller_pane_not_focused() {
 fn push_pane_ipc_unknown_pane_falls_back_to_focused() {
     let mut h = crate::testing::HostHarness::new();
     let pane_a = h.add_test_pane();
+    let _outside = h.add_test_pane();
     let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).unwrap();
     h.app.windows[0].focused_pane = Some(tile_a);
     let parent_id = h.app.router.active().context_id;
@@ -2556,6 +2557,13 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     // Push pane_a from root -> child1(d1). Router: [root, child1]. Active: child1.
     push_ipc(&mut h, pane_a);
     let child1_id = h.app.router.active().context_id;
+    // Keep a pane outside the grandchild, as required by the wrap contract.
+    let child1_window = h.app.active_window;
+    let old_root = h.app.windows[child1_window].tree.root.unwrap();
+    let (outside, _) = h.app.add_app_pane_in_window(child1_window, "outside");
+    let root = h.app.windows[child1_window].tree.tiles.insert_horizontal_tile(vec![old_root, outside]);
+    h.app.windows[child1_window].tree.root = Some(root);
+
 
     // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
     // With insert_after_subtree(root), child2 lands after child1: [root, child1, child2].

@@ -81,7 +81,10 @@ fn wrap_selection_preserves_layout_portal_and_workspace_roundtrip() {
     );
     // Compatibility strips exclude portals; the anchor tile above verifies the parent portal.
     let expected_parent = h.app.strip_for_context(parent);
-    h.app.save_workspace_now();
+    assert!(
+        h.app.save_workspace_now(),
+        "wrap must remain immediately saveable"
+    );
     let profile = h.profile_dir().to_path_buf();
     let saved =
         crate::workspace::WorkspaceFile::load_from(&profile).expect("valid wrapped workspace");
@@ -259,4 +262,69 @@ fn wrap_selection_stays_window_local_and_does_not_cross_boundaries() {
             .len(),
         1
     );
+}
+
+#[test]
+fn wrap_keeps_split_proportions_and_nonfirst_anchor() {
+    let mut h = HostHarness::new();
+    let [a, b, c, d] = grid(&mut h);
+    let tree = &mut h.app.windows[0].tree;
+    let egui_tiles::Tile::Container(egui_tiles::Container::Linear(root)) =
+        tree.tiles.get_mut(tree.root.unwrap()).unwrap()
+    else {
+        panic!("horizontal grid root")
+    };
+    root.shares[root.children[0]] = 3.0;
+    root.shares[root.children[1]] = 2.0;
+    let left = root.children[0];
+    let egui_tiles::Tile::Container(egui_tiles::Container::Linear(stack)) =
+        tree.tiles.get_mut(left).unwrap()
+    else {
+        panic!("vertical stack")
+    };
+    stack.shares[stack.children[0]] = 2.0;
+    stack.shares[stack.children[1]] = 1.0;
+    let anchor_slot = tree.tiles.find_pane(&c).unwrap();
+    assert!(h.app.wrap_panes_to_subcontext(&[c, b, a], c, None));
+    assert_eq!(h.app.focused_pane_id(), Some(c));
+    assert!(
+        matches!(h.app.windows[0].tree.tiles.get(anchor_slot), Some(egui_tiles::Tile::Pane(id)) if h.app.windows[0].panes[id].as_portal().is_some())
+    );
+    assert!(h.app.windows[0].panes.contains_key(&d));
+    assert!(h.app.save_workspace_now(), "save before rendering child");
+    h.run_frames(2);
+    let child = &h.app.windows[h.app.active_window];
+    let rect = |id| {
+        child
+            .tree
+            .tiles
+            .rect(child.tree.tiles.find_pane(&id).unwrap())
+            .unwrap()
+    };
+    let (ra, rb, rc) = (rect(a), rect(b), rect(c));
+    assert!((ra.width() / rc.width() - 1.5).abs() < 0.02);
+    assert!((ra.height() / rb.height() - 2.0).abs() < 0.02);
+    assert!(ra.bottom() <= rb.top());
+    assert!(ra.right() <= rc.left());
+    assert!(h.app.save_workspace_now(), "save after rendering child");
+}
+
+#[test]
+fn bracket_shortcuts_cycle_tabs_without_using_focus_history() {
+    let mut h = HostHarness::new();
+    let a = h.add_test_pane();
+    let b = h.add_test_pane();
+    let (ta, tb) = {
+        let tree = &mut h.app.windows[0].tree;
+        let ta = tree.tiles.find_pane(&a).unwrap();
+        let tb = tree.tiles.find_pane(&b).unwrap();
+        tree.root = Some(tree.tiles.insert_tab_tile(vec![ta, tb]));
+        (ta, tb)
+    };
+    h.app.windows[0].navigate_to(ta);
+    h.run_frames(2);
+    h.press_key(egui::Key::CloseBracket, command());
+    assert_eq!(h.app.windows[0].focused_pane, Some(tb));
+    h.press_key(egui::Key::OpenBracket, command());
+    assert_eq!(h.app.windows[0].focused_pane, Some(ta));
 }

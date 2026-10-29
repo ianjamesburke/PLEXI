@@ -127,11 +127,9 @@ pub enum Action {
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
-    /// Cmd+[ when a nav-active app pane is focused: pop one nav level and
-    /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
-    /// if no nav is active on the focused pane.
+    /// Pop app navigation, falling back to focus history. Unbound by default.
     NavBackApp,
-    /// Step forward through pane focus history. Bound to Cmd+].
+    /// Step forward through pane focus history. Unbound by default.
     FocusHistoryForward,
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
