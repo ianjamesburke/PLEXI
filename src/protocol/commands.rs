@@ -797,9 +797,10 @@ pub enum AppRequest {
         /// Initial slots (`key`, `value`) written onto the worker pane at spawn.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         initial_slots: Vec<(String, String)>,
-        /// Keep focus on the caller's pane/context rather than switching to the worker.
-        #[serde(default)]
-        no_focus: bool,
+        /// Focus and reveal the new pane (set only by interactive `plexi agent start`).
+        /// Default false: workers, calls, and teams never steal the caller's focus.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        focus: bool,
         response_file: String,
         /// Host-stamped socket peer ancestry for unspoofable `spawned_by` provenance.
         #[serde(skip)]
