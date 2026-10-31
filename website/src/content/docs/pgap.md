@@ -638,10 +638,10 @@ Spawn a configured agent worker pane, optionally into a created or reused child 
 | `command` | `string` | yes |
 | `cwd` | `string?` | no |
 | `ephemeral` | `boolean` | no |
+| `focus` | `boolean` | no |
 | `harness` | `string` | yes |
 | `initial_slots` | `any[][]` | no |
 | `name` | `string?` | no |
-| `no_focus` | `boolean` | no |
 | `parent_pane_id` | `integer?` | no |
 | `response_file` | `string` | yes |
 | `result_schema` | `any` | no |
