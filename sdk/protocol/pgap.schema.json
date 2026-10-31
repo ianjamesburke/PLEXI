@@ -2186,6 +2186,10 @@
               "description": "Whether the worker pane is ephemeral (`PLEXI_EPHEMERAL=1`, self-closes on exit 0).",
               "type": "boolean"
             },
+            "focus": {
+              "description": "Focus and reveal the new pane (set only by interactive `plexi agent start`).\nDefault false: workers, calls, and teams never steal the caller's focus.",
+              "type": "boolean"
+            },
             "harness": {
               "description": "CLI harness identifier (`claude`, `codex`, `pi`, `agy`).",
               "type": "string"
@@ -2213,11 +2217,6 @@
                 "string",
                 "null"
               ]
-            },
-            "no_focus": {
-              "default": false,
-              "description": "Keep focus on the caller's pane/context rather than switching to the worker.",
-              "type": "boolean"
             },
             "parent_pane_id": {
               "description": "Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.",
