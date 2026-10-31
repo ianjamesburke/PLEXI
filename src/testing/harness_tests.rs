@@ -10638,7 +10638,7 @@ mod pane_lifecycle_events {
             worktree: None,
             result_schema: Some(schema),
             initial_slots: vec![],
-            no_focus: true,
+            focus: false,
             response_file: spawn_reply.clone(),
             peer_ancestry: None,
         });
@@ -10772,7 +10772,7 @@ mod pane_lifecycle_events {
             worktree: None,
             result_schema: None,
             initial_slots: vec![],
-            no_focus: true,
+            focus: false,
             response_file: spawn_reply.clone(),
             peer_ancestry: None,
         });
@@ -10839,7 +10839,7 @@ mod pane_lifecycle_events {
             worktree: None,
             result_schema: None,
             initial_slots: vec![],
-            no_focus: true,
+            focus: false,
             response_file: spawn_reply.clone(),
             peer_ancestry: None,
         });
@@ -10977,7 +10977,7 @@ mod pane_lifecycle_events {
                 worktree: None,
                 result_schema: None,
                 initial_slots: vec![],
-                no_focus: true,
+                focus: false,
                 response_file: reply.clone(),
                 peer_ancestry: None,
             });
@@ -12471,7 +12471,7 @@ mod agent_state_restoration_tests {
             worktree: None,
             result_schema: None,
             initial_slots: vec![("summary".into(), "Auth audit passed".into())],
-            no_focus: true,
+            focus: false,
             response_file: spawn_reply.clone(),
             peer_ancestry: None,
         });
@@ -13675,6 +13675,220 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     assert_eq!(actual_cwd, expected_cwd);
 }
 
+/// Stint 1117 fixture: a seeded profile with one `pi` agent (`researcher`) and
+/// the real CLI resolver payloads for `agent start` / `agent spawn` from a
+/// given caller pane. The harness command is swapped for `sleep 30` so no
+/// model is ever called; everything else is the production payload.
+struct AgentFocusFixture {
+    home: tempfile::TempDir,
+    _profile_guard: crate::config::TestProfileDirGuard,
+    profile_dir: std::path::PathBuf,
+    proj_dir: std::path::PathBuf,
+}
+
+impl AgentFocusFixture {
+    fn new() -> Self {
+        let home = tempfile::tempdir().expect("fake home");
+        let profile_dir = home.path().join(".plexi-alpha");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let guard = crate::config::set_test_profile_dir(profile_dir.clone());
+        let agent_dir = profile_dir.join("agents").join("researcher");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "You are a researcher.\n").unwrap();
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            "[agent]\nid = \"researcher\"\ndisplay_name = \"Researcher\"\n\n[harness]\ncli = \"pi\"\n",
+        )
+        .unwrap();
+        let proj_dir = home.path().join("proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        Self { home, _profile_guard: guard, profile_dir, proj_dir }
+    }
+
+    fn stops(&self) -> Vec<std::path::PathBuf> {
+        vec![self.home.path().to_path_buf()]
+    }
+
+    fn request(&self, mut payload: serde_json::Value) -> AppRequest {
+        payload["command"] = serde_json::Value::String("sleep 30".into());
+        payload["response_file"] =
+            serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
+        serde_json::from_value(payload).expect("valid AgentSpawn request")
+    }
+
+    fn start(&self, caller: Option<u64>) -> AppRequest {
+        self.request(
+            crate::cli::agent::resolve_agent_start_in_stopping_at(
+                "researcher",
+                &self.profile_dir,
+                &self.proj_dir,
+                None,
+                caller,
+                &self.stops(),
+            )
+            .expect("resolve agent start payload"),
+        )
+    }
+
+    fn spawn(&self, caller: Option<u64>) -> AppRequest {
+        self.request(
+            crate::cli::agent::resolve_agent_spawn_in_stopping_at(
+                "researcher",
+                &self.profile_dir,
+                &self.proj_dir,
+                Some("background task"),
+                None,
+                None,
+                caller,
+                &self.stops(),
+            )
+            .expect("resolve agent spawn payload"),
+        )
+    }
+}
+
+fn agent_spawn_reply(req: &AppRequest) -> String {
+    match req {
+        AppRequest::AgentSpawn { response_file, .. } => response_file.clone(),
+        _ => panic!("expected AgentSpawn"),
+    }
+}
+
+/// Stint 1117 baseline-red: an interactive `agent start` from a focused
+/// terminal must hand focus (and ordinary unaddressed typed input) to the new
+/// conversation. Reverting the production fix leaves focus on the caller.
+#[test]
+fn agent_start_from_focused_terminal_focuses_new_pane_and_routes_typed_input() {
+    let fx = AgentFocusFixture::new();
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(caller)
+    );
+
+    let req = fx.start(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.hidden_frame();
+    let spawned = read_json_response(&reply);
+    assert_eq!(spawned["ok"], true, "agent start must succeed: {spawned}");
+    let new_pane = spawned["pane_id"].as_u64().expect("new pane id");
+    assert_ne!(new_pane, caller);
+
+    h.run_frames(3);
+    assert_eq!(
+        h.app.active_focused_pane_id(),
+        Some(new_pane),
+        "authoritative focus must move to the new conversation"
+    );
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(new_pane),
+        "input ownership must agree with the focus ring"
+    );
+    let ctx_id = h.app.router.active().context_id;
+    assert_eq!(
+        h.app.ensure_authoritative_strip(ctx_id).focused_pane,
+        Some(new_pane),
+        "strip focus must follow"
+    );
+
+    h.terminal_backend(caller).enable_input_tap();
+    h.terminal_backend(new_pane).enable_input_tap();
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Text("hello".into())],
+        ..Default::default()
+    });
+    assert_eq!(
+        h.terminal_backend(new_pane).take_input_tap(),
+        b"hello",
+        "unaddressed typed input must reach the new conversation"
+    );
+    assert!(
+        h.terminal_backend(caller).take_input_tap().is_empty(),
+        "the invoking pane must not receive the typed input"
+    );
+}
+
+/// Stint 1117: background `agent spawn` (worker/call/team path) never steals
+/// the caller's focus.
+#[test]
+fn agent_spawn_background_worker_preserves_caller_focus() {
+    let fx = AgentFocusFixture::new();
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let req = fx.spawn(Some(caller));
+    let reply = agent_spawn_reply(&req);
+    h.inject_ipc(req);
+    h.run_frames(3);
+    assert_eq!(read_json_response(&reply)["ok"], true);
+    assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(caller)
+    );
+}
+
+/// Stint 1117: a stale caller id (pane closed or never existed) must not
+/// manufacture a focus handoff.
+#[test]
+fn agent_start_with_stale_caller_preserves_focus() {
+    let fx = AgentFocusFixture::new();
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    h.inject_ipc(fx.start(Some(9_999_999)));
+    h.run_frames(3);
+    assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(caller)
+    );
+}
+
+/// Stint 1117: a caller living in a background context must not pull the
+/// user's active context onto the new conversation.
+#[test]
+fn agent_start_from_background_context_caller_preserves_active_focus() {
+    let fx = AgentFocusFixture::new();
+    let mut h = HostHarness::new();
+    let background_caller = h.add_focused_terminal();
+    let active_ctx = h.app.create_context_without_pty("front", None);
+    let front_idx = h.app.windows.len() - 1;
+    let (tile, front_pane) = h.app.add_app_pane_in_window(front_idx, "front");
+    h.app.windows[front_idx].navigate_to(tile);
+    h.run_frames(2);
+    assert_eq!(h.app.router.active().context_id, active_ctx);
+    assert_eq!(h.app.active_focused_pane_id(), Some(front_pane));
+
+    h.inject_ipc(fx.start(Some(background_caller)));
+    h.run_frames(3);
+    assert_eq!(h.app.router.active().context_id, active_ctx);
+    assert_eq!(h.app.active_focused_pane_id(), Some(front_pane));
+}
+
+/// Stint 1117: an unresolvable agent never reaches the host, so nothing is
+/// created and focus is untouched.
+#[test]
+fn agent_start_unknown_agent_fails_before_launch_and_preserves_focus() {
+    let fx = AgentFocusFixture::new();
+    let mut h = HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let before = h.app.windows[0].panes.len();
+    let err = crate::cli::agent::resolve_agent_start_in_stopping_at(
+        "no-such-agent",
+        &fx.profile_dir,
+        &fx.proj_dir,
+        None,
+        Some(caller),
+        &fx.stops(),
+    );
+    assert!(err.is_err(), "unknown agent must fail to resolve");
+    h.run_frames(2);
+    assert_eq!(h.app.windows[0].panes.len(), before);
+    assert_eq!(h.app.active_focused_pane_id(), Some(caller));
+}
+
 #[test]
 fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pane_tree() {
     let mut h = HostHarness::new();
@@ -13697,7 +13911,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: false,
+        focus: false,
         response_file: spawn_lead_reply.clone(),
         peer_ancestry: None,
     });
@@ -13722,7 +13936,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: true,
+        focus: false,
         response_file: spawn_child_reply.clone(),
         peer_ancestry: None,
     });
@@ -13851,7 +14065,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: false,
+        focus: false,
         response_file: lead_reply.clone(),
         peer_ancestry: None,
     });
@@ -13875,7 +14089,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
             worktree: None,
             result_schema: None,
             initial_slots: vec![],
-            no_focus: true,
+            focus: false,
             response_file: rep.clone(),
             peer_ancestry: None,
         });
@@ -14061,7 +14275,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: false,
+        focus: false,
         response_file: spawn_reply.clone(),
         peer_ancestry: None,
     });
@@ -14260,7 +14474,7 @@ allow = ["pane.send"]
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: false,
+        focus: false,
         response_file: spawn_claude_reply.clone(),
         peer_ancestry: None,
     });
@@ -14908,7 +15122,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             worktree: None,
             result_schema: None,
             initial_slots: vec![],
-            no_focus: false,
+            focus: false,
             response_file: lead_reply.clone(),
             peer_ancestry: None,
         });
@@ -14931,7 +15145,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             worktree: None,
             result_schema: None,
             initial_slots: vec![],
-            no_focus: false,
+            focus: false,
             response_file: helper_reply.clone(),
             peer_ancestry: None,
         });
@@ -15036,7 +15250,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         worktree: None,
         result_schema: None,
         initial_slots: vec![],
-        no_focus: false,
+        focus: false,
         response_file: spawn_reply.clone(),
         peer_ancestry: None,
     });
@@ -15302,7 +15516,7 @@ mod restore_followups_0983b {
                 worktree: None,
                 result_schema: None,
                 initial_slots: vec![],
-                no_focus: true,
+                focus: false,
                 response_file: spawn_reply.clone(),
                 peer_ancestry: None,
             });

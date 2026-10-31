@@ -2098,7 +2098,7 @@ pub fn resolve_agent_start_in_stopping_at(
     parent_pane_id: Option<u64>,
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
-    resolve_agent_spawn_in_stopping_at(
+    let mut payload = resolve_agent_spawn_in_stopping_at(
         agent_name,
         profile_dir,
         start_cwd,
@@ -2107,7 +2107,10 @@ pub fn resolve_agent_start_in_stopping_at(
         Some(false),
         parent_pane_id,
         stops,
-    )
+    )?;
+    // Interactive start is the only agent launch that hands focus to the new pane.
+    payload["focus"] = serde_json::Value::Bool(true);
+    Ok(payload)
 }
 
 fn resolve_effective_cwd(cwd: Option<&str>) -> Result<PathBuf, i32> {

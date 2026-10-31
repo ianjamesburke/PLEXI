@@ -1820,6 +1820,27 @@ impl PlexiApp {
         Ok((target_win_idx, target_ctx_id, parent_pane_id, effective_cwd))
     }
 
+    /// Hand focus to a freshly started interactive agent pane (stint 1117), through
+    /// the one focus authority ([`pane_navigate`](Self::pane_navigate)).
+    ///
+    /// Only a live caller in the user's active window may hand focus over: a stale
+    /// caller id, or a caller in a background context, leaves focus untouched so an
+    /// unattended launch can never steal it.
+    pub(crate) fn focus_started_agent_pane(&mut self, new_pane_id: PaneId, caller: Option<u64>) {
+        let active = &self.windows[self.active_window];
+        let caller_in_active = caller.is_none_or(|pid| active.panes.contains_key(&pid));
+        if !caller_in_active || !active.panes.contains_key(&new_pane_id) {
+            log::info!(
+                "agent_start: focus handoff skipped new_pane={new_pane_id} caller={caller:?} (caller or pane not in the active window)"
+            );
+            return;
+        }
+        let navigated = self.pane_navigate(new_pane_id);
+        log::info!(
+            "agent_start: focus handoff new_pane={new_pane_id} caller={caller:?} navigated={navigated}"
+        );
+    }
+
     /// Spawn a worker terminal pane for `plexi agent spawn` / `plexi agent start` / team / GUI,
     /// creating or reusing a sub-context and linking a `PortalPane` in the parent context when
     /// `subcontext` is specified.

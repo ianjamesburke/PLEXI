@@ -4500,7 +4500,7 @@ impl PlexiApp {
                 worktree: _,
                 result_schema,
                 initial_slots,
-                no_focus: _,
+                focus,
                 response_file,
                 peer_ancestry,
             } => {
@@ -4526,6 +4526,9 @@ impl PlexiApp {
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         self.set_pane_spawned_by(new_pane_id, spawned_by.clone(), effective_parent);
+                        if *focus {
+                            self.focus_started_agent_pane(new_pane_id, effective_parent);
+                        }
                         if let Some(ref custom_name) = name {
                             if !custom_name.is_empty() {
                                 self.apply_inline_pane_name(new_pane_id, custom_name);
