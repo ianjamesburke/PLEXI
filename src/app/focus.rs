@@ -866,24 +866,31 @@ impl PlexiApp {
                 "config: errors on reload count={} keeping_current_config={keep_current}",
                 all_diags.iter().filter(|d| d.is_error()).count()
             );
-            let notify_id = crate::app::notifications::new_notify_id("config-error");
-            self.enqueue_notification(
-                crate::app::notifications::NotifySource::HostInternal,
-                PendingNotification {
-                    notify_id,
-                    title: "Config Error".to_string(),
-                    body: error_msg,
-                    // A broken config is not a property of one context — it
-                    // affects the whole workspace, so this stays the explicit
-                    // global case rather than taking the shared default.
-                    scope: crate::protocol::NotifyScope::Global,
-                    ..Default::default()
-                },
-            );
+            if self.last_config_error.as_deref() == Some(error_msg.as_str()) {
+                log::info!("config: errors unchanged since last reload, not re-notifying");
+            } else {
+                self.last_config_error = Some(error_msg.clone());
+                let notify_id = crate::app::notifications::new_notify_id("config-error");
+                self.enqueue_notification(
+                    crate::app::notifications::NotifySource::HostInternal,
+                    PendingNotification {
+                        notify_id,
+                        title: "Config Error".to_string(),
+                        body: error_msg,
+                        // A broken config is not a property of one context — it
+                        // affects the whole workspace, so this stays the explicit
+                        // global case rather than taking the shared default.
+                        scope: crate::protocol::NotifyScope::Global,
+                        ..Default::default()
+                    },
+                );
+            }
             // The loader skips invalid keys and applies the rest of the file.
             if keep_current {
                 return;
             }
+        } else {
+            self.last_config_error = None;
         }
 
         let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);

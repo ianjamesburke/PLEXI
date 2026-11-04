@@ -2035,9 +2035,23 @@ pub fn migrate_config(path: &Path) {
         }
     };
 
-    let current_version = toml::from_str::<PlexiConfig>(&data)
-        .ok()
-        .and_then(|c| c.config_version)
+    // Read the version from the raw table, not a strict `PlexiConfig` parse:
+    // one invalid key elsewhere must not make the version read as 0 and
+    // rewrite the file on every load (the config watcher reloads on write).
+    let table = match data.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!(
+                "config migrate: {} is not valid TOML, skipping: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let current_version = table
+        .get("config_version")
+        .and_then(toml::Value::as_integer)
+        .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(0);
 
     if current_version >= CURRENT_CONFIG_VERSION {
@@ -2076,6 +2090,14 @@ pub fn migrate_config(path: &Path) {
     let mut updated = lines.join("\n");
     if trailing_newline {
         updated.push('\n');
+    }
+
+    if updated == data {
+        log::info!(
+            "config migrate: {} unchanged, skipping write",
+            path.display()
+        );
+        return;
     }
 
     match std::fs::write(path, &updated) {
@@ -2269,6 +2291,12 @@ impl PlexiConfig {
             }
         };
         let (cfg, diags) = parse_config_lenient(&data, path);
+        log::info!(
+            "config: loaded {} config_version={} skipped={}",
+            path.display(),
+            cfg.config_version.unwrap_or(0),
+            diags.len()
+        );
         for diag in &diags {
             match diag {
                 ConfigDiagnostic::DeprecatedSection { error: false, .. } => {
@@ -3268,6 +3296,38 @@ mod tests {
             result.contains("config_version = 1"),
             "version should be added: {result}"
         );
+    }
+
+    #[test]
+    fn migrate_config_with_invalid_key_writes_version_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "# header\nfont_size = \"huge\"\n\n[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\nhost = \"http://localhost:11434\"\n";
+        fs::write(&path, content).unwrap();
+        assert!(toml::from_str::<PlexiConfig>(content).is_err());
+
+        migrate_config(&path);
+        let migrated = fs::read_to_string(&path).unwrap();
+        assert_eq!(migrated.matches("config_version").count(), 1, "{migrated}");
+        assert!(migrated.contains("config_version = 1"), "{migrated}");
+        assert!(migrated.contains("font_size = \"huge\""), "{migrated}");
+        assert!(migrated.contains("backend = \"ollama\""), "{migrated}");
+
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        migrate_config(&path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), migrated);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+    }
+
+    #[test]
+    fn migrate_config_leaves_invalid_toml_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "font_size = = 14\n";
+        fs::write(&path, content).unwrap();
+        migrate_config(&path);
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
     }
 
     #[test]

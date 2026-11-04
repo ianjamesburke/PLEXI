@@ -436,6 +436,9 @@ pub struct PlexiApp {
     /// Cached from `[notifications]` config. See NotificationsConfig for semantics.
     pub(crate) notifications_enabled: bool,
     pub(crate) notifications_focus_mode: bool,
+    /// Error text of the last config-error notification. A reload with the
+    /// identical errors does not notify again; a clean reload clears it.
+    pub(crate) last_config_error: Option<String>,
     /// Path to the audible cue played on notification arrival. `None` = silent.
     pub(crate) notifications_sound: Option<String>,
     /// Keeps the most recent cue audible. Dropping a `PlaybackSession` stops
@@ -1784,6 +1787,7 @@ impl PlexiApp {
                     notifications_enabled,
                     notifications_focus_mode,
                     notifications_sound,
+                    last_config_error: None,
                     notification_cue_playback: None,
                     focus_stack: Vec::new(),
                     focus_history_depth,
@@ -2057,6 +2061,7 @@ impl PlexiApp {
             notifications_enabled,
             notifications_focus_mode,
             notifications_sound,
+            last_config_error: None,
             notification_cue_playback: None,
             focus_stack: Vec::new(),
             focus_history_depth,
@@ -3026,6 +3031,7 @@ impl PlexiApp {
             notifications_enabled: false,
             notifications_focus_mode: false,
             notifications_sound: None,
+            last_config_error: None,
             notification_cue_playback: None,
             focus_stack: Vec::new(),
             focus_history_depth: 100,
