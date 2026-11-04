@@ -12,6 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.channel");
     println!("cargo:rerun-if-env-changed=PLEXI_BUILD_TAG");
     let commit = git(&["rev-parse", "HEAD"]);
+    let short_commit = commit.get(..7).unwrap_or("unknown");
     for name in ["HEAD", &git(&["symbolic-ref", "-q", "HEAD"])] {
         if !name.is_empty() { println!("cargo:rerun-if-changed={}", git(&["rev-parse", "--git-path", name])); }
     }
@@ -34,4 +35,10 @@ fn main() {
     println!("cargo:rustc-env=PLEXI_SOURCE_COMMIT={commit}");
     println!("cargo:rustc-env=PLEXI_BUILD_ID={build_id}");
     println!("cargo:rustc-env=PLEXI_BUILD_TAG={tag}");
+    // The one human-readable identity of this binary: compiled tag (or crate
+    // version) plus short commit. Never derived from profile markers.
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let shown = Some(tag.trim_start_matches('v')).filter(|t| !t.is_empty()).unwrap_or(&version);
+    println!("cargo:rustc-env=PLEXI_SHORT_COMMIT={short_commit}");
+    println!("cargo:rustc-env=PLEXI_VERSION_TEXT={shown} ({short_commit})");
 }

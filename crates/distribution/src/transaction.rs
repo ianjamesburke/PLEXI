@@ -1340,6 +1340,18 @@ pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
     }
 }
 
+fn running_identity_matches(response: &serde_json::Value, build_id: &str, commit: &str) -> bool {
+    response.get("ready").and_then(|v| v.as_bool()) == Some(true)
+        && response
+            .pointer("/running/build_id")
+            .and_then(|v| v.as_str())
+            == Some(build_id)
+        && response
+            .pointer("/running/source_commit")
+            .and_then(|v| v.as_str())
+            == Some(commit)
+}
+
 pub fn launch_ready(receipt: &Receipt) -> Result<()> {
     let mut command = Command::new(receipt.active.executable());
     if let Some(home) = dirs::home_dir() {
@@ -1356,6 +1368,36 @@ pub fn launch_ready(receipt: &Receipt) -> Result<()> {
                 .into(),
         ));
     }
+    // An already-running older host also reports ready; require its identity.
+    let package = Package::load(&receipt.active.path)?;
+    let mut query = Command::new(receipt.active.executable());
+    query.args(["host", "status", "--json"]);
+    clean_environment(&mut query);
+    let output = query.output().context("query running host identity")?;
+    let response: serde_json::Value = if output.status.success() {
+        serde_json::from_slice(&output.stdout).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    if !running_identity_matches(
+        &response,
+        &receipt.active.build_id,
+        &package.manifest.source_commit,
+    ) {
+        log::warn!(
+            "distribution: running host identity unverified or differs from installed build={}",
+            receipt.active.build_id
+        );
+        return Err(Error::Invalid(
+            "running host identity is unverified or differs from the installed build; restart it cleanly and retry"
+                .into(),
+        ));
+    }
+    log::info!(
+        "distribution: verified running host build={} commit={}",
+        receipt.active.build_id,
+        package.manifest.source_commit
+    );
     Ok(())
 }
 
@@ -1645,6 +1687,34 @@ mod tests {
         recover(dir.path()).unwrap();
         assert_eq!(fs::read(&link).unwrap(), b"old launcher");
         assert!(!dir.path().join(RECEIPT).exists());
+    }
+
+    #[test]
+    fn running_identity_requires_matching_build_and_commit() {
+        for (response, matches) in [
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-b", "source_commit": "commit-b"}}),
+                true,
+            ),
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-a", "source_commit": "commit-b"}}),
+                false,
+            ),
+            (
+                serde_json::json!({"ready": true, "running": {"build_id": "build-b", "source_commit": "commit-a"}}),
+                false,
+            ),
+            (serde_json::json!({"ready": true, "running": null}), false),
+            (
+                serde_json::json!({"ready": false, "running": {"build_id": "build-b", "source_commit": "commit-b"}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                running_identity_matches(&response, "build-b", "commit-b"),
+                matches
+            );
+        }
     }
 
     #[test]

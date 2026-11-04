@@ -25,6 +25,7 @@ pub mod image_viewer_app;
 pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
+mod launch_notices;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -4750,9 +4751,7 @@ impl eframe::App for PlexiApp {
 }
 
 fn read_display_version() -> String {
-    crate::distribution::build_tag()
-        .trim_start_matches('v')
-        .to_string()
+    crate::distribution::version_text().to_string()
 }
 
 impl PlexiApp {
