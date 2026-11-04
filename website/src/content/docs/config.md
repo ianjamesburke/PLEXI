@@ -10,9 +10,9 @@ Changes take effect on the next launch unless a command says otherwise.
 
 ## Channel discipline
 
-Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
+Existing configuration is preserved on every channel when Plexi is installed or upgraded. A fresh channel starts with the built-in template.
 
-Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
+Beta is the staging channel for testing migrations and settings before promoting a release.
 
 PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
 
@@ -25,6 +25,8 @@ plexi config reset
 ```
 
 `config edit` opens the active channel config. `config check` validates known keys and TOML syntax. `config reset` backs up the current file to `config.toml.bak`, then writes the built-in default template.
+
+A key with a wrong value type, a retired key, or an unknown key never discards the rest of the file: Plexi logs an error naming the file and key to `plexi.log`, skips that key, and loads every other setting. `config check`, and the Config Error notification shown when a saved config reloads, list the same keys. Only a TOML syntax error ignores the whole file.
 
 ## Reference
 
