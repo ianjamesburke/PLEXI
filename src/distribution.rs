@@ -50,6 +50,33 @@ pub fn profile_needs_seeding() -> Result<bool, String> {
             .is_ok_and(|build| build == env!("PLEXI_BUILD_ID")))
 }
 
+fn seed_config(template: &std::path::Path, config: &std::path::Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(config) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect existing config: {error}")),
+    }
+    let parent = config.parent().ok_or("config has no parent")?;
+    let mut source =
+        std::fs::File::open(template).map_err(|error| format!("open default config: {error}"))?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("stage default config: {error}"))?;
+    std::io::copy(&mut source, staged.as_file_mut())
+        .map_err(|error| format!("write default config: {error}"))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("sync default config: {error}"))?;
+    match staged.persist_noclobber(config) {
+        Ok(_) => log::info!("distribution: seeded default config"),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            log::info!("distribution: retained existing config")
+        }
+        Err(error) => return Err(format!("install default config: {}", error.error)),
+    }
+    Ok(())
+}
+
 /// Seed package-owned definitions by build while retaining user settings/data.
 pub fn seed_profile() -> Result<(), String> {
     let Some(resources) = resources()? else {
@@ -84,10 +111,7 @@ pub fn seed_profile() -> Result<(), String> {
         Ok(())
     }
     let config = profile.join("config.toml");
-    if !config.exists() || crate::config::build_channel().as_deref() == Some("alpha") {
-        std::fs::copy(resources.join("default-config.toml"), &config)
-            .map_err(|e| format!("seed config: {e}"))?;
-    }
+    seed_config(&resources.join("default-config.toml"), &config)?;
     copy_tree(&resources.join("scripts"), &profile.join("scripts"), false)?;
     copy_tree(&resources.join("agents"), &profile.join("agents"), false)?;
     copy_tree(
@@ -107,4 +131,34 @@ pub fn seed_profile() -> Result<(), String> {
         env!("PLEXI_BUILD_ID")
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn package_seeding_preserves_existing_config_and_creates_missing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = dir.path().join("template.toml");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&template, "font_size = 12.0\n").unwrap();
+        std::fs::write(&config, "font_size = 18.0\n").unwrap();
+        super::seed_config(&template, &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "font_size = 18.0\n"
+        );
+        std::fs::remove_file(&config).unwrap();
+        super::seed_config(&template, &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "font_size = 12.0\n"
+        );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&config).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("missing"), &config).unwrap();
+            super::seed_config(&template, &config).unwrap();
+            assert!(config.is_symlink());
+        }
+    }
 }

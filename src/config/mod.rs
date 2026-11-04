@@ -3126,15 +3126,11 @@ mod tests {
 
     #[test]
     fn config_docs_explain_channel_discipline() {
-        for doc in [
-            include_str!("../../docs/CONFIG.md"),
-            include_str!("../../website/src/content/docs/config.md"),
-        ] {
-            assert!(doc.contains("Alpha config stays default"));
-            assert!(doc.contains("Beta config is the staging ground"));
-            assert!(doc.contains("PR builds are isolated"));
-            assert!(doc.contains("~/.plexi-pr-<N>/config.toml"));
-        }
+        let reference = include_str!("../../website/src/content/docs/config.md");
+        assert!(reference.contains("Existing configuration is preserved on every channel"));
+        assert!(reference.contains("Beta is the staging channel"));
+        assert!(reference.contains("PR builds are isolated"));
+        assert!(include_str!("../../docs/CONFIG.md").contains("config.md#channel-discipline"));
     }
 
     /// Stint 0285 shipped the CPython-in-WASM sandbox and 0512 corrected the

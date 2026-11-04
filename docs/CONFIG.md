@@ -4,11 +4,7 @@ Changes take effect on the next launch unless a command says otherwise.
 
 ## Channel discipline
 
-Alpha config stays default. `just install` refreshes `~/.plexi-alpha/config.toml` from the built-in template, and PR builds seed from alpha. Do not use alpha for personal overrides you expect to keep.
-
-Beta config is the staging ground. `~/.plexi-beta/config.toml` is not reset by alpha installs, so it is the right place to test migrations, advanced settings, and personal config before promoting a release.
-
-PR builds are isolated. A PR build reads `~/.plexi-pr-<N>/config.toml`; use the `plexi-pr-<N>` binary when checking a PR-specific config behavior.
+See the [configuration reference](../website/src/content/docs/config.md#channel-discipline) for channel profiles and installation behavior.
 
 ## Experiments
 
