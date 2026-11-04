@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.2] — 2026-11-04
+
+### Changes
+- fix(config): keep config on every channel; skip only invalid keys (#2971)
+- fix(agent): focus and reveal a newly started interactive conversation (stint 1117) (#2970)
 ## [0.4.1] — 2026-10-29
 
 ### Changes
