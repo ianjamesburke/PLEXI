@@ -1903,10 +1903,21 @@ pub fn shared_dir() -> PathBuf {
         if let Some(dir) = override_dir {
             return dir;
         }
+        // Same per-process fallback as `config_dir()`: a test that forgot
+        // `set_test_shared_dir` must not resolve the real `~/.plexi`, which is
+        // also the stable channel profile holding its `config.toml`.
+        let fallback = std::env::temp_dir()
+            .join(format!("plexi-shared-t-{}", std::process::id()))
+            .join(SHARED_DIR_NAME);
+        let _ = std::fs::create_dir_all(&fallback);
+        fallback
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(SHARED_DIR_NAME)
+    #[cfg(not(test))]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(SHARED_DIR_NAME)
+    }
 }
 
 const SHARED_DIR_NAME: &str = ".plexi";
@@ -3514,6 +3525,25 @@ mod per_key_load_tests {
         assert_eq!(cfg.font_size, None);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(diagnostics[0].blocks_reload());
+    }
+}
+
+#[cfg(test)]
+mod test_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_and_shared_dirs_never_resolve_into_real_home() {
+        let home = dirs::home_dir().expect("home dir");
+        for dir in [config_dir(), shared_dir()] {
+            assert!(
+                !dir.starts_with(&home) || dir.starts_with(std::env::temp_dir()),
+                "test resolved {} inside the real home",
+                dir.display()
+            );
+            assert_ne!(dir, home.join(".plexi"));
+            assert_ne!(dir, home.join(".plexi-alpha"));
+        }
     }
 }
 
