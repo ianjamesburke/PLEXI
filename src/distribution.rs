@@ -82,7 +82,10 @@ pub fn seed_profile() -> Result<(), String> {
     let Some(resources) = resources()? else {
         return Ok(());
     };
-    let profile = crate::config::config_dir();
+    seed_profile_from(&resources, &crate::config::config_dir())
+}
+
+fn seed_profile_from(resources: &std::path::Path, profile: &std::path::Path) -> Result<(), String> {
     let stamp = profile.join(".package_definitions_build");
     if std::fs::read_to_string(&stamp).is_ok_and(|s| s == env!("PLEXI_BUILD_ID")) {
         return Ok(());
@@ -160,5 +163,52 @@ mod tests {
             super::seed_config(&template, &config).unwrap();
             assert!(config.is_symlink());
         }
+    }
+
+    #[test]
+    fn alpha_reinstall_leaves_customized_config_byte_identical() {
+        let package = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let _channel = crate::config::set_test_channel("alpha");
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(
+            package.path().join("default-config.toml"),
+            "config_version = 1\nfont_size = 12.0\n",
+        )
+        .unwrap();
+        let customized = "# mine\nconfig_version = 1\nfont_size = 18.0\n\
+                          [theme]\npreset = \"catppuccin-mocha\"\n\
+                          [ai]\nbackend = \"openrouter\"\n";
+        let config = crate::config::config_path();
+        assert!(config.starts_with(profile.path()));
+        std::fs::write(&config, customized).unwrap();
+
+        super::seed_profile_from(package.path(), &crate::config::config_dir()).unwrap();
+        assert_eq!(std::fs::read(&config).unwrap(), customized.as_bytes());
+        assert_eq!(
+            std::fs::read_to_string(profile.path().join(".package_definitions_build")).unwrap(),
+            env!("PLEXI_BUILD_ID")
+        );
+
+        // A later build re-seeds package definitions and still retains settings.
+        std::fs::write(profile.path().join(".package_definitions_build"), "older").unwrap();
+        super::seed_profile_from(package.path(), &crate::config::config_dir()).unwrap();
+        assert_eq!(std::fs::read(&config).unwrap(), customized.as_bytes());
+    }
+
+    #[test]
+    fn fresh_profile_is_seeded_from_the_package_template() {
+        let package = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            package.path().join("default-config.toml"),
+            "font_size = 12.0\n",
+        )
+        .unwrap();
+        super::seed_profile_from(package.path(), profile.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(profile.path().join("config.toml")).unwrap(),
+            "font_size = 12.0\n"
+        );
     }
 }
