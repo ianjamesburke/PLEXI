@@ -54,7 +54,12 @@ pub fn build_tag() -> String {
 }
 pub fn resources() -> Result<Option<PathBuf>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("resolve executable: {e}"))?;
-    plexi_distribution::package::Package::at_executable(&exe)
+    if let Some(package) = plexi_distribution::package::Package::at_executable(&exe).map_err(|e| e.to_string())? {
+        return package.resources().map(Some).map_err(|e| e.to_string());
+    }
+    // The managed macOS Applications bundle is a copy without package.json;
+    // its package is the generation it was copied from.
+    plexi_distribution::transaction::managed_bundle_package(&exe, env!("PLEXI_BUILD_ID"))
         .and_then(|p| p.map(|p| p.resources()).transpose())
         .map_err(|e| e.to_string())
 }
