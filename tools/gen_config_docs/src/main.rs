@@ -282,6 +282,8 @@ plexi config reset
 
 `config edit` opens the active channel config. `config check` validates known keys and TOML syntax. `config reset` backs up the current file to `config.toml.bak`, then writes the built-in default template.
 
+A key with a wrong value type, a retired key, or an unknown key never discards the rest of the file: Plexi logs an error naming the file and key to `plexi.log`, skips that key, and loads every other setting. `config check`, and the Config Error notification shown when a saved config reloads, list the same keys. Only a TOML syntax error ignores the whole file.
+
 ## Reference
 
 ### Top-level (`config.toml`)

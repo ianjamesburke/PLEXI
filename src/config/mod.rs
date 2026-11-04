@@ -56,6 +56,16 @@ impl ConfigDiagnostic {
             Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
         }
     }
+
+    /// True when a hot reload should keep the current config: the file cannot
+    /// be parsed, or a key binding conflicts. Other errors name a key the
+    /// loader skips while applying the rest of the file.
+    pub fn blocks_reload(&self) -> bool {
+        matches!(
+            self,
+            Self::ReadError { .. } | Self::ParseError { .. } | Self::InvalidKeyBinding { .. }
+        )
+    }
 }
 
 impl std::fmt::Display for ConfigDiagnostic {
@@ -269,31 +279,20 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
-    let mut diags = Vec::new();
     let path_str = path.display().to_string();
 
     let data = match std::fs::read_to_string(path) {
         Ok(d) => d,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return diags,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(e) => {
-            diags.push(ConfigDiagnostic::ReadError {
+            return vec![ConfigDiagnostic::ReadError {
                 path: path_str,
                 error: e.to_string(),
-            });
-            return diags;
+            }];
         }
     };
 
-    let parsed_cfg = match toml::from_str::<PlexiConfig>(&data) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            diags.push(ConfigDiagnostic::ParseError {
-                path: path_str,
-                error: e.to_string(),
-            });
-            return diags;
-        }
-    };
+    let (parsed_cfg, mut diags) = parse_config_lenient(&data, path);
 
     if let Some(ref user_keys) = parsed_cfg.keys {
         let bindings = crate::host::keys::build_key_bindings(parsed_cfg.keybindings.as_ref());
@@ -302,124 +301,6 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                 path: path_str.clone(),
                 error: err,
             });
-        }
-    }
-
-    if let Ok(value) = toml::from_str::<toml::Value>(&data) {
-        if let Some(table) = value.as_table() {
-            let target_commands_path = matching_commands_display_path(path);
-            for key in table.keys() {
-                if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
-                    diags.push(ConfigDiagnostic::MisplacedTable {
-                        path: path_str.clone(),
-                        table: key.clone(),
-                        source_file: "config.toml",
-                        target_config_path: target_commands_path.clone(),
-                    });
-                } else if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
-                    diags.push(ConfigDiagnostic::UnknownKey {
-                        path: path_str.clone(),
-                        table: String::new(),
-                        key: key.clone(),
-                    });
-                }
-            }
-
-            if table.contains_key("experiments") {
-                if let Err(error) = experiments_from_path(path) {
-                    diags.push(ConfigDiagnostic::ParseError {
-                        path: path_str.clone(),
-                        error,
-                    });
-                }
-            }
-
-            if let Some(toml::Value::Table(t)) = table.get("attention") {
-                check_unknown_keys(
-                    t,
-                    "attention",
-                    &["style", "intensity", "dock"],
-                    &path_str,
-                    &mut diags,
-                );
-            }
-            if let Some(toml::Value::Table(t)) = table.get("theme") {
-                check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("effects") {
-                check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("log") {
-                check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("notifications") {
-                check_unknown_keys(
-                    t,
-                    "notifications",
-                    KNOWN_NOTIFICATIONS,
-                    &path_str,
-                    &mut diags,
-                );
-            }
-            if let Some(toml::Value::Table(t)) = table.get("ai") {
-                check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
-                for key in legacy_ai_keys(t) {
-                    diags.push(ConfigDiagnostic::InvalidValue {
-                        path: path_str.clone(),
-                        key,
-                        error: "is no longer supported; use [models.fast] / [models.slow] instead"
-                            .into(),
-                    });
-                }
-            }
-            if let Some(toml::Value::Table(t)) = table.get("models") {
-                check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
-                for mode in KNOWN_MODE_NAMES {
-                    if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
-                        check_unknown_keys(
-                            mode_table,
-                            &format!("models.{mode}"),
-                            KNOWN_MODEL_MODE,
-                            &path_str,
-                            &mut diags,
-                        );
-                    }
-                }
-            }
-            if let Some(toml::Value::Table(t)) = table.get("keybindings") {
-                check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("agents") {
-                check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("cli") {
-                check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("marketplace") {
-                check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("cloud") {
-                check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
-            }
-            if let Some(toml::Value::Table(t)) = table.get("permissions") {
-                check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
-            }
-            if table.contains_key("quick_note") {
-                diags.push(ConfigDiagnostic::DeprecatedSection {
-                    path: path_str.clone(),
-                    section: "quick_note".to_string(),
-                    hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
-                    error: true,
-                });
-            }
-            if table.contains_key("theme_preset") {
-                diags.push(ConfigDiagnostic::DeprecatedSection {
-                    path: path_str.clone(),
-                    section: "theme_preset".to_string(),
-                    hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
-                    error: false, // still works via fallback; migrate at your convenience
-                });
-            }
         }
     }
 
@@ -457,6 +338,258 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
         }
     }
 
+    diags
+}
+
+/// Parse config text the way the host loads it: every valid setting is kept,
+/// and each retired, unknown, or invalid key is reported. Retired `[ai]` keys
+/// and keys whose value does not deserialize are dropped, so one bad key falls
+/// back to its default instead of discarding the file. Only a TOML syntax
+/// error, which leaves no key structure to recover, yields the default config.
+fn parse_config_lenient(data: &str, path: &Path) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
+    let path_str = path.display().to_string();
+    let mut table: toml::Table = match toml::from_str(data) {
+        Ok(table) => table,
+        Err(e) => {
+            return (
+                PlexiConfig::default(),
+                vec![ConfigDiagnostic::ParseError {
+                    path: path_str,
+                    error: e.to_string(),
+                }],
+            );
+        }
+    };
+    let mut diags = key_diagnostics(&table, path, &path_str);
+
+    // Unknown and retired keys never fail deserialization, so a clean parse of
+    // the original text is the config exactly as written.
+    if let Ok(cfg) = toml::from_str::<PlexiConfig>(data) {
+        return (cfg, diags);
+    }
+
+    let legacy = match table.get("ai") {
+        Some(toml::Value::Table(ai)) => legacy_ai_keys(ai),
+        _ => Vec::new(),
+    };
+    for key in legacy {
+        let segments: Vec<String> = key.split('.').map(str::to_string).collect();
+        remove_key_path(&mut table, &segments);
+    }
+
+    // Each pass drops at least one key, so the key count bounds the loop.
+    for _ in 0..=count_keys(&table) {
+        let error = match toml::Value::Table(table.clone()).try_into::<PlexiConfig>() {
+            Ok(cfg) => return (cfg, diags),
+            Err(e) => e,
+        };
+        let Some((segments, message)) = find_invalid_key(&table, &[]) else {
+            diags.push(ConfigDiagnostic::ParseError {
+                path: path_str,
+                error: error.to_string(),
+            });
+            return (PlexiConfig::default(), diags);
+        };
+        remove_key_path(&mut table, &segments);
+        diags.push(ConfigDiagnostic::InvalidValue {
+            path: path_str.clone(),
+            key: segments.join("."),
+            error: format!("is invalid and was ignored ({message})"),
+        });
+    }
+    diags.push(ConfigDiagnostic::ParseError {
+        path: path_str,
+        error: "could not isolate the invalid keys; using defaults".into(),
+    });
+    (PlexiConfig::default(), diags)
+}
+
+/// Deserialize a config containing only `tree`, returning serde's message on failure.
+fn probe_config(tree: toml::Table) -> Result<(), String> {
+    toml::Value::Table(tree)
+        .try_into::<PlexiConfig>()
+        .map(drop)
+        .map_err(|e| e.message().trim().to_string())
+}
+
+/// A table holding `value` at `segments` and nothing else.
+fn isolate_key(segments: &[String], value: toml::Value) -> toml::Table {
+    let mut value = value;
+    for segment in segments[1..].iter().rev() {
+        let mut parent = toml::Table::new();
+        parent.insert(segment.clone(), value);
+        value = toml::Value::Table(parent);
+    }
+    let mut root = toml::Table::new();
+    root.insert(segments[0].clone(), value);
+    root
+}
+
+/// The first key under `prefix` whose value fails to deserialize on its own,
+/// narrowed to the deepest such key. A table is only narrowed when it is valid
+/// empty; otherwise it has required fields and is reported as a whole.
+fn find_invalid_key(table: &toml::Table, prefix: &[String]) -> Option<(Vec<String>, String)> {
+    for (key, value) in table {
+        let mut segments = prefix.to_vec();
+        segments.push(key.clone());
+        let Err(message) = probe_config(isolate_key(&segments, value.clone())) else {
+            continue;
+        };
+        if let toml::Value::Table(inner) = value {
+            let empty = toml::Value::Table(toml::Table::new());
+            if probe_config(isolate_key(&segments, empty)).is_ok() {
+                if let Some(found) = find_invalid_key(inner, &segments) {
+                    return Some(found);
+                }
+            }
+        }
+        return Some((segments, message));
+    }
+    None
+}
+
+fn remove_key_path(table: &mut toml::Table, segments: &[String]) {
+    match segments {
+        [] => {}
+        [leaf] => {
+            table.remove(leaf);
+        }
+        [head, rest @ ..] => {
+            if let Some(toml::Value::Table(inner)) = table.get_mut(head) {
+                remove_key_path(inner, rest);
+            }
+        }
+    }
+}
+
+fn count_keys(table: &toml::Table) -> usize {
+    table
+        .values()
+        .map(|value| match value {
+            toml::Value::Table(inner) => 1 + count_keys(inner),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Structural diagnostics for a parsed config table: unknown, misplaced,
+/// deprecated, and retired keys, plus `[experiments]` validation.
+fn key_diagnostics(table: &toml::Table, path: &Path, path_str: &str) -> Vec<ConfigDiagnostic> {
+    let mut diags = Vec::new();
+    let path_str = path_str.to_string();
+    let target_commands_path = matching_commands_display_path(path);
+    for key in table.keys() {
+        if KNOWN_COMMANDS_TOP_LEVEL.contains(&key.as_str()) {
+            diags.push(ConfigDiagnostic::MisplacedTable {
+                path: path_str.clone(),
+                table: key.clone(),
+                source_file: "config.toml",
+                target_config_path: target_commands_path.clone(),
+            });
+        } else if !KNOWN_TOP_LEVEL.contains(&key.as_str()) {
+            diags.push(ConfigDiagnostic::UnknownKey {
+                path: path_str.clone(),
+                table: String::new(),
+                key: key.clone(),
+            });
+        }
+    }
+
+    if table.contains_key("experiments") {
+        if let Err(error) = experiments_from_path(path) {
+            diags.push(ConfigDiagnostic::ParseError {
+                path: path_str.clone(),
+                error,
+            });
+        }
+    }
+
+    if let Some(toml::Value::Table(t)) = table.get("attention") {
+        check_unknown_keys(
+            t,
+            "attention",
+            &["style", "intensity", "dock"],
+            &path_str,
+            &mut diags,
+        );
+    }
+    if let Some(toml::Value::Table(t)) = table.get("theme") {
+        check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("effects") {
+        check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("log") {
+        check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("notifications") {
+        check_unknown_keys(
+            t,
+            "notifications",
+            KNOWN_NOTIFICATIONS,
+            &path_str,
+            &mut diags,
+        );
+    }
+    if let Some(toml::Value::Table(t)) = table.get("ai") {
+        check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
+        for key in legacy_ai_keys(t) {
+            diags.push(ConfigDiagnostic::InvalidValue {
+                path: path_str.clone(),
+                key,
+                error: "is no longer supported; use [models.fast] / [models.slow] instead".into(),
+            });
+        }
+    }
+    if let Some(toml::Value::Table(t)) = table.get("models") {
+        check_unknown_keys(t, "models", KNOWN_MODE_NAMES, &path_str, &mut diags);
+        for mode in KNOWN_MODE_NAMES {
+            if let Some(toml::Value::Table(mode_table)) = t.get(*mode) {
+                check_unknown_keys(
+                    mode_table,
+                    &format!("models.{mode}"),
+                    KNOWN_MODEL_MODE,
+                    &path_str,
+                    &mut diags,
+                );
+            }
+        }
+    }
+    if let Some(toml::Value::Table(t)) = table.get("keybindings") {
+        check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("agents") {
+        check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("cli") {
+        check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("marketplace") {
+        check_unknown_keys(t, "marketplace", KNOWN_MARKETPLACE, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("cloud") {
+        check_unknown_keys(t, "cloud", KNOWN_CLOUD, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("permissions") {
+        check_unknown_keys(t, "permissions", KNOWN_PERMISSIONS, &path_str, &mut diags);
+    }
+    if table.contains_key("quick_note") {
+        diags.push(ConfigDiagnostic::DeprecatedSection {
+            path: path_str.clone(),
+            section: "quick_note".to_string(),
+            hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
+            error: true,
+        });
+    }
+    if table.contains_key("theme_preset") {
+        diags.push(ConfigDiagnostic::DeprecatedSection {
+            path: path_str.clone(),
+            section: "theme_preset".to_string(),
+            hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config"
+                .to_string(),
+            error: false, // still works via fallback; migrate at your convenience
+        });
+    }
     diags
 }
 
@@ -2107,37 +2240,39 @@ impl PlexiConfig {
         Self::load_from_path(&path).unwrap_or_default()
     }
 
-    /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent;
-    /// returns `Some(default)` after logging if the file exists but fails to
-    /// parse — matches the historical behavior of `load()`.
+    /// Load `path` as a `PlexiConfig`. Returns `None` if the file is absent or
+    /// unreadable. A retired, unknown, or invalid key is logged as an error
+    /// and skipped; every other setting still loads.
     fn load_from_path(path: &Path) -> Option<Self> {
+        Self::load_from_path_with_diagnostics(path).map(|(cfg, _)| cfg)
+    }
+
+    /// [`Self::load_from_path`] plus the diagnostics for every key it skipped.
+    fn load_from_path_with_diagnostics(path: &Path) -> Option<(Self, Vec<ConfigDiagnostic>)> {
         let data = match std::fs::read_to_string(path) {
             Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
-                log::warn!("Failed to read config file {}: {e}", path.display());
+                log::error!("config: failed to read {}: {e}", path.display());
                 return None;
             }
         };
-        if let Some(error) = legacy_ai_error(&data) {
-            log::warn!("Failed to validate config file {}: {error}", path.display());
-            return None;
-        }
-        match toml::from_str::<Self>(&data) {
-            Ok(cfg) => {
-                if cfg.effects.as_ref().is_some_and(|e| e.crt.is_some()) {
-                    log::debug!(
-                        "config: ignoring retired `[effects] crt` toggle in {}",
-                        path.display()
-                    );
+        let (cfg, diags) = parse_config_lenient(&data, path);
+        for diag in &diags {
+            match diag {
+                ConfigDiagnostic::DeprecatedSection { error: false, .. } => {
+                    log::warn!("config: {diag}")
                 }
-                Some(cfg)
-            }
-            Err(e) => {
-                log::warn!("Failed to parse config file {}: {e}", path.display());
-                Some(Self::default())
+                _ => log::error!("config: setting not applied: {diag}"),
             }
         }
+        if cfg.effects.as_ref().is_some_and(|e| e.crt.is_some()) {
+            log::debug!(
+                "config: ignoring retired `[effects] crt` toggle in {}",
+                path.display()
+            );
+        }
+        Some((cfg, diags))
     }
 
     /// CLI-only strict parser used by machine-readable config access.
@@ -3178,7 +3313,7 @@ mod legacy_ai_rejection_tests {
     use super::*;
 
     #[test]
-    fn removed_ai_keys_fail_check_and_load_in_global_and_workspace_config() {
+    fn removed_ai_keys_fail_check_and_cli_load_and_are_reported_by_host_load() {
         for key in [
             "backend",
             "openrouter.model_low",
@@ -3216,13 +3351,169 @@ mod legacy_ai_rejection_tests {
                     }
                     Ok(_) => panic!("load must reject {}", path.display()),
                 }
+                let (_, load_diagnostics) = PlexiConfig::load_from_path_with_diagnostics(path)
+                    .expect("host load keeps the file");
                 assert!(
-                    PlexiConfig::load_from_path(path).is_none(),
-                    "host load must reject {}",
+                    load_diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.to_string().contains(&expected)),
+                    "host load must report {}: {load_diagnostics:?}",
                     path.display()
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod per_key_load_tests {
+    use super::*;
+
+    fn load(text: &str) -> (PlexiConfig, Vec<ConfigDiagnostic>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        PlexiConfig::load_from_path_with_diagnostics(&path).expect("config file exists")
+    }
+
+    fn keys(diagnostics: &[ConfigDiagnostic]) -> Vec<String> {
+        diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                ConfigDiagnostic::InvalidValue { key, .. } => Some(key.clone()),
+                ConfigDiagnostic::UnknownKey { table, key, .. } if table.is_empty() => {
+                    Some(key.clone())
+                }
+                ConfigDiagnostic::UnknownKey { table, key, .. } => Some(format!("{table}.{key}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn clean_config_loads_every_value_without_diagnostics() {
+        let (cfg, diagnostics) = load(
+            "config_version = 1\nfont_size = 15.0\nconfirm_quit = false\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n\
+             [notifications]\nenabled = false\nfocus_mode = true\n",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(cfg.font_size, Some(15.0));
+        assert_eq!(cfg.confirm_quit, Some(false));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+        let notifications = cfg.notifications.unwrap();
+        assert_eq!(notifications.enabled, Some(false));
+        assert_eq!(notifications.focus_mode, Some(true));
+    }
+
+    #[test]
+    fn legacy_ai_keys_are_reported_and_other_settings_still_load() {
+        let (cfg, diagnostics) = load(
+            "font_size = 16.0\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n\
+             [ai]\nbackend = \"openrouter\"\n\
+             [ai.openrouter]\napi_key_env = \"OPENROUTER_API_KEY\"\n\
+             model_low = \"a/low\"\nmodel_medium = \"a/medium\"\nmodel_high = \"a/high\"\n",
+        );
+        let reported = keys(&diagnostics);
+        for key in [
+            "ai.backend",
+            "ai.openrouter.api_key_env",
+            "ai.openrouter.model_low",
+            "ai.openrouter.model_medium",
+            "ai.openrouter.model_high",
+        ] {
+            assert!(
+                reported.iter().any(|k| k == key),
+                "{key} not reported: {diagnostics:?}"
+            );
+        }
+        assert!(diagnostics.iter().any(ConfigDiagnostic::is_error));
+        assert_eq!(cfg.font_size, Some(16.0));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+    }
+
+    #[test]
+    fn one_wrong_type_is_reported_and_other_settings_still_load() {
+        let (cfg, diagnostics) = load(
+            "font_size = \"huge\"\nconfirm_quit = false\npane_gap = 6.0\n\
+             [theme]\npreset = \"catppuccin-mocha\"\n",
+        );
+        assert_eq!(keys(&diagnostics), ["font_size"], "{diagnostics:?}");
+        assert!(diagnostics[0].is_error());
+        assert!(diagnostics[0].to_string().contains("config.toml"));
+        assert_eq!(cfg.font_size, None);
+        assert_eq!(cfg.confirm_quit, Some(false));
+        assert_eq!(cfg.pane_gap, Some(6.0));
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some("catppuccin-mocha")
+        );
+    }
+
+    #[test]
+    fn nested_wrong_types_drop_only_their_own_keys() {
+        let (cfg, diagnostics) = load(
+            "confirm_quit = true\nfocus_history_depth = \"lots\"\n\
+             [notifications]\nenabled = \"yes\"\nfocus_mode = true\n\
+             [theme]\npreset = 7\nstate_working = \"#00ff00\"\n",
+        );
+        let mut reported = keys(&diagnostics);
+        reported.sort();
+        assert_eq!(
+            reported,
+            [
+                "focus_history_depth",
+                "notifications.enabled",
+                "theme.preset"
+            ],
+            "{diagnostics:?}"
+        );
+        assert_eq!(cfg.confirm_quit, Some(true));
+        let notifications = cfg.notifications.unwrap();
+        assert_eq!(notifications.enabled, None);
+        assert_eq!(notifications.focus_mode, Some(true));
+        let theme = cfg.theme.unwrap();
+        assert_eq!(theme.preset, None);
+        assert_eq!(theme.state_working.as_deref(), Some("#00ff00"));
+    }
+
+    #[test]
+    fn unknown_keys_are_reported_at_load_and_ignored() {
+        let (cfg, diagnostics) = load("font_size = 13.0\nfont_szie = 20.0\n");
+        assert_eq!(keys(&diagnostics), ["font_szie"], "{diagnostics:?}");
+        assert_eq!(cfg.font_size, Some(13.0));
+    }
+
+    #[test]
+    fn config_check_reports_each_invalid_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "font_size = \"huge\"\nconfirm_quit = \"no\"\n[theme]\npreset = \"dracula\"\n",
+        )
+        .unwrap();
+        let diagnostics = validate_from_path(&path);
+        let mut reported = keys(&diagnostics);
+        reported.sort();
+        assert_eq!(reported, ["confirm_quit", "font_size"], "{diagnostics:?}");
+        assert!(diagnostics.iter().all(ConfigDiagnostic::is_error));
+        assert!(!diagnostics.iter().any(ConfigDiagnostic::blocks_reload));
+    }
+
+    #[test]
+    fn syntax_error_still_falls_back_to_defaults_and_blocks_reload() {
+        let (cfg, diagnostics) = load("font_size = 14.0\nconfirm_quit = \n");
+        assert_eq!(cfg.font_size, None);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].blocks_reload());
     }
 }
 

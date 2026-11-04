@@ -861,7 +861,11 @@ impl PlexiApp {
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            log::warn!("config: parse error, keeping current config count={}", all_diags.iter().filter(|d| d.is_error()).count());
+            let keep_current = all_diags.iter().any(|d| d.blocks_reload());
+            log::error!(
+                "config: errors on reload count={} keeping_current_config={keep_current}",
+                all_diags.iter().filter(|d| d.is_error()).count()
+            );
             let notify_id = crate::app::notifications::new_notify_id("config-error");
             self.enqueue_notification(
                 crate::app::notifications::NotifySource::HostInternal,
@@ -876,7 +880,10 @@ impl PlexiApp {
                     ..Default::default()
                 },
             );
-            return;
+            // The loader skips invalid keys and applies the rest of the file.
+            if keep_current {
+                return;
+            }
         }
 
         let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
