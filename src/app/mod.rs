@@ -4740,6 +4740,9 @@ impl eframe::App for PlexiApp {
             crate::platform::logging::UiPhase::Exit,
         );
         log::info!("quit_phase: on_exit begin");
+        if self.workspace_dirty && self.save_workspace_now() {
+            self.workspace_dirty = false;
+        }
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");

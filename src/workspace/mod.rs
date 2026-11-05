@@ -351,13 +351,79 @@ fn background_session_from(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| !value.is_empty())
 }
 
+static LOAD_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Startup failures are retained for the host's launch notice.
+pub(crate) fn load_failure_notice() -> Option<String> {
+    LOAD_FAILURE
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
+}
+
+fn save_failure_path(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("workspace-save-failure.txt")
+}
+
+fn record_save_failure(profile_dir: &Path, error: &io::Error) {
+    let path = save_failure_path(profile_dir);
+    let message = format!("The workspace could not be saved: {error}\nCheck permissions and free space, then inspect the workspace before retrying.\n");
+    if let Err(write_error) = std::fs::write(&path, message) {
+        log::error!(
+            "workspace_save: cannot persist failure notice {}: {write_error}",
+            path.display()
+        );
+    } else {
+        log::info!(
+            "workspace_save: persisted failure notice {}",
+            path.display()
+        );
+    }
+}
+
+pub(crate) fn save_failure_notice(profile_dir: &Path) -> Option<String> {
+    let path = save_failure_path(profile_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(message) => Some(format!(
+            "{message}\nAfter resolving the problem, remove {} to dismiss this notice.",
+            path.display()
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            log::error!(
+                "workspace_save: cannot read failure notice {}: {error}",
+                path.display()
+            );
+            Some(format!(
+                "Cannot read workspace save failure notice {}: {error}",
+                path.display()
+            ))
+        }
+    }
+}
+
 impl WorkspaceFile {
     pub fn save(&self) -> io::Result<()> {
         if ephemeral_session() {
             log::info!("workspace_save: skipped (ephemeral session)");
             return Ok(());
         }
-        self.save_to(&crate::config::config_dir())
+        let profile = crate::config::config_dir();
+        let load_failure = load_failure_notice();
+        let result = if let Some(error) = load_failure {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "workspace was not restored: {error}; restart after recovery before saving"
+                ),
+            ))
+        } else {
+            self.save_to(&profile)
+        };
+        if let Err(error) = &result {
+            record_save_failure(&profile, error);
+        }
+        result
     }
 
     pub fn save_to(&self, profile_dir: &Path) -> io::Result<()> {
@@ -394,13 +460,20 @@ impl WorkspaceFile {
                     let mut existing: Self = serde_json::from_slice(&data).map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("refusing to overwrite invalid workspace {}: {error}", path.display()),
+                            format!(
+                                "refusing to overwrite invalid workspace {}: {error}",
+                                path.display()
+                            ),
                         )
                     })?;
                     if !matches!(existing.version, 2 | 3) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
+                            format!(
+                                "refusing to overwrite workspace {} with unsupported version {}",
+                                path.display(),
+                                existing.version
+                            ),
                         ));
                     }
                     if migration_source.is_some() && existing.version == 2 && self.version == 3 {
@@ -411,7 +484,10 @@ impl WorkspaceFile {
                         preserve_v2_rollback(&path, &data)?;
                     }
                     if existing.version == 3 && self.version == 2 {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, "refusing to downgrade a version 3 workspace"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "refusing to downgrade a version 3 workspace",
+                        ));
                     }
                 }
                 Err(error)
@@ -450,54 +526,95 @@ impl WorkspaceFile {
             log::info!("workspace_load: skipped (ephemeral session)");
             return None;
         }
-        Self::load_from(&crate::config::config_dir())
+        match Self::try_load_from(&crate::config::config_dir()) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                log::error!("workspace_load: {error}");
+                *LOAD_FAILURE
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner()) = Some(error.to_string());
+                None
+            }
+        }
     }
 
+    #[cfg(test)]
     pub fn load_from(profile_dir: &Path) -> Option<Self> {
+        match Self::try_load_from(profile_dir) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                log::error!("workspace_load: {error}");
+                None
+            }
+        }
+    }
+
+    fn try_load_from(profile_dir: &Path) -> io::Result<Option<Self>> {
         let path = workspace_path_in(profile_dir);
         let data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                log::error!("workspace_load: cannot read {}: {error}", path.display());
-                return None;
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "cannot read {}: {error}; original preserved",
+                        path.display()
+                    ),
+                ))
             }
         };
-        let mut ws: Self = match serde_json::from_str(&data) {
-            Ok(ws) => ws,
-            Err(e) => {
-                log::warn!("Failed to parse workspace file: {e}");
-                return None;
-            }
-        };
+        let mut ws: Self = serde_json::from_str(&data).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "cannot parse {}: {error}; original preserved",
+                    path.display()
+                ),
+            )
+        })?;
         if !matches!(ws.version, 2 | 3) {
-            log::info!(
-                "Unsupported workspace file version {}; preserving original",
-                ws.version
-            );
-            return None;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported workspace version {} in {}; original preserved",
+                    ws.version,
+                    path.display()
+                ),
+            ));
         }
         if ws.version == 2 {
             ws.remove_legacy_deleted_context_focus();
         }
-        if let Err(error) = ws.validate() {
-            log::error!("workspace_load: invalid workspace {}: {error}; preserving original", path.display());
-            return None;
-        }
+        ws.validate().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "invalid workspace {}: {error}; original preserved",
+                    path.display()
+                ),
+            )
+        })?;
         if ws.version == 2 {
-            match ws.assign_legacy_window_ids().and_then(|()| ws.convert_legacy_strips()).and_then(|strips| {
-                ws.strips = strips;
-                ws.version = 3;
-                ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
-            }) {
-                Ok(()) => log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2"),
-                Err(error) => {
-                    log::error!("workspace migration: {}: {error}; preserving original", path.display());
-                    return None;
-                }
-            }
+            ws.assign_legacy_window_ids()
+                .and_then(|()| ws.convert_legacy_strips())
+                .and_then(|strips| {
+                    ws.strips = strips;
+                    ws.version = 3;
+                    ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
+                })
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot migrate workspace {}: {error}; original preserved",
+                            path.display()
+                        ),
+                    )
+                })?;
+            log::info!("workspace migration: converted version 2 to version 3; legacy conjoined views were not recorded in version 2");
         }
-        Some(ws)
+        Ok(Some(ws))
     }
 
     /// Version 2 could persist focus entries after a context was deleted.
@@ -1057,6 +1174,72 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn save_failure_notice_survives_reopen() {
+        let profile = tempfile::tempdir().unwrap();
+        record_save_failure(
+            profile.path(),
+            &io::Error::new(io::ErrorKind::PermissionDenied, "injected write failure"),
+        );
+        let notice = save_failure_notice(profile.path()).unwrap();
+        assert!(notice.contains("injected write failure"));
+        assert!(notice.contains("permissions"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_save_in_read_only_workspace_directory_persists_notice() {
+        use std::os::unix::fs::PermissionsExt;
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace: WorkspaceFile = serde_json::from_str(
+            r#"{"version":3,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#,
+        ).unwrap();
+        workspace.save().unwrap();
+        let path = workspace_path_in(profile.path());
+        let original = std::fs::read(&path).unwrap();
+        let directory = path.parent().unwrap();
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = workspace.save();
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        assert!(save_failure_notice(profile.path()).unwrap().contains("could not be saved"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_denied_load_reports_error_and_preserves_original() {
+        use std::os::unix::fs::PermissionsExt;
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"original workspace";
+        std::fs::write(&path, original).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = WorkspaceFile::try_load_from(profile.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = result.err().expect("unreadable workspace must fail");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn corrupt_load_reports_actionable_error_and_preserves_bytes() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"{truncated";
+        std::fs::write(&path, original).unwrap();
+        let error = WorkspaceFile::try_load_from(profile.path())
+            .err()
+            .expect("corrupt workspace must fail")
+            .to_string();
+        assert!(error.contains(&path.display().to_string()));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
     #[test]
