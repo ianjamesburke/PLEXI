@@ -247,10 +247,33 @@ Before calling a UI fix complete:
    artifact. Pass a suffix for several shots from one test, `evidence_png!("_ppp2")`.
 2. Run it and **open the PNG with the Read tool and look at it** — confirm the
    change looks right, not just that the test exited 0.
-3. Delete the screenshot from `/tmp` after review. Screenshots are a review
-   artifact, not evidence to persist — the passing test is what future runs
-   check; the PNG itself is not committed and not left on disk.
-4. Note in the PR body that this loop ran (what you looked at, what you saw).
+3. Keep the inspected screenshot until it is published as review evidence.
+   After opening the PR, run the command below and add its output to the PR
+   body. Do not commit the PNG to the feature branch. The retained
+   `evidence/pr-<number>` branch holds the image independently of feature-branch
+   cleanup. Its immutable commit link remains usable while that branch is kept.
+4. For a nonvisual change, record `Visual evidence: not applicable` with a
+   reason. When a required screenshot or publication fails, record the failure
+   and do not claim visual evidence or complete the required gate. A headless
+   render is not live-host proof; capture real host pixels when that boundary is
+   required. Independent validation is separate from the implementer's image.
+
+```bash
+python3 scripts/publish-pr-image.py --pr <number> --head <full-pr-head-sha> \
+  --image /tmp/<inspected>.png --source headless \
+  --context "<feature and scene or capture details>" --inspected
+```
+
+Use `--source live-host` only for actual `plexi host screenshot` pixels and
+include the channel/build identity in `--context`. The source and head are
+assertions by the operator, not inferred from PNG bytes: verify both before
+publishing. Inspect the image for private information first; publishing uses the
+repository's visibility. Public repository images are publicly accessible.
+The command verifies the saved blob and immutable URL; private repository links
+require reviewer access. Never describe a local `/tmp` path as durable evidence.
+Keep the evidence branch for as long as the PR's visual proof is needed; deleting
+it can eventually make commit-based links unavailable. Delete temporary local
+PNGs after successful publication.
 
 This applies whenever the diff includes host UI rendering — not only when the
 task is explicitly "visual." A logic-only PR that happens to touch `render.rs`

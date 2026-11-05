@@ -88,7 +88,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    just check-docs
    ```
 6. **Visual verification** (mandatory for host UI or PGAP app UI changes):
-   - Render realistic seeded content via a `HostHarness` PNG test or `plexi app render <app> --png <path>`, inspect the PNG, and remove any temporary PNG before committing.
+   - Render and inspect realistic seeded content as required by TESTING.md. Keep the temporary PNG through PR creation so it can be published; do not commit it to the feature branch.
 
 ---
 
@@ -111,15 +111,16 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    EOF
    )"
    ```
-3. Publish the PR number and `status=pr:done`:
+3. Publish required visual evidence in the PR body using [TESTING.md — Pre-Push Evidence](../../../../src/testing/TESTING.md#pre-push-evidence), or state why it is not applicable. A required capture or publication failure remains a gate failure.
+4. Publish the PR number and `status=pr:done`:
    ```bash
    plexi pane slot write pr <PR_NUMBER> --pane-id $PLEXI_PANE_ID --replace
    plexi pane slot write status pr:done --pane-id $PLEXI_PANE_ID --replace
    ```
-4. **Install rule:**
+5. **Install rule:**
    - **When run by `babysitter-v3` (unattended):** Do **not** run `just pr-install` (the dedicated tester pane installs and drives the PR build).
    - **When run standalone by Ian (interactive):** Run `just pr-install <PR_NUMBER>` in the foreground so the PR build is ready for spot-checking.
-5. Output the completion block and wait for `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`:
+6. Output the completion block and wait for `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`:
 
 ```text
 [IMPLEMENTED]

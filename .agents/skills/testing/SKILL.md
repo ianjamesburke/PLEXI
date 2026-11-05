@@ -154,9 +154,7 @@ zero-turn assistant pane cannot show the bug you fixed. `screenshot_assistant_co
 in `src/ui_tests.rs` is the pattern: build real model state, open through the
 real pane path (`open_assistant_built` / equivalent), screenshot, inspect.
 
-Once inspected, delete the PNG (`rm /tmp/plexi_*.png`). The screenshot is a
-review artifact, not evidence to keep — the passing test is what future runs
-re-check, and `/tmp` is not the durable record (see Guards).
+After inspection, follow [TESTING.md — Pre-Push Evidence](../../../../src/testing/TESTING.md#pre-push-evidence) to publish required images after opening the PR. Keep local PNGs until publication succeeds; never treat their temporary paths as durable evidence.
 
 ## Step 5 — Write the Evidence Block
 
@@ -167,7 +165,7 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 - just build: ok
 - clippy: ok
 - cargo test: <passed> passed, <failed> failed — filters: <module list or "final combined full bin suite">
-- PlexiUiHarness render: /tmp/plexi-render-<issue>-<name>.png — <one line: what it shows>
+- Visual evidence: <durable link, source, capture context and exact head, or not applicable with reason>
 - Conclusion: install skippable — full coverage | binary install required — <why>
 ```
 
@@ -186,4 +184,4 @@ Conclusion rules:
 
 - `git status --short` must show no unintended test scaffolding before commit. Committed scene files are the norm; a one-off you don't want to keep belongs outside the repo (`just scene /tmp/<file>.toml` works on absolute paths).
 - Never claim `install skippable` for a layer you didn't actually test.
-- Screenshot PNGs live in `/tmp` and die with the machine — the evidence block's one-line description is the durable record; keep it specific.
+- Temporary screenshot paths are not durable evidence; see TESTING.md for publication and failure handling.
