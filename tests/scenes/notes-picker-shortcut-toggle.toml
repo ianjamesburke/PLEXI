@@ -1,0 +1,22 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+assert_label = { target = "host", label = "Notes" }
+
+[[steps]]
+shot = "notes-picker-open.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+shot = "notes-picker-closed.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+assert_label = { target = "host", label = "Notes" }
