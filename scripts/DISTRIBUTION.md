@@ -115,7 +115,7 @@ sudo so it cannot wait on a user-domain authorization dialog.
 ## Layout and ownership
 
 macOS uses per-user `~/Applications/Plexi.app`, `Plexi Alpha.app` and
-`Plexi Beta.app` links to immutable generations. Linux uses an XDG data
+`Plexi Beta.app` bundles copied from the active immutable generation. Linux uses an XDG data
 installation with a command launcher, desktop entry and packaged icon. Windows
 uses LocalAppData, versioned host executables, a stable launcher, user PATH
 registration and a Start Menu shortcut. A command launcher contains no second
@@ -129,6 +129,23 @@ cannot identify an executable. After a successful install the installer writes
 that marker in the channel profile directory. The file contains the package
 tag, or the build id when the tag is empty. SDK and core-app refresh stamps use the compiled
 build identity, including source changes between prerelease builds.
+
+The Applications bundle is a real directory, not a link: Spotlight indexes
+neither symlinks nor hidden directories, so a link into
+`~/.local/share/plexi/<channel>/generations/<hash>/` was unsearchable, and
+LaunchServices kept one record per generation path for `open -a` to choose
+from. Activation copies the generation's bundle with `ditto` (preserving the
+signature and extended attributes) into a hidden sibling scratch directory,
+then renames the old item aside and the copy into place under the transaction
+journal. After commit it runs `lsregister -f` on the copy and `lsregister -u` on
+the bundles inside the generation store; failures are logged, not fatal. Only
+our old link into this installation root or a copy the receipt records is
+replaced; anything else is refused. The receipt records the copy's main
+executable digest rather than a marker file, because a file inside `Contents/`
+would break the code-signature seal. A copy lacks `package.json`, so the host
+locates its package through the receipt by build id. Uninstall unregisters and
+removes the owned copy. Command shims and receipt launches still execute the
+generation directly.
 
 The UI version label, `--version`, the menu title and `host status` show the
 running binary's compiled tag (or crate version) and short commit. At launch
