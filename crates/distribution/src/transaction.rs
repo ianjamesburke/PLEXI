@@ -2127,6 +2127,35 @@ mod tests {
         }
     }
 
+    // Regression: upgrading the receipt-owned copy must also reconcile the
+    // legacy launch path. This deliberately exercises the existing bundle
+    // activation boundary with both locations in a disposable directory.
+    #[cfg(unix)]
+    #[test]
+    fn legacy_app_reference_resolves_to_upgraded_bundle() {
+        let (home, root, bundle, executable, managed) = bundle_fixture();
+        let legacy = home.path().join("system-Applications/Plexi Beta.app");
+        let legacy_exe = legacy.join("Contents/MacOS/plexi-beta");
+        fs::create_dir_all(legacy_exe.parent().unwrap()).unwrap();
+        fs::write(&legacy_exe, b"old host").unwrap();
+        let profile = home.path().join("profile");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("settings.toml"), b"settings").unwrap();
+        fs::write(profile.join("workspace.json"), b"workspace").unwrap();
+
+        let change = prepare_bundle_change(&root, None, &managed, &bundle, &executable).unwrap();
+        activate_bundle(&change);
+        assert_eq!(
+            fs::read(profile.join("settings.toml")).unwrap(),
+            b"settings"
+        );
+        assert_eq!(
+            fs::read(profile.join("workspace.json")).unwrap(),
+            b"workspace"
+        );
+        assert_eq!(fs::read(&legacy_exe).unwrap(), b"host build abc");
+    }
+
     #[cfg(unix)]
     #[test]
     fn applications_link_into_our_root_becomes_a_real_owned_bundle() {
