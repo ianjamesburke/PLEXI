@@ -15966,6 +15966,77 @@ mod tiled_navigation_frame_tests {
 }
 
 #[test]
+fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    use crate::app::FocusKind;
+    use crate::overlays::notes_picker::PendingDelete;
+
+    for (query, pending_cut, key) in [
+        ("", None, egui::Key::O),
+        ("search", None, egui::Key::O),
+        ("search", Some(false), egui::Key::O),
+        ("search", Some(true), egui::Key::O),
+        ("search", Some(true), egui::Key::F8),
+    ] {
+        let mut h = HostHarness::new();
+        h.app.key_bindings.open_notes_picker = (egui::Modifiers::COMMAND, key);
+        h.app.binding_table = crate::host::keys::build_binding_table(&h.app.key_bindings);
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        h.run_frames(1);
+        let ctx = h.app.ctx.clone();
+        let dir = tempfile::tempdir().expect("note directory");
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "original note").expect("seed note");
+
+        h.press_key(key, egui::Modifiers::COMMAND);
+        assert_eq!(
+            h.app.focus_stack.iter().filter(|&&k| k == FocusKind::NotesPicker).count(),
+            1
+        );
+        assert_eq!(
+            h.app.input_owner(&ctx),
+            InputOwner::Overlay(OverlaySurface::Layer(FocusKind::NotesPicker))
+        );
+        h.frame(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        });
+        h.app.notes_picker_query = query.into();
+        h.app.notes_picker_pending_delete = pending_cut.map(|cut| PendingDelete {
+            path: path.clone(),
+            cut,
+        });
+        h.press_key(key, egui::Modifiers::COMMAND);
+        assert!(
+            !h.app.focus_stack.contains(&FocusKind::NotesPicker),
+            "second shortcut must close picker for query={query:?}, pending={pending_cut:?}"
+        );
+        assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
+        assert!(h.app.notes_picker_pending_delete.is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original note");
+        assert!(h.app.claimed_host_key_releases.contains(&key));
+        h.frame(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        });
+        assert!(!h.app.claimed_host_key_releases.contains(&key));
+    }
+}
+
+#[test]
 fn notes_picker_copy_closes_and_restores_pane_input_owner() {
     use crate::app::input_owner::{InputOwner, OverlaySurface};
     let mut h = HostHarness::new();

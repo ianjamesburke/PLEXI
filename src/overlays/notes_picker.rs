@@ -332,6 +332,21 @@ impl PlexiApp {
         &mut self,
         input: &mut crate::app::input_router::PlexiInput,
     ) {
+        // Normal host bindings are suppressed while an overlay owns input. The
+        // picker must claim its configured invocation chord itself, before a
+        // pending delete/cut confirmation can consume or ignore that chord.
+        let (modifiers, key) = self.key_bindings.open_notes_picker;
+        if input.consume_key_no_repeat(modifiers, key) {
+            self.claimed_host_key_releases.insert(key);
+            self.close_notes_picker();
+            return;
+        }
+        // A held invocation chord must not immediately close the picker that
+        // its first press opened, nor leak repeat events to the focused pane.
+        if input.consume_key(modifiers, key) {
+            self.claimed_host_key_releases.insert(key);
+            return;
+        }
         let visible = self.notes_picker_filtered().len();
 
         if input.events().iter().any(|e| {
