@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 // The crate itself is named `plexi`; bindgen also generates a top-level `plexi`
@@ -621,9 +621,7 @@ fn grants_from_component(engine: &Engine, component: &Component) -> Grants {
 
 impl WasmApp {
     fn engine_and_component(path: &Path) -> wasmtime::Result<(Engine, Component)> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-        let engine = Engine::new(&config)?;
+        let engine = super::wasm_engine::create_engine()?;
         let component = Component::from_file(&engine, path)?;
         Ok((engine, component))
     }

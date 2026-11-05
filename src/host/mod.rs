@@ -39,6 +39,7 @@ pub(crate) mod path_watch;
 pub mod state_watch;
 pub mod typed_pipes;
 pub mod wasm_app;
+mod wasm_engine;
 pub mod wasm_frame;
 pub mod wasm_gpu;
 pub mod wasm_pane;
