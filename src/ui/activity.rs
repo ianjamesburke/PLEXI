@@ -234,7 +234,7 @@ pub fn paint_pip(
                     Vec2::splat(radius * 2.0 + stroke.width),
                 )) {
                     let predicted = ctx.input(|i| i.predicted_dt).max(0.0);
-                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(0.1 + predicted));
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(1.0 / 30.0 + predicted));
                 }
                 (ctx.input(|i| i.time).rem_euclid(2.0) * std::f64::consts::PI) as f32
             };
@@ -398,8 +398,8 @@ mod tests {
         let (second, _) = frame(4.5, &AgentState::Working, false, true);
         assert_ne!(first, second, "working geometry must rotate");
         assert!(
-            delay >= std::time::Duration::from_millis(99)
-                && delay < std::time::Duration::from_millis(200),
+            delay >= std::time::Duration::from_millis(32)
+                && delay < std::time::Duration::from_millis(40),
             "{delay:?}"
         );
         for n in 5..9 {
