@@ -38,7 +38,17 @@ may need the printed PATH command; new shells read the idempotent PATH block.
 roots. Their canonical paths are persisted in the receipt and reused for
 updates. Source builds use `scripts/install.sh --from-source [channel]`, which
 builds and feeds the same package to the same transaction. It requires Rust,
-just, uv and Python 3.11 or newer.
+just, uv and Python 3.11 or newer. Arguments after the optional channel pass
+through to the installer, e.g. `scripts/install.sh --from-source beta --trash-strays`.
+
+After activation the installer lists other copies of the channel's Mac app
+outside the managed installation (`strays::find_strays`): `/Applications`,
+`~/Applications`, `~/Downloads` and `~/Desktop`, matched by
+`CFBundleIdentifier` or, without a readable identifier, by bundle name. The
+Trash, the installation root and owned integrations are excluded. By default it
+only warns. `--trash-strays`, or answering yes to the prompt shown when stdin
+is a terminal, renames them into `~/.Trash` (numbered on collision); nothing
+is deleted. The public bootstrap forwards the flag unchanged.
 
 ## Package
 
@@ -119,6 +129,14 @@ cannot identify an executable. After a successful install the installer writes
 that marker in the channel profile directory. The file contains the package
 tag, or the build id when the tag is empty. SDK and core-app refresh stamps use the compiled
 build identity, including source changes between prerelease builds.
+
+The UI version label, `--version`, the menu title and `host status` show the
+running binary's compiled tag (or crate version) and short commit. At launch
+the host compares its build id with the channel receipt's active build, logs a
+warning and posts one notification naming the relaunch path when they differ.
+On macOS it also notifies about strays in `/Applications` and `~/Applications`;
+Downloads and Desktop are left to the installer because reading them from the
+app triggers privacy prompts. Launch never moves anything.
 
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
 Outside a pane it launches stable. Channel-named commands retain their channel.

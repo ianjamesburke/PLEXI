@@ -936,6 +936,16 @@ fn socket_line_parse_error_does_not_wake() {
 }
 
 #[test]
+fn displayed_version_is_build_info_not_profile_installed_tag() {
+    let _h = crate::testing::HostHarness::new();
+    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
+    let (app, _ipc) = PlexiApp::new_for_test(egui::Context::default(), std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+    assert_eq!(app.display_version, env!("PLEXI_VERSION_TEXT"));
+    assert!(app.display_version.ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))));
+    assert!(!app.display_version.contains("999"));
+}
+
+#[test]
 fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let mut h = crate::testing::HostHarness::new();
     std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();

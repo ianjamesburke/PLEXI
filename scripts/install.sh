@@ -7,7 +7,9 @@ if [[ "${1:-}" != --from-source ]]; then
 fi
 shift
 cd "$repo"
-channel="${1:-}"
+# Optional channel, then installer flags (e.g. --trash-strays) passed through.
+channel=""
+if [[ $# -gt 0 && "$1" != --* ]]; then channel="$1"; shift; fi
 if [[ -z "$channel" ]]; then
   branch="$(git branch --show-current)"
   case "$branch" in main|alpha|beta) channel="$branch" ;; *) channel="$(cat .channel 2>/dev/null || echo alpha)" ;; esac
@@ -30,4 +32,4 @@ if [[ "$os" == macos && -z "${PLEXI_SIGN_IDENTITY:-}" ]] && security find-identi
 fi
 uv run --no-project --python 3.11 python scripts/package.py --binary "$target/release/plexi" --installer "$target/release/plexi-installer" --platform "$os-$arch" --channel "$channel" --output "$stage"
 normalized="$channel"; [[ "$normalized" != main ]] || normalized=stable
-"$target/release/plexi-installer" --package "$stage/package-$os-$arch-$normalized" --channel "$normalized" --install-only
+"$target/release/plexi-installer" --package "$stage/package-$os-$arch-$normalized" --channel "$normalized" --install-only "$@"

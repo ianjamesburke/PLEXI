@@ -182,7 +182,7 @@ fn menu_bar_title() -> Option<String> {
             .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
             .unwrap_or_default()
     };
-    Some(format!("Plexi {} {}", channel, env!("CARGO_PKG_VERSION")))
+    Some(format!("Plexi {} {}", channel, crate::distribution::version_text()))
 }
 
 fn remove_items_with_action(menu: &NSMenu, action: objc2::runtime::Sel) {

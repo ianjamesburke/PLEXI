@@ -2146,12 +2146,9 @@ fn main() -> eframe::Result {
         env!("CARGO_PKG_NAME"),
         native_options,
         Box::new(|cc| {
-            Ok(Box::new(app::PlexiApp::new(
-                cc,
-                frame_tick,
-                heartbeat_ctx,
-                ui_phase,
-            )))
+            let mut app = app::PlexiApp::new(cc, frame_tick, heartbeat_ctx, ui_phase);
+            app.surface_launch_notices();
+            Ok(Box::new(app))
         }),
     )
 }

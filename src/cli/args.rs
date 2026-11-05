@@ -235,7 +235,7 @@ pub fn resolve_target_from_candidates(
 #[command(
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
-    version = env!("CARGO_PKG_VERSION"),
+    version = env!("PLEXI_VERSION_TEXT"),
     after_help = "Get started: plexi ai onboard | Docs: https://plexiapp.com/docs",
     styles = plexi_styles(),
 )]

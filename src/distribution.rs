@@ -2,7 +2,47 @@
 use std::path::PathBuf;
 
 pub fn build_info() -> serde_json::Value {
-    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "tag": build_tag(), "build_id": env!("PLEXI_BUILD_ID"), "source_commit": env!("PLEXI_SOURCE_COMMIT") })
+    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "version_text": version_text(), "tag": build_tag(), "build_id": env!("PLEXI_BUILD_ID"), "source_commit": env!("PLEXI_SOURCE_COMMIT") })
+}
+/// The version every UI and CLI surface shows: this binary's compiled tag (or
+/// crate version) and short commit, e.g. `0.4.2 (abc1234)`. Profile markers
+/// such as `installed_tag` never feed it.
+pub fn version_text() -> &'static str {
+    env!("PLEXI_VERSION_TEXT")
+}
+/// The same rendering for an installed generation; its build id starts with
+/// the full source commit.
+pub fn generation_version_text(tag: &str, build_id: &str) -> String {
+    let version = Some(tag.trim_start_matches('v')).filter(|t| !t.is_empty()).unwrap_or("unknown");
+    let commit = build_id.get(..7).filter(|c| !c.contains('-')).unwrap_or("unknown");
+    format!("{version} ({commit})")
+}
+/// Where a user relaunches the managed build: the Applications bundle on
+/// macOS, the active executable elsewhere.
+pub fn relaunch_path(receipt: &plexi_distribution::transaction::Receipt) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        receipt.applications_dir.join(format!("{}.app", plexi_distribution::transaction::display_name(&receipt.channel)))
+    } else {
+        receipt.active.executable()
+    }
+}
+/// One-line notice when the running binary is not the channel's installed
+/// build. Compares build ids, never paths, so the managed Applications copy
+/// and the generation it was copied from are the same build.
+pub fn installation_mismatch(
+    running_build: &str,
+    running_text: &str,
+    receipt: &plexi_distribution::transaction::Receipt,
+) -> Option<String> {
+    if receipt.active.build_id == running_build {
+        return None;
+    }
+    Some(format!(
+        "Running {running_text} but {}'s installed build is {} — relaunch from {}",
+        plexi_distribution::transaction::display_name(&receipt.channel),
+        generation_version_text(&receipt.active.tag, &receipt.active.build_id),
+        relaunch_path(receipt).display()
+    ))
 }
 pub fn build_tag() -> String {
     let tag = env!("PLEXI_BUILD_TAG");
@@ -138,6 +178,50 @@ fn seed_profile_from(resources: &std::path::Path, profile: &std::path::Path) -> 
 
 #[cfg(test)]
 mod tests {
+    fn receipt(tag: &str, build_id: &str) -> plexi_distribution::transaction::Receipt {
+        let generation = plexi_distribution::transaction::Generation {
+            path: "/home/u/.local/share/plexi/beta/generations/abc".into(),
+            build_id: build_id.into(),
+            tag: tag.into(),
+            executable: "Plexi Beta.app/Contents/MacOS/plexi-beta".into(),
+        };
+        plexi_distribution::transaction::Receipt {
+            schema: 1,
+            channel: "beta".into(),
+            root: "/home/u/.local/share/plexi/beta".into(),
+            bin_dir: "/home/u/.local/bin".into(),
+            applications_dir: "/home/u/Applications".into(),
+            active: generation,
+            previous: None,
+            integrations: vec![],
+            path_edits: vec![],
+            windows_path_added: false,
+        }
+    }
+
+    #[test]
+    fn version_text_is_compiled_build_info() {
+        use clap::CommandFactory;
+        let text = super::version_text();
+        assert!(text.ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))), "{text}");
+        let tag = env!("PLEXI_BUILD_TAG").trim_start_matches('v');
+        assert!(text.starts_with(if tag.is_empty() { env!("CARGO_PKG_VERSION") } else { tag }));
+        assert_eq!(crate::cli::args::Cli::command().get_version(), Some(text));
+        assert_eq!(super::build_info()["version_text"], text);
+    }
+
+    #[test]
+    fn mismatch_compares_build_ids_and_names_the_relaunch_path() {
+        let installed = "def5678aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1234";
+        let receipt = receipt("v0.4.1", installed);
+        assert_eq!(super::installation_mismatch(installed, "0.4.1 (def5678)", &receipt), None);
+        let notice = super::installation_mismatch("abc1234-x", "0.4.2 (abc1234)", &receipt).unwrap();
+        assert!(notice.starts_with("Running 0.4.2 (abc1234) but Plexi Beta's installed build is 0.4.1 (def5678) — relaunch from "), "{notice}");
+        assert!(notice.ends_with(&super::relaunch_path(&receipt).display().to_string()));
+        assert!(!notice.contains('\n'));
+        assert_eq!(super::generation_version_text("", "-hash-only"), "unknown (unknown)");
+    }
+
     #[test]
     fn package_seeding_preserves_existing_config_and_creates_missing_config() {
         let dir = tempfile::tempdir().unwrap();

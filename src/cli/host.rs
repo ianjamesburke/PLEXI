@@ -1244,30 +1244,37 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
 }
 
 /// Human-readable running-vs-installed identity for `host status` and the
-/// `host start` already-running path (stint 0596). Returns no lines when the
-/// installation is unmanaged or the host did not report a build. When the
-/// running build differs from the installed package, the last line is the
-/// restart prompt. Never restarts anything on its own.
+/// `host start` already-running path. Versions come from each binary's own
+/// build info (version text, short commit, build id), never from profile
+/// markers. Unavailable running identity is reported as unverified and an
+/// unavailable installation separately. When the running build differs from
+/// the installed package, the last line is the restart prompt. Never restarts
+/// anything on its own.
 pub(crate) fn host_identity_lines(
     running: Option<&serde_json::Value>,
     installed: Option<(&str, &str)>,
     stop_start: &str,
 ) -> Vec<String> {
-    let (Some(running), Some((installed_tag, installed_build))) = (running, installed) else {
-        return Vec::new();
+    let field = |name: &str| running.and_then(|r| r.get(name)).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let running_build = field("build_id");
+    let running_line = match running_build {
+        Some(build) => {
+            // Hosts older than `version_text` report only their tag.
+            let text = field("version_text").map(str::to_string).unwrap_or_else(|| crate::distribution::generation_version_text(field("tag").unwrap_or(""), build));
+            format!("Running host: {text}, build {build}")
+        }
+        None => {
+            log::info!("host_status: running build identity unverified");
+            "Running host: unverified (build identity unavailable)".into()
+        }
     };
-    let Some(running_build) = running.get("build_id").and_then(|v| v.as_str()) else {
-        return Vec::new();
+    let installed_line = match installed {
+        Some((tag, build)) => format!("Installed:    {}, build {build}", crate::distribution::generation_version_text(tag, build)),
+        None => "Installed:    unavailable or unmanaged".into(),
     };
-    let running_tag = running.get("tag").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let mut lines = vec![
-        format!("Running host: {running_tag} ({running_build})"),
-        format!("Installed:    {installed_tag} ({installed_build})"),
-    ];
-    if running_build != installed_build {
-        lines.push(format!(
-            "The running host is older than the installed build. Restart it to use the update: {stop_start}"
-        ));
+    let mut lines = vec![running_line, installed_line];
+    if matches!((running_build, installed), (Some(running), Some((_, installed))) if running != installed) {
+        lines.push(format!("The running host differs from the installed build. Restart it to use the installed build: {stop_start}"));
     }
     lines
 }
@@ -1300,6 +1307,14 @@ pub fn host_workspace_rollback_cli(to_channel: &str) -> i32 {
 fn restart_hint() -> String {
     let name = crate::config::current_exe_basename();
     format!("{name} host stop && {name} host start")
+}
+
+fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) -> String {
+    if pid.is_some() || socket_exists {
+        format!("Plexi host readiness and running identity are unverified (pid {}, socket {})", pid.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()), socket.display())
+    } else {
+        format!("Plexi host is not running (socket {})", socket.display())
+    }
 }
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
@@ -1337,10 +1352,7 @@ pub fn host_status_cli(json: bool) -> i32 {
             println!("{line}");
         }
     } else {
-        println!(
-            "Plexi host is not running (socket {})",
-            socket_path.display()
-        );
+        println!("{}", not_ready_host_message(pid, socket_path.exists(), &socket_path));
     }
     0
 }
@@ -1582,12 +1594,24 @@ mod tests {
 
     #[test]
     fn identity_lines_prompt_restart_when_running_build_is_older() {
-        let running = serde_json::json!({"tag": "v0.1.16", "build_id": "old"});
-        let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", "new")), "plexi host stop && plexi host start");
+        let old = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hash";
+        let new = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-hash";
+        let running = serde_json::json!({"tag": "v0.1.16", "build_id": old});
+        let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", new)), "plexi host stop && plexi host start");
         assert_eq!(lines.len(), 3);
-        assert!(lines[0].contains("v0.1.16") && lines[0].contains("old"));
-        assert!(lines[1].contains("v0.2.0") && lines[1].contains("new"));
+        assert!(lines[0].contains("0.1.16 (1111111)") && lines[0].contains(old));
+        assert!(lines[1].contains("0.2.0 (2222222)") && lines[1].contains(new));
         assert!(lines[2].contains("plexi host stop && plexi host start"));
+        let running = serde_json::json!({"tag": "v9.9.9", "version_text": "0.4.2 (abc1234)", "build_id": old});
+        assert!(super::host_identity_lines(Some(&running), None, "r")[0].contains("0.4.2 (abc1234)"));
+    }
+
+    #[test]
+    fn unresponsive_socket_reports_unverified_host() {
+        let message = super::not_ready_host_message(None, true, std::path::Path::new("/socket"));
+        assert!(message.contains("unverified"));
+        assert!(!message.contains("not running"));
+        assert!(super::not_ready_host_message(None, false, std::path::Path::new("/socket")).contains("not running"));
     }
 
     #[test]
@@ -1598,11 +1622,12 @@ mod tests {
     }
 
     #[test]
-    fn identity_lines_are_empty_without_both_identities() {
+    fn identity_lines_report_unverified_or_unavailable_identity() {
         let running = serde_json::json!({"tag": "v0.2.0", "build_id": "x"});
-        assert!(super::host_identity_lines(Some(&running), None, "r").is_empty());
-        assert!(super::host_identity_lines(None, Some(("v1", "x")), "r").is_empty());
-        assert!(super::host_identity_lines(Some(&serde_json::json!({})), Some(("v1", "x")), "r").is_empty());
+        assert!(super::host_identity_lines(Some(&running), None, "r").join(" ").contains("Installed:    unavailable"));
+        assert!(super::host_identity_lines(None, None, "r").join(" ").contains("unverified"));
+        assert!(super::host_identity_lines(None, Some(("v1", "x")), "r").join(" ").contains("unverified"));
+        assert!(super::host_identity_lines(Some(&serde_json::json!({})), Some(("v1", "x")), "r").join(" ").contains("unverified"));
     }
 
     #[test]
