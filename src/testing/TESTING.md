@@ -24,6 +24,27 @@ workflow and escalation rules rather than treating its extension as a risk tier.
 | Visible UI, such as a spacing or overlay change | Relevant Rust/app tests, release build, strict Clippy and a scene exercising the affected state. Render realistic content and inspect its screenshot. | Run the relevant scene(s) individually; escalate to the suite when shared changes can affect it broadly. A headless image is not installed-host proof. Installed validation follows the existing rules below. |
 | Runtime, packaging, channel, PTY or installed interaction, even a one-line fix | Focused positive and failure-path tests, release build, strict Clippy and any affected script/SDK checks. | Independently install the exact head and exercise affected behavior at that boundary. Add a live scene or inspected host image when needed to prove the behavior or appearance. A small stint is not an exemption. |
 
+### Qualification through independent validation
+
+The task author records the planned risk and evidence. The implementer reassesses
+it against the actual diff and records exact-head checks, omissions and reasons;
+the independent tester verifies the affected behavior and Done-When. Examples
+below are feature-level; aggregate and final gates remain separate.
+
+| Example | Author and implementer | Independent validation and PR evidence |
+|---|---|---|
+| Unembedded prose correction | Plan text review and relevant docs checks; prove the local exemption with `--gate`. | Review the exact text at head; record no scene or screenshot and the install-skip reason. |
+| Pure non-UI calculation | Plan and run focused success and failure tests, build and lint. | Independently exercise the invariant at head; use the testing skill's skip decision if full behavior is covered and no installed boundary is affected. Record no visual evidence with reason. |
+| Visible overlay spacing | Plan and run relevant scene, inspect realistic rendered pixels, and publish the inspected screenshot after PR creation. | Check the image link, origin, head and affected behavior; install and drive when required. A headless image is not live-host proof. |
+| Small packaging or PTY guard | Plan failure and success cases, release build, lint and affected script tests, regardless of stint size. | Install the exact PR head and independently exercise the affected boundary; scene or screenshot only when needed to prove visible behavior. |
+
+A repository-only script whose behavior does not execute in an installed app
+may qualify for the testing skill's non-aggregate install skip if the entire
+changed behavior is covered and independently exercised at the exact source head.
+A script that changes an installed boundary is not repository-only for this
+purpose. State the boundary and any skip explicitly; do not describe source
+checks as installed behavior. Aggregate records still require installed heads.
+
 Before a feature or batch push, `just build` compiles the installable release
 binary with warnings denied, `scripts/scoped-tests.sh` proposes relevant Rust
 filters, and `cargo clippy --bin plexi -- -D warnings` is the lint gate. Run

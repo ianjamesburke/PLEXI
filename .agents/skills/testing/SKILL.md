@@ -162,17 +162,17 @@ Append to the Ship Log entry for this attempt (issue body), or the PR descriptio
 
 ```markdown
 **Test evidence (attempt <N>):**
-- just build: ok
-- clippy: ok
-- cargo test: <passed> passed, <failed> failed — filters: <module list or "final combined full bin suite">
+- just build / clippy: <pass, or proven markdown-only exemption with reason>
+- Head: <full commit>; phase: <feature / batch / final>; affected behavior and risk: <summary>
+- Checks: <commands and pass / fail counts, including actual Rust filters and matched counts; skipped or not applicable checks with reasons>
 - Visual evidence: <durable link, source, capture context and exact head, or not applicable with reason>
-- Conclusion: install skippable — full coverage | binary install required — <why>
+- Conclusion: install skippable — full coverage | binary install required — <why> | docs-only, no build — no test evidence required
 ```
 
 **These conclusion rules are the single source of truth for install-skip.** `/implement-stint-v2` and `/validate-pr` consume the conclusion this block produces — they never re-derive it against their own criteria. If you are editing skip criteria anywhere else, you are editing the wrong file.
 
 Conclusion rules:
-- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes pure-logic and docs-only changes with direct `HostHarness`/`PlexiUiHarness`/scene coverage of the full user-visible behavior — coverage is the test, not cosmetic-ness.
+- `install skippable — full coverage`: every touched layer has green tests AND any visual change has an inspected screenshot. This includes repository-only scripts whose actual behavior is fully covered at the exact source head and has no installed execution boundary; the independent tester must exercise the changed script, not rely only on the worker. For other logic, direct harness or scene coverage must cover the full user-visible behavior. A script that changes installation, packaging, runtime, PTY, or another installed boundary still requires installed validation.
 - `binary install required`: PTY/terminal interaction, keyboard-capture flows, anything `#[ignore = "requires-pty"]`, or behavior only observable in the installed bundle (menus, dock, file associations). This is the default for visible UI, keyboard, app-launch, channel, filesystem, host/runtime, or interaction changes.
 - `docs-only, no build — no test evidence required`: markdown, comments, or skill/doc text that `scripts/scoped-tests.sh --gate` proves is not embedded via `include_str!` and not under a `#[cfg(test)]` doc-sync assertion's directory. Embedded markdown is code and follows the rules for its including module.
 - A `LiveBackend` change always requires `just scene-live` against the installed

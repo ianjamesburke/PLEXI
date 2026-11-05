@@ -57,7 +57,7 @@ Inspect the stint spec(s) first:
 ```bash
 stint show <stint-id>
 ```
-Read the `AGENTS.md` in any directory you plan to edit.
+Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisional qualification as a starting point; reassess the actual diff against [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate). Record the head, selected and inapplicable checks with reasons, and required evidence. Size never decides the validation gate.
 
 - **Size `S` (small):**
   - Locate the target code, write the failing test first (for host logic) or identify the screenshot harness surface (for host UI), implement the fix, and verify with targeted tests.
@@ -119,7 +119,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    ```
 5. **Install rule:**
    - **When run by `babysitter-v3` (unattended):** Do **not** run `just pr-install` (the dedicated tester pane installs and drives the PR build).
-   - **When run standalone by Ian (interactive):** Run `just pr-install <PR_NUMBER>` in the foreground so the PR build is ready for spot-checking.
+   - **Standalone:** Determine installation from TESTING.md and the testing skill’s evidence conclusion. If a separate tester is assigned, that tester owns any required install; do not install twice. If no tester is assigned, install in the foreground when required. Record an approved skip and its reason; an aggregate still needs its installed-head record.
 6. Output the completion block and wait for `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`:
 
 ```text
@@ -146,7 +146,7 @@ TESTING:
    ```
 2. Diagnose and fix the root cause (not a surface patch) inside the same worktree (`worktrees/feature/stint-...`).
 3. Re-run the Step 3 pre-push gates, commit, and push to the same branch.
-4. (Standalone interactive mode only: re-run `just pr-install <PR_NUMBER>`.)
+4. Reassess the evidence against the new head. The assigned tester owns any required re-install; if no tester is assigned, reinstall when required.
 5. Write `plexi pane slot write status pr:done --pane-id $PLEXI_PANE_ID --replace` and post the updated `[IMPLEMENTED]` block.
 
 ### On `PASS`
@@ -154,7 +154,7 @@ TESTING:
    ```bash
    plexi pane slot write status merge:working --pane-id $PLEXI_PANE_ID --replace
    ```
-2. Confirm the phase-appropriate local gate, independent installed affected-behavior validation and non-deferred PR checks are green for the head being merged (TESTING.md). Batch integration does not require a full suite; the final combined candidate does. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
+2. Confirm the phase-appropriate local gate, independent affected-behavior validation (installed when required) and non-deferred PR checks are green for the head being merged (TESTING.md). Batch integration does not require a full suite; the final combined candidate does. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
    ```bash
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```
