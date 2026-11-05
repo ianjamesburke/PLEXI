@@ -71,15 +71,15 @@ Read the `AGENTS.md` in any directory you plan to edit.
 
 ## Step 3 — Mandatory Pre-Push Gate (`src/testing/TESTING.md`)
 
-Before pushing, run every required gate in the foreground from your worktree:
+Before pushing, run every applicable gate in the foreground from your worktree. The canonical policy in TESTING.md defines the proven unembedded markdown-only local exemption and separate aggregate requirements:
 
 1. **Focused tests** for the changed module(s).
-2. **Release build (`-D warnings`):**
+2. **Release build (`-D warnings`, unless the policy exemption applies):**
    ```bash
    just build
    ```
 3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
-4. **Clippy lint gate:**
+4. **Clippy lint gate (unless the policy exemption applies):**
    ```bash
    bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings
    ```

@@ -5,11 +5,13 @@ description: "Agent self-validation before push. Classifies the diff (host logic
 
 # Testing — Self-Validation Evidence
 
-Run this after implementation compiles, before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
+Use [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) to select phase- and risk-appropriate checks before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
 
 All commands run from the feature worktree.
 
 ## Step 0 — Installable build
+
+For the proven unembedded markdown-only local exemption, see TESTING.md; aggregate evidence requirements are separate. Otherwise run:
 
 ```bash
 just build
@@ -56,8 +58,9 @@ when implementation is still uncommitted.
 |---|---|---|
 | `src/` host logic (commands, effects, pane ops, CLI) | host | scoped `cargo test --bin plexi` |
 | `src/` egui layer (overlays, widgets, render, style) | host-ui | PlexiUiHarness test + screenshot |
-| `apps/`, `sdk/python/` | pgap | real-process headless screenshot |
-| docs, skills, scripts, config only | none | no evidence block needed — state "docs-only" |
+| `apps/`, `sdk/python/` | pgap | relevant app/SDK checks; inspected render for visible changes |
+| docs or skills | docs | path-specific gate classification and relevant documentation checks |
+| scripts or config | infrastructure | focused checks and other gates required by TESTING.md |
 
 A diff can hit multiple layers; produce evidence for each.
 
@@ -80,9 +83,9 @@ required-gate set automatically.
 
 ## Step 2 — Host Logic Evidence
 
-Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` stay mandatory on every push.
+Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
 
-Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, use relevant scoped checks plus build/Clippy and independent installed affected-behavior validation. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
+Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
 
 Record pass/fail counts and the selected filters. Verify each selected surface has actual matches; zero tests is not evidence. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test written first. Use `-- --exact` only with the fully-qualified test name. Evidence must identify the current attempt and diff; do not silently reuse an earlier full-suite run.
 
@@ -97,6 +100,8 @@ just scene tests/scenes/<name>.toml              # run one scene; PNGs + SceneRe
 just scene <file> /tmp/out 0                     # state-only: skip screenshot steps
 bash scripts/cargo-with-lease.sh cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
 ```
+
+For affected observable behavior, select and run relevant scenes individually; justify when none applies. Escalate to the suite for broadly shared changes as described in TESTING.md.
 
 For a new or changed overlay/widget/pane type: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.
 
@@ -118,7 +123,7 @@ format, see `src/testing/TESTING.md`.
 
 ### Python PGAP apps — AppHarness PNG renders
 
-**For `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
+**For visible `apps/` and `sdk/python/` changes, use `AppHarness` for headless PNG validation.** No running host or display required — it pipes draw commands to `plexi --render` via stdin and returns PNG bytes.
 
 ```python
 from plexi_sdk.testing import AppHarness, render_draw_commands

@@ -8,13 +8,29 @@ How Plexi is tested, which layer owns what, and how to add coverage.
 
 ## The Gate
 
-Feature and batch validation uses relevant scoped tests, the release build, strict Clippy, and independent installed verification of affected behavior. This includes stabilization slices pushed directly to alpha and batches integrated into an aggregate. Reserve the full host suite for the final combined candidate; do not repeat it for each feature, batch, integration, or tester install.
+Select checks from the actual changed behavior and failure risk, not the stint's
+S/M/L size. A change can belong to several rows; apply every relevant row.
+Reassess the plan when the diff changes. The path selector proposes Rust filters,
+not a complete test plan. Record the exact head, changed paths, chosen checks,
+matched test counts, visual evidence and reasons for inapplicable checks. A
+zero-match Rust run is a gap, not a pass. A markdown workflow or policy change
+can change agent behavior even when it is not compiled; verify the affected
+workflow and escalation rules rather than treating its extension as a risk tier.
 
-Before pushing a feature or batch:
+| Change and example | Feature / batch checks | Scene and installed evidence |
+|---|---|---|
+| Unembedded documentation only, such as a prose correction | Review the text and run relevant documentation checks. `scripts/scoped-tests.sh --gate` identifies the path-specific local build/test/Clippy exemption; an embedded or test-synchronized markdown file is code. Aggregate evidence and installation requirements still apply. | No scene or screenshot unless behavior or appearance changes. Outside aggregate mode, follow the existing testing-skill install-skip rules. |
+| Internal logic, such as a pure calculation | Focused invariant and failure-path tests, plus release build, strict Clippy and checks for other affected surfaces. | No scene if no observable state changes. Test observable state with a relevant scene where applicable. Independent installed affected-behavior validation applies except for the existing non-aggregate install-skip rules. |
+| Visible UI, such as a spacing or overlay change | Relevant Rust/app tests, release build, strict Clippy and a scene exercising the affected state. Render realistic content and inspect its screenshot. | Run the relevant scene(s) individually; escalate to the suite when shared changes can affect it broadly. A headless image is not installed-host proof. Installed validation follows the existing rules below. |
+| Runtime, packaging, channel, PTY or installed interaction, even a one-line fix | Focused positive and failure-path tests, release build, strict Clippy and any affected script/SDK checks. | Independently install the exact head and exercise affected behavior at that boundary. Add a live scene or inspected host image when needed to prove the behavior or appearance. A small stint is not an exemption. |
 
-1. `just build` compiles the installable release binary with warnings denied. Test builds omit production-only paths; bare `cargo build` does not enforce this warning gate.
-2. Run relevant tests selected by `scripts/scoped-tests.sh`, plus script/SDK/scene/specialized checks for the changed surfaces. Record the commands, coverage, and actual matches. A zero-match Rust run is a gate gap.
-3. `cargo clippy --bin plexi -- -D warnings` remains mandatory. Build and tests do not replace it.
+Before a feature or batch push, `just build` compiles the installable release
+binary with warnings denied, `scripts/scoped-tests.sh` proposes relevant Rust
+filters, and `cargo clippy --bin plexi -- -D warnings` is the lint gate. Run
+relevant scene, script, SDK and specialized checks too. The sole local
+build/test/Clippy exemption is the selector's proven unembedded markdown-only
+case above; the aggregate record's requirements are separate. Bare `cargo build`
+does not enforce the release warning gate.
 
 Independent validation installs the exact head and exercises the affected behavior. A scoped worker pass alone is insufficient; preserve the installed-head match, independent vendor, PASS verdict, non-deferred checks, and truthful evidence. Apply the testing skill's existing install-skip rules outside aggregate mode. Aggregate batches still require an installed-head record.
 
@@ -36,7 +52,9 @@ if (( ${#filters[@]} )); then
 fi
 ```
 
-No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the testing skill's path-specific `scripts/scoped-tests.sh --gate` decision, which is the single source of truth for the docs-only skip. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff. Render and inspect screenshots for visual changes as described below.
+No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
+
+For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
 
 ### Aggregate evidence
 
@@ -83,7 +101,7 @@ completes.
 |---|---|---|---|
 | Pure logic | `#[test]` unit tests | next to the code | `cargo test --bin plexi` |
 | Host logic (AppRequest/HostEffect dispatch) | `HostHarness` (`src/testing/mod.rs`) | `src/*/tests/` | `cargo test --bin plexi` |
-| Observable behavior — host UI, host apps, portals, real PGAP apps | **TOML scenes** (`tests/scenes/*.toml`) | `tests/scenes/` | `scene_suite` + `just scene` |
+| Observable behavior — host UI, host apps, portals, real PGAP apps | **TOML scenes** (`tests/scenes/*.toml`) | `tests/scenes/` | targeted `just scene`; `scene_suite` for broad/final coverage |
 
 `PlexiUiHarness` (`src/ui_tests.rs`) is the engine under scenes: PlexiApp inside egui_kittest with fully headless wgpu Metal rendering (no display needed). Direct PlexiUiHarness tests in `src/ui_tests.rs` are for egui-input edge cases scenes can't express (e.g. rename-commit-on-Enter inside a draw pass).
 
@@ -140,7 +158,7 @@ shot = "balls.png"                          # optional; written to the out dir
 | `expect = { target = "<handle>", after_key = "left", node_changes = "paddle", timeout_s = 2.0 }` | Deliver input normally and poll semantic state. On input timeout the stable failure code is `input_no_effect`; without input it is a normal eventual assertion. |
 | `expect = { target = "<handle>", event_stream = "probe.tick", event_payload_contains = '"count":1', timeout_s = 5.0 }` | Event-bus expectation: bounded-poll the recorded event bus (the same `AppTimeline` production `EmitEvent` records into) for an emitted event on the stream, optionally requiring a payload substring. Composable with the other expect predicates. Headless-only — the live backend returns `unsupported_live_verb` (no sanctioned live event-query seam). Rust-level counterpart: `HostHarness::wait_for_app_event`. |
 | `assert_label = { target = "<handle>", label = "Settings" }` | Focus a pane and require an exact semantic label inside that pane's rendered rectangle. Use `target = "host"` for the whole accessibility tree. |
-| `shot = "name.png"` | Headless screenshot to the out dir. |
+| `shot = "name.png"` | Screenshot to the out dir: headless framebuffer in the headless backend; host pixels in the live backend. |
 
 Every `open` step binds one unique symbolic handle. Later pane steps reject missing handles, duplicate handles fail before an app opens, and `host` is reserved for explicit whole-host input. New verbs require a scene that needs them. Assertions are structured keys, never expression strings. `tests/scenes/assistant-settings.toml` exercises `open`, `text`, pane-targeted `key`, and `assert_label` against the native Assistant without starting an AI turn.
 
@@ -192,7 +210,7 @@ driver.
 | Sidebar and context drag/drop | `sidebar`; file-browser sidebar scene. Host-chrome pointer drag (sidebar reorder) remains a direct `PlexiUiHarness` edge-case test — `plexi pane drag` targets app panes, not host chrome. | sidebar reorder/drop resolver tests | app-pane drags use `plexi pane drag`; single clicks use `plexi pane click` |
 | Command palette and host overlays | whole-host `key` plus semantic/pixel assertions; direct harness tests cover draw-pass focus edge cases | palette, notification, quick-note, and focus-stack tests | no generic whole-host key command; invoke the underlying pane/context/app CLI command |
 | Agent panes and terminal PTY behavior | host state and pane chrome can be captured; PTY behavior is not simulated | agent-state and `#[ignore = "requires-pty"]` tests | `plexi pane new`, `plexi agent report`, `plexi pane capture` |
-| Native, process, WASM, portal, sidebar, and overlay screenshots | `shot` captures the entire headless host framebuffer, so pane type does not require a separate capture path | renderer and semantic-state tests | live scenes intentionally skip `shot`; installed validation uses `drive-host` capture |
+| Native, process, WASM, portal, sidebar, and overlay screenshots | `shot` captures the entire headless host framebuffer, so pane type does not require a separate capture path | renderer and semantic-state tests | live scenes capture `shot` through the channel host screenshot command; installed validation can also use `drive-host` capture |
 | Experiments (stint 0785) | top-level `experiments = ["wasm_apps", ...]` scene key lists `ReleaseFeature` keys switched on for the scene (all are off by default). Headless-only. | `set_test_experiments` in Rust tests | a live host reads its own `[experiments]` config; use `plexi experiments enable` |
 | App file picker + picker-granted fs scopes (stint 0508) | top-level `picker_script` scene key scripts every `OpenFilePicker` outcome in order (`{ paths = [...] }` / `{ cancel = true }`, `{out}` prefix → scene out dir); `file-picker.toml` runs the pick → write → read → cancel round trip. Headless-only. | `wasm_pane` picker tests (capability denial, grant scoping, save-as, folder subtree, cancel) + `resolve_app_fs_path` jail/grant tests | no scene-live support; launch the host with `PLEXI_PICKER_SCRIPT=<json>` — same entry format, consumed per pane at launch — so tester agents drive picks without a dialog |
 

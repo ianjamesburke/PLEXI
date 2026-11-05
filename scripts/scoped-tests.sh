@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Print libtest filters, one per line; pass them AFTER cargo test --bin plexi --.
-# Taxonomy: .agents/skills/testing/SKILL.md, Step 1 — Classify the Diff.
+# Taxonomy and scene selection: src/testing/TESTING.md — The Gate.
 # Unknown src/ module relationships report ::, never no tests. Batch callers
 # must replace that broad fallback with reviewed relevant filters; only the final
 # combined candidate runs the full host suite (src/testing/TESTING.md).
@@ -31,11 +31,12 @@ select_filters() {
                 ;;
             docs/*|.agents/*|.claude/*) ;;
             src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
-            src/ui/*|src/render/*|src/ui_tests.rs|src/scenes.rs|tests/scenes/*)
-                printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
+            src/scenes.rs) printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
+            src/ui/*|src/render/*|src/ui_tests.rs|tests/scenes/*)
+                printf '%s\n' ui:: render:: ui_tests:: testing:: ;;
             src/cli/*) printf '%s\n' cli:: cli_tests:: testing:: ;;
             src/editor/*|src/app/text_editor_app.rs)
-                printf '%s\n' editor:: editor_gate ui_tests:: scene_suite ;;
+                printf '%s\n' editor:: editor_gate ui_tests:: ;;
             src/config/*|src/workspace/*)
                 printf '%s\n' config:: workspace:: testing:: ;;
             src/*) printf '%s\n' :: ;;
@@ -58,7 +59,11 @@ selftest() {
     [[ "$got" == *host::* && "$got" == *testing::* ]] || { printf 'FAIL host: %s\n' "$got"; return 1; }
     printf 'PASS host:\n%s\n' "$got"
     got=$(select_filters src/ui/widgets.rs)
-    [[ "$got" == *ui_tests::* && "$got" == *scene_suite* ]] || { printf 'FAIL UI: %s\n' "$got"; return 1; }
+    [[ "$got" == *ui_tests::* && "$got" != *scene_suite* ]] || { printf 'FAIL UI: %s\n' "$got"; return 1; }
+    [[ "$(select_filters src/scenes.rs)" == *scene_suite* ]] || { printf 'FAIL shared scene runner requires suite\n'; return 1; }
+    [[ "$(select_filters tests/scenes/example.toml)" != *scene_suite* ]] || { printf 'FAIL individual scene selected entire suite\n'; return 1; }
+    [[ "$(select_filters src/editor/example.rs)" != *scene_suite* ]] || { printf 'FAIL editor selected entire suite\n'; return 1; }
+    printf 'PASS targeted UI and editor; shared scene runner selects suite\n'
     printf 'PASS UI:\n%s\n' "$got"
     first=$(select_filters src/ui/widgets.rs src/host/model.rs src/host/model.rs)
     second=$(select_filters src/ui/widgets.rs src/host/model.rs src/host/model.rs)
