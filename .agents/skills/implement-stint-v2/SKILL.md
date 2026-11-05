@@ -57,7 +57,7 @@ Inspect the stint spec(s) first:
 ```bash
 stint show <stint-id>
 ```
-Read the `AGENTS.md` in any directory you plan to edit.
+Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisional qualification as a starting point; reassess the actual diff against [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate). Record the head, selected and inapplicable checks with reasons, and required evidence. Size never decides the validation gate.
 
 - **Size `S` (small):**
   - Locate the target code, write the failing test first (for host logic) or identify the screenshot harness surface (for host UI), implement the fix, and verify with targeted tests.
@@ -78,7 +78,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    ```bash
    just build
    ```
-3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
+3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
 4. **Clippy lint gate (unless the policy exemption applies):**
    ```bash
    bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings
@@ -111,7 +111,10 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    EOF
    )"
    ```
-3. Publish required visual evidence in the PR body using [TESTING.md — Pre-Push Evidence](../../../../src/testing/TESTING.md#pre-push-evidence), or state why it is not applicable. A required capture or publication failure remains a gate failure.
+3. After the PR exists, publish each applicable inspected image with the
+   `python3 scripts/publish-pr-image.py --pr <PR_NUMBER> --head <full-pr-head-sha>
+   --image <inspected.png> --source <headless|live-host> --context "<capture details>"
+   --inspected` command in [TESTING.md — Pre-Push Evidence](../../../src/testing/TESTING.md#pre-push-evidence), then put its output in the PR body. For nonvisual changes state why visual evidence is not applicable. A required capture or publication failure remains a gate failure. Never label a headless image as a live-host capture.
 4. Publish the PR number and `status=pr:done`:
    ```bash
    plexi pane slot write pr <PR_NUMBER> --pane-id $PLEXI_PANE_ID --replace
@@ -119,7 +122,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    ```
 5. **Install rule:**
    - **When run by `babysitter-v3` (unattended):** Do **not** run `just pr-install` (the dedicated tester pane installs and drives the PR build).
-   - **When run standalone by Ian (interactive):** Run `just pr-install <PR_NUMBER>` in the foreground so the PR build is ready for spot-checking.
+   - **Standalone:** Determine installation from TESTING.md and the testing skill’s evidence conclusion. If a separate tester is assigned, that tester owns any required install; do not install twice. If no tester is assigned, install in the foreground when required. Record an approved skip and its reason; an aggregate still needs its installed-head record.
 6. Output the completion block and wait for `PASS`, `FOLLOW-UP: <list>`, or `FAIL: <reason>`:
 
 ```text
@@ -146,7 +149,7 @@ TESTING:
    ```
 2. Diagnose and fix the root cause (not a surface patch) inside the same worktree (`worktrees/feature/stint-...`).
 3. Re-run the Step 3 pre-push gates, commit, and push to the same branch.
-4. (Standalone interactive mode only: re-run `just pr-install <PR_NUMBER>`.)
+4. Reassess the evidence against the new head. The assigned tester owns any required re-install; if no tester is assigned, reinstall when required.
 5. Write `plexi pane slot write status pr:done --pane-id $PLEXI_PANE_ID --replace` and post the updated `[IMPLEMENTED]` block.
 
 ### On `PASS`
@@ -154,7 +157,7 @@ TESTING:
    ```bash
    plexi pane slot write status merge:working --pane-id $PLEXI_PANE_ID --replace
    ```
-2. Confirm the phase-appropriate local gate, independent installed affected-behavior validation and non-deferred PR checks are green for the head being merged (TESTING.md). Batch integration does not require a full suite; the final combined candidate does. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
+2. Confirm the phase-appropriate local gate, independent affected-behavior validation (installed when required) and non-deferred PR checks are green for the head being merged (TESTING.md). Batch integration does not require a full suite; the final combined candidate does. Move to the `alpha` root checkout first (never remove a worktree while standing inside it):
    ```bash
    cd "$(git worktree list --porcelain | awk '/^worktree /{p=substr($0,10)} /^branch refs\/heads\/alpha$/{print p; exit}')"
    ```

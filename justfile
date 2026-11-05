@@ -544,6 +544,7 @@ test-infra-scripts:
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_publish_pr_image.py
     uv run --no-project python scripts/test_probe_one_note_authority.py
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
