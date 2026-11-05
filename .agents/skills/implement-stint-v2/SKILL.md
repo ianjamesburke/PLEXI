@@ -57,7 +57,7 @@ Inspect the stint spec(s) first:
 ```bash
 stint show <stint-id>
 ```
-Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisional qualification as a starting point; reassess the actual diff against [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate). Record the head, selected and inapplicable checks with reasons, and required evidence. Size never decides the validation gate.
+Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisional qualification as a starting point; reassess the actual diff against [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate). Record the head, selected and inapplicable checks with reasons, and required evidence. Size never decides the validation gate.
 
 - **Size `S` (small):**
   - Locate the target code, write the failing test first (for host logic) or identify the screenshot harness surface (for host UI), implement the fix, and verify with targeted tests.
@@ -78,7 +78,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    ```bash
    just build
    ```
-3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
+3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
 4. **Clippy lint gate (unless the policy exemption applies):**
    ```bash
    bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings
@@ -111,7 +111,10 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    EOF
    )"
    ```
-3. Publish required visual evidence in the PR body using [TESTING.md — Pre-Push Evidence](../../../../src/testing/TESTING.md#pre-push-evidence), or state why it is not applicable. A required capture or publication failure remains a gate failure.
+3. After the PR exists, publish each applicable inspected image with the
+   `python3 scripts/publish-pr-image.py --pr <PR_NUMBER> --head <full-pr-head-sha>
+   --image <inspected.png> --source <headless|live-host> --context "<capture details>"
+   --inspected` command in [TESTING.md — Pre-Push Evidence](../../../src/testing/TESTING.md#pre-push-evidence), then put its output in the PR body. For nonvisual changes state why visual evidence is not applicable. A required capture or publication failure remains a gate failure. Never label a headless image as a live-host capture.
 4. Publish the PR number and `status=pr:done`:
    ```bash
    plexi pane slot write pr <PR_NUMBER> --pane-id $PLEXI_PANE_ID --replace

@@ -77,6 +77,17 @@ No filters means no host Rust test is selected; run the affected script, SDK, do
 
 For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
 
+### Avoiding duplicate installation work
+
+When an independent tester is assigned, the tester owns the required PR install;
+the implementation worker does not first install the same head. The installer
+still runs its own scoped pretests and SDK smoke because the existing reuse stamp
+proves the channel, head and binary digest, not matching test outcomes. Reuse a
+release binary only under the installer's stamp checks; do not infer reusable
+test evidence from that stamp. The exact-head installed record and independent
+affected-behavior verification remain required wherever the phase policy calls
+for them. Reassess after any head or base movement.
+
 ### Aggregate evidence
 
 `local.head`, passing `build`/`test`/`clippy`, and `local.test_scope` identify the current validation. Use `"scoped"` for a batch selection, and `"full"` only when the full host suite actually passed at that head. Historical full batch evidence remains valid; it never creates a new batch requirement.

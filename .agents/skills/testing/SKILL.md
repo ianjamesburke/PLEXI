@@ -5,7 +5,7 @@ description: "Agent self-validation before push. Classifies the diff (host logic
 
 # Testing — Self-Validation Evidence
 
-Use [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) to select phase- and risk-appropriate checks before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
+Use [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) to select phase- and risk-appropriate checks before pushing. Output is a `**Test evidence:**` block appended to the issue Ship Log entry (or the PR body when there is no linked issue). validate-pr reads that block to decide whether the PR needs a binary install or diff review only.
 
 All commands run from the feature worktree.
 
@@ -83,9 +83,9 @@ required-gate set automatically.
 
 ## Step 2 — Host Logic Evidence
 
-Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
+Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
 
-Follow [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
+Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
 
 Record pass/fail counts and the selected filters. Verify each selected surface has actual matches; zero tests is not evidence. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test written first. Use `-- --exact` only with the fully-qualified test name. Evidence must identify the current attempt and diff; do not silently reuse an earlier full-suite run.
 
@@ -154,7 +154,7 @@ zero-turn assistant pane cannot show the bug you fixed. `screenshot_assistant_co
 in `src/ui_tests.rs` is the pattern: build real model state, open through the
 real pane path (`open_assistant_built` / equivalent), screenshot, inspect.
 
-After inspection, follow [TESTING.md — Pre-Push Evidence](../../../../src/testing/TESTING.md#pre-push-evidence) to publish required images after opening the PR. Keep local PNGs until publication succeeds; never treat their temporary paths as durable evidence.
+After inspection, follow [TESTING.md — Pre-Push Evidence](../../../src/testing/TESTING.md#pre-push-evidence) to publish required images after opening the PR. Keep local PNGs until publication succeeds; never treat their temporary paths as durable evidence.
 
 ## Step 5 — Write the Evidence Block
 

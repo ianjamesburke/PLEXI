@@ -38,7 +38,7 @@ Extract:
 - `PR_NUMBER` = from arg
 - `ISSUE_NUMBER` = parse from branch name — **empty in stint-first mode**
 
-**Stint-first mode.** A `feature/stint-<id>[-<id>...]-<slug>` branch has no issue: `.stint/` is authoritative and issues are optional. Do not read a digit run out of that branch as an issue number — `0469` is a stint id, and `gh issue view 469` returns an unrelated issue. In this mode, for the whole skill:
+**Stint-first mode** means the PR is backed by one or more `.stint/` tasks rather than a GitHub issue. A `feature/stint-<id>[-<id>...]-<slug>` branch identifies the stint ids; it does not identify a GitHub issue: `.stint/` is authoritative and issues are optional. Do not read a digit run out of that branch as an issue number — `0469` is a stint id, and `gh issue view 469` returns an unrelated issue. In this mode, for the whole skill:
 
 - `ISSUE_NUMBER` is empty; the **PR body** is the Ship Log (read/append there instead of an issue body)
 - attempt counting reads the PR body: `gh pr view $PR_NUMBER --json body --jq '.body'`
@@ -109,7 +109,7 @@ While handling validation feedback, `just install` is banned. Reinstall only wit
 ## Step 1 — Validation Mode Gate
 
 Read the stint's Done-When and qualification, actual PR diff, current head and
-worker evidence. Classify behavior and risk using [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate), not size or file paths alone.
+worker evidence. Classify behavior and risk using [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), not size or file paths alone.
 Consume the `/testing` conclusion from the issue Ship Log or PR body in
 stint-first mode. A missing, stale, incomplete or contradictory evidence block is
 not a skip: request the missing evidence or use the applicable installed path.
@@ -442,7 +442,7 @@ Issue re-labeled ready for next attempt
 
 ---
 
-## Diff-Review Testing Block (default)
+## Diff-Review Testing Block
 
 Surface the diff-review testing block format from Step 3. Key differences from the install path:
 - No attempt count in header (no retry loop for diff-only)
@@ -459,7 +459,7 @@ pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the d
 
 ## Rules
 
-- Binary install is the default. Skip only per the Test Evidence conclusion (single source: `/testing` Step 5), with the `apps/`-changed and Done-When overrides.
+- Select install or source-level validation by the actual behavior, phase, and `/testing` conclusion. Where the conclusion is missing or stale, obtain current evidence or use the applicable installed path. Preserve aggregate, installed-boundary, `apps/`, and Done-When requirements.
 - Independent validation checks the affected behavior and may run focused tests; do not rerun unrelated suites. Treat visible UI as visual evidence under TESTING.md, regardless of whether a change is called cosmetic.
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block

@@ -54,7 +54,7 @@ Before drafting, investigate the relevant code:
 - Find the files, functions, or modules most related to the task
 - Identify every file that will need to change and what changes in each
 - Note risks, gotchas, or non-obvious constraints
-- Identify affected behavior and qualification using [TESTING.md — The Gate](../../../../src/testing/TESTING.md#the-gate): required checks, scene or screenshot applicability, installed boundary, and evidence. Record a provisional plan in the task body; implementation must reassess it against the actual diff. Size estimates effort, not validation risk.
+- Identify affected behavior and qualification using [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate): required checks, scene or screenshot applicability, installed boundary, and evidence. Record a provisional plan in the task body; implementation must reassess it against the actual diff. Size estimates effort, not validation risk.
 
 For bug tasks, verify the root cause by reading code. Never state an unverified root cause as fact. If a claim can't be verified, mark it as an unconfirmed hypothesis in `## Open Questions`.
 
