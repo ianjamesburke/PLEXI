@@ -69,9 +69,11 @@ while IFS= read -r filter; do
     filters+=("$filter")
 done < <(bash scripts/scoped-tests.sh)
 if (( ${#filters[@]} )); then
-    bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID cargo test --bin plexi -- "${filters[@]}" < /dev/null
+    just test-host "${filters[@]}"
 fi
 ```
+
+`just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding a redundant rebuild when other Cargo settings match. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
 
 No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
 

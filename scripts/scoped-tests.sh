@@ -30,6 +30,8 @@ select_filters() {
                 fi
                 ;;
             docs/*|.agents/*|.claude/*) ;;
+            src/overlays/*) printf '%s\n' overlays:: testing:: ;;
+            src/testing/harness_tests.rs) printf '%s\n' testing::harness_tests:: ;;
             src/host/*) printf '%s\n' host:: testing:: ui_tests:: ;;
             src/scenes.rs) printf '%s\n' ui:: render:: ui_tests:: testing:: scene_suite ;;
             src/ui/*|src/render/*|src/ui_tests.rs|tests/scenes/*)
