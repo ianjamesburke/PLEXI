@@ -490,7 +490,7 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
     if let Some(cached) = cache.get(&key) {
         return Ok(cached.clone());
     }
-    let engine = WasmtimeEngine::default();
+    let engine = super::wasm_engine::create_engine().map_err(|error| error.to_string())?;
     let module = Module::from_file(&engine, path).map_err(|error| error.to_string())?;
     cache.insert(key, (engine.clone(), module.clone()));
     Ok((engine, module))
@@ -5461,7 +5461,9 @@ fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPy
 
 #[cfg(test)]
 fn is_core_wasm_module(path: &Path) -> bool {
-    wasmtime::Module::from_file(&wasmtime::Engine::default(), path).is_ok()
+    super::wasm_engine::create_engine()
+        .and_then(|engine| wasmtime::Module::from_file(&engine, path))
+        .is_ok()
 }
 
 #[cfg(test)]

@@ -84,7 +84,7 @@ pub fn pip_color(
 }
 
 /// Returns the color for a given agent state given an explicit `time` value.
-/// Working is static: only human attention spends the animation budget.
+/// State colors stay constant; motion is handled by the glyph renderer.
 pub fn dot_color_from_time(
     state: &AgentState,
     colors: &Colors,
@@ -184,14 +184,15 @@ pub fn set_attention(
     });
 }
 
+fn motion_settings(ctx: &egui::Context) -> (crate::config::AttentionConfig, bool) {
+    ctx.data(|d| {
+        d.get_temp::<(crate::config::AttentionConfig, bool)>(egui::Id::new("agent_attention_style"))
+    })
+    .unwrap_or_default()
+}
+
 pub fn attention(ctx: &egui::Context) -> AttentionVisual {
-    let (config, reduce) = ctx
-        .data(|d| {
-            d.get_temp::<(crate::config::AttentionConfig, bool)>(egui::Id::new(
-                "agent_attention_style",
-            ))
-        })
-        .unwrap_or_default();
+    let (config, reduce) = motion_settings(ctx);
     attention_visual(config, reduce, ctx.input(|i| i.time))
 }
 
@@ -223,9 +224,23 @@ pub fn paint_pip(
     let stroke = Stroke::new(1.4_f32, color);
     match state_glyph(state) {
         StateGlyph::Arc => {
+            let ctx = painter.ctx();
+            let reduced = motion_settings(ctx).1;
+            let angle_offset = if reduced {
+                0.0
+            } else {
+                if painter.clip_rect().intersects(Rect::from_center_size(
+                    center,
+                    Vec2::splat(radius * 2.0 + stroke.width),
+                )) {
+                    let predicted = ctx.input(|i| i.predicted_dt).max(0.0);
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f32(1.0 / 30.0 + predicted));
+                }
+                (ctx.input(|i| i.time).rem_euclid(2.0) * std::f64::consts::PI) as f32
+            };
             let points = (0..=16)
                 .map(|i| {
-                    let angle = i as f32 / 16.0 * std::f32::consts::TAU * 0.75;
+                    let angle = angle_offset + i as f32 / 16.0 * std::f32::consts::TAU * 0.75;
                     center + Vec2::angled(angle) * radius
                 })
                 .collect();
@@ -327,7 +342,11 @@ pub fn paint_attention_chrome(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "NEEDS YOU",
-            crate::ui::theme::font_medium((crate::ui::style::TEXT_TITLE_XL * 1.5).min(rect.width() / 6.5).min(rect.height() / 3.0)),
+            crate::ui::theme::font_medium(
+                (crate::ui::style::TEXT_TITLE_XL * 1.5)
+                    .min(rect.width() / 6.5)
+                    .min(rect.height() / 3.0),
+            ),
             color.gamma_multiply(0.35 * visual.alpha),
         );
         if visual.animate && time - entered < 0.3 {
@@ -342,22 +361,82 @@ mod tests {
     use crate::config::ThemeConfig;
 
     #[test]
-    fn attention_repaint_stops_for_working_and_reduce_motion() {
+    fn working_arc_rotates_and_repaints_only_when_visible_and_motion_enabled() {
         let ctx = egui::Context::default();
-        let frame = |time, state: &AgentState, reduced| {
+        let frame = |time, state: &AgentState, reduced, visible| {
             set_attention(&ctx, Default::default(), reduced);
-            let output = ctx.run_ui(egui::RawInput { time:Some(time),..Default::default() }, |ui| {
-                paint_pip(ui.painter(),egui::pos2(30.0,30.0),4.0,Some(state),egui::Color32::WHITE,false);
-            });
-            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    let painter = if visible {
+                        ui.painter().clone()
+                    } else {
+                        ui.painter().with_clip_rect(egui::Rect::NOTHING)
+                    };
+                    paint_pip(
+                        &painter,
+                        egui::pos2(30.0, 30.0),
+                        4.0,
+                        Some(state),
+                        egui::Color32::WHITE,
+                        false,
+                    );
+                },
+            );
+            (
+                format!("{:?}", output.shapes),
+                output.viewport_output[&egui::ViewportId::ROOT].repaint_delay,
+            )
         };
-        for n in 0..4 { frame(n as f64, &AgentState::NeedsYou, false); }
-        let delay = frame(4.0,&AgentState::NeedsYou,false);
-        assert!(delay >= std::time::Duration::from_millis(99) && delay < std::time::Duration::from_millis(200), "{delay:?}");
-        for n in 5..9 { frame(n as f64,&AgentState::Working,false); }
-        assert_eq!(frame(9.0,&AgentState::Working,false),std::time::Duration::MAX);
-        for n in 10..14 { frame(n as f64,&AgentState::NeedsYou,true); }
-        assert_eq!(frame(14.0,&AgentState::NeedsYou,true),std::time::Duration::MAX);
+        for n in 0..4 {
+            frame(n as f64, &AgentState::Working, false, true);
+        }
+        let (first, delay) = frame(4.0, &AgentState::Working, false, true);
+        let (second, _) = frame(4.5, &AgentState::Working, false, true);
+        assert_ne!(first, second, "working geometry must rotate");
+        assert!(
+            delay >= std::time::Duration::from_millis(32)
+                && delay < std::time::Duration::from_millis(40),
+            "{delay:?}"
+        );
+        for n in 5..9 {
+            frame(n as f64, &AgentState::Idle, false, true);
+        }
+        assert_eq!(
+            frame(9.0, &AgentState::Idle, false, true).1,
+            std::time::Duration::MAX
+        );
+        for n in 10..14 {
+            frame(n as f64, &AgentState::Working, true, true);
+        }
+        let (reduced, delay) = frame(14.0, &AgentState::Working, true, true);
+        assert_eq!(reduced, frame(14.5, &AgentState::Working, true, true).0);
+        assert_eq!(delay, std::time::Duration::MAX);
+        for n in 20..24 {
+            frame(n as f64, &AgentState::NeedsYou, false, true);
+        }
+        let delay = frame(24.0, &AgentState::NeedsYou, false, true).1;
+        assert!(
+            delay >= std::time::Duration::from_millis(99)
+                && delay < std::time::Duration::from_millis(200)
+        );
+        for n in 25..29 {
+            frame(n as f64, &AgentState::NeedsYou, true, true);
+        }
+        assert_eq!(
+            frame(29.0, &AgentState::NeedsYou, true, true).1,
+            std::time::Duration::MAX
+        );
+        for n in 15..19 {
+            frame(n as f64, &AgentState::Working, false, false);
+        }
+        assert_eq!(
+            frame(19.0, &AgentState::Working, false, false).1,
+            std::time::Duration::MAX
+        );
     }
 
     #[test]
@@ -429,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn working_without_attention_is_static() {
+    fn working_color_is_static() {
         let colors = Colors::from_config(&ThemeConfig::default());
         assert_eq!(
             dot_color_from_time(&AgentState::Working, &colors, 0.0, 0),
