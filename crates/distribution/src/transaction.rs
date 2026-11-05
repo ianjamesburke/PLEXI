@@ -277,6 +277,15 @@ pub fn managed_bundle_package(exe: &Path, build_id: &str) -> Result<Option<Packa
         .transpose()
 }
 
+/// The package `exe` runs from: its own package layout, else the generation
+/// a managed Applications bundle copy was made from.
+pub fn package_for_executable(exe: &Path, build_id: &str) -> Result<Option<Package>> {
+    if let Some(package) = Package::at_executable(exe)? {
+        return Ok(Some(package));
+    }
+    managed_bundle_package(exe, build_id)
+}
+
 pub fn lock(root: &Path) -> Result<File> {
     fs::create_dir_all(root).context("create installation root")?;
     let file = OpenOptions::new()
@@ -1168,6 +1177,16 @@ fn lsregister(flag: &str, path: &Path) {
     match Command::new(LSREGISTER).arg(flag).arg(path).output() {
         Ok(output) if output.status.success() => {
             log::info!("distribution: lsregister {flag} {}", path.display())
+        }
+        // -10814 (kLSApplicationNotFoundErr): unregistering a bundle
+        // LaunchServices never knew, the normal case for generation bundles.
+        Ok(output)
+            if flag == "-u" && String::from_utf8_lossy(&output.stderr).contains("-10814") =>
+        {
+            log::debug!(
+                "distribution: lsregister -u {} was not registered",
+                path.display()
+            )
         }
         Ok(output) => log::warn!(
             "distribution: lsregister {flag} {} failed: {}",
@@ -2186,6 +2205,87 @@ mod tests {
         restore_bundle(&path, &change.after_hash, change.bundle.as_ref().unwrap()).unwrap();
         assert_eq!(fs::read_link(&path).unwrap(), bundle);
         assert!(!change.bundle.unwrap().scratch.exists());
+    }
+
+    /// Regression: an npm `package.json` in `$HOME` made the Applications copy
+    /// fail to start ("missing field `schema`") instead of resolving its
+    /// generation package.
+    #[cfg(unix)]
+    #[test]
+    fn applications_copy_ignores_foreign_home_package_json() {
+        let (tmp, root, bundle, executable, _) = bundle_fixture();
+        let home_dir = tmp.path().join("home");
+        let applications = home_dir.join("Applications");
+        fs::create_dir_all(&applications).unwrap();
+        let path = applications.join("Plexi Beta.app");
+        fs::write(
+            home_dir.join("package.json"),
+            r#"{"name":"dotfiles","version":"1.0.0","devDependencies":{}}"#,
+        )
+        .unwrap();
+        let generation = bundle.parent().unwrap().to_path_buf();
+        fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+        let manifest = crate::package::Manifest {
+            schema: 1,
+            version: "0.4.2".into(),
+            tag: "v0.4.2-beta.1".into(),
+            build_id: "abc".into(),
+            source_commit: "abc".into(),
+            channel: "beta".into(),
+            platform: "macos-arm64".into(),
+            executable: "Plexi Beta.app/Contents/MacOS/plexi-beta".into(),
+            resources: "Plexi Beta.app/Contents/Resources".into(),
+            files: Default::default(),
+        };
+        write_json(&generation.join("package.json"), &manifest).unwrap();
+        let owned = activate_bundle(
+            &prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap(),
+        );
+        let root = root.canonicalize().unwrap();
+        let mut receipt = fixture_receipt(&root);
+        receipt.channel = "beta".into();
+        receipt.applications_dir = applications.clone();
+        receipt.active = Generation {
+            path: root.join("generations/abc"),
+            build_id: "abc".into(),
+            tag: "v0.4.2-beta.1".into(),
+            executable: manifest.executable.clone(),
+        };
+        receipt.integrations.push(owned);
+        write_json(&root.join(RECEIPT), &receipt).unwrap();
+        // SAFETY: the only test in this crate that reads the distribution root.
+        unsafe { std::env::set_var("PLEXI_DISTRIBUTION_HOME", root.parent().unwrap()) };
+
+        let copy = path.join("Contents/MacOS/plexi-beta");
+        assert!(Package::at_executable(&copy).unwrap().is_none());
+        let package = managed_bundle_package(&copy, "abc").unwrap().unwrap();
+        let from_generation = Package::at_executable(&executable).unwrap().unwrap();
+        assert_eq!(package.root, from_generation.root);
+        assert_eq!(
+            package.resources().unwrap(),
+            from_generation.resources().unwrap()
+        );
+        assert_eq!(
+            package_for_executable(&copy, "abc")
+                .unwrap()
+                .unwrap()
+                .resources()
+                .unwrap(),
+            from_generation.resources().unwrap()
+        );
+        assert_eq!(
+            installed_for_executable(&copy)
+                .unwrap()
+                .unwrap()
+                .active
+                .build_id,
+            "abc"
+        );
+        assert!(
+            managed_bundle_package(&copy, "other-build")
+                .unwrap()
+                .is_none()
+        );
     }
 
     fn fixture_receipt(root: &Path) -> Receipt {
