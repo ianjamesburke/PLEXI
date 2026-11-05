@@ -26,7 +26,7 @@ They are two different artifacts doing two different jobs:
   `AgentCard::from_definition`. This is the local, A2A-shaped card `plexi agent list --json` prints.
   It says who an agent is. It grants nothing.
 - **Authority — `AgentAuthorityRecord`** (a private `struct` in `src/agent/runs.rs`), persisted as
-  `agent.json` and reached only through `write_definition` / `read_agent` /
+  `agent.json` and reached only through `write_authority` / `read_agent` /
   `list_agent_authorities`. It records an agent's declared tool grants. It is internal, not a public
   API, and it is never projected as a card.
 - **A grant file is not a card.** `AgentCard` carries no grants; a card advertises, it does not
