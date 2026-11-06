@@ -712,6 +712,10 @@ impl PlexiApp {
                 continue;
             };
             let ctx_id = self.windows[idx].context_id;
+            if self.revealed_child(ctx_id).is_some() {
+                log::info!("focus_history: skipping revealed portal context={ctx_id}");
+                continue;
+            }
             self.save_minimap_before_context_navigation(ctx_id);
 
             // Save current focus to future stack before navigating.
@@ -762,6 +766,10 @@ impl PlexiApp {
                 continue;
             };
             let ctx_id = self.windows[idx].context_id;
+            if self.revealed_child(ctx_id).is_some() {
+                log::info!("focus_history: skipping revealed portal context={ctx_id}");
+                continue;
+            }
             self.save_minimap_before_context_navigation(ctx_id);
 
             // Save current focus to history stack before navigating.

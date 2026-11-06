@@ -1,0 +1,44 @@
+# A child remains a distinct context while the last sibling close reveals it.
+size = [1280.0, 800.0]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = ".", as = "child_files" }
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "tests", as = "outside" }
+
+[[steps]]
+focus = "child_files"
+
+[[steps]]
+push_to_subcontext = "Child workspace"
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", cwd = "docs", as = "child_docs" }
+
+[[steps]]
+switch_context = 0
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+shot = "reveal-subcontext-before.png"
+
+[[steps]]
+close = "outside"
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { target = "outside", exists = false, context_count = 2 }
+
+[[steps]]
+assert = { target = "child_files", exists = true }
+
+[[steps]]
+assert = { target = "child_docs", exists = true }
+
+[[steps]]
+shot = "reveal-subcontext-after.png"

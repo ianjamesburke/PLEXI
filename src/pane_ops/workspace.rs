@@ -1351,7 +1351,7 @@ impl PlexiApp {
 
     /// A close-triggered portal can represent its parent only while it remains
     /// the sole owned pane on the sole page and its target is a live child.
-    fn revealed_child(&self, parent_id: u64) -> Option<u64> {
+    pub(crate) fn revealed_child(&self, parent_id: u64) -> Option<u64> {
         let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);
         let page = pages.next()?;
         if pages.next().is_some() || page.panes.len() != 1 {
@@ -1364,7 +1364,7 @@ impl PlexiApp {
         }
         let child = self.router.iter().find(|c| c.context_id == portal.target_context_id)?;
         if child.parent_id != Some(parent_id)
-            || !self.windows.iter().any(|w| w.context_id == child.context_id && !w.panes.is_empty())
+            || !self.context_has_visible_pane(child.context_id)
         {
             return None;
         }
@@ -1383,7 +1383,7 @@ impl PlexiApp {
         let target = portal.target_context_id;
         if portal.hidden || page.tree.tiles.find_pane(&pane_id).is_none()
             || !self.router.iter().any(|c| c.context_id == target && c.parent_id == Some(parent_id))
-            || !self.windows.iter().any(|w| w.context_id == target && !w.panes.is_empty())
+            || !self.context_has_visible_pane(target)
         {
             return;
         }
@@ -1399,6 +1399,12 @@ impl PlexiApp {
                 self.switch_workspace(index);
             }
         }
+    }
+
+    fn context_has_visible_pane(&self, context_id: u64) -> bool {
+        self.windows.iter().filter(|w| w.context_id == context_id).any(|w| {
+            w.panes.iter().any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+        })
     }
 
     /// Return to the immediate parent, restoring its entry window and focus when available.

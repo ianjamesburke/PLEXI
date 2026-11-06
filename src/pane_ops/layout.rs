@@ -784,6 +784,7 @@ impl PlexiApp {
                         self.delete_window(ctx_idx);
                     }
                 }
+                self.reveal_sole_portal_after_close(ctx_id);
                 // An emptied subcontext collapses entirely — delete it and,
                 // when it was active, zoom back out like Cmd+Escape.
                 self.collapse_subcontext_if_empty(ctx_id);
@@ -1843,6 +1844,7 @@ impl PlexiApp {
     /// or from the confirm-close dialog when the user confirms).
     pub(crate) fn execute_close_pane(&mut self) {
         let ctx_id = self.windows[self.active_window].context_id;
+        let closed_window_id = self.windows[self.active_window].window_id;
         self.windows[self.active_window].clear_zoom();
         if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
@@ -1850,16 +1852,19 @@ impl PlexiApp {
         // If the window is now empty, only delete it when there are other pages
         // in the same context (i.e. it's one of several pages). When it's the
         // sole page, keep it alive so the welcome screen renders.
-        if self.windows[self.active_window].panes.is_empty() {
+        if let Some(closed_window) = self.windows.iter().position(|w| w.window_id == closed_window_id)
+            .filter(|&index| self.windows[index].panes.is_empty())
+        {
             let pages_in_context = self
                 .windows
                 .iter()
                 .filter(|w| w.context_id == ctx_id)
                 .count();
             if pages_in_context > 1 {
-                self.delete_window(self.active_window);
+                self.delete_window(closed_window);
             }
         }
+        self.reveal_sole_portal_after_close(ctx_id);
         // An emptied subcontext collapses entirely — delete it and zoom back
         // out to the parent, as if Cmd+Escape had been pressed.
         self.collapse_subcontext_if_empty(ctx_id);
