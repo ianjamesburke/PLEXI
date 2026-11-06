@@ -694,7 +694,9 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             .get("name")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .or_else(|| pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+            })
             .unwrap_or("pane");
         let role = pane
             .get("agent_role")
@@ -989,6 +991,19 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
 pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32 {
+    pane_send_with_operation_cli(pane_id, text, submit, paste, None)
+}
+
+pub fn pane_send_with_operation_cli(
+    pane_id: u64,
+    text: &str,
+    submit: bool,
+    paste: bool,
+    operation_id: Option<&str>,
+) -> i32 {
+    let operation_id = operation_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));
     log::info!(
         "pane_send:cli: pane_id={pane_id} len={} submit={submit} paste={paste}",
         text.len()
@@ -999,6 +1014,7 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         "text": text,
         "submit": submit,
         "paste": paste,
+        "operation_id": operation_id,
         "peer_ancestry": [],
     });
     if submit {
@@ -1012,7 +1028,12 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
             SUBMIT_REPLY_WINDOW,
         ) {
             Ok(content) => content,
-            Err(code) => return code,
+            Err(code) => {
+                eprintln!(
+                    "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+                );
+                return code;
+            }
         };
         let outcome = submit_outcome(&content);
         outcome.report();
@@ -1025,7 +1046,12 @@ pub fn pane_send_cli(pane_id: u64, text: &str, submit: bool, paste: bool) -> i32
         SUBMIT_REPLY_WINDOW,
     ) {
         Ok(content) => content,
-        Err(code) => return code,
+        Err(code) => {
+            eprintln!(
+                "pane send outcome unknown; reconcile operation {operation_id} before retrying"
+            );
+            return code;
+        }
     };
     if let Err(code) = super::check_reply_error(&content) {
         return code;
@@ -1084,7 +1110,9 @@ fn parse_heartbeat_duration(value: &str) -> Result<std::time::Duration, String> 
 
 /// Client-side poll window for `pane send --submit`. Strictly above the host's
 /// own settle + confirm + retry-confirm ceiling.
-const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(25);
+// The host can spend 20 seconds on approval and then up to 15 seconds on
+// submit confirmation. Leave room for the typed host result to arrive.
+const SUBMIT_REPLY_WINDOW: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// What the host said about a `--submit`, in the two shapes a caller branches on.
 #[derive(Debug, PartialEq, Eq)]
@@ -1981,6 +2009,10 @@ mod submit_tests {
             assert_eq!(payload["type"], "send_to_pane");
             assert_eq!(payload["submit"], submit, "payload was {payload}");
             assert_eq!(payload["paste"], paste, "payload was {payload}");
+            assert!(
+                payload["operation_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("pane-send-")), "payload was {payload}");
         }
     }
 }

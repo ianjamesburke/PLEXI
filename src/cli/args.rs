@@ -2159,6 +2159,9 @@ pub enum PaneCmd {
         /// does not read or change the system clipboard.
         #[arg(long, conflicts_with = "submit")]
         paste: bool,
+        /// Reuse this operation identity when explicitly retrying a waiting send.
+        #[arg(long)]
+        operation_id: Option<String>,
     },
     /// Print the id of the pane you are currently in.
     ///
@@ -3641,6 +3644,7 @@ mod tests {
             text,
             submit,
             paste,
+            ..
         } = cmd
         else {
             panic!("expected pane send command");

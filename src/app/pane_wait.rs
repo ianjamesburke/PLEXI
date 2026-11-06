@@ -112,6 +112,7 @@ enum SubmitPhase {
 /// heals.
 pub(crate) struct PendingSubmit {
     pub pane_id: u64,
+    pub operation_id: Option<String>,
     /// Plain JSON response file, like the agent-boot path. `None` when the
     /// caller wanted the sequence run but no answer — the host still settles,
     /// submits and confirms, and logs the outcome.
@@ -191,6 +192,7 @@ pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 /// A parked `AppRequest::SendToPane` waiting on a permission broker approval.
 pub(crate) struct PendingSendApproval {
     pub pending_request_id: String,
+    pub operation_id: String,
     pub caller_pane_id: u64,
     pub pane_id: u64,
     pub text: String,
@@ -706,6 +708,7 @@ impl PlexiApp {
         );
         self.pending_submits.push(PendingSubmit {
             pane_id,
+            operation_id: None,
             response_file,
             phase: SubmitPhase::Settle {
                 until: requested_at + SUBMIT_SETTLE_MAX,
@@ -731,7 +734,25 @@ impl PlexiApp {
         let mut still_pending = Vec::with_capacity(self.pending_submits.len());
         for mut submit in std::mem::take(&mut self.pending_submits) {
             match self.advance_submit(&mut submit, now) {
-                Some(reply) => {
+                Some(mut reply) => {
+                    if let Some(operation_id) = &submit.operation_id {
+                        let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                            &crate::config::config_dir(),
+                        );
+                        let state = if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+                            crate::broker::gate::ContinuationState::Completed
+                        } else {
+                            // Text or Enter may already have been delivered.
+                            crate::broker::gate::ContinuationState::OutcomeUnknown
+                        };
+                        if let Err(error) = monitor.complete_continuation(operation_id, state, None)
+                        {
+                            log::error!(
+                                "pane_submit: could not record operation={operation_id}: {error}"
+                            );
+                            reply = serde_json::json!({"error":"submission outcome could not be recorded", "error_code":"outcome_unknown", "operation_id":operation_id});
+                        }
+                    }
                     log::info!(
                         "pane_submit: pane_id={} resolved after {:.2}s reply={reply}",
                         submit.pane_id,
@@ -1568,6 +1589,37 @@ impl PlexiApp {
         let mut remaining_items = Vec::new();
         let mut approved_to_dispatch = Vec::new();
         for item in items {
+            let caller_exited = item.peer_ancestry
+                .as_ref()
+                .and_then(|ancestry| ancestry.first())
+                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid));
+                    if caller_exited || now >= item.expires_at {
+                let detached = monitor.detach_pane_send_waiter(&item.pending_request_id);
+                if let Err(error) = &detached {
+                    log::error!(
+                        "pane_send_approval: could not persist detached waiter pending={}: {error}",
+                        item.pending_request_id
+                    );
+                }
+                let reason = if caller_exited {
+                    "caller_disconnected"
+                } else {
+                    "approval_wait_timeout"
+                };
+                    if let Some(ref rf) = item.response_file {
+                        crate::rpc::write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": format!("{reason}: pane send was not executed; run `plexi needs-you reconcile --id {}` before retrying with `--operation-id {}`", item.operation_id, item.operation_id),
+                            "error_code": reason,
+                            "operation_state": if detached.is_ok() { "retry_required" } else { "outcome_unknown" },
+                            "operation_id": item.operation_id,
+                                "pending_request_id": item.pending_request_id,
+                        }),
+                    );
+                }
+                continue;
+            }
             match monitor.approval_resolution(&item.pending_request_id) {
                 Some(
                     crate::broker::gate::ApprovalChoice::Once
@@ -1598,21 +1650,10 @@ impl PlexiApp {
                             rf,
                             serde_json::json!({
                                 "error": "permission_denied: pane send denied",
-                            }),
-                        );
-                    }
-                }
-                None if now >= item.expires_at => {
-                    log::info!(
-                        "pane_send_approval: pending={} timed out waiting for decision (leaving ask open)",
-                        item.pending_request_id
-                    );
-                    if let Some(ref rf) = item.response_file {
-                        crate::rpc::write_json_response(
-                            rf,
-                            serde_json::json!({
-                                "error": "permission_denied: pane send requires approval",
+                                "error_code": "permission_denied",
+                                "operation_id": item.operation_id,
                                 "pending_request_id": item.pending_request_id,
+                                "operation_state": "cancelled",
                             }),
                         );
                     }
@@ -1627,6 +1668,7 @@ impl PlexiApp {
             self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
                 pane_id: item.pane_id,
                 text: item.text,
+                operation_id: Some(item.operation_id),
                 submit: item.submit,
                 paste: item.paste,
                 response_file: item.response_file,
@@ -1641,11 +1683,14 @@ impl PlexiApp {
         {
             let predicted_frame =
                 std::time::Duration::from_secs_f32(ctx.input(|input| input.predicted_dt));
-            ctx.request_repaint_after(crate::host::wasm_frame::repaint_delay_until(
+            let until_expiry = crate::host::wasm_frame::repaint_delay_until(
                 next_expiry,
                 Instant::now(),
                 predicted_frame,
-            ));
+            );
+            ctx.request_repaint_after(
+                until_expiry.min(Duration::from_millis(500) + predicted_frame),
+            );
         }
     }
 }

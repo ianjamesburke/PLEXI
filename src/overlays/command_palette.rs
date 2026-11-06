@@ -2312,6 +2312,7 @@ impl PlexiApp {
                     submit: true,
                     paste: false,
                     response_file: None,
+                    operation_id: None,
                     peer_ancestry: None,
                 });
                 return;
@@ -2660,6 +2661,7 @@ impl PlexiApp {
                     text,
                     submit,
                     paste,
+                    operation_id,
                 } => {
                     let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
                         return 1;
@@ -2672,6 +2674,7 @@ impl PlexiApp {
                         submit,
                         paste,
                         response_file: Some(resp_str),
+                        operation_id,
                         peer_ancestry: None,
                     });
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {
