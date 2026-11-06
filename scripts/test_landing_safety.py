@@ -208,7 +208,7 @@ fi
         (lane / 'target').rmdir()
         (lane / 'ignored-data/important').unlink()
         (lane / 'ignored-data').rmdir()
-        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, sha)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(lane.exists())
 
