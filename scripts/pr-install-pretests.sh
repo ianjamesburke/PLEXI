@@ -38,9 +38,14 @@ if [[ "$scope" == scoped ]]; then
   done <<< "$selection"
 fi
 cargo_test() {
+  # Older PR worktrees may predate the managed input helper.
+  local cargo_command=(cargo)
+  if [[ -f scripts/cargo-channel-inputs.py ]]; then
+    cargo_command=(python3 scripts/cargo-channel-inputs.py)
+  fi
   bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT \
     -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING \
-    -u PLEXI_PANE_ID cargo test --bin plexi -- "$@" < /dev/null
+    -u PLEXI_PANE_ID "${cargo_command[@]}" test --bin plexi -- "$@" < /dev/null
 }
 if [[ "$scope" == scoped && ${#filters[@]} -gt 0 ]]; then
   listing="$(cargo_test "${filters[@]}" --list)"

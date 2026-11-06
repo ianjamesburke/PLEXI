@@ -112,6 +112,10 @@ coverage-summary:
 perf-clippy:
     RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
 
+# Strict lint gate with the same managed build inputs and warning flags.
+clippy:
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
+
 build:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 
@@ -548,8 +552,8 @@ merge-pr PR *FLAGS:
 test-build-inputs:
     uv run --no-project python scripts/test_cargo_channel_inputs.py
 
-# Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
-test-infra-scripts:
+# Infrastructure checks, including offline Cargo build-input fixtures.
+test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py

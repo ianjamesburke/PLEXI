@@ -127,6 +127,27 @@ class ChannelInputs(unittest.TestCase):
         (root / ".channel").write_text("alpha")
         self.assertEqual(self.build(root, target, managed=False, overrides=wrong)[:2], (False, "Plexi Alpha"))
 
+    def test_canonical_clippy_recipe_keeps_managed_input_on_repeat(self):
+        root = self.package("lint-recipe")
+        with (root / "Cargo.toml").open("a") as manifest:
+            manifest.write('[[bin]]\nname="plexi"\npath="src/main.rs"\n')
+        (root / "scripts").mkdir()
+        shutil.copyfile(HELPER, root / "scripts/cargo-channel-inputs.py")
+        shutil.copyfile(LEASE, root / "scripts/cargo-with-lease.sh")
+        env = dict(self.env, CARGO_TARGET_DIR=str(root / "target"), CARGO_NET_OFFLINE="true")
+        command = ["just", "--justfile", str(REPO / "justfile"), "--working-directory", str(root), "clippy"]
+        first = self.command(command, root, env)
+        self.assertIn("cargo-channel-input:", first.stderr)
+        second = self.command(command, root, env)
+        self.assertIn("cargo-channel-input:", second.stderr)
+        self.assertNotIn("Checking channel_probe", second.stderr)
+        self.assertNotIn("Compiling channel_probe", second.stderr)
+        outputs = list((root / "target/debug/build").glob("channel_probe-*/output"))
+        self.assertTrue(outputs)
+        for output in outputs:
+            self.assertIn("cargo:rerun-if-env-changed=PLEXI_BUILD_CHANNEL_INPUT", output.read_text())
+            self.assertNotIn("cargo:rerun-if-changed=.channel", output.read_text())
+
     def test_lookup_and_read_failures_do_not_reuse_cached_input(self):
         root = self.package("failure")
         env = dict(self.env, CARGO_TARGET_DIR=str(root / "target"))

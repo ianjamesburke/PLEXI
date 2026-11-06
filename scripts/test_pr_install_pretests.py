@@ -26,6 +26,7 @@ class InstallPretests(unittest.TestCase):
             'printf "%s\\n" "$*" >> "$PR_PRETEST_FIXTURE_LOG"\n'
             'if [[ "$*" == *--list* && "${PR_PRETEST_FIXTURE_ZERO:-}" != 1 ]]; then\n'
             '  printf "%s\\n" "${PR_PRETEST_FIXTURE_LIST:-cli::tests::affected: test}"\nfi\n')
+        (self.root / "scripts/cargo-channel-inputs.py").write_text("# managed helper available\n")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         just = self.bin / "just"
@@ -50,10 +51,20 @@ class InstallPretests(unittest.TestCase):
         result, commands = self.run_scope()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("matched=1", result.stdout)
-        cargo = [line for line in commands if "cargo test" in line]
+        cargo = [line for line in commands if "test --bin plexi" in line]
+        self.assertTrue(all("python3 scripts/cargo-channel-inputs.py test" in line for line in cargo))
         self.assertEqual(len(cargo), 2)  # list matches, then execute the selection
         self.assertTrue(all("-- cli::tests::affected" in line for line in cargo))
         self.assertIn("just fetch-python-runtime sdk-smoke", commands)
+
+    def test_legacy_worktree_without_helper_retains_raw_cargo_fallback(self):
+        (self.root / "scripts/cargo-channel-inputs.py").unlink()
+        result, commands = self.run_scope()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cargo = [line for line in commands if "test --bin plexi" in line]
+        self.assertEqual(len(cargo), 2)
+        self.assertTrue(all("cargo test --bin plexi" in line for line in cargo))
+        self.assertTrue(all("cargo-channel-inputs" not in line for line in cargo))
 
     def test_1109_paths_select_reviewed_filters_and_install_pretests(self):
         paths = ["src/overlays/notes_picker.rs", "src/testing/harness_tests.rs",
@@ -66,7 +77,7 @@ class InstallPretests(unittest.TestCase):
         listing = "\n".join(f"{name}fixture: test" for name in selected.splitlines())
         result, commands = self.run_scope(filters=selected, PR_PRETEST_FIXTURE_LIST=listing)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any("cargo test" in line and "--list" not in line for line in commands))
+        self.assertTrue(any("test --bin plexi" in line and "--list" not in line for line in commands))
         unknown = subprocess.run(["bash", str(ROOT / "scripts/scoped-tests.sh"),
                                   "src/new_unknown/file.rs"], cwd=ROOT, capture_output=True,
                                  text=True, check=True).stdout.strip()
@@ -78,7 +89,7 @@ class InstallPretests(unittest.TestCase):
     def test_scripts_only_never_fall_back_to_full_host_suite(self):
         result, commands = self.run_scope(filters="")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any("cargo test" in line for line in commands))
+        self.assertFalse(any("test --bin plexi" in line for line in commands))
         self.assertIn("just fetch-python-runtime sdk-smoke", commands)
 
     def test_broad_fallback_requires_reviewed_filters(self):
@@ -109,7 +120,7 @@ class InstallPretests(unittest.TestCase):
         self.assertEqual(commands, [])
         result, commands = self.run_scope(scope="full", final=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(line.endswith("cargo test --bin plexi --") for line in commands))
+        self.assertTrue(any(line.endswith("cargo-channel-inputs.py test --bin plexi --") for line in commands))
 
     def test_unknown_scope_rejects_before_any_commands(self):
         result, commands = self.run_scope(scope="skip")

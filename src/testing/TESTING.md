@@ -47,7 +47,7 @@ checks as installed behavior. Aggregate records still require installed heads.
 
 Before a feature or batch push, `just build` compiles the installable release
 binary with warnings denied, `scripts/scoped-tests.sh` proposes relevant Rust
-filters, and `cargo clippy --bin plexi -- -D warnings` is the lint gate. Run
+filters, and `just clippy` is the lint gate. Run
 relevant scene, script, SDK and specialized checks too. The sole local
 build/test/Clippy exemption is the selector's proven unembedded markdown-only
 case above; the aggregate record's requirements are separate. Bare `cargo build`

@@ -81,7 +81,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
 3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
 4. **Clippy lint gate (unless the policy exemption applies):**
    ```bash
-   bash scripts/cargo-with-lease.sh cargo clippy --bin plexi -- -D warnings
+   just clippy
    ```
 5. **Docs/schema gate** (when CLI args, config fields, SDK, or docs changed):
    ```bash
