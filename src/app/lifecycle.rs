@@ -2288,29 +2288,6 @@ impl PlexiApp {
                             Some((caller, None))
                         }
                     });
-                if let Some((caller, _)) = &caller_and_posture {
-                    let old = std::mem::take(&mut self.pending_send_approvals);
-                    let mut kept = Vec::with_capacity(old.len());
-                    for item in old {
-                        if item.caller_pane_id == *caller
-                            && item.pane_id == *pane_id
-                            && item.response_file != *response_file
-                        {
-                            if let Some(ref rf) = item.response_file {
-                                write_json_response(
-                                    rf,
-                                    serde_json::json!({
-                                        "error": "permission_denied: pane send requires approval",
-                                        "pending_request_id": item.pending_request_id,
-                                    }),
-                                );
-                            }
-                        } else {
-                            kept.push(item);
-                        }
-                    }
-                    self.pending_send_approvals = kept;
-                }
                 let admission = caller_and_posture.map(|(caller, posture)| {
                     let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                         &crate::config::config_dir(),
@@ -2318,7 +2295,12 @@ impl PlexiApp {
                     let root = self
                         .pane_context_authority_root(caller)
                         .unwrap_or_else(crate::config::config_dir);
-                    let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste}).to_string();
+                    // Bind a one-time authorization to the text without putting
+                    // terminal input into the permission summary or audit log.
+                    let text_fingerprint = crate::broker::gate::fingerprint_args(
+                        &serde_json::json!({"text": text_with_newlines}).to_string(),
+                    ).expect("serializing a string produces valid canonical JSON");
+                    let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste, "text_fingerprint": text_fingerprint}).to_string();
                     let actor = format!("pane:{caller}");
                     let adm = monitor.admit_with_posture(
                         crate::broker::gate::AdmitRequest {
@@ -2352,6 +2334,25 @@ impl PlexiApp {
                         caller,
                         crate::broker::gate::Admission::Required { pending_request_id },
                     )) => {
+                        // A matching request can have only one active waiter;
+                        // distinct requests for the same pane remain independent.
+                        let old = std::mem::take(&mut self.pending_send_approvals);
+                        let mut kept = Vec::with_capacity(old.len());
+                        for item in old {
+                            if item.pending_request_id == pending_request_id
+                                && item.response_file != *response_file
+                            {
+                                if let Some(ref rf) = item.response_file {
+                                    write_json_response(rf, serde_json::json!({
+                                        "error": "approval_wait_replaced: another caller is waiting on this request",
+                                        "pending_request_id": item.pending_request_id,
+                                    }));
+                                }
+                            } else {
+                                kept.push(item);
+                            }
+                        }
+                        self.pending_send_approvals = kept;
                         if response_file.is_some() {
                             self.pending_send_approvals.push(
                                 crate::app::pane_wait::PendingSendApproval {

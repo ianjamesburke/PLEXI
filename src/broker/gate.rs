@@ -1191,8 +1191,9 @@ impl PermissionMonitor {
         );
         record.session_id = session_id;
         record.expires_at = expires_at;
-        record.args_unbound =
-            choice == ApprovalChoice::AllowTool || binding.target_type == TargetType::Capability;
+        record.args_unbound = choice == ApprovalChoice::AllowTool
+            || (binding.target_type == TargetType::Capability
+                && !(binding.target_id == "pane.send" && choice == ApprovalChoice::Once));
         self.store().record(record);
         if choice == ApprovalChoice::Always {
             // Drop the store guard before locking it again on failure. A

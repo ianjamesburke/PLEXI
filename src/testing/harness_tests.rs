@@ -15216,11 +15216,29 @@ ask = ["pane.send"]
         .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
         .expect("approve once");
 
+    // Approval of one payload must not authorize a different payload to the
+    // same pane, even when the earlier caller has already timed out.
+    let unrelated_reply = temp_response(&ws, "send-retry-unrelated");
+    h.inject_ipc(AppRequest::SendToPane {
+        pane_id: target_pane,
+        text: "unrelated message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(unrelated_reply.clone()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&unrelated_reply).exists(),
+        "a different payload must require its own approval"
+    );
+    assert_eq!(monitor.list_pending().len(), 1);
+
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
     h.inject_ipc(AppRequest::SendToPane {
         pane_id: target_pane,
-        text: "attempt 2".to_string(),
+        text: "attempt 1".to_string(),
         submit: false,
         paste: false,
         response_file: Some(reply_2.clone()),
@@ -15234,8 +15252,12 @@ ask = ["pane.send"]
         "retry after Allow once must consume the Once grant and succeed: {json_2}"
     );
     assert!(
-        monitor.list_pending().is_empty(),
-        "retry must not file a new ask when an unconsumed Once grant exists"
+        monitor.list_pending().len() == 1,
+        "the unrelated request must remain pending after an exact retry"
+    );
+    assert_eq!(
+        h.app.pending_send_approvals.len(), 1,
+        "an unrelated request must keep its own live waiter"
     );
 
     // A third call after the retry consumed the Once grant must ask again.
@@ -15251,7 +15273,7 @@ ask = ["pane.send"]
     h.hidden_frame();
     assert_eq!(
         monitor.list_pending().len(),
-        1,
+        2,
         "subsequent call after Once grant was consumed must ask again"
     );
 }
