@@ -1989,7 +1989,7 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for (submit, paste) in [(true, false), (false, false), (false, true)] {
+        for (submit, paste, operation_id) in [(true, false, None), (false, false, None), (false, true, None), (false, false, Some("explicit-id"))] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -2013,7 +2013,7 @@ mod submit_tests {
                 tx.send(payload).ok();
             });
 
-            let code = pane_send_cli(42, "hello", submit, paste);
+            let code = pane_send_with_operation_cli(42, "hello", submit, paste, operation_id);
             let payload = rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("host listener never received the send payload");
@@ -2023,10 +2023,12 @@ mod submit_tests {
             assert_eq!(payload["type"], "send_to_pane");
             assert_eq!(payload["submit"], submit, "payload was {payload}");
             assert_eq!(payload["paste"], paste, "payload was {payload}");
-            assert!(
-                payload["operation_id"]
-                    .as_str()
-                    .is_some_and(|id| id.starts_with("pane-send-")), "payload was {payload}");
+            assert_eq!(payload["generated_operation_id"], operation_id.is_none());
+            if let Some(id) = operation_id {
+                assert_eq!(payload["operation_id"], id);
+            } else {
+                assert!(payload["operation_id"].as_str().is_some_and(|id| id.starts_with("pane-send-")), "payload was {payload}");
+            }
         }
     }
 }
