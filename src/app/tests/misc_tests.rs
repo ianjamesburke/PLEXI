@@ -1429,3 +1429,115 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
     assert_eq!(after["cwd"], state["cwd"]);
     assert_eq!(after["selected"], 1);
 }
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_explicit_directory_artifact_keeps_requested_root() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for surface in ["artifact", "generic", "ipc", "generic-default"] {
+        let mut h = crate::testing::HostHarness::new();
+        let sender = h.add_test_pane();
+        let terminal = h.add_focused_terminal();
+        let directory = h.workspace_root().join("explicit-directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("requested.txt"), "requested").unwrap();
+        if surface == "generic-default" {
+            let marker = directory.join("ready");
+            h.terminal_backend(terminal)
+                .process_command(egui_term::BackendCommand::Write(
+                    format!(
+                        "cd '{}' && touch '{}'\n",
+                        directory.display(),
+                        marker.display()
+                    )
+                    .into_bytes(),
+                ));
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+            while !marker.exists() {
+                assert!(std::time::Instant::now() < deadline);
+                h.run_frames(1);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            h.focus_pane(terminal);
+        }
+        match surface {
+            "generic-default" => {
+                h.app
+                    .launch_app_by_id_with_layout("file_browser", Some("split_h".into()), &[], None)
+                    .unwrap();
+            }
+            "artifact" => h.app.dispatch_open_artifact(
+                sender,
+                directory.display().to_string(),
+                crate::protocol::ArtifactOpenMode::OpenInPane,
+            ),
+            "generic" => {
+                h.app
+                    .launch_app_by_id_with_layout(
+                        "file_browser",
+                        Some("split_h".into()),
+                        &[],
+                        Some(directory.clone()),
+                    )
+                    .unwrap();
+            }
+            _ => {
+                h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+                    type_id: "file_browser".into(),
+                    layout: Some("split_h".into()),
+                    args: vec![],
+                    from_pane_id: Some(terminal),
+                    request_id: None,
+                    response_file: None,
+                    ephemeral: false,
+                    cwd: Some(directory.display().to_string()),
+                    no_focus: false,
+                    path: None,
+                    workspace_root: None,
+                    target_context: None,
+                    context_name: None,
+                    name: None,
+                    agent_cmd: None,
+                    boot_timeout_secs: None,
+                    worktree: None,
+                    result_schema: None,
+                    peer_ancestry: None,
+                });
+                h.hidden_frame();
+            }
+        }
+        if surface == "generic-default" {
+            let browser = h.app.windows[0]
+                .panes
+                .values()
+                .find_map(|pane| {
+                    pane.as_app()
+                        .filter(|app| app.manifest_id == "file_browser")
+                })
+                .unwrap();
+            assert_eq!(
+                browser.workspace_root.canonicalize().unwrap(),
+                directory.canonicalize().unwrap(),
+                "implicit generic caller must bind before first frame"
+            );
+        }
+        h.run_frames(3);
+        let browser = h.app.windows[0]
+            .panes
+            .values()
+            .find_map(|pane| {
+                pane.as_app()
+                    .filter(|app| app.manifest_id == "file_browser")
+            })
+            .unwrap();
+        let state = browser.runtime.serialize_state().unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "{surface} explicit directory must survive frame synchronization"
+        );
+    }
+}

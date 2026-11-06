@@ -2361,7 +2361,15 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, false)
+        let follow_file_browser_cwd = cwd_override.is_none();
+        self.launch_app_by_id_with_layout_inner(
+            id,
+            layout,
+            args,
+            cwd_override,
+            false,
+            follow_file_browser_cwd,
+        )
     }
 
     /// Like [`launch_app_by_id_with_layout`](Self::launch_app_by_id_with_layout)
@@ -2376,7 +2384,34 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, true)
+        let follow_file_browser_cwd = cwd_override.is_none();
+        self.launch_app_by_id_with_layout_inner(
+            id,
+            layout,
+            args,
+            cwd_override,
+            true,
+            follow_file_browser_cwd,
+        )
+    }
+
+    /// The IPC boundary has already distinguished caller-derived cwd from an
+    /// explicit directory. Carry that intent through the shared launch path.
+    pub(crate) fn launch_file_browser_with_layout(
+        &mut self,
+        layout: Option<String>,
+        args: &[String],
+        cwd: Option<PathBuf>,
+        follow_caller: bool,
+    ) -> Result<Option<PaneId>, String> {
+        self.launch_app_by_id_with_layout_inner(
+            "file_browser",
+            layout,
+            args,
+            cwd,
+            false,
+            follow_caller,
+        )
     }
 
     fn launch_app_by_id_with_layout_inner(
@@ -2386,7 +2421,18 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
         bypass_on_launch: bool,
+        follow_file_browser_cwd: bool,
     ) -> Result<Option<PaneId>, String> {
+        // Resolve an implicit Explorer caller before on-launch policy can move focus.
+        let cwd_override =
+            if id == "file_browser" && follow_file_browser_cwd && cwd_override.is_none() {
+                Some(self.file_browser_start_directory(
+                    self.focused_terminal_id(self.active_window),
+                    self.windows[self.active_window].context_id,
+                ))
+            } else {
+                cwd_override
+            };
         // "terminal" is a builtin pane type, not in the app registry.
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
@@ -2492,11 +2538,14 @@ impl PlexiApp {
         // Builtin app factory — resolved before the process registry; builtins never touch disk.
         if let Some(app) = builtin_factory(id, &cwd, args) {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
-            let group = self
-                .registries
-                .view_for_context(context_id, &self.router)
-                .group_for(id)
-                .or_else(|| builtin_default_group(app.type_id()));
+            let group = if id == "file_browser" && !follow_file_browser_cwd {
+                None
+            } else {
+                self.registries
+                    .view_for_context(context_id, &self.router)
+                    .group_for(id)
+                    .or_else(|| builtin_default_group(app.type_id()))
+            };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
