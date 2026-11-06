@@ -4,8 +4,8 @@
 # Usage: bs-merge.sh <pr-number> [merge-pr flags, e.g. no-issue]
 #
 # Wraps `just merge-pr` (reviewed squash → fast-forward → lane cleanup → close), then
-# uninstalls the plexi-pr-<N> build, confirms the feature worktree was reaped
-# (hard error if not), and publishes a final slot report.
+# retires the PR channel and safely retains a worktree with ignored content,
+# then publishes a final slot report.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,9 +43,9 @@ fi
 # merge-pr's cleanup owns worktree reaping — confirm it actually happened.
 worktree="$alpha_root/worktrees/$branch"
 if [[ -d "$worktree" ]]; then
-  bash "$SCRIPT_DIR/bs-slot.sh" merge failed "pr=$pr" "detail=worktree not reaped: $worktree"
-  echo "bs-merge: PR #$pr merged but its worktree survived cleanup: $worktree — inspect and preserve its content before retrying." >&2
-  exit 1
+  bash "$SCRIPT_DIR/bs-slot.sh" merge done "pr=$pr" "verdict=PASS" "detail=merged; lane retained for ignored content: $worktree"
+  echo "bs-merge: PR #$pr merged; lane retained at $worktree. Preserve or deliberately handle its ignored content, then retry lane cleanup as instructed above."
+  exit 0
 fi
 
 bash "$SCRIPT_DIR/bs-slot.sh" merge done "pr=$pr" "verdict=PASS" "detail=merged, pr-$pr uninstalled, worktree reaped"

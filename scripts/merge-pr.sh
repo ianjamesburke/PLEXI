@@ -61,15 +61,6 @@ assert_clean_lane() {
             git -C "$WORKTREE_PATH" status --short >&2
             return 1
         fi
-        # Git removes ignored files with a worktree even without --force. Their
-        # contents may be valuable, so do not treat them as disposable.
-        local IGNORED
-        IGNORED=$(git -C "$WORKTREE_PATH" ls-files --others --ignored --exclude-standard --directory --no-empty-directory)
-        if [ -n "$IGNORED" ]; then
-            echo "ERROR: lane has ignored content that worktree removal would delete; preserve it before cleanup: $WORKTREE_PATH" >&2
-            printf '%s\n' "$IGNORED" >&2
-            return 1
-        fi
     elif [ -e "$WORKTREE_PATH" ]; then
         echo "ERROR: unregistered lane path exists; inspect it before cleanup: $WORKTREE_PATH" >&2
         return 1
@@ -97,6 +88,16 @@ do_cleanup() {
     echo "==> Cleaning up PR #$PR lane artifacts"
     just channel-clean "pr-${PR}"
     if git worktree list --porcelain | grep -Fqx "worktree $WORKTREE_PATH"; then
+        # Git removes ignored files even without --force. Keep the entire lane
+        # when they exist, and allow the merged stint to close truthfully.
+        local IGNORED
+        IGNORED=$(git -C "$WORKTREE_PATH" ls-files --others --ignored --exclude-standard --directory --no-empty-directory)
+        if [ -n "$IGNORED" ]; then
+            echo "NOTICE: PR #$PR merged; retaining lane and branches to preserve ignored content: $WORKTREE_PATH" >&2
+            printf '%s\n' "$IGNORED" >&2
+            echo "Preserve or deliberately handle those files, then run: just merge-cleanup $PR $BRANCH $REVIEWED_HEAD" >&2
+            return 0
+        fi
         git worktree remove "$WORKTREE_PATH"
     fi
     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then

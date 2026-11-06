@@ -23,7 +23,7 @@ class LandingSafety(unittest.TestCase):
         (self.root / 'a').write_text('base\n')
         (self.root / 'b').write_text('base\n')
         (self.root / 'Cargo.toml').write_text('version = \"1.0.0\"\n')
-        (self.root / '.gitignore').write_text('ignored-data/\n')
+        (self.root / '.gitignore').write_text('ignored-data/\ntarget/\n')
         self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore')
         self.run_cmd('git', 'commit', '-m', 'base')
         self.run_cmd('git', 'remote', 'add', 'origin', str(self.remote))
@@ -124,8 +124,8 @@ class LandingSafety(unittest.TestCase):
         (lane / 'ignored-data').mkdir()
         (lane / 'ignored-data/important').write_text('preserve me\n')
         result = self.script('merge-pr.sh', 'cleanup', '1', branch, sha)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('ignored content', result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('retaining lane', result.stderr)
         self.assertEqual((lane / 'ignored-data/important').read_text(), 'preserve me\n')
         (lane / 'ignored-data/important').unlink()
         (lane / 'ignored-data').rmdir()
@@ -133,7 +133,7 @@ class LandingSafety(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(lane.exists())
         self.assertTrue(sibling.exists())
-        self.assertEqual((self.base / 'calls').read_text().strip(), 'channel-clean pr-1')
+        self.assertEqual((self.base / 'calls').read_text().splitlines(), ['channel-clean pr-1', 'channel-clean pr-1'])
 
     def test_full_merge_requires_reviewed_head_and_preserves_unrelated_edits(self):
         branch = 'feature/stint-1234-fix'
@@ -151,6 +151,12 @@ class LandingSafety(unittest.TestCase):
         self.env['TEST_REMOTE'] = str(self.remote)
         self.env['TEST_GH_STATE'] = str(self.base / 'merged')
         self.env['TEST_SCRIPTS'] = str(SCRIPTS)
+        self.env['TEST_STINT_LOG'] = str(self.base / 'stint-calls')
+        self.stub('stint', 'echo \"$*\" >> \"$TEST_STINT_LOG\"')
+        (lane / 'target').mkdir()
+        (lane / 'target/build-output').write_text('compiled output\n')
+        (lane / 'ignored-data').mkdir()
+        (lane / 'ignored-data/important').write_text('preserve me\n')
         self.stub('just', 'if [ \"$1\" = merge-pr ]; then shift; exec bash \"$TEST_SCRIPTS/merge-pr.sh\" \"$@\"; fi\necho \"$*\" >> \"$TEST_LOG\"')
         self.stub('gh', r"""
 if [ "$1 $2" = 'pr view' ]; then
@@ -193,9 +199,18 @@ fi
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'local work\n')
-        self.assertFalse(lane.exists())
+        self.assertTrue(lane.exists())
+        self.assertEqual((lane / 'target/build-output').read_text(), 'compiled output\n')
+        self.assertEqual((lane / 'ignored-data/important').read_text(), 'preserve me\n')
+        self.assertIn('lane retained', result.stdout)
+        self.assertIn('done 1234', (self.base / 'stint-calls').read_text())
+        (lane / 'target/build-output').unlink()
+        (lane / 'target').rmdir()
+        (lane / 'ignored-data/important').unlink()
+        (lane / 'ignored-data').rmdir()
         result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(lane.exists())
 
 
 if __name__ == '__main__':

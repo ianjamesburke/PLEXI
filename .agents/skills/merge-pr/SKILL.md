@@ -49,7 +49,7 @@ Verifies the reviewed head, squash-merges it, fast-forwards Alpha, retires only 
 | PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH <SHA> && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
 | Local edit conflicts with the PR or Alpha sync | Preserve the edit and resolve the conflict before retrying |
 | Diverged local alpha | Investigate and preserve local commits; do not reset |
-| Ignored lane content | Preserve or deliberately handle the listed files before retrying; Git removes ignored files with the worktree |
+| Ignored lane content | Merge completes and the lane is retained. Preserve or deliberately handle the listed files before retrying cleanup; Git removes ignored files with the worktree |
 | `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR --reviewed-head <SHA> no-issue`. Otherwise fix the PR body's `Stint: <id>` or closing keyword first. |
 
 **Available sub-steps:**
