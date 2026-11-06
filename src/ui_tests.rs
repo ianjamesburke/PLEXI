@@ -3048,6 +3048,7 @@ mod tests {
                     pane_id: portal_pane_id,
                     target_context_id: child_ctx_id,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -5002,6 +5003,7 @@ mod tests {
                     pane_id: pane_id + 1_000,
                     target_context_id: 42,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 }))));
             }
@@ -5882,6 +5884,7 @@ mod tests {
                         pane_id: portal_pane_id,
                         target_context_id: child_ctx_id,
                         context_state: None,
+                        reveal_after_close: false,
                         hidden: false,
                     })),
                 );
@@ -6081,6 +6084,7 @@ mod tests {
                     pane_id: extra_a,
                     target_context_id: extra_a + 10_000,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -6090,6 +6094,7 @@ mod tests {
                     pane_id: extra_b,
                     target_context_id: extra_b + 10_000,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: true,
                 })),
             );

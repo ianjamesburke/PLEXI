@@ -448,7 +448,7 @@ fn legacy_portal_conversion_preserves_child_and_scope() {
     let original = serde_json::to_vec(&legacy).unwrap();
     std::fs::write(&path, &original).unwrap();
     let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
-    assert!(migrated.windows.iter().any(|window| window.context_id == parent_context && window.panes.iter().any(|pane| pane.id == portal && matches!(pane.kind, crate::workspace::SavedPaneKind::Portal { context_id } if context_id == child_context))));
+    assert!(migrated.windows.iter().any(|window| window.context_id == parent_context && window.panes.iter().any(|pane| pane.id == portal && matches!(pane.kind, crate::workspace::SavedPaneKind::Portal { context_id, .. } if context_id == child_context))));
     assert!(migrated.windows.iter().any(|window| window.context_id == child_context && window.panes.iter().any(|pane| pane.id == child)));
     assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
     let restored = HostHarness::from_profile_dir(profile);

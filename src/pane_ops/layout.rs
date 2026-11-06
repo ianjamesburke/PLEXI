@@ -996,6 +996,10 @@ impl PlexiApp {
         if let Some(new_focus) = next {
             self.record_close_focus_column(ctx_idx, new_focus);
         }
+        if closed_pane_id.is_some() {
+            let context_id = self.windows[ctx_idx].context_id;
+            self.reveal_sole_portal_after_close(context_id);
+        }
     }
 
     /// Choose focus after closing a focused tile without leaving its window.

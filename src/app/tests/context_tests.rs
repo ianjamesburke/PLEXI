@@ -810,6 +810,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -1556,6 +1557,7 @@ fn delete_context_collapses_empty_portal_window() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -1673,6 +1675,7 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -1782,6 +1785,7 @@ fn dissolve_portal_grafts_single_child_window_tree_in_place() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
@@ -1967,6 +1971,7 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
@@ -2256,6 +2261,7 @@ fn rename_on_focused_portal_falls_through_to_subcontext() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -2864,6 +2870,7 @@ fn context_close_offers_dissolve_only_for_portal_backed_context() {
             pane_id: portal_pane_id,
             target_context_id: child_ctx_id,
             context_state: None,
+            reveal_after_close: false,
             hidden: false,
         })),
     );
