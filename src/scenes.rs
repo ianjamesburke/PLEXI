@@ -403,6 +403,8 @@ pub enum Step {
     SeedNotification {
         seed_notification: NotificationSeedSpec,
     },
+    /// Seed a pane-send approval whose caller has stopped waiting (headless).
+    SeedPaneSendTimeout { seed_pane_send_timeout: bool },
     /// Switch to the context at this router index.
     SwitchContext { switch_context: usize },
     /// Push the focused pane into a new subcontext with this name.
@@ -937,6 +939,18 @@ pub struct HeadlessBackend {
     /// `-WxH` appended to every `shot` stem when the scene declares a `sizes`
     /// matrix, so the passes write distinct files. `None` for a single size.
     shot_suffix: Option<String>,
+    seeded_pane_send: Option<(PathBuf, String)>,
+}
+
+impl Drop for HeadlessBackend {
+    fn drop(&mut self) {
+        if let Some((profile, id)) = self.seeded_pane_send.take() {
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+            if let Err(error) = monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny) {
+                log::warn!("scene: failed to clear seeded pane.send approval: {error}");
+            }
+        }
+    }
 }
 
 /// Run a scene file. Writes `<out_dir>/<scene-stem>.json` and returns the
@@ -1097,6 +1111,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             out_dir: out_dir.to_path_buf(),
             no_shots,
             shot_suffix: suffix,
+            seeded_pane_send: None,
         });
 
         for step in &scene.steps {
@@ -1969,6 +1984,10 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "seed_notification is headless-only; live scenes must notify through an app",
             )),
+            Step::SeedPaneSendTimeout { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "seed_pane_send_timeout is headless-only",
+            )),
         }
     }
 
@@ -2466,6 +2485,7 @@ fn step_label(step: &Step) -> String {
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
+        Step::SeedPaneSendTimeout { seed_pane_send_timeout } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
@@ -2888,6 +2908,34 @@ impl HeadlessBackend {
                 Ok(Some(StepDetail::Message {
                     message: format!("seeded notification {id}"),
                 }))
+            }
+            Step::SeedPaneSendTimeout { seed_pane_send_timeout } => {
+                if !seed_pane_send_timeout {
+                    return Err(SceneError::new("seed_failed", "seed_pane_send_timeout must be true"));
+                }
+                let (pane_id, context_id) = self.h.with_app(|app| (
+                    app.active_focused_pane_id().unwrap_or(0), app.windows[app.active_window].context_id,
+                ));
+                let profile = crate::config::config_dir();
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+                let actor = format!("pane:{pane_id}");
+                let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
+                    call_id: "pane-send", tool: "pane.send",
+                    input_json: r#"{"pane_id":42,"operation_id":"scene-retry"}"#,
+                    actor_type: crate::broker::ActorType::Agent,
+                    actor_id: &actor, actor_scope: crate::broker::ActorScope::Workspace,
+                    trust_origin: "host", workspace_root: &profile, package_id: "", instance_id: 0,
+                    context_id, target_type: crate::broker::TargetType::Capability,
+                });
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
+                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                };
+                monitor.detach_pane_send_waiter(&pending_request_id)
+                    .map_err(|error| SceneError::new("seed_failed", error))?;
+                self.seeded_pane_send = Some((profile, pending_request_id));
+                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.run_steps(2);
+                Ok(Some(StepDetail::Message { message: "seeded timed-out pane send".to_string() }))
             }
             Step::SwitchContext { switch_context } => {
                 let idx = *switch_context;

@@ -2159,6 +2159,10 @@ pub enum PaneCmd {
         /// does not read or change the system clipboard.
         #[arg(long, conflicts_with = "submit")]
         paste: bool,
+        /// Reuse an operation identity for a brokered agent send. Human and
+        /// unidentified callers are refused before sending when this is set.
+        #[arg(long)]
+        operation_id: Option<String>,
     },
     /// Print the id of the pane you are currently in.
     ///
@@ -3641,6 +3645,7 @@ mod tests {
             text,
             submit,
             paste,
+            ..
         } = cmd
         else {
             panic!("expected pane send command");

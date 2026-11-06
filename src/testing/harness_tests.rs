@@ -1647,11 +1647,14 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let response_file = temp_response(tmp.path(), "send-text");
 
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "/settings".to_string(),
         submit: false,
         response_file: Some(response_file.clone()),
+        operation_id: None,
         peer_ancestry: None,
     });
     assert_eq!(
@@ -6294,11 +6297,13 @@ fn editor_gate_harness_matrix() {
                 let response = temp_response(tmp.path(), &format!("gate-{name}-{index}-{sub}"));
                 match input {
                     GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
+                        generated_operation_id: false,
                         paste: false,
                         pane_id,
                         text,
                         submit: false,
                         response_file: Some(response.clone()),
+                        operation_id: None,
                         peer_ancestry: None,
                     }),
                     GateHostInput::Key(key) => h.inject_ipc(AppRequest::KeyPane {
@@ -6406,11 +6411,13 @@ fn editor_gate_host_surfaces() {
     // no-op, so dirty the buffer first).
     let response = temp_response(tmp.path(), "gate-save-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "!".to_string(),
         submit: false,
         response_file: Some(response.clone()),
+        operation_id: None,
         peer_ancestry: None,
     });
     h.run_frames(2);
@@ -6489,11 +6496,13 @@ fn editor_gate_save_failure_reports_error_semantically() {
 
     let response = temp_response(tmp.path(), "gate-save-fail-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "unsaveable".to_string(),
         submit: false,
         response_file: Some(response.clone()),
+        operation_id: None,
         peer_ancestry: None,
     });
     h.run_frames(2);
@@ -7045,11 +7054,13 @@ fn blank_text_editor_open_acquires_input_focus() {
 
     let text_response = temp_response(tmp.path(), "blank-editor-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "hello".to_string(),
         submit: false,
         response_file: Some(text_response.clone()),
+        operation_id: None,
         peer_ancestry: None,
     });
     h.hidden_frame();
@@ -8286,11 +8297,13 @@ fn file_browser_rename_modal_preselects_entry_name() {
     // selected prefill, and the rename must land in the source's own
     // directory (not the browse/host cwd).
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "QQ".to_string(),
         submit: false,
         response_file: None,
+        operation_id: None,
         peer_ancestry: None,
     });
     run_blurred_frames(&mut h, 2);
@@ -8360,11 +8373,13 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     // Queue text for B while A's raw widget still holds egui focus.
     let response_file = temp_response(tmp.path(), "send-text-b");
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id: pane_b,
         text: "for-b-only".to_string(),
         submit: false,
         response_file: Some(response_file.clone()),
+        operation_id: None,
         peer_ancestry: None,
     });
     h.run_frames(4);
@@ -9746,22 +9761,26 @@ mod pane_send_submit_tests {
 
     fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             paste: false,
             pane_id: pane,
             text: text.to_string(),
             submit: true,
             response_file,
+            operation_id: None,
             peer_ancestry: None,
         });
     }
 
     fn type_only(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             paste: false,
             pane_id: pane,
             text: text.to_string(),
             submit: false,
             response_file,
+            operation_id: None,
             peer_ancestry: None,
         });
     }
@@ -12535,11 +12554,13 @@ mod agent_state_restoration_tests {
         // 5. Explicit pane input resumes it via its Harness Adapter.
         let send_resp = temp_response(tmp.path(), "send-standby");
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             pane_id: 20,
             text: "Use BTreeMap\n".to_string(),
             submit: false,
             paste: false,
             response_file: Some(send_resp),
+            operation_id: None,
             peer_ancestry: None,
         });
         h.hidden_frame();
@@ -13070,11 +13091,13 @@ mod agent_state_restoration_tests {
         for pane_id in [20, 21] {
             let send_resp = temp_response(tmp.path(), &format!("wake-{pane_id}"));
             h.inject_ipc(AppRequest::SendToPane {
+                generated_operation_id: false,
                 pane_id,
                 text: "\n".to_string(),
                 submit: false,
                 paste: false,
                 response_file: Some(send_resp),
+                operation_id: None,
                 peer_ancestry: None,
             });
             h.hidden_frame();
@@ -15013,11 +15036,13 @@ ask = ["pane.send"]
         .child_pid();
     let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: 11,
         text: "hello from restored lead".to_string(),
         submit: false,
         paste: false,
         response_file: Some(send_reply.clone()),
+        operation_id: None,
         peer_ancestry: Some(vec![lead_pid]),
     });
     h.hidden_frame();
@@ -15084,11 +15109,13 @@ ask = ["pane.send"]
 
     let reply_1 = temp_response(&ws, "send-parked-1");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "first message".to_string(),
         submit: false,
         paste: false,
         response_file: Some(reply_1.clone()),
+        operation_id: None,
         peer_ancestry: Some(vec![lead_pid]),
     });
     h.hidden_frame();
@@ -15116,11 +15143,13 @@ ask = ["pane.send"]
     // Second send must require a fresh approval because the Once grant was consumed.
     let reply_2 = temp_response(&ws, "send-parked-2");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "second message".to_string(),
         submit: false,
         paste: false,
         response_file: Some(reply_2.clone()),
+        operation_id: None,
         peer_ancestry: Some(vec![lead_pid]),
     });
     h.hidden_frame();
@@ -15135,6 +15164,7 @@ ask = ["pane.send"]
 fn pane_send_allow_once_retry_consumes_grant_and_succeeds() {
     let mut h = HostHarness::new();
     let target_pane = h.add_focused_terminal();
+    h.terminal_backend(target_pane).enable_input_tap();
     let ws = h.workspace_root();
     let agent_dir = ws.join(".plexi").join("agents").join("lead");
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
@@ -15181,14 +15211,14 @@ ask = ["pane.send"]
         .child_pid();
 
     let reply_1 = temp_response(&ws, "send-retry-1");
-    h.inject_ipc(AppRequest::SendToPane {
-        pane_id: target_pane,
-        text: "attempt 1".to_string(),
-        submit: false,
-        paste: false,
-        response_file: Some(reply_1.clone()),
-        peer_ancestry: Some(vec![lead_pid]),
-    });
+    h.inject_ipc(
+        serde_json::from_value(serde_json::json!({
+            "type": "send_to_pane", "pane_id": target_pane, "text": "attempt 1",
+            "submit": false, "paste": false, "response_file": reply_1,
+            "peer_ancestry": [lead_pid], "operation_id": "op-pane-send-1"
+        }))
+        .unwrap(),
+    );
     h.hidden_frame();
 
     // Simulate wait expiry before the user clicks Allow once.
@@ -15200,8 +15230,8 @@ ask = ["pane.send"]
     assert!(
         json_1["error"]
             .as_str()
-            .is_some_and(|e| e.contains("permission_denied")),
-        "expired wait must reply with permission_denied: {json_1}"
+            .is_some_and(|e| e.contains("approval_wait_timeout")),
+        "expired wait must report its actual timeout: {json_1}"
     );
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
     let pending = monitor.list_pending();
@@ -15212,19 +15242,59 @@ ask = ["pane.send"]
     );
     let req_id = pending[0].pending_request_id.clone();
 
+    let timed_out = monitor
+        .get_continuation(&req_id)
+        .expect("reconcilable request");
+    assert_eq!(timed_out.operation_id.as_deref(), Some("op-pane-send-1"));
+    assert_eq!(
+        timed_out.state,
+        crate::broker::gate::ContinuationState::Paused
+    );
+    assert_eq!(timed_out.run_outcome.as_deref(), Some("retry_required"));
+    h.app.sync_attention_queue();
+    let item = h.app.attention_queue.items.iter().find(|item| item.id == req_id).unwrap();
+    assert!(item.summary.contains("retry"), "the approval card must tell the person the caller stopped waiting: {}", item.summary);
+
     // User approves Allow once after the initial CLI call timed out.
     monitor
         .approve_pending(&req_id, crate::broker::gate::ApprovalChoice::Once)
         .expect("approve once");
+    let late = monitor
+        .get_continuation(&req_id)
+        .expect("late decision receipt");
+    assert_eq!(late.state, crate::broker::gate::ContinuationState::Paused);
+    assert_eq!(late.run_outcome.as_deref(), Some("retry_required"));
+
+    // Approval of one payload must not authorize a different payload to the
+    // same pane, even when the earlier caller has already timed out.
+    let unrelated_reply = temp_response(&ws, "send-retry-unrelated");
+    h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
+        pane_id: target_pane,
+        text: "unrelated message".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(unrelated_reply.clone()),
+        operation_id: None,
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    assert!(
+        !std::path::Path::new(&unrelated_reply).exists(),
+        "a different payload must require its own approval"
+    );
+    assert_eq!(monitor.list_pending().len(), 1);
 
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
-        text: "attempt 2".to_string(),
+        text: "attempt 1".to_string(),
         submit: false,
         paste: false,
         response_file: Some(reply_2.clone()),
+        operation_id: Some("op-pane-send-1".into()),
         peer_ancestry: Some(vec![lead_pid]),
     });
     h.hidden_frame();
@@ -15235,26 +15305,113 @@ ask = ["pane.send"]
         "retry after Allow once must consume the Once grant and succeed: {json_2}"
     );
     assert!(
-        monitor.list_pending().is_empty(),
-        "retry must not file a new ask when an unconsumed Once grant exists"
+        monitor.list_pending().len() == 1,
+        "the unrelated request must remain pending after an exact retry"
     );
+    assert_eq!(
+        h.app.pending_send_approvals.len(), 1,
+        "an unrelated request must keep its own live waiter"
+    );
+
+    // A transport retry of an already executed operation must return a
+    // duplicate receipt, not write the same terminal input a second time.
+    let duplicate_reply = temp_response(&ws, "send-retry-duplicate");
+    h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
+        pane_id: target_pane,
+        text: "attempt 1".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(duplicate_reply.clone()),
+        operation_id: Some("op-pane-send-1".into()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    let duplicate = read_json_response(&duplicate_reply);
+    assert_eq!(duplicate["duplicate"], true, "{duplicate}");
+    assert_eq!(h.terminal_backend(target_pane).take_input_tap(), b"attempt 1",
+        "the original send writes once, and the duplicate writes nothing");
+
+    let forged_reply = temp_response(&ws, "send-forged-completion");
+    h.app.handle_needs_you_api("complete", &serde_json::json!({
+        "id": "op-pane-send-1", "state": "running"
+    }), &[lead_pid], &forged_reply);
+    let forged = read_json_response(&forged_reply);
+    assert_eq!(forged["error_code"], "host_owned_operation", "{forged}");
+    assert_eq!(monitor.get_continuation("op-pane-send-1").unwrap().state,
+        crate::broker::gate::ContinuationState::Completed);
+
+    let conflict_reply = temp_response(&ws, "send-retry-conflict");
+    h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
+        pane_id: target_pane,
+        text: "different text with same id".to_string(),
+        submit: false,
+        paste: false,
+        response_file: Some(conflict_reply.clone()),
+        operation_id: Some("op-pane-send-1".into()),
+        peer_ancestry: Some(vec![lead_pid]),
+    });
+    h.hidden_frame();
+    let conflict = read_json_response(&conflict_reply);
+    assert_eq!(
+        conflict["error_code"], "operation_id_conflict",
+        "{conflict}"
+    );
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a conflicting retry must not write terminal input");
 
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 3".to_string(),
         submit: false,
         paste: false,
         response_file: Some(reply_3.clone()),
+        operation_id: None,
         peer_ancestry: Some(vec![lead_pid]),
     });
     h.hidden_frame();
     assert_eq!(
         monitor.list_pending().len(),
-        1,
+        2,
         "subsequent call after Once grant was consumed must ask again"
     );
+
+    let parked = h
+        .app
+        .pending_send_approvals
+        .iter_mut()
+        .find(|wait| wait.response_file.as_deref() == Some(reply_3.as_str()))
+        .expect("third send remains parked");
+    // The pane still exists, but the socket client that made this call died.
+    parked.peer_ancestry = Some(vec![0, lead_pid]);
+    let disconnected_id = parked.pending_request_id.clone();
+    monitor
+        .approve_pending(&disconnected_id, crate::broker::gate::ApprovalChoice::Once)
+        .expect("approve a disconnected caller");
+    h.hidden_frame();
+    let disconnected = read_json_response(&reply_3);
+    assert_eq!(disconnected["error_code"], "caller_disconnected");
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a dead caller's late approval must not write terminal input");
+    assert_eq!(
+        monitor.get_continuation(&disconnected_id).unwrap().state,
+        crate::broker::gate::ContinuationState::Paused
+    );
+
+    let denied_id = h.app.pending_send_approvals.iter()
+        .find(|wait| wait.response_file.as_deref() == Some(unrelated_reply.as_str()))
+        .expect("unrelated waiter remains live").pending_request_id.clone();
+    monitor.approve_pending(&denied_id, crate::broker::gate::ApprovalChoice::Deny).unwrap();
+    h.hidden_frame();
+    let denied = read_json_response(&unrelated_reply);
+    assert_eq!(denied["error_code"], "permission_denied");
+    assert_eq!(denied["operation_state"], "cancelled");
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a denied request must not write terminal input");
 }
 
 #[test]
@@ -15604,11 +15761,13 @@ mod restore_followups_0983b {
 
         let send_resp = temp_response(tmp.path(), "wake-30");
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             pane_id: 30,
             text: "\n".to_string(),
             submit: false,
             paste: false,
             response_file: Some(send_resp),
+            operation_id: None,
             peer_ancestry: None,
         });
         h.hidden_frame();

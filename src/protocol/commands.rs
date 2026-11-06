@@ -898,6 +898,12 @@ pub enum AppRequest {
     SendToPane {
         pane_id: u64,
         text: String,
+        /// Stable, caller-chosen identity for reconciling this send.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation_id: Option<String>,
+        /// The CLI generated this ID for transport recovery, rather than the user explicitly requesting it.
+        #[serde(default)]
+        generated_operation_id: bool,
         #[serde(default)]
         submit: bool,
         /// Deliver literal text as one paste event to an app pane.

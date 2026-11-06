@@ -81,6 +81,23 @@ pub fn pipe_name_for_channel(channel: Option<&str>) -> String {
 #[cfg(unix)]
 pub use std::os::unix::net::{UnixListener as IpcListener, UnixStream as IpcStream};
 
+/// Check whether a retained reply stream still has a peer without consuming data.
+#[cfg(unix)]
+pub(crate) fn peer_connected(stream: &IpcStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    // SAFETY: the buffer is valid for one byte and the fd is owned by stream.
+    let n = unsafe { libc::recv(stream.as_raw_fd(), &mut byte as *mut u8 as *mut _, 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    if n > 0 { return true; }
+    if n == 0 { return false; }
+    matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
+}
+
+#[cfg(windows)]
+pub(crate) fn peer_connected(stream: &IpcStream) -> bool {
+    stream.peer_connected()
+}
+
 /// Unlink a leftover socket file before binding.
 ///
 /// A previous host that died without unlinking leaves a socket inode that
@@ -158,6 +175,9 @@ mod windows_impl {
     }
 
     impl IpcStream {
+        pub(super) fn peer_connected(&self) -> bool {
+            self.peek_available().is_ok()
+        }
         /// Connect to an existing named pipe, blocking until one instance is
         /// free or the pipe is gone.
         pub fn connect(endpoint: impl AsRef<Path>) -> io::Result<Self> {

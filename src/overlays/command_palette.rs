@@ -2307,11 +2307,13 @@ impl PlexiApp {
                     shell_cmd.chars().count()
                 );
                 self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                    generated_operation_id: false,
                     pane_id,
                     text: shell_cmd.to_string(),
                     submit: true,
                     paste: false,
                     response_file: None,
+                    operation_id: None,
                     peer_ancestry: None,
                 });
                 return;
@@ -2660,6 +2662,7 @@ impl PlexiApp {
                     text,
                     submit,
                     paste,
+                    operation_id,
                 } => {
                     let Some(pane_id) = self.resolve_host_pane_target(&pane_id) else {
                         return 1;
@@ -2667,11 +2670,13 @@ impl PlexiApp {
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
                     self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                        generated_operation_id: false,
                         pane_id,
                         text,
                         submit,
                         paste,
                         response_file: Some(resp_str),
+                        operation_id,
                         peer_ancestry: None,
                     });
                     if let Ok(content) = std::fs::read_to_string(&resp_path) {

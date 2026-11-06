@@ -201,6 +201,15 @@ pub fn default_ask_options() -> Vec<QueueOption> {
     ]
 }
 
+fn pane_send_ask_options() -> Vec<QueueOption> {
+    let mut options = default_ask_options();
+    options[1].label = format!(
+        "Allow this workspace caller any text to any pane for {} days",
+        crate::broker::gate::ALWAYS_TTL_SECS / (24 * 60 * 60)
+    );
+    options
+}
+
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct AttentionQueueState {
@@ -626,13 +635,20 @@ impl PlexiApp {
                 pane_name,
                 context_id,
                 context_path,
-                summary: format!(
-                    "{} wants to use {}",
-                    self.approval_actor_label(&pending.actor_id),
-                    pending.tool.replace("__", " / ")
-                ),
+                summary: if monitor.get_continuation(&req_id).is_some_and(|record| {
+                    record.run_outcome.as_deref() == Some("retry_required")
+                }) {
+                    format!("{} stopped waiting. Approve, then retry {}.",
+                        self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                } else {
+                    format!("{} wants to use {}", self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                },
                 command_text: cmd_text,
-                options: default_ask_options(),
+                options: if pending.tool == "pane.send" {
+                    pane_send_ask_options()
+                } else {
+                    default_ask_options()
+                },
                 created_at_ms: created_ms,
                 locked: false,
                 source: QueueSource::BrokerPending { request_id: req_id },
@@ -2489,6 +2505,13 @@ impl InputViewportRect for egui::InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_send_always_option_names_caller_breadth_and_expiry() {
+        let options = pane_send_ask_options();
+        assert_eq!(options[1].key, "allow_always");
+        assert_eq!(options[1].label, "Allow this workspace caller any text to any pane for 30 days");
+    }
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
 

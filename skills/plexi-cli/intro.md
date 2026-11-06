@@ -103,6 +103,18 @@ plexi needs-you show <id>
 plexi needs-you reconcile
 ```
 
+If `pane send` returns `approval_wait_timeout`, the send did not run. Use
+`plexi needs-you reconcile --id <operation-id>` to inspect the decision.
+After approval, retry the same text and target with `--operation-id
+<operation-id>`. A one-time approval applies only to that operation and its
+exact text. If the outcome is unknown, check the target before taking further
+action; an automatic retry could repeat an effect.
+
+Explicit `--operation-id` requires a brokered agent caller. Human or
+unidentified callers receive an error before any text is sent; ordinary sends
+without the flag remain available. A completed operation reported as a
+duplicate does not send text again.
+
 Completed continuations must not repeat their mutation. For app-to-app data,
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.
