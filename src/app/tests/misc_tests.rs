@@ -1161,14 +1161,10 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
             "shell must remain in the executed cd directory"
         );
         h.app.open_file_browser();
-        let browser = h.app.windows[0]
-            .panes
-            .values()
-            .find_map(|pane| {
-                pane.as_app()
-                    .filter(|app| app.runtime.type_id() == "file_browser")
-            })
-            .unwrap();
+        // Overlay replacement retains the invoking terminal slot. The harness
+        // seed is also a FileBrowser runtime, so never pick an arbitrary runtime.
+        let browser = h.app.windows[0].panes[&terminal].as_app().unwrap();
+        assert_eq!(browser.manifest_id, "file_browser");
         assert_eq!(
             browser.workspace_root.canonicalize().unwrap(),
             directory.canonicalize().unwrap()
@@ -1331,7 +1327,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         .values()
         .find_map(|pane| {
             pane.as_app()
-                .filter(|app| app.runtime.type_id() == "file_browser")
+                .filter(|app| app.manifest_id == "file_browser")
         })
         .unwrap();
     assert_eq!(
