@@ -711,42 +711,6 @@ fn integration_files(package: &Package, receipt: &Receipt) -> Result<Vec<(PathBu
     Ok(files)
 }
 
-/// Recognize only the old release installer's duplicated command: its bytes
-/// must match a host at the exact historical payload path for this channel.
-fn legacy_release_command(path: &Path, receipt: &Receipt) -> Result<bool> {
-    let name = release::command_name(&receipt.channel);
-    let expected = receipt.bin_dir.join(if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name
-    });
-    if path != expected || path.is_symlink() || !path.is_file() {
-        return Ok(false);
-    }
-    let parent = receipt
-        .root
-        .parent()
-        .ok_or_else(|| Error::Invalid("installation root has no parent".into()))?;
-    let legacy = parent.join(if receipt.channel == "stable" && !cfg!(windows) {
-        "main"
-    } else {
-        &receipt.channel
-    });
-    let checksum = hash_file(path)?;
-    for relative in ["plexi", "plexi.exe", "Plexi.app/Contents/MacOS/plexi"] {
-        let payload = legacy.join(relative);
-        if payload.is_file() && !payload.is_symlink() && hash_file(&payload)? == checksum {
-            log::info!(
-                "distribution: adopting verified legacy release command {}; retaining legacy payload at {}",
-                path.display(),
-                legacy.display()
-            );
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub fn display_name(channel: &str) -> String {
     match channel {
         "stable" | "main" => "Plexi".into(),
@@ -855,7 +819,11 @@ fn install_checked(
                     .iter()
                     .any(|p| p.path == path && p.matches().unwrap_or(false))
             });
-            if !owned && !legacy_release_command(&path, &receipt)? {
+            if !owned {
+                log::info!(
+                    "distribution: refusing unowned integration for channel={}",
+                    receipt.channel
+                );
                 return Err(Error::Invalid(format!(
                     "refusing to overwrite unowned integration {}",
                     path.display()
@@ -1021,11 +989,10 @@ fn atomic_link(path: &Path, target: &Path) -> Result<()> {
 /// Stage a real copy of the active app bundle beside the Applications
 /// destination. Spotlight skips symlinks and hidden directories, so a link
 /// into the generation store is invisible to search and leaves one
-/// LaunchServices record per generation. Only our old link into this
-/// installation root, or a copy the previous receipt records, is replaced.
+/// LaunchServices record per generation. Only an item the previous receipt records is replaced.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn prepare_bundle_change(
-    root: &Path,
+    _root: &Path,
     before: Option<&Receipt>,
     path: &Path,
     source: &Path,
@@ -1037,11 +1004,8 @@ fn prepare_bundle_change(
             .iter()
             .any(|p| p.path == path && p.matches().unwrap_or(false))
     });
-    let our_link = path.is_symlink()
-        && fs::read_link(path)
-            .context("read existing Applications link")?
-            .starts_with(root);
-    if previous && !recorded && !our_link {
+    if previous && !recorded {
+        log::info!("distribution: refusing unowned Applications bundle");
         return Err(Error::Invalid(format!(
             "refusing to replace unowned bundle {}",
             path.display()
@@ -1589,12 +1553,13 @@ pub fn register_path(root: &Path) -> Result<Receipt> {
 }
 
 pub fn launch(root: &Path, args: &[std::ffi::OsString]) -> Result<i32> {
-    if let Ok(_lock) = lock(root) {
+    let receipt = {
+        let _lock = lock(root)?;
         recover(root)?;
-    }
-    let receipt = read_receipt(root)?.ok_or_else(|| {
-        Error::Invalid("installation is incomplete; run the installer again".into())
-    })?;
+        read_receipt(root)?.ok_or_else(|| {
+            Error::Invalid("installation is incomplete; run the installer again".into())
+        })?
+    };
     // Contextual bare-command routing is limited to an actual Plexi pane.
     if receipt.channel == "stable"
         && std::env::var("PLEXI_RUNNING").as_deref() == Ok("1")
@@ -2127,33 +2092,38 @@ mod tests {
         }
     }
 
-    // Regression: upgrading the receipt-owned copy must also reconcile the
-    // legacy launch path. This deliberately exercises the existing bundle
-    // activation boundary with both locations in a disposable directory.
     #[cfg(unix)]
     #[test]
-    fn legacy_app_reference_resolves_to_upgraded_bundle() {
+    fn unreceipted_legacy_bundles_are_untouched() {
         let (home, root, bundle, executable, managed) = bundle_fixture();
-        let legacy = home.path().join("system-Applications/Plexi Beta.app");
-        let legacy_exe = legacy.join("Contents/MacOS/plexi-beta");
-        fs::create_dir_all(legacy_exe.parent().unwrap()).unwrap();
-        fs::write(&legacy_exe, b"old host").unwrap();
-        let profile = home.path().join("profile");
-        fs::create_dir_all(&profile).unwrap();
-        fs::write(profile.join("settings.toml"), b"settings").unwrap();
-        fs::write(profile.join("workspace.json"), b"workspace").unwrap();
+        let legacy = home
+            .path()
+            .join("system-Applications/Plexi Beta.app/Contents/MacOS/plexi-beta");
+        let other = home
+            .path()
+            .join("Applications/Plexi Alpha.app/Contents/MacOS/plexi-alpha");
+        for path in [&legacy, &other] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"old build").unwrap();
+        }
+        let owned = activate_bundle(
+            &prepare_bundle_change(&root, None, &managed, &bundle, &executable).unwrap(),
+        );
+        assert!(owned.matches().unwrap());
+        assert_eq!(fs::read(legacy).unwrap(), b"old build");
+        assert_eq!(fs::read(other).unwrap(), b"old build");
+        let link = home.path().join("Applications/Unowned.app");
+        std::os::unix::fs::symlink(&bundle, &link).unwrap();
+        assert!(prepare_bundle_change(&root, None, &link, &bundle, &executable).is_err());
+        assert_eq!(fs::read_link(link).unwrap(), bundle);
+    }
 
-        let change = prepare_bundle_change(&root, None, &managed, &bundle, &executable).unwrap();
-        activate_bundle(&change);
-        assert_eq!(
-            fs::read(profile.join("settings.toml")).unwrap(),
-            b"settings"
-        );
-        assert_eq!(
-            fs::read(profile.join("workspace.json")).unwrap(),
-            b"workspace"
-        );
-        assert_eq!(fs::read(&legacy_exe).unwrap(), b"host build abc");
+    #[test]
+    fn launch_refuses_an_in_progress_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let _lock = lock(dir.path()).unwrap();
+        let error = launch(dir.path(), &[]).unwrap_err();
+        assert!(error.to_string().contains("another installer"));
     }
 
     #[cfg(unix)]
@@ -2161,7 +2131,15 @@ mod tests {
     fn applications_link_into_our_root_becomes_a_real_owned_bundle() {
         let (home, root, bundle, executable, path) = bundle_fixture();
         std::os::unix::fs::symlink(&bundle, &path).unwrap();
-        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        let mut prior = fixture_receipt(&root);
+        prior.integrations.push(OwnedPath {
+            path: path.clone(),
+            sha256: String::new(),
+            link_target: Some(bundle.clone()),
+            bundle_executable: None,
+        });
+        let change =
+            prepare_bundle_change(&root, Some(&prior), &path, &bundle, &executable).unwrap();
         let owned = activate_bundle(&change);
         assert!(!path.is_symlink() && path.is_dir());
         assert_eq!(
@@ -2216,9 +2194,17 @@ mod tests {
     fn interrupted_bundle_activation_restores_the_previous_link() {
         let (_home, root, bundle, executable, path) = bundle_fixture();
         std::os::unix::fs::symlink(&bundle, &path).unwrap();
-        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        let mut prior = fixture_receipt(&root);
+        prior.integrations.push(OwnedPath {
+            path: path.clone(),
+            sha256: String::new(),
+            link_target: Some(bundle.clone()),
+            bundle_executable: None,
+        });
+        let change =
+            prepare_bundle_change(&root, Some(&prior), &path, &bundle, &executable).unwrap();
         let journal = Journal {
-            before: None,
+            before: Some(prior.clone()),
             after: fixture_receipt(&root),
             changes: vec![change.clone()],
             windows_path: None,
@@ -2230,7 +2216,8 @@ mod tests {
         assert_eq!(fs::read_link(&path).unwrap(), bundle);
         assert!(!change.bundle.unwrap().scratch.exists());
         // An interruption before the swap leaves the destination alone.
-        let change = prepare_bundle_change(&root, None, &path, &bundle, &executable).unwrap();
+        let change =
+            prepare_bundle_change(&root, Some(&prior), &path, &bundle, &executable).unwrap();
         restore_bundle(&path, &change.after_hash, change.bundle.as_ref().unwrap()).unwrap();
         assert_eq!(fs::read_link(&path).unwrap(), bundle);
         assert!(!change.bundle.unwrap().scratch.exists());

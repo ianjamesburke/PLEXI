@@ -7,7 +7,7 @@ if [[ "${1:-}" != --from-source ]]; then
 fi
 shift
 cd "$repo"
-# Optional channel, then installer flags (e.g. --trash-strays) passed through.
+# Optional channel, then installer flags passed through.
 channel=""
 if [[ $# -gt 0 && "$1" != --* ]]; then channel="$1"; shift; fi
 if [[ -z "$channel" ]]; then

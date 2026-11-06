@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use plexi_distribution::{
     Error, Result,
     package::Package,
-    release, strays,
-    transaction::{self, InstallOptions, Receipt},
+    release,
+    transaction::{self, InstallOptions},
 };
 use std::{ffi::OsString, path::PathBuf};
 
@@ -24,10 +24,6 @@ struct Args {
     applications_dir: Option<PathBuf>,
     #[arg(long)]
     install_only: bool,
-    /// Move other copies of this channel's app (outside the managed
-    /// installation) to the Trash instead of only reporting them.
-    #[arg(long)]
-    trash_strays: bool,
     #[arg(long, overrides_with = "no_modify_path")]
     modify_path: bool,
     #[arg(long, overrides_with = "modify_path")]
@@ -86,56 +82,6 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 static LOGGER: Logger = Logger;
-
-/// Report old copies of the channel's app; move them to the Trash only with
-/// `--trash-strays` or an interactive yes. Never deletes.
-fn handle_strays(receipt: &Receipt, trash: bool) {
-    use std::io::{BufRead, IsTerminal, Write};
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let found = strays::find_for_installation(
-        &receipt.channel,
-        &home,
-        Some(receipt),
-        &strays::candidate_dirs(&home),
-    );
-    if found.is_empty() {
-        return;
-    }
-    log::warn!(
-        "distribution: {} stray copies of channel {}: {found:?}",
-        found.len(),
-        receipt.channel
-    );
-    println!(
-        "Other copies of {} outside the managed installation:",
-        transaction::display_name(&receipt.channel)
-    );
-    for path in &found {
-        println!("  {}", path.display());
-    }
-    let trash = trash || {
-        let stdin = std::io::stdin();
-        stdin.is_terminal() && {
-            print!("Move them to the Trash? [y/N] ");
-            let _ = std::io::stdout().flush();
-            let mut answer = String::new();
-            stdin.lock().read_line(&mut answer).is_ok()
-                && matches!(answer.trim(), "y" | "Y" | "yes")
-        }
-    };
-    if !trash {
-        println!("Left in place. Rerun with --trash-strays to move them to the Trash.");
-        return;
-    }
-    for path in &found {
-        match strays::move_to_trash(path, &home) {
-            Ok(destination) => println!("Moved {} to {}", path.display(), destination.display()),
-            Err(error) => eprintln!("warning: {error}"),
-        }
-    }
-}
 
 fn run(args: Args) -> Result<i32> {
     match args.command {
@@ -280,7 +226,6 @@ fn run(args: Args) -> Result<i32> {
             .to_string_lossy()
             .replace('\'', "'\\''")
     );
-    handle_strays(&receipt, args.trash_strays);
     #[cfg(windows)]
     let command_directory = transaction::windows_shell_path(&receipt.bin_dir);
     #[cfg(unix)]

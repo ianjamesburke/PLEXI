@@ -330,3 +330,10 @@ Every `HostHarness::new()` call creates a fresh `tempfile::TempDir` and installs
 - The override is thread-local, so worker threads spawned by the host (e.g. IPC handlers) won't see it. This is acceptable for dispatch tests; note it when writing tests that assert on paths written by background threads.
 - For unit tests that call `config_dir()` directly (without HostHarness), use `set_test_profile_dir(tempdir.path().to_path_buf())` and hold the returned `TestProfileDirGuard` for the test duration.
 - `set_test_channel()` remains for tests that specifically exercise channel-name derivation logic. Prefer `set_test_profile_dir` for everything else.
+
+## Receipt-owned installation acceptance
+
+Run `cargo test -p plexi-distribution` for installer changes, including ownership,
+transaction recovery, concurrency and running-build identity. Use disposable
+profiles for installation tests. On macOS independently verify the real bundle,
+GUI launch and authorization behavior; Linux fixtures do not establish those proofs.
