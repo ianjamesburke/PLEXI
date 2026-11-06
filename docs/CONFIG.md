@@ -145,7 +145,7 @@ Portals cannot be wrapped, and at least one pane must remain outside the child.
 Cmd+D on a zoomed pane wraps it and creates a second pane beside it in the child.
 
 `context_zoom_out` (Cmd+Escape) closes an open Plexi surface first, then moves
-up one context level. At the root it stays in panes. The `tree_atlas` experiment
+up one context level. The sidebar shows the active ancestry under its root; clicking an ancestor breadcrumb uses the same parent-return restoration and folds deeper rows. Explicit breadcrumb targets can show a parent whose sole portal is revealed; ordinary context navigation retains its reveal behavior. At the root it stays in panes. The `tree_atlas` experiment
 is off by default; when enabled, Cmd+Escape at the root opens the context tree
 and Enter or Cmd+Enter opens the selected context directly.
 

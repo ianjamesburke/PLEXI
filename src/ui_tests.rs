@@ -4054,6 +4054,109 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
+    #[test]
+    fn screenshot_sidebar_ancestry_overflow_scale_matrix() {
+        for (width, scale) in [(520.0, 1.0), (1100.0, 1.0), (1100.0, 1.5)] {
+            let mut h = PlexiUiHarness::new_sized_scaled(width, 800.0, scale);
+            let root_path = h.workspace_root().to_string_lossy().to_string();
+            let root = h.with_app(|app| app.router.active().context_id);
+            fill_window_with_panes(&mut h, 0, 8);
+            let second = push_window_for_context(&mut h, root, 1, &root_path);
+            fill_window_with_panes(&mut h, second, 6);
+            let (child_idx, child, child_window) = push_sidebar_context(&mut h, "Research child with a long descriptive name", &root_path);
+            fill_window_with_panes(&mut h, child_window, 12);
+            let (leaf_idx, leaf, leaf_window) = push_sidebar_context(&mut h, "Current grandchild with a long descriptive name", &root_path);
+            fill_window_with_panes(&mut h, leaf_window, 12);
+            let (_, _, other_window) = push_sidebar_context(&mut h, "Unrelated root stays compact", &root_path);
+            fill_window_with_panes(&mut h, other_window, 2);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = true;
+                app.router.get_mut(0).name = "Root workspace".to_string().into();
+                app.router.get_mut(child_idx).parent_id = Some(root);
+                app.router.get_mut(leaf_idx).parent_id = Some(child);
+                for (window, target) in [(second, child), (child_window, leaf)] {
+                    let win = &mut app.windows[window];
+                    let panes = crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, win.tree.root().unwrap());
+                    let pane_id = *panes.last().unwrap();
+                    win.panes.insert(pane_id, Pane::Portal(Box::new(crate::host::pane::PortalPane { pane_id, target_context_id: target, context_state: None, hidden: false, reveal_after_close: false })));
+                }
+                for win in &mut app.windows {
+                    let panes = crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, win.tree.root().unwrap());
+                    for (index, pane_id) in panes.iter().enumerate() {
+                        if let Some(Pane::App(pane)) = win.panes.get_mut(pane_id) {
+                            let state = match index % 5 {
+                                0 => Some(crate::protocol::AgentState::Working),
+                                1 => Some(crate::protocol::AgentState::NeedsYou),
+                                2 => Some(crate::protocol::AgentState::Blocked),
+                                _ => None,
+                            };
+                            pane.agent = state.map(|state| crate::protocol::PaneAgentState { pane_id: *pane_id, state, agent: "fixture".into(), detail: None, session_id: None });
+                            pane.hidden = index % 5 == 3;
+                        }
+                    }
+                    win.focused_pane = panes.last().and_then(|id| win.tree.tiles.find_pane(id));
+                }
+                app.switch_workspace(leaf_idx);
+                app.set_ui_scale(scale);
+            });
+            h.run_steps(3);
+            h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.01));
+            h.save_screenshot(&evidence_png!(format!("_{width}_{scale}"))).unwrap();
+            assert!(h.host_has_label("Current grandchild with a long descriptive name"));
+        }
+    }
+
+    #[test]
+    fn sidebar_ancestor_pointer_restores_context_and_folds_path() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let cwd = h.workspace_root().to_path_buf();
+        let open = |h: &mut PlexiUiHarness| h.open_target(HarnessOpenTarget::Builtin { id: "file_browser", cwd: &cwd, args: &[] }).unwrap();
+        let pane = open(&mut h);
+        open(&mut h);
+        let (root, child) = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.router.get_mut(0).name = "Root path".to_string().into();
+            let root = app.router.active().context_id;
+            app.push_pane_to_subcontext(Some("Child path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(root)).unwrap();
+            let child = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            (root, child)
+        });
+        open(&mut h);
+        let grandchild = h.with_app_mut(|app| {
+            app.push_pane_to_subcontext(Some("Grandchild path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(child)).unwrap();
+            let id = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            id
+        });
+        h.run_steps(3);
+        h.with_app_mut(|app| {
+            app.router.get_mut(0).parked = true;
+            app.parked_section_expanded = false;
+        });
+        h.run_steps(3);
+        assert!(h.host_has_label("Child path"), "active parked ancestry remains reachable");
+        h.with_app_mut(|app| app.router.get_mut(0).parked = false);
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_nested")).unwrap();
+        h.harness().get_by_label("Child path").click();
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, child));
+        assert!(!h.host_has_label("Grandchild path"));
+        h.with_app_mut(|app| {
+            let index = app.router.position(|c| c.context_id == grandchild).unwrap();
+            app.switch_workspace(index);
+        });
+        h.run_steps(3);
+        h.harness().get_all_by_label("Root path").min_by(|a,b| a.rect().height().total_cmp(&b.rect().height())).unwrap().click();
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, root));
+        assert!(!h.host_has_label("Child path"));
+        h.save_screenshot(&evidence_png!("_root")).unwrap();
+    }
+
     /// Stint 0241: the sidebar is master-context navigation only. Every slot is
     /// a numbered, keyboard-addressable top-level destination, so a subcontext
     /// is never rendered and never consumes a number — it is reached from

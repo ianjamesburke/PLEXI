@@ -297,6 +297,7 @@ impl PlexiApp {
                         chrome_section(ui, "Sidebar rows", &colors, |ui| {
                             for (index, name) in data.names.iter().enumerate() {
                                 crate::ui::sidebar_row::SidebarRow {
+                                    ancestry: Vec::new(),
                                     is_active: index == 1,
                                     is_dragging: false,
                                     any_dragging: false,
@@ -307,6 +308,7 @@ impl PlexiApp {
                                     subtitle: Some(data.command.to_owned()),
                                     draggable: false,
                                     pane_dots: Some(crate::ui::sidebar_row::PaneDots {
+                                        route_idx: None,
                                         count: data.pips,
                                         focused_idx: Some(0),
                                         hidden_set: Default::default(),

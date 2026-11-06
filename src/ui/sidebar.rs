@@ -73,6 +73,19 @@ fn reorder_line_y(rects: &[Rect], slot: usize) -> f32 {
 }
 
 impl PlexiApp {
+    fn sidebar_ancestry_levels(&self, root: usize) -> Vec<crate::ui::sidebar_row::AncestryLevel> {
+        let path = self.router.active_ancestry();
+        if path.first() != Some(&root) || path.len() < 2 { return Vec::new(); }
+        path.iter().map(|&index| {
+            let context = self.router.get(index);
+            crate::ui::sidebar_row::AncestryLevel {
+                context_id: context.context_id,
+                name: context.name.to_string(),
+                dots: self.sidebar_pane_dots(context.context_id, index == self.router.active_idx()),
+            }
+        }).collect()
+    }
+
     /// Sidebar pane dots retain the window and pane that context activation
     /// will restore, even while another context is active.
     fn sidebar_pane_dots(&self, ctx_id: u64, is_active_context: bool) -> Option<PaneDots> {
@@ -203,7 +216,27 @@ impl PlexiApp {
             });
             activities.push(activity);
         }
+        let ancestry = self.router.active_ancestry();
+        let child = ancestry
+            .windows(2)
+            .find(|pair| self.router.get(pair[0]).context_id == ctx_id)
+            .map(|pair| self.router.get(pair[1]).context_id);
+        let route_idx = child.and_then(|child| {
+            pane_ids.iter().position(|id| {
+                self.windows
+                    .iter()
+                    .filter(|w| w.context_id == ctx_id)
+                    .find_map(|w| w.panes.get(id))
+                    .and_then(|p| p.as_portal())
+                    .is_some_and(|portal| portal.target_context_id == child)
+            })
+        });
+        let route_idx = route_idx.or_else(|| {
+            (is_active_context && ancestry.len() > 1).then_some(focused_idx).flatten()
+        });
+        let focused_idx = if child.is_some() { None } else { focused_idx };
         Some(PaneDots {
+            route_idx,
             count: pane_ids.len(),
             focused_idx,
             hidden_set,
@@ -294,7 +327,10 @@ impl PlexiApp {
         let desired_w = ctx
             .data(|d| d.get_temp::<f32>(desired_id))
             .unwrap_or(crate::ui::style::SIDEBAR_DEFAULT_W)
-            .clamp(crate::ui::style::SIDEBAR_MIN_W, crate::ui::style::SIDEBAR_MAX_W);
+            .clamp(
+                crate::ui::style::SIDEBAR_MIN_W,
+                crate::ui::style::SIDEBAR_MAX_W,
+            );
         let was_clamped = ctx
             .data(|d| d.get_temp::<bool>(clamped_id))
             .unwrap_or(false);
@@ -365,6 +401,7 @@ impl PlexiApp {
 
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
+        let mut ancestor_navigation = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut active_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -382,9 +419,11 @@ impl PlexiApp {
         self.sync_attention_queue();
 
         // Build display order: top-level contexts only. Subcontexts never appear
-        // in the sidebar — they are reached from inside their parent via its
-        // Portal tile — so they are never enumerated, numbered, or rendered.
+        // as independent entries. Only the active ancestry is disclosed inside
+        // its root card, without changing numbering or drag order.
         let display_order: Vec<usize> = self.router.top_level_order();
+        let ancestry = self.router.active_ancestry();
+        let active_root = ancestry.first().copied();
 
         // Partition: active contexts render in the main list, parked ones below.
         let active_order: Vec<usize> = display_order
@@ -418,7 +457,8 @@ impl PlexiApp {
                     let subtitle = Some(self.router.get(i).root.display().to_string());
 
                     let (action, response) = SidebarRow {
-                        is_active,
+                        ancestry: self.sidebar_ancestry_levels(i),
+                        is_active: active_root == Some(i),
                         is_dragging,
                         any_dragging,
                         action_enabled: num_contexts > 1 && !any_dragging,
@@ -501,6 +541,9 @@ impl PlexiApp {
                         });
 
                         match action {
+                            SidebarAction::Ancestor { source, target } => {
+                                ancestor_navigation = Some((source, target));
+                            }
                             SidebarAction::Delete => {
                                 delete_context = Some(i);
                             }
@@ -527,7 +570,7 @@ impl PlexiApp {
                     ui.add_space(8.0);
 
                     let divider_id = egui::Id::new("parked_divider");
-                    let expanded = self.parked_section_expanded;
+                    let expanded = self.parked_section_expanded || active_root.is_some_and(|i| self.router.get(i).parked);
                     let label = if parked_count > 0 {
                         format!("Parked ({parked_count})")
                     } else {
@@ -545,17 +588,18 @@ impl PlexiApp {
                     }
                     ui.add_space(4.0);
 
-                    if self.parked_section_expanded {
+                    if expanded {
                         for &i in &parked_order {
                             let ctx = self.router.get(i);
                             let ctx_name = ctx.name.to_string();
                             let ctx_id = ctx.context_id;
                             let subtitle = Some(ctx.root.display().to_string());
 
-                            let pane_dots = self.sidebar_pane_dots(ctx_id, false);
+                            let pane_dots = self.sidebar_pane_dots(ctx_id, i == self.router.active_idx());
 
                             let (action, response) = SidebarRow {
-                                is_active: false,
+                                ancestry: self.sidebar_ancestry_levels(i),
+                                is_active: active_root == Some(i),
                                 is_dragging: self.drag_context == Some(i),
                                 any_dragging: self.drag_context.is_some(),
                                 action_enabled: false,
@@ -582,6 +626,7 @@ impl PlexiApp {
                             });
 
                             match action {
+                                SidebarAction::Ancestor { source, target } => { ancestor_navigation = Some((source, target)); }
                                 SidebarAction::DragStart => {
                                     self.drag_context = Some(i);
                                 }
@@ -790,6 +835,8 @@ impl PlexiApp {
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
+        } else if let Some((source, target)) = ancestor_navigation {
+            self.navigate_context_ancestor(source, target);
         } else if let Some(i) = clicked_workspace {
             // Only top-level rows are rendered, so a click here is always a
             // lateral move between master contexts — never a descent into a
@@ -809,6 +856,32 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_ancestry_projection_tracks_ids_empty_state_and_background_rename() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.add_test_pane();
+        let root = h.app.router.active().context_id;
+        h.app.router.get_mut(0).name = "duplicate".to_string().into();
+        h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+        let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+        let child = h.app.router.get(child_index).context_id;
+        h.app.switch_workspace(child_index);
+        let levels = h.app.sidebar_ancestry_levels(0);
+        assert_eq!(levels.iter().map(|l| l.context_id).collect::<Vec<_>>(), vec![root, child]);
+        assert_eq!(levels[0].name, levels[1].name);
+        let focus = h.app.active_window;
+        h.app.router.get_mut(0).parked = true;
+        h.app.router.get_mut(0).name = "renamed in background".to_string().into();
+        assert_eq!(h.app.sidebar_ancestry_levels(0)[0].name, "renamed in background");
+        assert_eq!(h.app.active_window, focus);
+        h.app.windows[focus].panes.clear();
+        h.app.windows[focus].tree = egui_tiles::Tree::empty("empty restored child");
+        assert!(h.app.sidebar_ancestry_levels(0)[1].dots.is_none());
+        h.app.switch_workspace(0);
+        assert!(h.app.sidebar_ancestry_levels(0).is_empty());
+    }
+
     use super::*;
     use egui::{pos2, vec2, Rect};
 

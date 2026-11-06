@@ -2570,7 +2570,6 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     let root = h.app.windows[child1_window].tree.tiles.insert_horizontal_tile(vec![old_root, outside]);
     h.app.windows[child1_window].tree.root = Some(root);
 
-
     // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
     // With insert_after_subtree(root), child2 lands after child1: [root, child1, child2].
     push_ipc(&mut h, pane_b);
@@ -4299,3 +4298,82 @@ fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
     assert_eq!(response, r#"{"ok":true}"#);
 }
 
+#[test]
+fn breadcrumb_navigation_rejects_stale_source_and_nonancestor() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.app.router.active().context_id;
+    let before = h.app.active_window;
+    assert!(!h.app.navigate_context_ancestor(root + 1, root));
+    assert!(!h.app.navigate_context_ancestor(root, u64::MAX));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.active_window, before);
+}
+
+#[test]
+fn breadcrumb_navigation_restores_parent_chain_and_rejects_stale_source() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let child = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    let child_id = h.app.router.get(child).context_id;
+    h.app.switch_workspace(child);
+    h.add_assistant_pane_in_window(h.app.active_window);
+    h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let grandchild = h.app.router.position(|c| c.parent_id == Some(child_id)).unwrap();
+    let source = h.app.router.get(grandchild).context_id;
+    h.app.switch_workspace(grandchild);
+    h.app.router.depth_stack.clear();
+    h.app.router.depth_stack.push((source, u64::MAX, None));
+    let windows = h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>();
+    assert!(h.app.navigate_context_ancestor(source, root));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert!(h.app.router.depth_stack.is_empty());
+    assert_eq!(windows, h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>());
+    assert!(!h.app.navigate_context_ancestor(source, child_id));
+    assert_eq!(h.app.router.active().context_id, root);
+}
+
+#[test]
+fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
+    let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    let child = h.app.router.get(child_index).context_id;
+    let root_window = h.app.windows.iter().position(|w| w.context_id == root).unwrap();
+    let win = &mut h.app.windows[root_window];
+    let portal_id = *win.panes.iter().find(|(_,p)| p.as_portal().is_some()).unwrap().0;
+    win.panes.retain(|id,_| *id == portal_id);
+    win.tree.root = win.tree.tiles.find_pane(&portal_id);
+    win.panes.get_mut(&portal_id).unwrap().as_portal_mut().unwrap().reveal_after_close = true;
+    h.app.switch_workspace(child_index);
+    assert_eq!(h.app.revealed_child(root), Some(child));
+    assert!(h.app.navigate_context_ancestor(child, root));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.revealed_child(root), Some(child));
+    let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
+    h.app.switch_workspace(root_index);
+    assert_eq!(h.app.router.active().context_id, child, "ordinary navigation retains reveal behavior");
+}
+
+#[test]
+fn breadcrumb_deleted_ancestor_rejects_without_focus_or_history_changes() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.push_pane_to_subcontext(Some("child".into()), Some(pane));
+    let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    let child = h.app.router.get(child_index).context_id;
+    h.app.switch_workspace(child_index);
+    let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
+    h.app.router.remove_at(root_index);
+    let before = (h.app.active_window, h.app.router.depth_stack.clone());
+    assert!(!h.app.navigate_context_ancestor(child, root));
+    assert_eq!(h.app.router.active().context_id, child);
+    assert_eq!(before, (h.app.active_window, h.app.router.depth_stack.clone()));
+}
