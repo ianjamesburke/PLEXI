@@ -795,7 +795,7 @@ impl PlexiApp {
             } else {
                 QueueCategory::Result
             };
-            let options = if !notif.options.is_empty() {
+            let options = if !notif.tombstoned && !notif.options.is_empty() {
                 notif
                     .options
                     .iter()
@@ -1573,14 +1573,22 @@ impl PlexiApp {
                         .options
                         .get(option_idx)
                         .and_then(|o| o.host_action.clone());
-                    self.deliver_notify_action(
+                    let delivered = self.deliver_notify_action(
                         n.sender_pane_id,
-                        n.notify_id,
+                        n.notify_id.clone(),
                         option.label.clone(),
                         Some(option.key.clone()),
-                        n.response_file,
+                        n.response_file.clone(),
                         host_action,
                     );
+                    if !delivered {
+                        self.pending_notifications.insert(pos, n);
+                        self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(),
+                            "Could not deliver the response. The recipient may have received the action; check it before retrying.".into()));
+                        log::warn!("decision_overlay: notification response failed id={notify_id}; outcome unknown");
+                        return false;
+                    }
                     self.save_notifications();
                 }
             }
@@ -2538,6 +2546,38 @@ mod tests {
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+    }
+
+    #[test]
+    fn ended_notification_source_has_no_action_choices() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "ended".into(), sender_pane_id: pane_id, title: "Approval".into(),
+            tombstoned: true,
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        let item = h.app.attention_queue.items.iter().find(|item| item.id == "notify-ended").unwrap();
+        assert!(item.options.is_empty(), "ended sources cannot receive actions");
+    }
+
+    #[test]
+    fn failed_notification_response_is_not_reported_as_delivered() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "broken-response".into(), sender_pane_id: pane_id, title: "Choice".into(),
+            response_file: Some("/dev/null/not-a-response".into()),
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-broken-response"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert!(h.app.attention_queue.verdicts.is_empty());
+        assert!(h.app.approval_keyboard.last_error.is_some());
     }
 
     fn needs_you_failed_audit_is_retryable(with_choices: bool) {

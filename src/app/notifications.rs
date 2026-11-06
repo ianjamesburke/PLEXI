@@ -365,7 +365,7 @@ impl PlexiApp {
         value: Option<String>,
         response_file: Option<String>,
         host_action: Option<String>,
-    ) {
+    ) -> bool {
         log::info!(
             "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
         );
@@ -393,10 +393,13 @@ impl PlexiApp {
                 log::warn!("notify:action: unknown host_action {:?}", action);
             }
         }
+        let mut response_written = true;
         if let Some(rf) = &response_file {
             let content = value.as_deref().unwrap_or("");
             if crate::rpc::write_response(rf, content.as_bytes()) {
                 log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+            } else {
+                response_written = false;
             }
         }
         // Search all windows for the sender pane — it may not be in the
@@ -417,6 +420,7 @@ impl PlexiApp {
                 }
             }
         }
+        response_written
     }
 
     /// Resolve app-notification provenance without consulting focus. A live
