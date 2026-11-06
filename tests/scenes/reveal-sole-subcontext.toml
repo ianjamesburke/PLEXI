@@ -1,0 +1,62 @@
+# A child remains a distinct context while the last sibling close reveals it.
+size = [1280.0, 800.0]
+
+[[steps]]
+clear_seed = true
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", args = ["{tmp}/child-plan.md"], as = "child_files" }
+
+[[steps]]
+paste = { target = "child_files", value = "# Child plan\n\nKeep this workspace intact.\n" }
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", args = ["{tmp}/outside-review.md"], as = "outside" }
+
+[[steps]]
+paste = { target = "outside", value = "# Outside review\n\nClose this pane to reveal the child.\n" }
+
+[[steps]]
+focus = "child_files"
+
+[[steps]]
+push_to_subcontext = "Child workspace"
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", args = ["{tmp}/child-notes.md"], as = "child_docs" }
+
+[[steps]]
+paste = { target = "child_docs", value = "# Child notes\n\nBoth panes remain in their context.\n" }
+
+[[steps]]
+switch_context = 0
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+focus = "outside"
+
+[[steps]]
+assert = { target = "outside", focused = true, context_count = 2, context_pane_count = 2 }
+
+[[steps]]
+shot = "reveal-subcontext-before.png"
+
+[[steps]]
+close = "outside"
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { target = "outside", exists = false, context_count = 2 }
+
+[[steps]]
+assert = { target = "child_files", exists = true }
+
+[[steps]]
+assert = { target = "child_docs", exists = true, focused = true, context_pane_count = 2 }
+
+[[steps]]
+shot = "reveal-subcontext-after.png"

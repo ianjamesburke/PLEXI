@@ -143,6 +143,11 @@ completes.
 
 A scene file is a list of steps: setup, actions, structured assertions, optional screenshots. **The scene file IS the test** — `scene_suite` globs `tests/scenes/*.toml`, so adding a file adds a regression test. Runner: `src/scenes.rs`.
 
+Use `clear_seed = true` as the first step only when a scene needs an empty
+initial topology. Headless runs require an already-empty harness; live runs
+close only the sole seed terminal of a fresh runner-owned host and refuse
+attached hosts or scenes that have already opened panes.
+
 ```toml
 size = [1280.0, 800.0]      # optional, default 1280x800
 sizes = [[520.0, 400.0], [1280.0, 800.0]]
@@ -198,7 +203,7 @@ Every `open` step binds one unique symbolic handle. Later pane steps reject miss
 
 ### Assertions
 
-`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `fit = "fill"|"contain"` and `aspect = [width, height]` inspect committed canvas semantic bounds. `exists` and `focused` check pane lifecycle/focus while the latter inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
+`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `context_pane_count` counts all owned panes across the target pane's context pages on both backends. `context_pane_count`, `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `fit = "fill"|"contain"` and `aspect = [width, height]` inspect committed canvas semantic bounds. `exists` and `focused` check pane lifecycle/focus while the latter inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
 
 ### Running
 

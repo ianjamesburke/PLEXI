@@ -211,6 +211,8 @@ pub enum SavedPaneKind {
     #[serde(alias = "sub_context")]
     Portal {
         context_id: u64,
+        #[serde(default)]
+        reveal_after_close: bool,
     },
 }
 
@@ -611,7 +613,7 @@ impl WorkspaceFile {
                 if matches!(pane.kind, SavedPaneKind::App) && pane.app_id.is_none() {
                     return Err(invalid(format!("app pane {} has no app identity", pane.id)));
                 }
-                if let SavedPaneKind::Portal { context_id } = pane.kind {
+                if let SavedPaneKind::Portal { context_id, .. } = pane.kind {
                     if !context_ids.contains(&context_id) { return Err(invalid(format!("portal {} references missing context {context_id}", pane.id))); }
                 }
                 if owners.insert(pane.id, window.context_id).is_some() {
@@ -1307,7 +1309,7 @@ mod tests {
         // Portal round-trips with embedded context_id.
         let portal_pane = SavedPane {
             id: 99,
-            kind: SavedPaneKind::Portal { context_id: 42 },
+            kind: SavedPaneKind::Portal { context_id: 42, reveal_after_close: false },
             cwd: PathBuf::new(),
             name: None,
             app_id: None,
@@ -1322,7 +1324,7 @@ mod tests {
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");
         assert!(
-            matches!(restored.kind, SavedPaneKind::Portal { context_id: 42 }),
+            matches!(restored.kind, SavedPaneKind::Portal { context_id: 42, reveal_after_close: false }),
             "Portal kind must round-trip with correct context_id"
         );
         assert_eq!(restored.id, 99);
@@ -1332,7 +1334,7 @@ mod tests {
         let legacy: SavedPane =
             serde_json::from_str(legacy_json).expect("deserialize legacy sub_context");
         assert!(
-            matches!(legacy.kind, SavedPaneKind::Portal { context_id: 42 }),
+            matches!(legacy.kind, SavedPaneKind::Portal { context_id: 42, reveal_after_close: false }),
             "legacy sub_context must deserialize to Portal"
         );
     }

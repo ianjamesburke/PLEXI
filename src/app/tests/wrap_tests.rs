@@ -433,3 +433,262 @@ fn bracket_shortcuts_cycle_tabs_without_using_focus_history() {
     h.press_key(egui::Key::OpenBracket, command());
     assert_eq!(h.app.windows[0].focused_pane, Some(ta));
 }
+
+#[test]
+fn closing_last_sibling_reveals_child_without_moving_panes() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    let before = h.app.strip_for_context(child).columns;
+    let origin = h.app.origin_for_pane(a).unwrap();
+    let resource = crate::host::scope::Scope::Pane { pane_id: a, context_id: child };
+    let grant = crate::host::scope::CrossContextGrant {
+        granting_context_id: child,
+        grantee_context_id: parent,
+        reason: "test".into(),
+    };
+    let before_reach = crate::host::scope::evaluate_reach(&resource, parent, Some(&grant));
+    let child_window = h.app.windows.iter().find(|w| w.context_id == child).unwrap();
+    let runtime = &child_window.panes[&a].as_app().unwrap().runtime as *const _ as *const ();
+    assert!(h.app.zoom_out_of_context());
+    assert_eq!(h.app.router.active().context_id, parent);
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, child, "closing the last sibling should reveal the child");
+    assert_eq!(h.app.strip_for_context(child).columns, before);
+    let child_window = h.app.windows.iter().find(|w| w.context_id == child).unwrap();
+    assert!([a, b, c].iter().all(|id| child_window.panes.contains_key(id)));
+    assert_eq!(h.app.origin_for_pane(a), Some(origin));
+    assert_eq!(crate::host::scope::evaluate_reach(&resource, parent, Some(&grant)), before_reach);
+    assert_eq!(&child_window.panes[&a].as_app().unwrap().runtime as *const _ as *const (), runtime);
+    h.app.close_pane_by_id(b);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.origin_for_pane(a).is_some());
+}
+
+#[test]
+fn close_reveal_preserves_background_focus_and_skips_redundant_ancestor() {
+    let mut h = HostHarness::new();
+    let [a, b, c, _outside] = grid(&mut h);
+    let root = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    let grandchild = h.app.router.active().context_id;
+    let before_window = h.app.active_window;
+    h.app.close_pane_by_id(c);
+    assert_eq!(h.app.router.active().context_id, grandchild);
+    assert_eq!(h.app.active_window, before_window, "background close must not steal focus");
+    assert!(h.app.zoom_out_of_context());
+    assert_eq!(h.app.router.active().context_id, root, "back should skip the redundant child");
+    assert!(h.app.router.iter().any(|ctx| ctx.context_id == child && ctx.parent_id == Some(root)));
+    assert!(h.app.router.iter().any(|ctx| ctx.context_id == grandchild && ctx.parent_id == Some(child)));
+}
+
+#[test]
+fn close_reveal_does_not_ignore_hidden_owned_panes() {
+    let mut h = HostHarness::new();
+    let [a, b, hidden, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b], a, None));
+    assert!(h.app.zoom_out_of_context());
+    let parent_win = h.app.windows.iter_mut().find(|w| w.context_id == parent).unwrap();
+    parent_win.panes.get_mut(&hidden).unwrap().set_hidden(true);
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, parent, "hidden panes still belong to the parent");
+}
+
+#[test]
+fn close_reveal_survives_workspace_restore() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    h.app.close_pane_by_id(outside);
+    assert!(h.app.save_workspace_now());
+    let mut restored = HostHarness::from_profile_dir(h.profile_dir().to_path_buf());
+    let parent_idx = restored.app.router.position(|ctx| ctx.context_id == parent).unwrap();
+    restored.app.switch_workspace(parent_idx);
+    assert_eq!(restored.app.router.active().context_id, child);
+    assert!(!restored.app.zoom_out_of_context(), "no meaningful ancestor remains");
+}
+
+#[test]
+fn close_reveal_respects_other_pages_and_missing_targets() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    assert!(h.app.zoom_out_of_context());
+    let parent_window = h.app.windows.iter().find(|w| w.context_id == parent).unwrap();
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: parent_window.path.clone(),
+        tree: egui_tiles::Tree::empty("empty-second-page"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 987_654_321,
+        context_id: parent,
+    });
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, parent, "a second page is meaningful");
+    h.app.windows.pop();
+    let portal = h.app.windows.iter_mut().find(|w| w.context_id == parent).unwrap().panes.values_mut().find_map(|p| p.as_portal_mut()).unwrap();
+    portal.target_context_id = u64::MAX;
+    h.app.reveal_sole_portal_after_close(parent);
+    assert_eq!(h.app.router.active().context_id, parent, "missing targets cannot be revealed");
+}
+
+#[test]
+fn close_reveal_via_focused_close_preserves_child_page() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    let index = h.app.windows.iter().position(|w| w.context_id == parent).unwrap();
+    let tile = h.app.windows[index].tree.tiles.find_pane(&outside).unwrap();
+    h.app.windows[index].navigate_to(tile);
+    h.app.execute_close_pane();
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!([a, b, c].iter().all(|id| h.app.windows[h.app.active_window].panes.contains_key(id)));
+}
+
+#[test]
+fn close_reveal_focus_history_skips_redundant_portal() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    h.app.close_pane_by_id(outside);
+    let page = h.app.windows.iter().find(|w| w.context_id == parent).unwrap();
+    let tile = page.tree.root.and_then(|root| page.find_first_pane_in(root)).unwrap();
+    let entry = (page.window_id, tile);
+    h.app.pane_focus_history.clear();
+    h.app.pane_focus_history.push(entry);
+    h.app.step_focus_history_back();
+    assert_eq!(h.app.router.active().context_id, child);
+    h.app.pane_focus_future.clear();
+    h.app.pane_focus_future.push(entry);
+    h.app.step_focus_history_forward();
+    assert_eq!(h.app.router.active().context_id, child);
+}
+
+#[test]
+fn close_reveal_chooses_populated_child_page_over_remembered_empty_page() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    let child_path = h.app.windows[h.app.active_window].path.clone();
+    let empty_window = 987_654_322;
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: child_path,
+        tree: egui_tiles::Tree::empty("empty-child-page"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: empty_window,
+        context_id: child,
+    });
+    assert!(h.app.zoom_out_of_context());
+    h.app.context_active_window.insert(child, empty_window);
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.windows[h.app.active_window].panes.contains_key(&a));
+}
+
+#[test]
+fn close_reveal_when_last_sibling_page_is_removed() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    let parent_page = h.app.windows.iter().position(|w| w.context_id == parent).unwrap();
+    let parent_window = &mut h.app.windows[parent_page];
+    let tile = parent_window.tree.tiles.find_pane(&outside).unwrap();
+    if let Some(parent_tile) = parent_window.tree.tiles.parent_of(tile) {
+        if let Some(egui_tiles::Tile::Container(container)) = parent_window.tree.tiles.get_mut(parent_tile) {
+            container.remove_child(tile);
+        }
+    }
+    parent_window.tree.tiles.remove(tile);
+    parent_window.tree.simplify(&egui_tiles::SimplificationOptions {
+        all_panes_must_have_tabs: true,
+        ..Default::default()
+    });
+    let outside_pane = parent_window.panes.remove(&outside).unwrap();
+    let path = parent_window.path.clone();
+    let mut tree = egui_tiles::Tree::empty("sibling-page");
+    let tile = tree.tiles.insert_pane(outside);
+    tree.root = Some(tile);
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(), path, tree,
+        panes: std::collections::HashMap::from([(outside, outside_pane)]),
+        focused_pane: Some(tile), zoomed_pane: None, grid_x: 1, grid_y: 0,
+        window_id: 987_654_323, context_id: parent,
+    });
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.windows.iter().all(|w| w.window_id != 987_654_323));
+}
+
+#[test]
+fn close_reveal_does_not_enter_all_hidden_child() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    let child_page = h.app.windows.iter_mut().find(|w| w.context_id == child).unwrap();
+    for pane in child_page.panes.values_mut() { pane.set_hidden(true); }
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, parent);
+}
+
+#[test]
+fn close_reveal_direct_portal_focus_stays_in_child() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    h.app.close_pane_by_id(outside);
+    let portal = h.app.windows.iter().find(|w| w.context_id == parent).unwrap()
+        .panes.iter().find_map(|(&id, pane)| pane.as_portal().map(|_| id)).unwrap();
+    assert!(h.app.pane_navigate(portal));
+    assert_eq!(h.app.router.active().context_id, child, "pane navigation must not expose the redundant portal");
+    assert!(h.app.focus_pane_in_strip(portal));
+    assert_eq!(h.app.router.active().context_id, child, "strip focus must not expose the redundant portal");
+    assert_eq!(h.app.origin_for_pane(a).unwrap().context_id, child);
+}
+
+#[test]
+fn direct_focus_preserves_deliberate_portal_with_sibling() {
+    let mut h = HostHarness::new();
+    let [a, b, c, _outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let portal = h.app.windows.iter().find(|w| w.context_id == parent).unwrap()
+        .panes.iter().find_map(|(&id, pane)| pane.as_portal().map(|_| id)).unwrap();
+    assert!(h.app.pane_navigate(portal));
+    assert_eq!(h.app.router.active().context_id, parent);
+    assert!(h.app.focus_pane_in_strip(portal));
+    assert_eq!(h.app.router.active().context_id, parent);
+}

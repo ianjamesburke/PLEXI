@@ -5750,11 +5750,12 @@ pub(crate) fn restore_workspace(
                 saved_pane.kind,
                 crate::workspace::SavedPaneKind::Portal { .. }
             ) {
-                if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
+                if let crate::workspace::SavedPaneKind::Portal { context_id, reveal_after_close } = &saved_pane.kind {
                     pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
                         pane_id: saved_pane.id,
                         target_context_id: *context_id,
                         context_state: None,
+                        reveal_after_close: *reveal_after_close,
                         hidden: false,
                     })));
                 }

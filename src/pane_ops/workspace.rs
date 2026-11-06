@@ -469,6 +469,7 @@ impl PlexiApp {
                     pane_id: sub_ctx_pane_id,
                     target_context_id: ctx_id,
                     context_state: None,
+                    reveal_after_close: false,
                     hidden: false,
                 })),
             );
@@ -1348,14 +1349,118 @@ impl PlexiApp {
             .unwrap_or(page_count > 1);
     }
 
+    /// A close-triggered portal can represent its parent only while it remains
+    /// the sole owned pane on the sole page and its target is a live child.
+    pub(crate) fn revealed_child(&self, parent_id: u64) -> Option<u64> {
+        let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);
+        let page = pages.next()?;
+        if pages.next().is_some() || page.panes.len() != 1 {
+            return None;
+        }
+        let (pane_id, pane) = page.panes.iter().next()?;
+        let portal = pane.as_portal()?;
+        if !portal.reveal_after_close || portal.hidden || page.tree.tiles.find_pane(pane_id).is_none() {
+            return None;
+        }
+        let child = self.router.iter().find(|c| c.context_id == portal.target_context_id)?;
+        if child.parent_id != Some(parent_id)
+            || !self.context_has_visible_pane(child.context_id)
+        {
+            return None;
+        }
+        Some(child.context_id)
+    }
+
+    /// Explicit focus on a revealed portal resolves to the child as well.
+    pub(crate) fn focus_revealed_portal(&mut self, pane_id: u64) -> bool {
+        let Some((parent_id, target)) = self.windows.iter().find_map(|w| {
+            w.panes.get(&pane_id)
+                .and_then(|pane| pane.as_portal())
+                .map(|portal| (w.context_id, portal.target_context_id))
+        }) else { return false };
+        if self.revealed_child(parent_id) != Some(target) {
+            return false;
+        }
+        let Some(index) = self.router.position(|c| c.context_id == parent_id) else { return false };
+        self.switch_workspace(index);
+        true
+    }
+
+    /// A closing pane may leave a portal as the only remaining owned pane.
+    pub(crate) fn reveal_sole_portal_after_close(&mut self, parent_id: u64) {
+        let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);
+        let Some(page) = pages.next() else { return };
+        if pages.next().is_some() || page.panes.len() != 1 {
+            return;
+        }
+        let Some((&pane_id, pane)) = page.panes.iter().next() else { return };
+        let Some(portal) = pane.as_portal() else { return };
+        let target = portal.target_context_id;
+        if portal.hidden || page.tree.tiles.find_pane(&pane_id).is_none()
+            || !self.router.iter().any(|c| c.context_id == target && c.parent_id == Some(parent_id))
+            || !self.context_has_visible_pane(target)
+        {
+            return;
+        }
+        let page_id = page.window_id;
+        if let Some(portal) = self.windows.iter_mut().find(|w| w.window_id == page_id)
+            .and_then(|w| w.panes.get_mut(&pane_id)).and_then(|p| p.as_portal_mut()) {
+            portal.reveal_after_close = true;
+        }
+        self.mark_workspace_dirty();
+        log::info!("context_navigation: close revealed child={target} parent={parent_id}");
+        if self.router.active().context_id == parent_id {
+            if let Some(index) = self.router.position(|c| c.context_id == target) {
+                self.prefer_visible_reveal_page(target);
+                self.conjoined_parent_focus = None;
+                self.switch_workspace(index);
+            }
+        }
+    }
+
+    fn context_has_visible_pane(&self, context_id: u64) -> bool {
+        self.windows.iter().filter(|w| w.context_id == context_id).any(|w| {
+            w.panes.iter().any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
+        })
+    }
+
+    fn prefer_visible_reveal_page(&mut self, context_id: u64) {
+        let visible = |w: &&crate::host::context::Window| {
+            w.context_id == context_id
+                && w.panes.iter().any(|(id, pane)| {
+                    !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some()
+                })
+        };
+        let preferred = self.context_active_window.get(&context_id).copied();
+        if self.windows.iter().filter(visible).any(|w| Some(w.window_id) == preferred) {
+            return;
+        }
+        if let Some(window_id) = self.windows.iter().find(visible).map(|w| w.window_id) {
+            self.context_active_window.insert(context_id, window_id);
+        }
+    }
+
     /// Return to the immediate parent, restoring its entry window and focus when available.
     /// Ancestry is authoritative; navigation history is optional and may be stale after a switch.
     pub(crate) fn zoom_out_of_context(&mut self) -> bool {
         let child_id = self.router.active().context_id;
-        let Some(parent_id) = self.router.active().parent_id else {
+        let Some(mut parent_id) = self.router.active().parent_id else {
             log::info!("context_navigation: already at root context={child_id}");
             return false;
         };
+        // Skip only close-triggered, still-redundant ancestors. A top-level
+        // context with no meaningful ancestor leaves us in the current child.
+        let mut child_for_parent = child_id;
+        for _ in 0..self.router.len() {
+            if self.revealed_child(parent_id) != Some(child_for_parent) {
+                break;
+            }
+            let Some(next) = self.router.iter().find(|c| c.context_id == parent_id).and_then(|c| c.parent_id) else {
+                return false;
+            };
+            child_for_parent = parent_id;
+            parent_id = next;
+        }
         let Some(parent_idx) = self.router.position(|c| c.context_id == parent_id) else {
             log::warn!("context_navigation: missing parent={parent_id} child={child_id}");
             return false;
@@ -1398,7 +1503,7 @@ impl PlexiApp {
             .find_map(|(index, w)| {
                 w.panes.iter().find_map(|(id, pane)| match pane {
                     crate::host::pane::Pane::Portal(portal)
-                        if portal.target_context_id == child_id =>
+                        if portal.target_context_id == child_for_parent =>
                     {
                         w.tree.tiles.find_pane(id).map(|tile| (index, tile))
                     }
@@ -1600,6 +1705,21 @@ impl PlexiApp {
     /// This is the standard path for context navigation. Focus-history traversal
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        let mut new_ctx_idx = new_ctx_idx;
+        let mut redirected = false;
+        for _ in 0..self.router.len() {
+            let id = self.router.get(new_ctx_idx).context_id;
+            let Some(child) = self.revealed_child(id) else { break };
+            let Some(index) = self.router.position(|c| c.context_id == child) else { break };
+            if index == new_ctx_idx { break; }
+            new_ctx_idx = index;
+            redirected = true;
+        }
+        if redirected {
+            let context_id = self.router.get(new_ctx_idx).context_id;
+            self.prefer_visible_reveal_page(context_id);
+            self.conjoined_parent_focus = None;
+        }
         if new_ctx_idx != self.router.active_idx() {
             self.cancel_context_rename("context switch");
         }
@@ -2277,6 +2397,7 @@ impl PlexiApp {
                         id,
                         kind: crate::workspace::SavedPaneKind::Portal {
                             context_id: child_ctx_id,
+                            reveal_after_close: pane.as_portal().is_some_and(|p| p.reveal_after_close),
                         },
                         cwd: std::path::PathBuf::new(),
                         name: None,

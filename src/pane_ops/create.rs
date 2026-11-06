@@ -1785,6 +1785,7 @@ impl PlexiApp {
                             pane_id: portal_pane_id,
                             target_context_id: ctx_id,
                             context_state: None,
+                            reveal_after_close: false,
                             hidden: false,
                         })),
                     );

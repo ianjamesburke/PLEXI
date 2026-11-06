@@ -202,6 +202,77 @@ fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json:
         })
 }
 
+fn live_context_pane_count(panes: &serde_json::Value, target: PaneId) -> Result<usize, SceneError> {
+    let entries = panes.as_array().ok_or_else(|| {
+        SceneError::new("live_json_invalid", "pane list did not return an array")
+    })?;
+    if entries.iter().any(|pane| {
+        pane.get("id").and_then(serde_json::Value::as_u64).is_none()
+            || pane.get("context_id").and_then(serde_json::Value::as_u64).is_none()
+    }) {
+        return Err(SceneError::new(
+            "live_json_invalid",
+            "pane list contains a pane without an id or owning context",
+        ));
+    }
+    let context_id = entries.iter()
+        .find(|pane| pane.get("id").and_then(serde_json::Value::as_u64) == Some(target))
+        .and_then(|pane| pane.get("context_id").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| SceneError::new("missing_target", "target pane has no live context"))?;
+    Ok(entries.iter().filter(|pane| {
+        pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
+    }).count())
+}
+
+fn live_seed_to_clear(
+    owned_host: bool,
+    attached_host: bool,
+    handles_empty: bool,
+    panes: &serde_json::Value,
+) -> Result<PaneId, SceneError> {
+    if !owned_host || attached_host || !handles_empty {
+        return Err(SceneError::new(
+            "unsafe_seed_clear",
+            "clear_seed requires a fresh runner-owned host before opening scene panes",
+        ));
+    }
+    let Some(entries) = panes.as_array() else {
+        return Err(SceneError::new("live_json_invalid", "pane list did not return an array"));
+    };
+    if entries.len() != 1
+        || entries[0].get("type").and_then(serde_json::Value::as_str) != Some("terminal")
+    {
+        return Err(SceneError::new(
+            "unsafe_seed_clear",
+            "clear_seed requires exactly one initial terminal pane",
+        ));
+    }
+    entries[0].get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
+        SceneError::new("live_json_invalid", "initial terminal has no pane id")
+    })
+}
+
+fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError> {
+    let entries = panes.as_array().ok_or_else(|| {
+        SceneError::new("live_json_invalid", "pane list did not return an array")
+    })?;
+    let mut focused = entries.iter().filter(|pane| {
+        pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true)
+    });
+    let pane = focused.next().ok_or_else(|| {
+        SceneError::new("missing_target", "push_to_subcontext requires a focused pane")
+    })?;
+    if focused.next().is_some() {
+        return Err(SceneError::new(
+            "live_focus_ambiguous",
+            "pane list reported more than one focused pane",
+        ));
+    }
+    pane.get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
+        SceneError::new("live_json_invalid", "focused pane has no pane id")
+    })
+}
+
 fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
     match open {
         OpenSpec::Builtin { cwd, .. } => cwd.as_deref().map(resolve),
@@ -303,6 +374,8 @@ fn default_true() -> bool {
 #[derive(Deserialize, Debug)]
 #[serde(untagged)]
 pub enum Step {
+    /// Start empty: close only a runner-owned live host's sole seed terminal.
+    ClearSeed { clear_seed: bool },
     /// Open one process, WASM, or builtin app and bind its pane id to a handle.
     Open { open: OpenSpec },
     /// Insert text through egui's normal text-input event path. Printable
@@ -513,6 +586,8 @@ pub struct AssertSpec {
     /// Pane handle used by app lifecycle and tree assertions.
     pub target: Option<String>,
     pub pane_count: Option<usize>,
+    /// All owned panes across pages in the target pane's context.
+    pub context_pane_count: Option<usize>,
     pub window_count: Option<usize>,
     pub context_count: Option<usize>,
     /// Portal panes across all windows.
@@ -1354,19 +1429,19 @@ impl LiveBackend {
                 ));
             }
         }
-        let pane = format!("cwd={}", env!("CARGO_MANIFEST_DIR"));
         // Hermetic by construction: a runner-owned host must never restore
         // (or overwrite) the channel's saved session — stale panes from a
-        // human session would pollute every live assertion.
-        self.command(
+        // human session would pollute every live assertion. The fresh host
+        // already creates its root terminal; --pane would queue a second one
+        // after readiness and race the scene's initial topology.
+        self.command_with_cwd(
             &[
                 "host".to_string(),
                 "start".to_string(),
                 "--ephemeral".to_string(),
-                "--pane".to_string(),
-                pane,
             ],
             false,
+            Some(Path::new(env!("CARGO_MANIFEST_DIR"))),
         )?;
         self.owned_host = true;
         if let Some(owner_file) = &self.owner_file {
@@ -1528,6 +1603,32 @@ impl LiveBackend {
         shots: &mut Vec<String>,
     ) -> Result<Option<StepDetail>, SceneError> {
         match step {
+            Step::ClearSeed { clear_seed } => {
+                if !clear_seed {
+                    return Err(SceneError::new("invalid_seed_clear", "clear_seed must be true"));
+                }
+                if !self.owned_host || self.attached_host || !self.handles.by_name.is_empty() {
+                    return Err(SceneError::new(
+                        "unsafe_seed_clear",
+                        "clear_seed requires a fresh runner-owned host before opening scene panes",
+                    ));
+                }
+                let panes = self.json(&["pane", "list"])?;
+                let pane_id = live_seed_to_clear(
+                    self.owned_host,
+                    self.attached_host,
+                    self.handles.by_name.is_empty(),
+                    &panes,
+                )?;
+                self.command(&["pane".into(), "close".into(), pane_id.to_string()], true)?;
+                poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
+                    Ok(self.json(&["pane", "list"]).ok().and_then(|panes| {
+                        panes.as_array().filter(|panes| panes.is_empty()).map(|_| ())
+                    }))
+                })?;
+                log::info!("scene_live: cleared runner-owned seed pane={pane_id}");
+                Ok(Some(StepDetail::Message { message: format!("cleared seed pane {pane_id}") }))
+            }
             Step::Open { open } => {
                 self.handles.ensure_available(open.handle())?;
                 let target = match open {
@@ -1836,12 +1937,7 @@ impl LiveBackend {
                 Ok(None)
             }
             Step::PushToSubcontext { push_to_subcontext } => {
-                let pane_id = self.last_app_pane.ok_or_else(|| {
-                    SceneError::new(
-                        "missing_target",
-                        "push_to_subcontext requires an opened pane",
-                    )
-                })?;
+                let pane_id = live_focused_pane_id(&self.json(&["pane", "list"])?)?;
                 let before = self
                     .json(&["context", "list"])?
                     .as_array()
@@ -1935,6 +2031,16 @@ impl LiveBackend {
                 "pane_count: expected {expected}, got {}",
                 host.pane_count
             ));
+        }
+        if let Some(expected) = spec.context_pane_count {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = live_context_pane_count(&self.json(&["pane", "list"])?, pane_id)?;
+            if actual != expected {
+                failures.push(format!("context_pane_count: expected {expected}, got {actual}"));
+            }
         }
         if let Some(expected) = spec
             .window_count
@@ -2339,6 +2445,7 @@ fn live_failed_report(scene: String, channel: Option<String>, error: SceneError)
 
 fn step_label(step: &Step) -> String {
     match step {
+        Step::ClearSeed { .. } => "clear_seed".to_string(),
         Step::Open { open } => format!("open {} as {}", open.target_kind(), open.handle()),
         Step::Text { text } => format!(
             "text {} ({} chars)",
@@ -2460,6 +2567,18 @@ impl HeadlessBackend {
         shots: &mut Vec<String>,
     ) -> Result<Option<StepDetail>, SceneError> {
         match step {
+            Step::ClearSeed { clear_seed } => {
+                let pane_count = self.h.with_app(|app| {
+                    app.windows.iter().map(|window| window.panes.len()).sum::<usize>()
+                });
+                if !clear_seed || pane_count != 0 || !self.handles.by_name.is_empty() {
+                    return Err(SceneError::new(
+                        "unsafe_seed_clear",
+                        "headless clear_seed requires a fresh empty scene",
+                    ));
+                }
+                Ok(Some(StepDetail::Message { message: "headless host already empty".into() }))
+            }
             Step::Open { open } => {
                 let handle = open.handle();
                 self.handles.ensure_available(handle)?;
@@ -3174,6 +3293,19 @@ impl HeadlessBackend {
         if let Some(v) = spec.pane_count {
             expect("pane_count", v.to_string(), host.pane_count.to_string());
         }
+        if let Some(expected) = spec.context_pane_count {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = self.h.with_app(|app| {
+                let context_id = app.windows.iter()
+                    .find(|window| window.panes.contains_key(&pane_id))?.context_id;
+                Some(app.windows.iter().filter(|window| window.context_id == context_id)
+                    .map(|window| window.panes.len()).sum::<usize>())
+            }).ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
+            expect("context_pane_count", expected.to_string(), actual.to_string());
+        }
         if let Some(v) = spec.window_count {
             expect("window_count", v.to_string(), host.window_count.to_string());
         }
@@ -3761,6 +3893,133 @@ mod tests {
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
     }
 
+    #[test]
+    fn live_clear_seed_requires_a_single_runner_owned_terminal() {
+        let seed = serde_json::json!([{"id": 17, "type": "terminal"}]);
+        assert_eq!(live_seed_to_clear(true, false, true, &seed).unwrap(), 17);
+        for (owned, attached, empty, panes) in [
+            (false, true, true, seed.clone()),
+            (true, true, true, seed.clone()),
+            (true, false, false, seed.clone()),
+            (true, false, true, serde_json::json!([])),
+            (true, false, true, serde_json::json!([{"id": 1, "type": "app"}])),
+            (true, false, true, serde_json::json!([{"id": 1, "type": "terminal"}, {"id": 2, "type": "terminal"}])),
+        ] {
+            assert_eq!(live_seed_to_clear(owned, attached, empty, &panes).unwrap_err().code, "unsafe_seed_clear");
+        }
+    }
+
+    #[test]
+    fn live_clear_seed_never_commands_an_attached_host() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-attach");
+        let mut backend = LiveBackend::from_env(&std::env::temp_dir(), true).unwrap();
+        backend.binary = "/nonexistent/should-not-run".into();
+        backend.attached_host = true;
+        let error = backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap_err();
+        assert_eq!(error.code, "unsafe_seed_clear");
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn live_push_to_subcontext_uses_focused_not_last_opened_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("plexi-fake");
+        let marker = temp.path().join("pushed");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo '[{{\"id\":2,\"focused\":true}},{{\"id\":3,\"focused\":false}}]'; exit 0; fi\nif [ \"$1 $2\" = \"context list\" ]; then if [ -f '{}' ]; then echo '[{{\"context_id\":1}},{{\"context_id\":2}}]'; else echo '[{{\"context_id\":1}}]'; fi; exit 0; fi\nif [ \"$1 $2 $4 $5\" = \"context push --pane-id 2\" ]; then touch '{}'; exit 0; fi\necho wrong-target >&2; exit 1\n",
+            marker.display(), marker.display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-push");
+        let mut backend = LiveBackend::from_env(temp.path(), true).unwrap();
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+        backend.binary = binary.to_string_lossy().into_owned();
+        backend.last_app_pane = Some(3);
+        backend.exec(&Step::PushToSubcontext { push_to_subcontext: "child".into() }, &mut Vec::new()).unwrap();
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn live_push_rejects_missing_or_ambiguous_focus() {
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([{"id": 1, "focused": false}]))
+                .unwrap_err().code,
+            "missing_target"
+        );
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([
+                {"id": 1, "focused": true}, {"id": 2, "focused": true}
+            ])).unwrap_err().code,
+            "live_focus_ambiguous"
+        );
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([{"focused": true}]))
+                .unwrap_err().code,
+            "live_json_invalid"
+        );
+    }
+
+    #[test]
+    fn reveal_scene_fails_if_an_extra_parent_pane_prevents_transition() {
+        let temp = tempfile::tempdir().unwrap();
+        let scene = temp.path().join("extra-parent.toml");
+        let source = include_str!("../tests/scenes/reveal-sole-subcontext.toml");
+        let extra = "[[steps]]\nopen = { kind = \"builtin\", id = \"file_browser\", cwd = \".\", as = \"extra\" }\n\n[[steps]]\nfocus = \"child_files\"";
+        let modified = source.replacen("[[steps]]\nfocus = \"child_files\"", extra, 1);
+        assert_ne!(modified, source);
+        std::fs::write(&scene, modified).unwrap();
+        let report = run_scene(&scene, temp.path(), true);
+        assert!(!report.passed, "an extra parent pane must prevent a scene pass");
+        assert!(report.steps.iter().any(|step| step.error.as_ref().is_some_and(|error| {
+            error.code == "assertion_failed" && error.message.contains("context_pane_count")
+        })), "the pre-close topology assertion must catch the extra pane: {report:?}");
+    }
+
+    #[test]
+    fn live_context_pane_count_uses_target_ownership_across_pages() {
+        let panes = serde_json::json!([
+            {"id": 1, "context_id": 8, "window_id": 10, "type": "terminal"},
+            {"id": 2, "context_id": 8, "window_id": 11, "type": "portal"},
+            {"id": 3, "context_id": 9, "window_id": 12, "type": "app"}
+        ]);
+        assert_eq!(live_context_pane_count(&panes, 1).unwrap(), 2);
+        assert_eq!(live_context_pane_count(&panes, 3).unwrap(), 1);
+        assert_eq!(live_context_pane_count(&panes, 99).unwrap_err().code, "missing_target");
+        assert_eq!(
+            live_context_pane_count(&serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]), 1)
+                .unwrap_err().code,
+            "live_json_invalid"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn live_clear_seed_closes_owned_seed_and_observes_empty_host() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("plexi-fake");
+        let marker = temp.path().join("seed-closed");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then\n  if [ -f '{}' ]; then echo '[]'; else echo '[{{\"id\":17,\"type\":\"terminal\"}}]'; fi\n  exit 0\nfi\nif [ \"$1 $2 $3\" = \"pane close 17\" ]; then touch '{}'; exit 0; fi\nexit 1\n",
+            marker.display(), marker.display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-owned");
+        let mut backend = LiveBackend::from_env(temp.path(), true).unwrap();
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+        backend.binary = binary.to_string_lossy().into_owned();
+        backend.owned_host = true;
+        backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap();
+        assert!(marker.exists());
+    }
+
     /// Writes an executable stand-in for the channel binary so `LiveBackend`
     /// tests can exercise `host status`/`start`/`stop`/`screenshot` without a
     /// real installed host. State (whether the fake host is "running", and
@@ -3782,6 +4041,7 @@ if [ "$1" = "host" ] && [ "$2" = "status" ]; then
 fi
 if [ "$1" = "host" ] && [ "$2" = "start" ]; then
     mkdir -p "$state_dir"
+    printf '%s\n' "$*" > "$state_dir/start-args"
     touch "$state_dir/running"
     echo "started"
     exit 0
@@ -3848,6 +4108,22 @@ exit 1
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         std::env::remove_var("PLEXI_SCENE_BIN");
         backend
+    }
+
+    #[test]
+    fn live_owned_host_does_not_enqueue_a_second_terminal() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut backend = fake_live_backend(
+            "test-single-seed", script_dir.path(), state_dir.path(), out_dir.path(), true,
+        );
+        backend.start_or_attach().unwrap();
+        let args = std::fs::read_to_string(state_dir.path().join("start-args")).unwrap();
+        assert_eq!(args.trim(), "host start --ephemeral");
+        backend.teardown();
+        assert!(backend.teardown.ok);
     }
 
     #[test]
