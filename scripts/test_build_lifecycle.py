@@ -99,6 +99,38 @@ class Lifecycle(unittest.TestCase):
             self.call(*command, env={**env, 'FIXTURE_EXIT': '1'})
         self.assertFalse(receipt.exists())
 
+    def test_install_leaf_refuses_unverified_reuse_flag(self):
+        scripts = self.repo / 'scripts'
+        scripts.mkdir()
+        for name in ('install.sh', 'build-evidence.py'):
+            shutil.copy(ROOT / 'scripts' / name, scripts)
+        self.call('git', 'add', '.')
+        self.call('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'leaf')
+        target = self.root / 'target'
+        (target / 'release').mkdir(parents=True)
+        binary = target / 'release/plexi'
+        binary.write_text("#!/bin/sh\necho '{}'\n")
+        binary.chmod(0o755)
+        commands = self.root / 'commands'
+        commands.mkdir()
+        fake_cargo = commands / 'cargo'
+        fake_cargo.write_text('#!/bin/sh\nif [ "$1" = metadata ]; then\n'
+                              + "echo '" + json.dumps({'target_directory': str(target)}) + "'\n"
+                              + 'else echo cargo-fixture; fi\n')
+        fake_uv = commands / 'uv'
+        fake_uv.write_text('#!/bin/sh\nif [ "$1" = --version ]; then echo uv-fixture; exit; fi\n'
+                           'while [ "$1" != python ]; do shift; done\nshift\nexec python3 "$@"\n')
+        fake_just = commands / 'just'
+        fake_just.write_text('#!/bin/sh\necho should-not-run > "$FIXTURE_JUST"\nexit 99\n')
+        for executable in (fake_cargo, fake_uv, fake_just):
+            executable.chmod(0o755)
+        env = {**self.env, 'PATH': str(commands) + ':' + self.env['PATH'],
+               'PLEXI_REUSE_RELEASE_BUILD': '1', 'FIXTURE_JUST': str(self.root / 'just-ran')}
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.call('bash', str(scripts / 'install.sh'), '--from-source', 'pr-1', env=env)
+        self.assertIn('compiled PR channel mismatch', raised.exception.stderr)
+        self.assertFalse((self.root / 'just-ran').exists())
+
     def test_custom_cargo_home_and_driver_are_fingerprinted(self):
         from unittest.mock import patch
         custom = self.root / 'custom-cargo'

@@ -25,7 +25,12 @@ def identity():
     config = ROOT / '.cargo/config.toml'
     if config.is_file():
         paths.append(config)
-    return {'schema': 1, 'sources': {str(p.relative_to(ROOT)): digest(p) for p in paths},
+    config_directories = [parent / '.cargo' for parent in [*reversed(ROOT.parents), ROOT]]
+    config_directories.append(Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo'))))
+    configs = {str(directory / name): digest(directory / name)
+               for directory in config_directories for name in ('config', 'config.toml')
+               if (directory / name).is_file()}
+    return {'configs': configs, 'schema': 1, 'sources': {str(p.relative_to(ROOT)): digest(p) for p in paths},
             'platform': [platform.system(), platform.machine()],
             'toolchain': subprocess.check_output(['rustc', '-vV'], text=True),
             'flags': {k: v for k, v in os.environ.items() if k.startswith(('RUST', 'CARGO_')) and k != 'CARGO_TARGET_DIR' or k in ('CC', 'CXX', 'SDKROOT', 'DEVELOPER_DIR', 'MACOSX_DEPLOYMENT_TARGET')},
