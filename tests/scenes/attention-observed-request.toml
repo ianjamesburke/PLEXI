@@ -1,0 +1,13 @@
+sizes = [[520.0, 640.0], [1280.0, 800.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+seed_notification = { title = "Codex needs your attention", body = "Review the pending request in the source pane.", required = true, focused_source = true }
+
+[[steps]]
+assert_label = { target = "host", label = "Attention Queue" }
+
+[[steps]]
+shot = "attention-observed-request.png"

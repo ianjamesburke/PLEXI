@@ -2026,7 +2026,11 @@ impl PlexiApp {
                                             "{} ▸ {}",
                                             crate::ui::shortcuts::key_text(&["Enter"]),
                                             if bar.options.is_empty() {
-                                                "Open pane"
+                                                if self.find_pane_in_any_window(bar.pane_id).is_some() {
+                                                    "Open pane"
+                                                } else {
+                                                    "Pane unavailable"
+                                                }
                                             } else {
                                                 "Decide"
                                             }

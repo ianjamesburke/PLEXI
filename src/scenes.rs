@@ -380,6 +380,10 @@ pub struct NotificationSeedSpec {
     pub title: String,
     #[serde(default)]
     pub body: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub focused_source: bool,
 }
 
 /// One generic app-opening request. `kind` determines which production launch
@@ -2725,12 +2729,15 @@ impl HeadlessBackend {
                 // the modal so scenes can photograph it.
                 let title = seed_notification.title.clone();
                 let body = seed_notification.body.clone();
+                let required = seed_notification.required;
+                let focused_source = seed_notification.focused_source;
                 let id = self.h.with_app_mut(|app| {
                     let id = format!("__scene_notification_{}", app.pending_notifications.len());
+                    let sender_pane_id = if focused_source { app.active_focused_pane_id().unwrap_or(0) } else { 0 };
                     app.pending_notifications
                         .push(crate::app::PendingNotification {
                             notify_id: id.clone(),
-                            sender_pane_id: 0,
+                            sender_pane_id,
                             dismiss_owner_pane_id: 0,
                             source_context_id: 0,
                             source_window_id: 0,
@@ -2739,7 +2746,7 @@ impl HeadlessBackend {
                             kind: crate::protocol::NotifyKind::Message,
                             options: Vec::new(),
                             input_prompt: None,
-                            required: false,
+                            required,
                             scope: crate::protocol::NotifyScope::Global,
                             image_inline: None,
                             image_pipe_id: None,
