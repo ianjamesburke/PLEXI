@@ -860,6 +860,8 @@ pub struct TerminalPane {
     /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
     pub observed_agent: Option<crate::protocol::PaneAgentState>,
+    /// Last detected foreground identity until the shell is observed idle.
+    pub(crate) last_observed_agent: Option<String>,
     /// Agent state mapped from OSC 7501 program-status records, refreshed in
     /// `tick_terminal_activity`. Highest-priority signal: when set it wins over
     /// hook and observed state; `None` leaves the old selection untouched.
@@ -993,6 +995,7 @@ impl TerminalPane {
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
+            last_observed_agent: None,
             reported_7501: None,
             activity: None,
             slots: HashMap::new(),
