@@ -3228,8 +3228,9 @@ impl PlexiApp {
                         let captured = terminal
                             .backend
                             .capture_lines(crate::app::pane_status::capture_depth());
+                        let agent = pane.effective_agent();
                         let mut status =
-                            crate::app::pane_status::composite_status(pane.agent(), &captured);
+                            crate::app::pane_status::composite_status(agent.as_ref(), &captured);
                         crate::app::pane_status::apply_program_status(
                             &mut status,
                             &terminal
