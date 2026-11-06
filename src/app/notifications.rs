@@ -71,6 +71,8 @@ pub(crate) struct PendingNotification {
     /// True when the originating app pane has exited. The notification stays
     /// in the queue so the user can read it, but action buttons are hidden.
     pub tombstoned: bool,
+    /// Persisted before attempting an action; prevents replay after a crash.
+    pub delivery_unknown: bool,
     /// When `Some(t)`, the notification is invisible and exempt from timeout
     /// until `t` has elapsed (snooze). `None` means deliver immediately.
     pub deliver_after: Option<std::time::Instant>,
@@ -135,6 +137,7 @@ impl Default for PendingNotification {
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -179,6 +182,8 @@ struct PersistedNotification {
     /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
     enqueued_at_secs: u64,
     tombstoned: bool,
+    #[serde(default)]
+    delivery_unknown: bool,
     // deliver_after (snooze) is session-only — not persisted.
     // image_pipe_id and response_file are session handles — not persisted.
 }
@@ -189,6 +194,15 @@ pub(crate) fn save_pending_notifications_to(
     notifications: &[PendingNotification],
     path: &std::path::Path,
 ) {
+    if let Err(error) = try_save_pending_notifications_to(notifications, path) {
+        log::warn!("notify:persist: failed to save {:?}: {error}", path);
+    }
+}
+
+pub(crate) fn try_save_pending_notifications_to(
+    notifications: &[PendingNotification],
+    path: &std::path::Path,
+) -> Result<(), String> {
     let now_sys = crate::platform::clock::now_secs();
     let persisted: Vec<PersistedNotification> = notifications
         .iter()
@@ -215,19 +229,14 @@ pub(crate) fn save_pending_notifications_to(
                 on_dismiss: n.on_dismiss.clone(),
                 enqueued_at_secs,
                 tombstoned: n.tombstoned,
+                delivery_unknown: n.delivery_unknown,
             }
         })
         .collect();
-    match serde_json::to_string(&persisted) {
-        Ok(json) => match crate::platform::fs::atomic_write(path, json.as_bytes()) {
-            Ok(()) => log::info!(
-                "notify:persist: saved {} notification(s)",
-                notifications.len()
-            ),
-            Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-        },
-        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
-    }
+    let json = serde_json::to_string(&persisted).map_err(|e| e.to_string())?;
+    crate::platform::fs::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string())?;
+    log::info!("notify:persist: saved {} notification(s)", notifications.len());
+    Ok(())
 }
 
 /// Load persisted notifications from `path`. Drops entries older than 7 days.
@@ -281,6 +290,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
                 tombstoned: true,      // source pane is gone
+                delivery_unknown: p.delivery_unknown,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
             })
@@ -436,7 +446,11 @@ impl PlexiApp {
                             value,
                         }) {
                         Some(Ok(())) => delivered = true,
-                        Some(Err(error)) => {
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Encode(error))) => {
+                            log::warn!("notify:action: app event encoding failed: {error}");
+                            failed = true;
+                        }
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Send(error))) => {
                             log::warn!("notify:action: app delivery failed: {error}");
                             failed = true;
                             uncertain = true;
@@ -725,6 +739,11 @@ impl PlexiApp {
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
         );
+    }
+
+    pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
+        self.prune_notification_images();
+        try_save_pending_notifications_to(&self.pending_notifications, &crate::config::config_dir().join("notifications.json"))
     }
 
     /// Drop decoded image state as soon as its notification leaves the live

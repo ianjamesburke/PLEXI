@@ -4371,7 +4371,7 @@ mod tests {
             timeout_secs: None,
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
-            tombstoned: false,
+            tombstoned: false, delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -7394,7 +7394,7 @@ mod tests {
                     timeout_secs: None,
                     on_dismiss: None,
                     enqueued_at: std::time::Instant::now(),
-                    tombstoned: false,
+                    tombstoned: false, delivery_unknown: false,
                     deliver_after: None,
                     origin_in_view: false,
                 }

@@ -1833,7 +1833,7 @@ impl AppRuntime {
     }
 
     /// Returns None when this runtime does not support NotifyAction.
-    pub(crate) fn try_queue_notify_action(&mut self, event: crate::protocol::PlexiEvent) -> Option<Result<(), String>> {
+    pub(crate) fn try_queue_notify_action(&mut self, event: crate::protocol::PlexiEvent) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
         if !self.supports_notify_action() {
             return None;
         }

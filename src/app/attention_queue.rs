@@ -218,8 +218,6 @@ pub struct AttentionQueueState {
     pub dismissed_ids: HashSet<String>,
     /// Answered ask IDs so each ask is decided at most once.
     pub answered_ask_ids: HashSet<String>,
-    /// Responses that may already have caused effects must not be replayed.
-    pub uncertain_notification_ids: HashSet<String>,
     /// Recorded verdicts sent from the Decision Overlay (for tests and audit).
     pub verdicts: Vec<DecisionVerdict>,
     /// Open Decision Overlay state (`None` unless explicitly opened).
@@ -803,7 +801,7 @@ impl PlexiApp {
                 .and_then(|pane| pane.as_app())
                 .is_some_and(|app| app.runtime.supports_notify_action());
             let response_receiver = notif.response_file.is_some();
-            let uncertain = self.attention_queue.uncertain_notification_ids.contains(&notif.notify_id);
+            let uncertain = notif.delivery_unknown;
             let option_indices: Vec<usize> = notif.options.iter().enumerate().filter_map(|(idx, option)| {
                 let host_receiver = option.host_action.as_deref().and_then(|action| action.strip_prefix("pane_focus:"))
                     .and_then(|id| id.parse::<u64>().ok())
@@ -1036,7 +1034,7 @@ impl PlexiApp {
             let independent_notification_route = matches!(overlay.source, QueueSource::Notification { .. })
                 && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
             let uncertain_notification = match &overlay.source {
-                QueueSource::Notification { notify_id, .. } => self.attention_queue.uncertain_notification_ids.contains(notify_id),
+                QueueSource::Notification { notify_id, .. } => self.pending_notifications.iter().any(|n| &n.notify_id == notify_id && n.delivery_unknown),
                 _ => false,
             };
             let pane_alive = is_notice || independent_notification_route || uncertain_notification || self.find_pane_in_any_window(overlay.pane_id).is_some();
@@ -1588,7 +1586,7 @@ impl PlexiApp {
                 }
             }
             QueueSource::Notification { notify_id, option_indices } => {
-                if self.attention_queue.uncertain_notification_ids.contains(notify_id) {
+                if self.pending_notifications.iter().any(|n| &n.notify_id == notify_id && n.delivery_unknown) {
                     self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
                     self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "The action may already have happened. Check the recipient before taking further action.".into()));
                     return false;
@@ -1598,6 +1596,14 @@ impl PlexiApp {
                     .iter()
                     .position(|n| &n.notify_id == notify_id)
                 {
+                    self.pending_notifications[pos].delivery_unknown = true;
+                    if let Err(error) = self.try_save_notifications() {
+                        self.pending_notifications[pos].delivery_unknown = false;
+                        self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), format!("Could not record this decision; no action was sent: {error}")));
+                        log::warn!("decision_overlay: notification attempt not recorded id={notify_id}: {error}");
+                        return false;
+                    }
                     let n = self.pending_notifications.remove(pos);
                     let host_action = n
                         .options
@@ -1615,9 +1621,17 @@ impl PlexiApp {
                         self.pending_notifications.insert(pos, n);
                         self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
                         let message = match delivered {
-                            crate::app::notifications::NotifyDelivery::Unavailable => "The recipient is no longer available." ,
+                            crate::app::notifications::NotifyDelivery::Unavailable => {
+                                self.pending_notifications[pos].delivery_unknown = false;
+                                if let Err(error) = self.try_save_notifications() {
+                                    self.pending_notifications[pos].delivery_unknown = true;
+                                    log::warn!("decision_overlay: could not persist unavailable outcome id={notify_id}: {error}");
+                                    "The outcome could not be saved. Check the recipient before taking further action."
+                                } else {
+                                    "The recipient is no longer available."
+                                }
+                            },
                             crate::app::notifications::NotifyDelivery::OutcomeUnknown => {
-                                self.attention_queue.uncertain_notification_ids.insert(notify_id.clone());
                                 "The action may already have happened. Check the recipient before taking further action."
                             },
                             crate::app::notifications::NotifyDelivery::Delivered => "The response was delivered.",
@@ -2709,6 +2723,36 @@ mod tests {
         assert!(!h.app.pick_decision_overlay_option(0));
         assert_eq!(h.app.active_focused_pane_id(), Some(source), "retry must not replay host action");
         assert!(h.app.attention_queue.verdicts.is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = dir.path().join("notifications.json");
+        crate::app::notifications::save_pending_notifications_to(&h.app.pending_notifications, &snapshot);
+        h.app.pending_notifications = crate::app::notifications::load_pending_notifications_from(&snapshot);
+        h.app.attention_queue = AttentionQueueState::default();
+        h.app.sync_attention_queue();
+        let restored = h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-partial").unwrap();
+        assert!(restored.summary.contains("Outcome unknown"), "restart must retain uncertain outcome");
+        assert!(restored.options.is_empty(), "restart must not expose replayable actions");
+        assert_eq!(h.app.active_focused_pane_id(), Some(source));
+    }
+
+    #[test]
+    fn notification_does_not_execute_when_attempt_cannot_be_persisted() {
+        let mut h = HostHarness::new();
+        let source = h.add_focused_terminal();
+        let destination = h.add_test_pane();
+        let blocked_path = crate::config::config_dir().join("notifications.json");
+        std::fs::create_dir_all(&blocked_path).unwrap();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "persist-failure".into(), sender_pane_id: source, title: "Choice".into(),
+            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-persist-failure"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert_eq!(h.app.active_focused_pane_id(), Some(source));
+        assert!(h.app.attention_queue.verdicts.is_empty());
+        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("no action was sent"));
     }
 
     #[test]
