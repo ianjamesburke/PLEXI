@@ -82,20 +82,6 @@ pub struct SavedPane {
     /// Saved agent session state for agent terminal panes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<SavedAgentSession>,
-    /// Terminal ownership and immutable permission posture at save time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_authority: Option<SavedTerminalAuthority>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct SavedTerminalAuthority {
-    pub human_owned: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawned_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_pane_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_posture: Option<crate::broker::PermissionPosture>,
 }
 
 /// Queued structured result from a child agent pane waiting to be delivered
@@ -1301,7 +1287,6 @@ mod tests {
         let kinds = [SavedPaneKind::Terminal, SavedPaneKind::App];
         for kind in kinds {
             let pane = SavedPane {
-                terminal_authority: None,
                 id: 42,
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
@@ -1323,7 +1308,6 @@ mod tests {
         }
         // Portal round-trips with embedded context_id.
         let portal_pane = SavedPane {
-            terminal_authority: None,
             id: 99,
             kind: SavedPaneKind::Portal { context_id: 42, reveal_after_close: false },
             cwd: PathBuf::new(),
@@ -1469,7 +1453,6 @@ mod tests {
         let mut slots = HashMap::new();
         slots.insert("summary".to_string(), PathBuf::from("/tmp/slot_summary"));
         let pane = SavedPane {
-            terminal_authority: None,
             id: 42,
             kind: SavedPaneKind::Terminal,
             cwd: PathBuf::from("/tmp/work"),

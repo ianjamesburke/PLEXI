@@ -735,6 +735,7 @@ Write text to a terminal PTY or an app's input path (`plexi pane send`). `\n` in
 
 | Field | Type | Required |
 |-------|------|----------|
+| `generated_operation_id` | `boolean` | no |
 | `operation_id` | `string?` | no |
 | `pane_id` | `integer` | yes |
 | `paste` | `boolean` | no |

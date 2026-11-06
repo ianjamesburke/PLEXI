@@ -5810,16 +5810,6 @@ pub(crate) fn restore_workspace(
                         root: ctx_root.cloned(),
                         depth: ctx_depth,
                     };
-                    // Older formats discarded plain agent-child ownership.
-                    // Missing or contradictory provenance never grants human authority.
-                    let authority = saved_pane.terminal_authority.as_ref();
-                    let human_owned = authority.is_some_and(|a| {
-                        a.human_owned
-                            && a.parent_pane_id.is_none()
-                            && a.permission_posture.is_none()
-                            && a.spawned_by.as_deref().is_none_or(|s| s == "human")
-                            && saved_pane.agent_session.is_none()
-                    });
                     let (mut settings, pending_credential) =
                         PlexiApp::make_backend_settings_in_profile(
                             collaborators.profile_dir,
@@ -5827,16 +5817,8 @@ pub(crate) fn restore_workspace(
                             cwd.clone(),
                             collaborators.colors,
                             &context_env,
-                            !human_owned,
+                            effective_session.is_some(),
                         );
-                    if let Some(authority) = authority {
-                        if let Some(spawner) = &authority.spawned_by {
-                            settings.env.insert("PLEXI_SPAWNED_BY".to_string(), spawner.clone());
-                        }
-                        if let Some(parent) = authority.parent_pane_id {
-                            settings.env.insert("PLEXI_PARENT_PANE".to_string(), parent.to_string());
-                        }
-                    }
                     let mut effective_session = effective_session;
                     if let Some(ref mut session) = effective_session {
                         settings
@@ -5944,17 +5926,6 @@ pub(crate) fn restore_workspace(
                         settings,
                         default_font_size,
                     ) {
-                        pane.agent_spawned = !human_owned;
-                        if let Some(authority) = authority {
-                            pane.spawned_by = authority.spawned_by.clone();
-                            pane.parent_pane_id = authority.parent_pane_id;
-                            if !authority.human_owned {
-                                pane.agent_permission_posture = authority.permission_posture.clone();
-                            }
-                        } else {
-                            pane.spawned_by = None;
-                            log::info!("workspace_restore: pane={} has unknown legacy authority; broker access", saved_pane.id);
-                        }
                         pane.name = saved_pane.name.clone().or_else(|| {
                             effective_session
                                 .as_ref()
