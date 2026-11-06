@@ -425,7 +425,7 @@ case "$CMD" in
             if [ -z "$ISSUE" ] && [ -z "$STINTS" ]; then
                 echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
                 echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch or a 'Stint: 0123, 0124' line in the PR body." >&2
-                echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR no-issue" >&2
+                echo "For a standalone follow-up PR with nothing to close, re-run: just merge-pr $PR --reviewed-head <SHA> no-issue" >&2
                 exit 1
             fi
             while IFS= read -r STINT; do

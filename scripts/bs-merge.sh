@@ -3,7 +3,7 @@
 #
 # Usage: bs-merge.sh <pr-number> [merge-pr flags, e.g. no-issue]
 #
-# Wraps `just merge-pr` (rebase → squash → sync → cleanup → close), then
+# Wraps `just merge-pr` (reviewed squash → fast-forward → lane cleanup → close), then
 # uninstalls the plexi-pr-<N> build, confirms the feature worktree was reaped
 # (hard error if not), and publishes a final slot report.
 set -euo pipefail
@@ -36,19 +36,15 @@ rc=0
 (cd "$alpha_root" && just merge-pr "$pr" "$@") || rc=$?
 if [[ "$rc" -ne 0 ]]; then
   bash "$SCRIPT_DIR/bs-slot.sh" merge failed "pr=$pr" "detail=merge-pr exited $rc"
-  echo "bs-merge: 'just merge-pr $pr' failed with exit $rc — recover with the merge-* sub-steps (see justfile), then re-run bs-merge only if the merge itself did not land." >&2
+  echo "bs-merge: 'just merge-pr $pr' failed with exit $rc — preserve local work, resolve the reported problem, then re-run with the reviewed SHA to resume." >&2
   exit "$rc"
 fi
 
-# Retire the PR build. channel-clean is safe when nothing is installed.
-(cd "$alpha_root" && just channel-clean "pr-$pr")
-
 # merge-pr's cleanup owns worktree reaping — confirm it actually happened.
 worktree="$alpha_root/worktrees/$branch"
-git -C "$alpha_root" worktree prune
 if [[ -d "$worktree" ]]; then
   bash "$SCRIPT_DIR/bs-slot.sh" merge failed "pr=$pr" "detail=worktree not reaped: $worktree"
-  echo "bs-merge: PR #$pr merged but its worktree survived cleanup: $worktree — inspect it (uncommitted files?), then remove with 'wtp remove -f $branch'." >&2
+  echo "bs-merge: PR #$pr merged but its worktree survived cleanup: $worktree — inspect and preserve its content before retrying." >&2
   exit 1
 fi
 

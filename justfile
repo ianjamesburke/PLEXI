@@ -539,8 +539,8 @@ uninstall channel="all":
 
 # Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, close issue.
 # Intended for the merge-pr skill — run from repo root.
-#   just merge-pr 2155
-#   just merge-pr 2202 no-issue   — standalone follow-up PR, skips issue/stint close
+#   just merge-pr 2155 --reviewed-head <SHA>
+#   just merge-pr 2202 --reviewed-head <SHA> no-issue   — standalone follow-up PR, skips issue/stint close
 merge-pr PR *FLAGS:
     bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
 
@@ -606,8 +606,8 @@ bs-validate-setup pr:
 
 # Merge + retire the lane: `just merge-pr`, uninstall plexi-pr-<N>, confirm
 # the worktree was reaped (hard error if it survived).
-#   just bs-merge 2542
-#   just bs-merge 2542 no-issue
+#   just bs-merge 2542 --reviewed-head <SHA>
+#   just bs-merge 2542 --reviewed-head <SHA> no-issue
 bs-merge pr *flags:
     bash scripts/bs-merge.sh {{pr}} {{flags}}
 
