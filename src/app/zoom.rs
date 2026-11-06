@@ -594,6 +594,9 @@ impl PlexiApp {
     /// Focus `pane_id` inside its context and update column & context focus memory
     /// in the single authoritative `Strip` in `HostModel`.
     pub fn focus_pane_in_strip(&mut self, pane_id: PaneId) -> bool {
+        if self.focus_revealed_portal(pane_id) {
+            return true;
+        }
         if Some(pane_id) == self.conjoined_parent() {
             self.conjoined_parent_focus = Some(pane_id);
             self.sync_attention_queue();

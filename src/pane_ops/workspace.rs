@@ -1371,6 +1371,21 @@ impl PlexiApp {
         Some(child.context_id)
     }
 
+    /// Explicit focus on a revealed portal resolves to the child as well.
+    pub(crate) fn focus_revealed_portal(&mut self, pane_id: u64) -> bool {
+        let Some((parent_id, target)) = self.windows.iter().find_map(|w| {
+            w.panes.get(&pane_id)
+                .and_then(|pane| pane.as_portal())
+                .map(|portal| (w.context_id, portal.target_context_id))
+        }) else { return false };
+        if self.revealed_child(parent_id) != Some(target) {
+            return false;
+        }
+        let Some(index) = self.router.position(|c| c.context_id == parent_id) else { return false };
+        self.switch_workspace(index);
+        true
+    }
+
     /// A closing pane may leave a portal as the only remaining owned pane.
     pub(crate) fn reveal_sole_portal_after_close(&mut self, parent_id: u64) {
         let mut pages = self.windows.iter().filter(|w| w.context_id == parent_id);

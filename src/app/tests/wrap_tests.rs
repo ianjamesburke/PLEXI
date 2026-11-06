@@ -660,3 +660,35 @@ fn close_reveal_does_not_enter_all_hidden_child() {
     h.app.close_pane_by_id(outside);
     assert_eq!(h.app.router.active().context_id, parent);
 }
+
+#[test]
+fn close_reveal_direct_portal_focus_stays_in_child() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    h.app.close_pane_by_id(outside);
+    let portal = h.app.windows.iter().find(|w| w.context_id == parent).unwrap()
+        .panes.iter().find_map(|(&id, pane)| pane.as_portal().map(|_| id)).unwrap();
+    assert!(h.app.pane_navigate(portal));
+    assert_eq!(h.app.router.active().context_id, child, "pane navigation must not expose the redundant portal");
+    assert!(h.app.focus_pane_in_strip(portal));
+    assert_eq!(h.app.router.active().context_id, child, "strip focus must not expose the redundant portal");
+    assert_eq!(h.app.origin_for_pane(a).unwrap().context_id, child);
+}
+
+#[test]
+fn direct_focus_preserves_deliberate_portal_with_sibling() {
+    let mut h = HostHarness::new();
+    let [a, b, c, _outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let portal = h.app.windows.iter().find(|w| w.context_id == parent).unwrap()
+        .panes.iter().find_map(|(&id, pane)| pane.as_portal().map(|_| id)).unwrap();
+    assert!(h.app.pane_navigate(portal));
+    assert_eq!(h.app.router.active().context_id, parent);
+    assert!(h.app.focus_pane_in_strip(portal));
+    assert_eq!(h.app.router.active().context_id, parent);
+}

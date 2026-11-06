@@ -1147,6 +1147,9 @@ impl PlexiApp {
     /// Navigate to a pane by id, updating both `focused_pane` on its window and
     /// `active_window`. Returns `true` if the pane was found.
     pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {
+        if self.focus_revealed_portal(pane_id) {
+            return true;
+        }
         // Read-only pass: find the window index, tile_id, and context_id before mutating.
         // Using iter() instead of iter_mut() so self.windows borrow ends before we call
         // push_focus_history (which needs &mut self).
