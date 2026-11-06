@@ -1122,6 +1122,7 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
 #[test]
 #[ignore = "requires-pty"]
 fn file_browser_fresh_open_tracks_terminal_cd() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
     let root = h.workspace_root();
     h.app.set_context_root(root.clone(), None);
@@ -1149,6 +1150,9 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
             h.run_frames(1);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        h.focus_pane(terminal);
+        let pid = h.terminal_backend(terminal).child_pid();
+        assert_eq!(crate::host::shell::get_pid_cwd_fresh(pid).unwrap().canonicalize().unwrap(), directory.canonicalize().unwrap(), "shell must remain in the executed cd directory");
         h.app.open_file_browser();
         let browser = h.app.windows[0]
             .panes
@@ -1187,6 +1191,7 @@ fn file_browser_fallback_uses_explicit_context_not_active_router() {
 #[test]
 #[ignore = "requires-pty"]
 fn file_browser_unavailable_terminal_directory_falls_back() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
     let root = h.workspace_root();
     let context = h.app.windows[0].context_id;
@@ -1212,6 +1217,7 @@ fn file_browser_unavailable_terminal_directory_falls_back() {
 #[test]
 #[ignore = "requires-pty"]
 fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
     let terminal = h.add_focused_terminal();
     let expected = crate::host::shell::get_pid_cwd_fresh(h.terminal_backend(terminal).child_pid()).unwrap();
