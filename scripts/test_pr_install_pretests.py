@@ -25,7 +25,7 @@ class InstallPretests(unittest.TestCase):
         (self.root / "scripts/cargo-with-lease.sh").write_text(
             'printf "%s\\n" "$*" >> "$PR_PRETEST_FIXTURE_LOG"\n'
             'if [[ "$*" == *--list* && "${PR_PRETEST_FIXTURE_ZERO:-}" != 1 ]]; then\n'
-            '  echo "cli::tests::affected: test"\nfi\n')
+            '  printf "%s\\n" "${PR_PRETEST_FIXTURE_LIST:-cli::tests::affected: test}"\nfi\n')
         self.bin = self.root / "bin"
         self.bin.mkdir()
         just = self.bin / "just"
@@ -54,6 +54,26 @@ class InstallPretests(unittest.TestCase):
         self.assertEqual(len(cargo), 2)  # list matches, then execute the selection
         self.assertTrue(all("-- cli::tests::affected" in line for line in cargo))
         self.assertIn("just fetch-python-runtime sdk-smoke", commands)
+
+    def test_1109_paths_select_reviewed_filters_and_install_pretests(self):
+        paths = ["src/overlays/notes_picker.rs", "src/testing/harness_tests.rs",
+                 "tests/scenes/notes-picker-shortcut-toggle.toml"]
+        selected = subprocess.run(["bash", str(ROOT / "scripts/scoped-tests.sh"), *paths],
+                                  cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+        self.assertNotIn("::", selected.splitlines())
+        self.assertIn("overlays::", selected.splitlines())
+        self.assertIn("testing::harness_tests::", selected.splitlines())
+        listing = "\n".join(f"{name}fixture: test" for name in selected.splitlines())
+        result, commands = self.run_scope(filters=selected, PR_PRETEST_FIXTURE_LIST=listing)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("cargo test" in line and "--list" not in line for line in commands))
+        unknown = subprocess.run(["bash", str(ROOT / "scripts/scoped-tests.sh"),
+                                  "src/new_unknown/file.rs"], cwd=ROOT, capture_output=True,
+                                 text=True, check=True).stdout.strip()
+        self.assertEqual(unknown, "::")
+        result, _ = self.run_scope(filters=unknown)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("broad selection requires reviewed", result.stderr)
 
     def test_scripts_only_never_fall_back_to_full_host_suite(self):
         result, commands = self.run_scope(filters="")

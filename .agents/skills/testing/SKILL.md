@@ -83,7 +83,7 @@ required-gate set automatically.
 
 ## Step 2 — Host Logic Evidence
 
-Run the PR-push filters from `scripts/scoped-tests.sh` using the array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate): `cargo test --bin plexi -- <filters...>`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
+Run the PR-push filters from `scripts/scoped-tests.sh` using the `just test-host` array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), which shares test-profile flags with `just scene`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
 
 Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
 

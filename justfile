@@ -65,6 +65,11 @@ test:
         --skip changes \
         --skip scene_suite
 
+# Run selected host tests with the same flags and isolation as `just scene`.
+# Pass libtest filters and options after the recipe name.
+test-host +args:
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test --bin plexi -- {{args}} < /dev/null
+
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
 roadmap-evidence:
