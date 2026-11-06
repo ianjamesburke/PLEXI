@@ -1497,6 +1497,18 @@ fn assistant_open_spawns_second_instance_in_other_context() {
 /// config file (template written when absent) and focuses — never duplicates —
 /// an already-open config.
 #[test]
+fn command_comma_opens_channel_config_in_builtin_editor() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane).run_frames(1);
+    let path = crate::config::config_path();
+    let before = h.pane_count();
+    h.press_key(egui::Key::Comma, egui::Modifiers { command: true, ..Default::default() });
+    assert_eq!(h.pane_count(), before + 1);
+    assert!(h.app.find_open_text_editor_pane_any_window(&path).is_some());
+}
+
+#[test]
 fn open_config_in_editor_splits_and_dedups() {
     let mut h = HostHarness::new();
     let first = h.add_test_pane();

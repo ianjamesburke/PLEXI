@@ -1243,6 +1243,18 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     serde_json::from_str(&content).ok()
 }
 
+fn running_identity_verified(running: Option<&serde_json::Value>) -> bool {
+    let Some(value) = running else { return false };
+    ["version", "build_id", "source_commit", "executable_path"]
+        .iter()
+        .all(|key| {
+            value[*key]
+                .as_str()
+                .is_some_and(|s| !s.is_empty() && s != "unknown")
+        })
+        && value["pid"].as_u64().is_some_and(|pid| pid > 0)
+}
+
 /// Human-readable running-vs-installed identity for `host status` and the
 /// `host start` already-running path. Versions come from each binary's own
 /// build info (version text, short commit, build id), never from profile
@@ -1257,11 +1269,11 @@ pub(crate) fn host_identity_lines(
 ) -> Vec<String> {
     let field = |name: &str| running.and_then(|r| r.get(name)).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
     let running_build = field("build_id");
-    let running_line = match running_build {
+    let running_line = match running_build.filter(|_| running_identity_verified(running)) {
         Some(build) => {
             // Hosts older than `version_text` report only their tag.
             let text = field("version_text").map(str::to_string).unwrap_or_else(|| crate::distribution::generation_version_text(field("tag").unwrap_or(""), build));
-            format!("Running host: {text}, build {build}")
+            format!("Running host: {text}, build {build}, commit {}, pid {}, executable {}", field("source_commit").unwrap_or("unknown"), running.and_then(reported_pid).unwrap_or(0), field("executable_path").unwrap_or("unknown"))
         }
         None => {
             log::info!("host_status: running build identity unverified");
@@ -1333,6 +1345,7 @@ pub fn host_status_cli(json: bool) -> i32 {
         let payload = serde_json::json!({
             "ready": ready,
             "cli": crate::distribution::build_info(),
+            "running_identity": if running_identity_verified(running.as_ref()) { "verified" } else { "unverified" },
             "running": running,
             "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,
@@ -1596,14 +1609,43 @@ mod tests {
     fn identity_lines_prompt_restart_when_running_build_is_older() {
         let old = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hash";
         let new = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-hash";
-        let running = serde_json::json!({"tag": "v0.1.16", "build_id": old});
+        let running = serde_json::json!({"tag": "v0.1.16", "version": "0.1.16", "build_id": old, "source_commit": "1111111", "pid": 1, "executable_path": "/host"});
         let lines = super::host_identity_lines(Some(&running), Some(("v0.2.0", new)), "plexi host stop && plexi host start");
         assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("0.1.16 (1111111)") && lines[0].contains(old));
         assert!(lines[1].contains("0.2.0 (2222222)") && lines[1].contains(new));
         assert!(lines[2].contains("plexi host stop && plexi host start"));
-        let running = serde_json::json!({"tag": "v9.9.9", "version_text": "0.4.2 (abc1234)", "build_id": old});
+        let running = serde_json::json!({"tag": "v9.9.9", "version": "0.4.2", "version_text": "0.4.2 (abc1234)", "build_id": old, "source_commit": "abc1234", "pid": 1, "executable_path": "/host"});
         assert!(super::host_identity_lines(Some(&running), None, "r")[0].contains("0.4.2 (abc1234)"));
+    }
+
+    #[test]
+    fn running_identity_requires_every_field() {
+        let mut value = serde_json::json!({"version":"1", "build_id":"a", "source_commit":"abc", "executable_path":"/host", "pid":42});
+        assert!(super::running_identity_verified(Some(&value)));
+        for key in [
+            "version",
+            "build_id",
+            "source_commit",
+            "executable_path",
+            "pid",
+        ] {
+            let saved = value[key].take();
+            assert!(!super::running_identity_verified(Some(&value)), "{key}");
+            value[key] = saved;
+        }
+        value["source_commit"] = serde_json::json!("unknown");
+        assert!(!super::running_identity_verified(Some(&value)));
+    }
+
+    #[test]
+    fn identical_versions_with_different_commits_show_mismatch() {
+        let running = serde_json::json!({"version":"1.0", "version_text":"1.0 (aaaaaaa)", "build_id":"aaaaaaa-hash", "source_commit":"aaaaaaa", "executable_path":"/host", "pid":42});
+        let lines =
+            super::host_identity_lines(Some(&running), Some(("v1.0", "bbbbbbb-hash")), "restart");
+        assert!(lines[0].contains("aaaaaaa"));
+        assert!(lines[1].contains("bbbbbbb"));
+        assert!(lines[2].contains("differs"));
     }
 
     #[test]

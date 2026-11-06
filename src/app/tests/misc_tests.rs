@@ -955,5 +955,8 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     h.hidden_frame();
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
+    assert_eq!(value["source_commit"], env!("PLEXI_SOURCE_COMMIT"));
+    assert_eq!(value["pid"], std::process::id());
+    assert_eq!(value["executable_path"], std::env::current_exe().unwrap().to_str().unwrap());
     assert_ne!(value["tag"], "v999.0.0");
 }
