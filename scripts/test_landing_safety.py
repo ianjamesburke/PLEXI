@@ -105,6 +105,8 @@ class LandingSafety(unittest.TestCase):
         sha = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
         payload = json.dumps({'state': 'MERGED', 'headRefName': branch, 'headRefOid': sha})
         self.stub('gh', "printf '%s\\n' '" + payload + "'")
+        self.assertNotEqual(self.script('merge-pr.sh', 'cleanup', '1', branch, '0' * 40).returncode, 0)
+        self.assertTrue(lane.exists())
         (lane / 'a').write_text('valuable\n')
         self.assertNotEqual(self.script('merge-pr.sh', 'cleanup', '1', branch, sha).returncode, 0)
         self.assertEqual((lane / 'a').read_text(), 'valuable\n')
@@ -136,7 +138,7 @@ if [ "$1 $2" = 'pr view' ]; then
   if [[ "$*" == *closingIssuesReferences* ]]; then
     printf '\n'
   elif [[ "$*" == *'--jq'* ]]; then
-    printf '{"branch":"%s","state":"%s","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
+    printf '{"branch":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
   else
     printf '{"headRefName":"%s","headRefOid":"%s","state":"%s"}\n' "$TEST_BRANCH" "$TEST_SHA" "$state"
   fi
@@ -170,6 +172,8 @@ fi
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'local work\n')
         self.assertFalse(lane.exists())
+        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

@@ -372,40 +372,12 @@ The three-pane squad was stint-0568-shaped."
     echo "resolve_both tests passed"
 }
 
-# Regression: a worktree dir that survives `git worktree remove --force` (the
-# routine "Directory not empty" case) must be cleared, not abort the run before
-# the issue/stint close. See do_cleanup.
-test_cleanup_survivor() {
-    local TMP
-    TMP=$(mktemp -d)
-    # shellcheck disable=SC2064
-    trap "rm -rf '$TMP'" RETURN
-
-    local WORKTREE_PATH="$TMP/worktrees/feature/fake-branch"
-    mkdir -p "$WORKTREE_PATH"
-    echo "leftover build artifact" > "$WORKTREE_PATH/stale.o"
-
-    # Mimic do_cleanup's survivor branch in isolation: removal already failed and
-    # left files behind, so the directory is still present at this point.
-    if [ -e "$WORKTREE_PATH" ]; then
-        rm -rf "$WORKTREE_PATH"
-    fi
-
-    if [ -e "$WORKTREE_PATH" ]; then
-        echo "expected leftover worktree dir to be cleared, still present" >&2
-        return 1
-    fi
-
-    echo "cleanup survivor test passed"
-}
-
 # --- Dispatch ---
 CMD="${1:-}"
 case "$CMD" in
     test-resolve-issue) test_resolve_issue ;;
     test-resolve-stints) test_resolve_stints ;;
     test-resolve-both) test_resolve_both ;;
-    test-cleanup-survivor) test_cleanup_survivor ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" "${3:?reviewed head SHA required}" ;;
     sync)     do_sync ;;
@@ -433,9 +405,14 @@ case "$CMD" in
             esac
         done
 
-        INFO=$(gh pr view "$PR" --json headRefName,state,body --jq '{branch: .headRefName, state: .state, body: .body}')
+        INFO=$(gh pr view "$PR" --json headRefName,baseRefName,state,body --jq '{branch: .headRefName, base: .baseRefName, state: .state, body: .body}')
         BRANCH=$(echo "$INFO" | jq -r .branch)
         STATE=$(echo "$INFO" | jq -r .state)
+        BASE=$(echo "$INFO" | jq -r .base)
+        if [ "$BASE" != alpha ]; then
+            echo "ERROR: PR #$PR targets $BASE, not alpha; refusing to merge." >&2
+            exit 1
+        fi
         PR_BODY=$(echo "$INFO" | jq -r '.body // ""')
         ISSUE=""
         STINTS=""
