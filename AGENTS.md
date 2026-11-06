@@ -72,7 +72,7 @@ Never add `Co-Authored-By: Claude ...` trailers. Never push directly to `main` o
 
 ## Tasks and Issues
 
-Always use the `/create-stint` skill to create tasks. Never create stint tasks or GitHub issues manually.
+Always use the `/create-stint` skill and read [Plexi task creation rules](.agents/create-stint.md) to create tasks. Never create stint tasks or GitHub issues manually.
 `.stint/` is git-ignored by design. Validate task state with `stint check`, `stint list`, `stint show <id>`, and `stint status`.
 
 ## Planning
