@@ -5456,8 +5456,26 @@ impl PlexiApp {
                     t.activity = new;
                 }
 
-                let reported =
-                    crate::program_status::reported_agent_state(*pane_id, &t.program_status);
+                // OSC 7501 describes arbitrary programs. Its state can refine
+                // an identified agent, but generic program activity is not
+                // itself evidence of agent identity.
+                let reported = crate::program_status::reported_agent_state(*pane_id, &t.program_status)
+                    .and_then(|mut report| {
+                        let known = report.agent == "claude-code"
+                            || crate::host::shell::known_agent_process(&report.agent).is_some();
+                        let identity = t.agent.as_ref().map(|a| a.agent.as_str())
+                            .or_else(|| t.observed_agent.as_ref().map(|a| a.agent.as_str()))
+                            .or(t.agent_harness.as_deref())
+                            .or(t.agent_role.as_deref())
+                            .or_else(|| t.reported_7501.as_ref().map(|a| a.agent.as_str()));
+                        if !known && identity.is_none() {
+                            return None;
+                        }
+                        if !known {
+                            report.agent = identity.unwrap_or_default().to_owned();
+                        }
+                        Some(report)
+                    });
                 let reported_changed = match (&t.reported_7501, &reported) {
                     (None, None) => false,
                     (Some(a), Some(b)) => {
