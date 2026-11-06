@@ -9,8 +9,8 @@ def selection(paths):
         return True, "empty or unknown diff"
     # Only these native-only surfaces are proven unrelated. Everything else,
     # including protocol/runtime/build inputs and unknown paths, keeps smoke.
-    native = ("src/overlays/", "src/ui/", "src/editor/", "src/config/",
-              "src/host/context", "src/host/model", "src/host/navigation",
+    native = ("src/overlays/", "src/ui/", "src/editor/",
+              "src/host/context", "src/host/navigation",
               "src/workspace/context")
     for path in paths:
         if path.startswith(native) or path == "src/app/text_editor_app.rs":

@@ -24,7 +24,7 @@ def atomic_json(path, value):
     os.replace(temporary, path)
 
 
-def identity(root, extra):
+def identity(root, extra, sdk_tests=False):
     root = Path(root).resolve()
     def output(*args):
         return subprocess.check_output(args, cwd=root, text=True, stderr=subprocess.PIPE).strip()
@@ -43,7 +43,19 @@ def identity(root, extra):
                        "PLEXI_BUILD_TEST_CHANNEL", "PLEXI_PR_TEST_FILTERS", "PLEXI_PR_REQUIRE_SDK"}}
     # Target is artifact location, not a compiler input. A slot remains locked.
     keys.pop("CARGO_TARGET_DIR", None)
-    return {"schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
+    if sdk_tests and len(extra) >= 2 and extra[1] == "scoped" and os.environ.get("PLEXI_PR_REQUIRE_SDK") != "1":
+        selector = root / "scripts/pr-sdk-selection.py"
+        if selector.is_file():
+            sdk_tests = not output(sys.executable, str(selector), extra[0]).startswith("skip:")
+    python_tests = None
+    if sdk_tests and (root / "sdk/python/pyproject.toml").is_file():
+        # Resolve the same uv environment as sdk-smoke, including its actual
+        # interpreter and test dependency versions. A failure disables reuse.
+        python_tests = output("uv", "run", "--python", "3.12", "--project", "sdk/python",
+                              "--with", "pytest", "--with", "pytest-asyncio", "python", "-c",
+                              "import sys,json; from importlib.metadata import distributions; "
+                              "print(json.dumps([sys.executable,sys.version,sorted((d.metadata['Name'],d.version) for d in distributions())]))")
+    return {"python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
             "source": str(root), "channel_input": digest(root / ".channel") if (root / ".channel").is_file() else None,
             "toolchain": output("rustc", "-vV"), "cargo": output("cargo", "-vV"),
             "uv": output("uv", "--version"), "configs": configs, "environment": keys, "extra": extra}
@@ -61,7 +73,7 @@ def receipt_run(arguments):
     target = os.environ.get("CARGO_TARGET_DIR")
     path = Path(target) / ".plexi-pretests.json" if target else None
     try:
-        key = identity(root, selection)
+        key = identity(root, selection, sdk_tests=True)
     except (OSError, subprocess.CalledProcessError, ValueError) as error:
         print(f"pretest-receipt: unavailable: {error}", flush=True)
         key = None
@@ -88,7 +100,7 @@ def receipt_run(arguments):
         result = process.wait()
     if result == 0 and key:
         try:
-            if identity(root, selection) == key:
+            if identity(root, selection, sdk_tests=True) == key:
                 atomic_json(path, {"identity": key, "result": 0, "log": str(log), "log_sha256": digest(log)})
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             print(f"pretest-receipt: not recorded: {error}", file=sys.stderr)

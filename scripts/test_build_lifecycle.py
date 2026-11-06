@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,15 @@ class Lifecycle(unittest.TestCase):
         args = [str(self.repo), head, 'pr-1', str(binary)]
         self.call(*command, 'stamp', *args, env=env)
         self.call(*command, 'check', *args, env=env)
+        manifest = binary.parent / '.plexi-candidate.json'
+        original = manifest.read_text()
+        for field in ('schema', 'toolchain', 'configs', 'head'):
+            value = json.loads(original)
+            value['identity'][field] = 'mismatch'
+            manifest.write_text(json.dumps(value))
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.call(*command, 'check', *args, env=env)
+        manifest.write_text(original)
         for name, value in [('RUSTFLAGS', '-D warnings'), ('PLEXI_BUILD_TEST_CHANNEL', 'pr-2')]:
             with self.assertRaises(subprocess.CalledProcessError):
                 self.call(*command, 'check', *args, env={**env, name: value})
@@ -106,7 +116,7 @@ class Lifecycle(unittest.TestCase):
         command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1', 'true']
         self.call(*command)
         namespace = next((self.root / 'cache').iterdir())
-        locks = [(slot / 'lock').open('a+') for slot in namespace.iterdir()]
+        locks = [(slot / 'lock').open('a+') for slot in namespace.iterdir() if slot.is_dir()]
         try:
             for lock in locks:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -136,8 +146,11 @@ class Lifecycle(unittest.TestCase):
         (self.repo / 'src/main.rs').write_text('fn main() { println!("probe"); }\n')
         target = self.root / 'target'
         env = {**self.env, 'CARGO_TARGET_DIR': str(target), 'RUSTC_WRAPPER': ''}
+        timings = []
         def build(repo, env):
+            started = time.monotonic()
             result = self.call('cargo', 'build', '--offline', '--message-format=json', cwd=repo, env=env)
+            timings.append(time.monotonic() - started)
             return [json.loads(line)['fresh'] for line in result.stdout.splitlines()
                     if json.loads(line).get('reason') == 'compiler-artifact']
         self.assertEqual(build(self.repo, env), [False])
@@ -146,9 +159,11 @@ class Lifecycle(unittest.TestCase):
         shutil.copytree(self.repo, other)
         moved = build(other, env)
         seeded = self.root / 'seeded'
+        seed_started = time.monotonic()
         shutil.copytree(target, seeded)
+        seed_seconds = time.monotonic() - seed_started
         seeded_result = build(other, {**env, 'CARGO_TARGET_DIR': str(seeded)})
-        print(json.dumps({'fixture': 'small real Cargo', 'warm': True, 'moved_fresh': moved, 'seeded_fresh': seeded_result}))
+        print(json.dumps({'fixture': 'small real Cargo', 'warm': True, 'moved_fresh': moved, 'seeded_fresh': seeded_result, 'build_seconds_cold_warm_moved_seeded': timings, 'seed_copy_seconds': seed_seconds}))
 
 if __name__ == '__main__':
     unittest.main()
