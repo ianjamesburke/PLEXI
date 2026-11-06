@@ -1779,6 +1779,7 @@ mod tests {
     /// The scene DSL cannot seed PTY output or drag inside a terminal widget.
     /// Exercise real pointer events, selection commands and highlight painting.
     #[test]
+    #[ignore = "requires-pty"]
     fn terminal_selection_tracks_pointer_at_fractional_scale() {
         for scale in [1.0, 1.1, 1.3] {
             let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 500.0, 2.0);
