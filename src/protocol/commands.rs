@@ -84,7 +84,7 @@ impl PipStatus {
     /// Map the app-reported status onto the host activity-dot vocabulary so the
     /// dot renders the app's intended color. Yellow maps to the working color,
     /// green to idle, and red to blocked. The UI renders yellow health pips
-    /// statically, separate from an agent's working animation.
+    /// statically unless the pane also has a working agent.
     pub fn as_agent_state(self) -> &'static AgentState {
         match self {
             PipStatus::Green => &AgentState::Idle,
