@@ -1396,6 +1396,8 @@ impl PlexiApp {
         log::info!("context_navigation: close revealed child={target} parent={parent_id}");
         if self.router.active().context_id == parent_id {
             if let Some(index) = self.router.position(|c| c.context_id == target) {
+                self.prefer_visible_reveal_page(target);
+                self.conjoined_parent_focus = None;
                 self.switch_workspace(index);
             }
         }
@@ -1405,6 +1407,22 @@ impl PlexiApp {
         self.windows.iter().filter(|w| w.context_id == context_id).any(|w| {
             w.panes.iter().any(|(id, pane)| !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some())
         })
+    }
+
+    fn prefer_visible_reveal_page(&mut self, context_id: u64) {
+        let visible = |w: &&crate::host::context::Window| {
+            w.context_id == context_id
+                && w.panes.iter().any(|(id, pane)| {
+                    !pane.is_hidden() && w.tree.tiles.find_pane(id).is_some()
+                })
+        };
+        let preferred = self.context_active_window.get(&context_id).copied();
+        if self.windows.iter().filter(visible).any(|w| Some(w.window_id) == preferred) {
+            return;
+        }
+        if let Some(window_id) = self.windows.iter().find(visible).map(|w| w.window_id) {
+            self.context_active_window.insert(context_id, window_id);
+        }
     }
 
     /// Return to the immediate parent, restoring its entry window and focus when available.
@@ -1673,12 +1691,19 @@ impl PlexiApp {
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
         let mut new_ctx_idx = new_ctx_idx;
+        let mut redirected = false;
         for _ in 0..self.router.len() {
             let id = self.router.get(new_ctx_idx).context_id;
             let Some(child) = self.revealed_child(id) else { break };
             let Some(index) = self.router.position(|c| c.context_id == child) else { break };
             if index == new_ctx_idx { break; }
             new_ctx_idx = index;
+            redirected = true;
+        }
+        if redirected {
+            let context_id = self.router.get(new_ctx_idx).context_id;
+            self.prefer_visible_reveal_page(context_id);
+            self.conjoined_parent_focus = None;
         }
         if new_ctx_idx != self.router.active_idx() {
             self.cancel_context_rename("context switch");
