@@ -56,10 +56,12 @@ def identity(root, extra, sdk_tests=False):
                               "--with", "pytest", "--with", "pytest-asyncio", "python", "-c",
                               "import sys,json; from importlib.metadata import distributions; "
                               "print(json.dumps([sys.executable,sys.version,sorted((d.metadata['Name'],d.version) for d in distributions())]))")
+    tag = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
+                         cwd=root, capture_output=True, text=True)
     driver = {name: digest(Path(__file__).with_name(name))
               for name in ("build-evidence.py", "pr-install-pretests.sh", "pr-sdk-selection.py")
               if Path(__file__).with_name(name).is_file()}
-    return {"driver": driver, "python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
+    return {"exact_tag": tag.stdout.strip() if tag.returncode == 0 else "", "driver": driver, "python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
             "source": str(root), "channel_input": digest(root / ".channel") if (root / ".channel").is_file() else None,
             "toolchain": output("rustc", "-vV"), "cargo": output("cargo", "-vV"),
             "uv": output("uv", "--version"), "configs": configs, "environment": keys, "extra": extra}
