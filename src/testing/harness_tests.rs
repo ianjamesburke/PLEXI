@@ -947,7 +947,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
                     id: 41,
-                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20 },
+                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20, reveal_after_close: false },
                     cwd: root_a.path().to_path_buf(),
                     name: None,
                     app_id: None,
@@ -3387,6 +3387,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
                 pane_id: portal_pane_id,
                 target_context_id: child_ctx_id,
                 context_state: None,
+                reveal_after_close: false,
                 hidden: false,
             })),
         );
@@ -12130,7 +12131,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 11,
-                            kind: SavedPaneKind::Portal { context_id: 2 },
+                            kind: SavedPaneKind::Portal { context_id: 2, reveal_after_close: false },
                             cwd: PathBuf::new(),
                             name: None,
                             app_id: None,
@@ -12144,7 +12145,7 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 12,
-                            kind: SavedPaneKind::Portal { context_id: 3 },
+                            kind: SavedPaneKind::Portal { context_id: 3, reveal_after_close: false },
                             cwd: PathBuf::new(),
                             name: None,
                             app_id: None,
