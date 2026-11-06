@@ -218,6 +218,8 @@ pub struct AttentionQueueState {
     pub dismissed_ids: HashSet<String>,
     /// Answered ask IDs so each ask is decided at most once.
     pub answered_ask_ids: HashSet<String>,
+    /// A desktop notification choice awaiting the next logic pass.
+    pub pending_notification_decision: Option<(String, usize)>,
     /// Recorded verdicts sent from the Decision Overlay (for tests and audit).
     pub verdicts: Vec<DecisionVerdict>,
     /// Open Decision Overlay state (`None` unless explicitly opened).
@@ -314,6 +316,31 @@ pub fn context_is_in_subtree(
 }
 
 impl PlexiApp {
+    fn request_decision_overlay_option(&mut self, option_idx: usize) {
+        let Some(overlay) = self.attention_queue.decision_overlay.as_ref() else {
+            return;
+        };
+        if matches!(overlay.source, QueueSource::Notification { .. }) {
+            if self.attention_queue.pending_notification_decision.is_none() {
+                self.attention_queue.pending_notification_decision = Some((overlay.ask_id.clone(), option_idx));
+                self.ctx.request_repaint();
+            }
+        } else {
+            self.pick_decision_overlay_option(option_idx);
+        }
+    }
+
+    pub(crate) fn service_pending_notification_decision(&mut self) -> bool {
+        let Some((ask_id, option_idx)) = self.attention_queue.pending_notification_decision.take() else {
+            return false;
+        };
+        if self.attention_queue.decision_overlay.as_ref().is_some_and(|overlay| overlay.ask_id == ask_id) {
+            self.pick_decision_overlay_option(option_idx);
+        } else {
+            log::info!("attention_queue: queued notification decision no longer active id={ask_id}");
+        }
+        true
+    }
     /// Returns the currently focused pane ID at the active context/window,
     /// including `conjoined_parent_focus` when focused on a conjoined parent column.
     pub fn active_focused_pane_id(&self) -> Option<u64> {
@@ -1764,7 +1791,7 @@ impl PlexiApp {
                 .map(|o| o.options.len())
                 .unwrap_or(0);
             if digit_idx < len {
-                self.pick_decision_overlay_option(digit_idx);
+                self.request_decision_overlay_option(digit_idx);
             }
             input.clear();
             return KeyDisposition::Consumed;
@@ -1777,7 +1804,7 @@ impl PlexiApp {
                 .as_ref()
                 .map(|o| o.selected_idx)
                 .unwrap_or(0);
-            self.pick_decision_overlay_option(idx);
+            self.request_decision_overlay_option(idx);
             input.clear();
             return KeyDisposition::Consumed;
         }
@@ -2330,7 +2357,7 @@ impl PlexiApp {
             });
 
         if let Some(idx) = picked_option {
-            self.pick_decision_overlay_option(idx);
+            self.request_decision_overlay_option(idx);
         }
     }
 }
@@ -2753,6 +2780,31 @@ mod tests {
         assert_eq!(h.app.active_focused_pane_id(), Some(source));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("no action was sent"));
+    }
+
+    #[test]
+    fn notification_decision_is_serviced_in_hidden_logic() {
+        let mut h = HostHarness::new();
+        let source = h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("response");
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "deferred".into(), sender_pane_id: source, title: "Choice".into(),
+            response_file: Some(path.to_string_lossy().into_owned()),
+            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-deferred"));
+        let mut input = PlexiInput::synthetic(vec![egui::Event::Key {
+            key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }], egui::Modifiers::NONE);
+        assert!(matches!(h.app.handle_decision_overlay_input(&mut input), KeyDisposition::Consumed));
+        assert!(!path.exists(), "UI input must not perform external I/O");
+        h.hidden_frame();
+        assert!(path.exists(), "pending={:?} error={:?} overlay={:?}", h.app.attention_queue.pending_notification_decision, h.app.approval_keyboard.last_error, h.app.attention_queue.decision_overlay.as_ref().map(|o| &o.ask_id));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "go");
     }
 
     #[test]

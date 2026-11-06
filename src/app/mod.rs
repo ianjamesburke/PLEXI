@@ -3596,6 +3596,9 @@ impl eframe::App for PlexiApp {
         // `ui`, a fully covered host serviced no pane IPC at all: wakes fired,
         // logic-only passes ran, and queued commands sat until the window was
         // next uncovered (stint 0505 fix round 3).
+        if self.service_pending_notification_decision() {
+            ctx.request_repaint();
+        }
         self.update_preamble(ctx);
         self.apply_ui_scale(ctx);
         self.flush_ui_scale_persist();
