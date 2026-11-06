@@ -1,7 +1,7 @@
 //! Lifecycle methods — per-frame drain and tick operations on PlexiApp.
 
-use egui_term::PtyEvent;
 use crate::host::pane_lifecycle::{ExitStatus, PaneLifecycleEvent, Provenance, Source};
+use egui_term::PtyEvent;
 
 use super::PendingNotification;
 use super::PlexiApp;
@@ -333,8 +333,10 @@ impl PlexiApp {
                     }
                     if submitted { break; }
                 }
-                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error})); }
-                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"})); }
+                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
+                    ); }
+                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
+                    ); }
             }
             crate::protocol::AppRequest::CommandView { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=command_view op={op}");
@@ -1664,7 +1666,9 @@ impl PlexiApp {
             }
             crate::protocol::AppRequest::ContextRename { context_id, name, response_file } => {
                 let reply = match self.router.position(|c| c.context_id == *context_id) {
-                    Some(idx) => serde_json::json!({"ok":true, "name":self.rename_context(idx, name)}),
+                    Some(idx) => {
+                        serde_json::json!({"ok":true, "name":self.rename_context(idx, name)})
+                    }
                     None => serde_json::json!({"error":format!("context {context_id} not found")}),
                 };
                 write_json_response(response_file, reply);
@@ -1689,7 +1693,9 @@ impl PlexiApp {
             crate::protocol::AppRequest::PaneVisibility { pane_id, hidden, response_file } => {
                 log::info!("pane_visibility: pane_id={pane_id} hidden={hidden}");
                 let reply = match self.set_pane_hidden(*pane_id, *hidden) {
-                    Ok(()) => serde_json::json!({"ok":true, "pane_id": *pane_id, "hidden": *hidden}),
+                    Ok(()) => {
+                        serde_json::json!({"ok":true, "pane_id": *pane_id, "hidden": *hidden})
+                    }
                     Err(error) => serde_json::json!({"error":error}),
                 };
                 write_json_response(response_file, reply);
@@ -1730,16 +1736,26 @@ impl PlexiApp {
                     self.host.set_strip_layout(context_id, layout);
                 }
                 let owner = match self.input_owner(&self.ctx) {
-                    crate::app::input_owner::InputOwner::Pane(pane_id) => serde_json::json!({"kind":"pane", "pane_id":pane_id}),
-                    crate::app::input_owner::InputOwner::Overlay(_) => serde_json::json!({"kind":"overlay"}),
-                    crate::app::input_owner::InputOwner::OsUnfocused => serde_json::json!({"kind":"os_unfocused"}),
-                    crate::app::input_owner::InputOwner::Nobody => serde_json::json!({"kind":"nobody"}),
+                    crate::app::input_owner::InputOwner::Pane(pane_id) => {
+                        serde_json::json!({"kind":"pane", "pane_id":pane_id})
+                    }
+                    crate::app::input_owner::InputOwner::Overlay(_) => {
+                        serde_json::json!({"kind":"overlay"})
+                    }
+                    crate::app::input_owner::InputOwner::OsUnfocused => {
+                        serde_json::json!({"kind":"os_unfocused"})
+                    }
+                    crate::app::input_owner::InputOwner::Nobody => {
+                        serde_json::json!({"kind":"nobody"})
+                    }
                 };
                 let reply = if let Some(snapshot) = self.host.published_strip_snapshot(context_id) {
-                    let columns: Vec<_> = snapshot.strip.columns.iter().map(|column| serde_json::json!({
+                    let columns: Vec<_> = snapshot.strip.columns.iter().map(|column| {
+                            serde_json::json!({
                         "column_id":column.id.0, "panes":column.panes, "width":column.width,
                         "height_shares":column.heights,
-                    })).collect();
+                    })
+                        }).collect();
                     let panes: Vec<_> = snapshot.strip.columns.iter().flat_map(|column| column.panes.iter().map(move |pane_id| (column.id, *pane_id))).map(|(column_id, pane_id)| {
                         let window_id = self.windows.iter().find(|window| window.panes.contains_key(&pane_id)).map(|window| window.window_id);
                         let geometry = snapshot.layout.pane(pane_id);
@@ -2237,6 +2253,7 @@ impl PlexiApp {
             crate::protocol::AppRequest::SendToPane {
                 pane_id,
                 text,
+                operation_id,
                 submit,
                 paste,
                 response_file,
@@ -2288,6 +2305,76 @@ impl PlexiApp {
                             Some((caller, None))
                         }
                     });
+                let send_operation_id = operation_id
+                    .clone()
+                    .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));
+                if send_operation_id.is_empty()
+                    || send_operation_id.len() > 128
+                    || !send_operation_id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+                {
+                    if let Some(rf) = response_file {
+                        write_json_response(
+                            rf,
+                            serde_json::json!({"error":"invalid operation ID", "error_code":"invalid_argument"}),
+                        );
+                    }
+                    return;
+                }
+                // Check operation identity before admission: a different
+                // payload must not create another ask under a used ID.
+                if let Some((caller, _)) = &caller_and_posture {
+                    let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                        &crate::config::config_dir(),
+                    );
+                    if let Some(existing) = monitor.get_continuation(&send_operation_id) {
+                        let text_fingerprint = crate::broker::gate::fingerprint_args(
+                            &serde_json::json!({"text": text_with_newlines}).to_string(),
+                        )
+                        .expect("serializing a string produces valid canonical JSON");
+                        let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste, "text_fingerprint": text_fingerprint, "operation_id": send_operation_id}).to_string();
+                        let fingerprint = crate::broker::gate::fingerprint_args(&input)
+                            .expect("generated JSON is canonicalizable");
+                        let context_id = self
+                            .windows
+                            .iter()
+                            .find(|window| window.panes.contains_key(caller))
+                            .map(|window| window.context_id)
+                            .unwrap_or_default();
+                        if existing.actor != format!("pane:{caller}")
+                            || existing.context_id != Some(context_id)
+                            || existing.request_fingerprint.as_deref() != Some(fingerprint.as_str())
+                        {
+                            if let Some(rf) = response_file {
+                                write_json_response(
+                                    rf,
+                                    serde_json::json!({"error":"operation ID is already bound to another request", "error_code":"operation_id_conflict", "operation_id":send_operation_id}),
+                                );
+                            }
+                            return;
+                        }
+                        let replay_reply = match existing.state {
+                            crate::broker::gate::ContinuationState::Completed => Some(
+                                serde_json::json!({"ok":true, "duplicate":true, "operation_id":send_operation_id}),
+                            ),
+                            crate::broker::gate::ContinuationState::OutcomeUnknown => Some(
+                                serde_json::json!({"error":"operation outcome is unknown; do not automatically retry", "error_code":"outcome_unknown", "operation_id":send_operation_id}),
+                            ),
+                            crate::broker::gate::ContinuationState::Failed
+                            | crate::broker::gate::ContinuationState::Canceled => Some(
+                                serde_json::json!({"error":"operation has already failed or been cancelled", "error_code":"operation_terminal", "operation_id":send_operation_id}),
+                            ),
+                            _ => None,
+                        };
+                        if let Some(reply) = replay_reply {
+                            if let Some(rf) = response_file {
+                                write_json_response(rf, reply);
+                            }
+                            return;
+                        }
+                    }
+                }
                 let admission = caller_and_posture.map(|(caller, posture)| {
                     let monitor = crate::broker::gate::PermissionMonitor::for_profile(
                         &crate::config::config_dir(),
@@ -2300,7 +2387,7 @@ impl PlexiApp {
                     let text_fingerprint = crate::broker::gate::fingerprint_args(
                         &serde_json::json!({"text": text_with_newlines}).to_string(),
                     ).expect("serializing a string produces valid canonical JSON");
-                    let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste, "text_fingerprint": text_fingerprint}).to_string();
+                    let input = serde_json::json!({"pane_id": pane_id, "submit": submit, "paste": paste, "text_fingerprint": text_fingerprint, "operation_id": send_operation_id}).to_string();
                     let actor = format!("pane:{caller}");
                     let adm = monitor.admit_with_posture(
                         crate::broker::gate::AdmitRequest {
@@ -2357,6 +2444,7 @@ impl PlexiApp {
                             self.pending_send_approvals.push(
                                 crate::app::pane_wait::PendingSendApproval {
                                     pending_request_id,
+                                    operation_id: send_operation_id.clone(),
                                     caller_pane_id: caller,
                                     pane_id: *pane_id,
                                     text: text.clone(),
@@ -2376,7 +2464,56 @@ impl PlexiApp {
                         }
                     }
                     proceed_or_none => {
-                        let send_res = match pane_kind {
+                        if let Some((
+                            caller,
+                            crate::broker::gate::Admission::Proceed { fingerprint, .. },
+                        )) = &proceed_or_none
+                        {
+                            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
+                                &crate::config::config_dir(),
+                            );
+                            let context_id = self
+                                .windows
+                                .iter()
+                                .find(|window| window.panes.contains_key(caller))
+                                .map(|window| window.context_id)
+                                .unwrap_or_default();
+                            let claim = monitor.claim_pane_send(
+                                &send_operation_id,
+                                &format!("pane:{caller}"),
+                                context_id,
+                                *pane_id,
+                                fingerprint,
+                            );
+                            let reply = match claim {
+                                Ok(crate::broker::gate::PaneSendClaim::Claimed) => None,
+                                Ok(crate::broker::gate::PaneSendClaim::Completed) => Some(
+                                    serde_json::json!({"ok":true, "duplicate":true, "operation_id":send_operation_id}),
+                                ),
+                                Ok(crate::broker::gate::PaneSendClaim::Conflict) => Some(
+                                    serde_json::json!({"error":"operation ID is already bound to another request", "error_code":"operation_id_conflict", "operation_id":send_operation_id}),
+                                ),
+                                Ok(crate::broker::gate::PaneSendClaim::Waiting) => Some(
+                                    serde_json::json!({"error":"operation is still waiting for approval", "error_code":"approval_waiting", "operation_id":send_operation_id}),
+                                ),
+                                Ok(crate::broker::gate::PaneSendClaim::OutcomeUnknown) => Some(
+                                    serde_json::json!({"error":"operation outcome is unknown; do not automatically retry", "error_code":"outcome_unknown", "operation_id":send_operation_id}),
+                                ),
+                                Ok(crate::broker::gate::PaneSendClaim::Failed) => Some(
+                                    serde_json::json!({"error":"operation has already failed or been cancelled", "error_code":"operation_terminal", "operation_id":send_operation_id}),
+                                ),
+                                Err(error) => Some(
+                                    serde_json::json!({"error":format!("cannot record pane send before dispatch: {error}"), "error_code":"operation_record_failed", "operation_id":send_operation_id}),
+                                ),
+                            };
+                            if let Some(reply) = reply {
+                                if let Some(rf) = response_file {
+                                    write_json_response(rf, reply);
+                                }
+                                return;
+                            }
+                        }
+                        let mut send_res = match pane_kind {
                     None => {
                         log::warn!(
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
@@ -2412,19 +2549,29 @@ impl PlexiApp {
                                 term.backend
                                     .process_command(egui_term::BackendCommand::Write(
                                         text_with_newlines.into_bytes(),
-                                    ));
+                                    ),
+                                        );
                                 if *submit {
                                     self.register_pending_submit(
                                         *pane_id,
                                         response_file.clone(),
                                         text.chars().count(),
                                     );
-                                    deferred = response_file.is_some();
+                                            if proceed_or_none.is_some() {
+                                                if let Some(wait) = self.pending_submits.last_mut()
+                                                {
+                                                    wait.operation_id =
+                                                        Some(send_operation_id.clone());
+                                                }
+                                            }
+                                            deferred = response_file.is_some();
                                 }
                                 Ok(())
                             }
-                            None => Err(format!("pane {pane_id} changed while routing text")),
-                        }
+                            None => {
+                                        Err(format!("pane {pane_id} changed while routing text"))
+                                    }
+                                }
                     }
                     Some("app") if *submit => {
                         log::warn!("pane_submit: pane_id={pane_id} refused — not a terminal pane");
@@ -2471,27 +2618,36 @@ impl PlexiApp {
                             );
                             let actor = format!("pane:{caller}");
                             let resource = resource_id.unwrap_or_default();
-                            let _ = monitor.note_use(
+                            let use_record = monitor.note_use(
                                 &actor,
                                 "pane-send",
                                 &grant_id,
                                 &fingerprint,
                                 &resource,
-                                "",
+                                &send_operation_id,
                             );
-                            let _ = monitor.note_outcome(
+                            let effect_succeeded = send_res.is_ok();
+                            let outcome_record = if !*submit || !effect_succeeded {
+                                monitor.note_outcome(
                                 &actor,
                                 "pane-send",
                                 &grant_id,
                                 &fingerprint,
                                 &resource,
-                                "",
+                                    &send_operation_id,
                                 if send_res.is_ok() { "ok" } else { "failed" },
                                 "",
                                 "",
-                            );
-                            if send_res.is_ok() {
-                                monitor.consume_once(&grant_id, None);
+                            )
+                            } else {
+                                Ok(())
+                            };
+                            if effect_succeeded {
+                                monitor.consume_once(&grant_id, Some(&send_operation_id));
+                            }
+                            if let Err(error) = use_record.and(outcome_record) {
+                                log::error!("pane_send: audit/receipt failed operation={send_operation_id}: {error}");
+                                send_res = Err(format!("outcome_unknown: pane send may have been delivered; reconcile operation {send_operation_id}"));
                             }
                         }
                         send_res
@@ -3169,7 +3325,9 @@ impl PlexiApp {
                                 if term
                                     .agent
                                     .as_ref()
-                                    .is_some_and(|a| a.state == crate::protocol::AgentState::Interrupted)
+                                    .is_some_and(|a| {
+                                    a.state == crate::protocol::AgentState::Interrupted
+                                })
                                 {
                                     if let Some(tail) = term
                                         .tail_preview
@@ -3770,9 +3928,7 @@ impl PlexiApp {
                         _ => false,
                     };
                     if should_file_human_needs_you {
-                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| {
-                            format!("{agent} is blocked")
-                        });
+                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| format!("{agent} is blocked"));
                         let kind = if *state == crate::protocol::AgentState::NeedsYou
                             || event.as_deref() == Some("AskQuestion")
                             || event.as_deref() == Some("AgentAsk")
@@ -3929,9 +4085,7 @@ impl PlexiApp {
                 // fallback that produced that case is exactly the forgeable
                 // input this stint removes.
                 let effective_scope = match scope.unwrap_or_default() {
-                    crate::protocol::NotifyScope::Global => {
-                        crate::protocol::NotifyScope::Global
-                    }
+                    crate::protocol::NotifyScope::Global => crate::protocol::NotifyScope::Global,
                     crate::protocol::NotifyScope::Context if caller_context_id.is_some() => {
                         crate::protocol::NotifyScope::Context
                     }
@@ -4262,9 +4416,7 @@ impl PlexiApp {
                     return;
                 };
                 let parent_ctx_id = self.router.get(parent_idx).context_id;
-                let resolved_layout = layout.unwrap_or_else(|| {
-                    crate::pane_ops::default_squad_layout(panes.len())
-                });
+                let resolved_layout = layout.unwrap_or_else(|| crate::pane_ops::default_squad_layout(panes.len()));
                 log::info!(
                     "pane_ipc: kind=create_sub_context name={name:?} parent_ctx_id={parent_ctx_id} \
                      panes={} requested_layout={layout:?} layout={resolved_layout:?} focus={focus} \

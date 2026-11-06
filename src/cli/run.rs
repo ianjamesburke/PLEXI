@@ -523,8 +523,11 @@ pub fn dispatch_cli_step(
                 text,
                 submit,
                 paste,
+                operation_id,
             } => match pane_id.resolve() {
-                Ok(id) => crate::cli::pane_send_cli(id, &text, submit, paste),
+                Ok(id) => crate::cli::pane::pane_send_with_operation_cli(id, &text, submit, paste,
+                    operation_id.as_deref(),
+                ),
                 Err(code) => code,
             },
             PaneCmd::Command {
@@ -700,7 +703,9 @@ pub(crate) fn format_list_commands_for_root(
 
     let commands_file = super::commands_file();
     let has_ws_toml = workspace_root
-        .is_some_and(|root| root.join(&commands_file) != super::global_commands_path() && root.join(&commands_file).exists());
+        .is_some_and(|root| {
+        root.join(&commands_file) != super::global_commands_path() && root.join(&commands_file).exists()
+    });
 
     if cmds.is_empty() {
         let global_path = super::global_commands_path();

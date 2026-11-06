@@ -229,7 +229,8 @@ fn scope_for(global: bool, workspace_root: Option<&Path>) -> Result<SecretScope,
             root: crate::platform::path::canonical_or_self(root),
         },
         None => SecretScope::Global,
-    })
+    },
+    )
 }
 
 fn write_reply(path: &Path, body: serde_json::Value, holds_value: bool) {
@@ -484,6 +485,7 @@ mod list_tests {
             submit: false,
             paste: false,
             response_file: Some(send_resp.clone()),
+            operation_id: None,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
@@ -602,6 +604,7 @@ mod list_tests {
             submit: false,
             paste: false,
             response_file: Some(send_resp.clone()),
+            operation_id: None,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
@@ -659,6 +662,7 @@ mod list_tests {
             submit: false,
             paste: false,
             response_file: Some(send_resp.clone()),
+            operation_id: None,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();

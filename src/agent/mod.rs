@@ -1849,7 +1849,7 @@ default = "ask"
             assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
             harness.app.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
                 pane_id: terminal, text: SENTINEL.to_string(), submit: false, paste: false,
-                response_file: None, peer_ancestry: None,
+                response_file: None, operation_id: None, peer_ancestry: None,
             });
             assert_eq!(harness.terminal_backend(terminal).take_input_tap(), SENTINEL.as_bytes());
             use crate::workspace::secrets::SecretStore;

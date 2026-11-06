@@ -1390,9 +1390,10 @@ fn main() -> eframe::Result {
                             text,
                             submit,
                             paste,
+                            operation_id,
                         } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane_send_cli(pane_id, &text, submit, paste))
+                            cli::trace::exit(cli::pane::pane_send_with_operation_cli(pane_id, &text, submit, paste, operation_id.as_deref()))
                         }
                         PaneCmd::Command {
                             pane_id,

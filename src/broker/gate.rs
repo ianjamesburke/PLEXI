@@ -5,13 +5,13 @@
 //! instance, argument fingerprint, session, expiry). Schema-0 grants never
 //! match. Revoke and commit share one admission lock.
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use sha2::{Digest, Sha256};
 
 use super::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
@@ -282,6 +282,9 @@ pub struct ContinuationRecord {
     pub context_id: Option<u64>,
     pub actor: String,
     pub target_resource: String,
+    /// Exact request binding, when this continuation represents a pane send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,6 +305,16 @@ pub struct ContinuationRecord {
     pub updated_at: i64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PaneSendClaim {
+    Claimed,
+    Completed,
+    Conflict,
+    Waiting,
+    OutcomeUnknown,
+    Failed,
+}
+
 /// What happened to the run that was waiting.
 ///
 /// `unblocked` means this host process still owns that run, so the decision
@@ -312,6 +325,8 @@ pub struct ContinuationRecord {
 pub enum RunOutcome {
     Unblocked,
     OutcomeUnknown,
+    /// The original waiter ended before the decision; no operation was sent.
+    RetryRequired,
 }
 
 impl RunOutcome {
@@ -319,6 +334,7 @@ impl RunOutcome {
         match self {
             Self::Unblocked => "unblocked",
             Self::OutcomeUnknown => "outcome_unknown",
+            Self::RetryRequired => "retry_required",
         }
     }
 }
@@ -1299,8 +1315,11 @@ impl PermissionMonitor {
                                 && row.resource == filed.resource
                                 && row.summary == filed.summary
                                 && match (row.details.as_ref(), details.as_ref()) {
-                                    (Some(a), Some(b)) if a.correlation_id.is_some() || b.correlation_id.is_some() => a.correlation_id == b.correlation_id,
-                                    _ => true,
+                                    (Some(a), Some(b)) if a.correlation_id.is_some() || b.correlation_id.is_some() =>
+                                {
+                                    a.correlation_id == b.correlation_id
+                                }
+                                _ => true,
                                 }))
                         && (filed.kind != NeedsYouKind::PermissionRequest
                             || row.resource == filed.resource)
@@ -1371,6 +1390,7 @@ impl PermissionMonitor {
                 context_id: det.context_id,
                 actor: record.actor.clone(),
                 target_resource: record.resource.clone(),
+                request_fingerprint: None,
                 expected_revision: det.expected_revision,
                 needs_you_id: Some(id.clone()),
                 resume_condition: Some(record.kind.as_str().to_string()),
@@ -1917,7 +1937,11 @@ impl PermissionMonitor {
     }
 
     fn run_outcome_for(&self, id: &str) -> RunOutcome {
-        if self.origin_is_current(id) {
+        if self.get_continuation(id)
+            .is_some_and(|record| record.run_outcome.as_deref() == Some("retry_required"))
+        {
+            RunOutcome::RetryRequired
+        } else if self.origin_is_current(id) {
             RunOutcome::Unblocked
         } else {
             RunOutcome::OutcomeUnknown
@@ -2017,6 +2041,8 @@ impl PermissionMonitor {
                 context_id: details.context_id,
                 actor: pending.binding.actor_id.clone(),
                 target_resource: resource,
+                request_fingerprint: (pending.tool == "pane.send")
+                    .then(|| pending.binding.args_fingerprint.clone()),
                 expected_revision: None,
                 needs_you_id: Some(pending.id.clone()),
                 resume_condition: Some("approval_click".to_string()),
@@ -2085,10 +2111,10 @@ impl PermissionMonitor {
             }
             return false;
         }
-        let outcome = if current_origin && decision != "outcome_unknown" {
-            RunOutcome::Unblocked
-        } else {
+        let outcome = if decision == "outcome_unknown" {
             RunOutcome::OutcomeUnknown
+        } else {
+            self.run_outcome_for(id)
         };
         self.update_continuation_on_needs_you(
             id,
@@ -2114,14 +2140,28 @@ impl PermissionMonitor {
             let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
             // A run can produce another request before an earlier one is settled.
             // Keep each request addressable rather than replacing its predecessor.
+            let renewed_approval = map.get(&record.run_id).is_some_and(|existing| {
+                existing.run_outcome.as_deref() == Some("retry_requires_authorization_check")
+                    && existing.operation_id == record.operation_id
+                    && existing.actor == record.actor
+                    && existing.request_fingerprint.is_some()
+                    && existing.request_fingerprint == record.request_fingerprint
+            });
             if let Some(request_id) = record.needs_you_id.as_ref() {
-                if map.get(&record.run_id).is_some_and(|existing| {
+                if !renewed_approval
+                    && map.get(&record.run_id).is_some_and(|existing| {
                     existing.needs_you_id.as_ref().is_some_and(|id| id != request_id)
                 }) {
                     record.run_id = request_id.clone();
                 }
             }
             if let Some(existing) = map.get_mut(&record.run_id) {
+                if renewed_approval {
+                    existing.resolution = None;
+                    existing.run_outcome = None;
+                    existing.receipt = None;
+                    existing.origin_session = self.session_id.clone();
+                }
                 // Never overwrite a terminal completed/outcome_unknown record with an earlier state.
                 if matches!(
                     existing.state,
@@ -2202,6 +2242,111 @@ impl PermissionMonitor {
             .cloned()
     }
 
+    /// Journal a pane send before its first side effect. The unknown marker
+    /// prevents a crash or a lost reply from turning a retry into a replay.
+    pub(crate) fn claim_pane_send(
+        &self,
+        operation_id: &str,
+        actor: &str,
+        context_id: u64,
+        pane_id: u64,
+        fingerprint: &str,
+    ) -> Result<PaneSendClaim, String> {
+        let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+        let key = map
+            .iter()
+            .find(|(_, record)| record.operation_id.as_deref() == Some(operation_id))
+            .map(|(key, _)| key.clone());
+        let now = self.now_secs();
+        let previous = key.as_ref().and_then(|key| map.get(key).cloned());
+        if let Some(record) = previous.as_ref() {
+            if record.actor != actor
+                || record.context_id != Some(context_id)
+                || record.request_fingerprint.as_deref() != Some(fingerprint)
+            {
+                return Ok(PaneSendClaim::Conflict);
+            }
+            match record.state {
+                ContinuationState::Completed => return Ok(PaneSendClaim::Completed),
+                ContinuationState::Failed | ContinuationState::Canceled => {
+                    return Ok(PaneSendClaim::Failed)
+                }
+                ContinuationState::OutcomeUnknown => return Ok(PaneSendClaim::OutcomeUnknown),
+                ContinuationState::WaitingUser if record.resolution.is_none() => {
+                    return Ok(PaneSendClaim::Waiting)
+                }
+                _ => {}
+            }
+        }
+        let key = key.unwrap_or_else(|| operation_id.to_string());
+        let mut record = previous.clone().unwrap_or(ContinuationRecord {
+            run_id: operation_id.to_string(),
+            operation_id: Some(operation_id.to_string()),
+            correlation_id: Some(operation_id.to_string()),
+            session_id: Some(self.session_id.clone()),
+            pane_id: Some(pane_id),
+            context_id: Some(context_id),
+            actor: actor.to_string(),
+            target_resource: "pane.send".to_string(),
+            request_fingerprint: Some(fingerprint.to_string()),
+            expected_revision: None,
+            needs_you_id: None,
+            resume_condition: None,
+            state: ContinuationState::OutcomeUnknown,
+            resolution: None,
+            answer: None,
+            run_outcome: None,
+            receipt: None,
+            origin_session: self.session_id.clone(),
+            created_at: now,
+            updated_at: now,
+        });
+        record.state = ContinuationState::OutcomeUnknown;
+        record.run_outcome = Some("outcome_unknown".to_string());
+        record.updated_at = now;
+        map.insert(key.clone(), record);
+        if let Some(profile) = self.profile_dir.as_deref() {
+            let rows: Vec<_> = map.values().cloned().collect();
+            if let Err(error) = super::needs_you_store::save_continuations(profile, &rows) {
+                if let Some(previous) = previous {
+                    map.insert(key, previous);
+                } else {
+                    map.remove(&key);
+                }
+                return Err(error);
+            }
+        }
+        log::info!("pane_send: claimed operation={operation_id} actor={actor}");
+        Ok(PaneSendClaim::Claimed)
+    }
+
+    /// Record that the pane-send waiter has ended without executing the send.
+    /// The pending human decision stays open, but approval cannot resume this
+    /// particular waiter and must not be reported as operation completion.
+    pub(crate) fn detach_pane_send_waiter(&self, request_id: &str) -> Result<(), String> {
+        let _decision = self.decision_lock.lock().unwrap_or_else(|e| e.into_inner());
+        {
+            let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+            let record = map
+                .values_mut()
+                .find(|record| record.needs_you_id.as_deref() == Some(request_id))
+                .ok_or_else(|| format!("unknown continuation for {request_id}"))?;
+            record.state = ContinuationState::Paused;
+            record.run_outcome = Some(RunOutcome::RetryRequired.as_str().to_string());
+            record.updated_at = self.now_secs();
+            if let Some(profile) = self.profile_dir.as_deref() {
+                let records = map.values().cloned().collect::<Vec<_>>();
+                super::needs_you_store::save_continuations(profile, &records)?;
+            }
+        }
+        self.run_outcomes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(request_id.to_string(), RunOutcome::RetryRequired);
+        log::info!("pane_send_approval: waiter detached pending={request_id} retry_required");
+        Ok(())
+    }
+
     pub fn list_continuations(
         &self,
         session_id: Option<&str>,
@@ -2220,7 +2365,9 @@ impl PermissionMonitor {
             })
             .cloned()
             .collect();
-        rows.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.run_id.cmp(&b.run_id)));
+        rows.sort_by(|a, b| {
+            a.created_at.cmp(&b.created_at).then(a.run_id.cmp(&b.run_id))
+        });
         rows
     }
 
@@ -2247,13 +2394,25 @@ impl PermissionMonitor {
             let Some(key) = key else {
                 return Err(format!("unknown continuation {run_id}"));
             };
+            let previous = map.get(&key).expect("checked key").clone();
             let entry = map.get_mut(&key).expect("checked key");
             entry.state = state;
+            if entry.request_fingerprint.is_some() {
+                entry.run_outcome = Some(state.as_str().to_string());
+            }
             if let Some(rcpt) = receipt {
                 entry.receipt = Some(rcpt);
             }
             entry.updated_at = now;
-            entry.clone()
+            let updated = entry.clone();
+            if let Some(profile) = self.profile_dir.as_deref() {
+                let records = map.values().cloned().collect::<Vec<_>>();
+                if let Err(error) = super::needs_you_store::save_continuations(profile, &records) {
+                    map.insert(key, previous);
+                    return Err(error);
+                }
+            }
+            updated
         };
         log::info!(
             "continuation: completed run_id={} state={} receipt={:?}",
@@ -2261,7 +2420,6 @@ impl PermissionMonitor {
             updated.state.as_str(),
             updated.receipt
         );
-        self.persist_continuations();
         Ok(updated)
     }
 
@@ -2284,7 +2442,11 @@ impl PermissionMonitor {
                     }
                     record.run_outcome = Some(outcome.as_str().to_string());
                     record.updated_at = now;
-                    if outcome == RunOutcome::OutcomeUnknown && record.receipt.is_none() {
+                    if outcome == RunOutcome::RetryRequired
+                        && resolution == NeedsYouResolution::Approved
+                    {
+                        record.state = ContinuationState::Paused;
+                    } else if outcome == RunOutcome::OutcomeUnknown && record.receipt.is_none() {
                         record.state = ContinuationState::OutcomeUnknown;
                     } else if resolution == NeedsYouResolution::Denied {
                         if record.state.is_in_flight() {
@@ -2306,11 +2468,13 @@ impl PermissionMonitor {
         let Some(profile) = self.profile_dir.clone() else {
             return;
         };
-        let records: Vec<ContinuationRecord> = self
+        // Keep the snapshot and write serialized with claims/completions so
+        // an older snapshot cannot overwrite a durable pre-effect marker.
+        let map = self
             .continuations
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
+            .unwrap_or_else(|e| e.into_inner());
+        let records: Vec<ContinuationRecord> = map.values()
             .cloned()
             .collect();
         if let Err(error) = super::needs_you_store::save_continuations(&profile, &records) {
@@ -2387,11 +2551,21 @@ impl PermissionMonitor {
                     .needs_you_id
                     .as_ref()
                     .is_some_and(|ny_id| open_ids.contains(ny_id));
-                if record.state.is_in_flight() && !waiting_on_restored_open {
+                if record.state == ContinuationState::Paused
+                    && record.run_outcome.as_deref() == Some("retry_required")
+                    && record.resolution == Some(NeedsYouResolution::Approved)
+                {
+                    // The operation never ran, but ephemeral grants belong to
+                    // the previous host; a retry must recheck authorization.
+                    record.run_outcome = Some("retry_requires_authorization_check".to_string());
+                    dirty = true;
+                } else if record.state.is_in_flight() && !waiting_on_restored_open {
                     record.state = ContinuationState::OutcomeUnknown;
                     record.run_outcome = Some(RunOutcome::OutcomeUnknown.as_str().to_string());
                     dirty = true;
-                } else if waiting_on_restored_open {
+                } else if waiting_on_restored_open
+                    && record.run_outcome.as_deref() != Some("retry_required")
+                {
                     record.run_outcome = Some(RunOutcome::OutcomeUnknown.as_str().to_string());
                     dirty = true;
                 }
@@ -2778,9 +2952,7 @@ impl PermissionMonitor {
         if epoch == 0 {
             return Err("permission monitor epoch is unset".to_string());
         }
-        let alive = self.store().records().iter().any(|record| {
-            record.grant_id == grant_id && record.decision == Decision::Allow
-        });
+        let alive = self.store().records().iter().any(|record| record.grant_id == grant_id && record.decision == Decision::Allow);
         if grant_id.is_empty() || !alive {
             return Err("grant revoked".to_string());
         }
@@ -2828,6 +3000,16 @@ impl PermissionMonitor {
         } else {
             call_id
         };
+        if call_id == "pane-send" {
+            audited?;
+            let state = if decision == "ok" {
+                ContinuationState::Completed
+            } else {
+                ContinuationState::Failed
+            };
+            self.complete_continuation(run_key, state, Some(format!("decision={decision}")))?;
+            return Ok(());
+        }
         if !run_key.is_empty() {
             let state = if decision == "ok" {
                 ContinuationState::Completed
@@ -3709,7 +3891,8 @@ impl PermissionMonitor {
     pub(crate) fn secret_last_uses(&self) -> Result<BTreeMap<String, u64>, String> {
         let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
         let mut uses = BTreeMap::new();
-        let Some(path) = &self.audit_path else { return Ok(uses) };
+        let Some(path) = &self.audit_path else { return Ok(uses);
+        };
         if !path.exists() { return Ok(uses); }
         super::seal::verify_audit(path)?;
         let text = std::fs::read_to_string(path).map_err(|error| {
@@ -4631,6 +4814,85 @@ mod tests {
     }
 
     #[test]
+    fn detached_pane_send_restart_reports_authority_must_be_rechecked() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"send-restart"}"#;
+        let mut base = binding(&fingerprint_args(args).unwrap());
+        base.target_type = TargetType::Capability;
+        base.target_id = "pane.send".into();
+        base.call_id = "pane-send".into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("approval needed")
+        };
+        monitor
+            .detach_pane_send_waiter(&pending_request_id)
+            .unwrap();
+        monitor
+            .approve_pending(&pending_request_id, ApprovalChoice::Once)
+            .unwrap();
+        drop(monitor);
+
+        let restored = PermissionMonitor::open_profile(dir.path());
+        let continuation = restored.get_continuation("send-restart").unwrap();
+        assert_eq!(continuation.state, ContinuationState::Paused);
+        assert_eq!(
+            continuation.run_outcome.as_deref(),
+            Some("retry_requires_authorization_check")
+        );
+        let Admission::Required {
+            pending_request_id: renewed,
+        } = admit_of(&restored, &base, args)
+        else {
+            panic!("an ephemeral Once grant cannot survive host restart");
+        };
+        assert_ne!(renewed, pending_request_id);
+        let waiting = restored.get_continuation("send-restart").unwrap();
+        assert_eq!(waiting.needs_you_id.as_deref(), Some(renewed.as_str()));
+        assert_eq!(waiting.state, ContinuationState::WaitingUser);
+        assert_eq!(waiting.resolution, None);
+    }
+
+    #[test]
+    fn pane_send_claim_is_durable_and_fails_closed_on_persistence_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(
+            monitor
+                .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
+                .unwrap(),
+            PaneSendClaim::Claimed
+        );
+        drop(monitor);
+        let restored = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(
+            restored
+                .claim_pane_send("send-1", "pane:1", 2, 42, "fp-1")
+                .unwrap(),
+            PaneSendClaim::OutcomeUnknown,
+            "a crash after claiming must never cause an automatic replay"
+        );
+        assert_eq!(
+            restored
+                .claim_pane_send("send-1", "pane:1", 2, 42, "other")
+                .unwrap(),
+            PaneSendClaim::Conflict
+        );
+
+        let broken = tempfile::tempdir().unwrap();
+        let unavailable = PermissionMonitor::open_profile(broken.path());
+        let path = broken.path().join("host").join("continuations.json");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(unavailable
+            .claim_pane_send("send-2", "pane:1", 2, 42, "fp-2")
+            .is_err());
+        assert!(
+            unavailable.get_continuation("send-2").is_none(),
+            "a failed claim cannot permit dispatch"
+        );
+    }
+
+    #[test]
     fn grant_binding_and_lifetime_matrix() {
         let args_a = r#"{"game_id":"game-1","move":"e2e4","expected_revision":0,"operation_id":"op-1"}"#;
         let args_b = r#"{"move":"e2e4","operation_id":"op-1","expected_revision":0,"game_id":"game-1"}"#;
@@ -4745,7 +5007,9 @@ mod tests {
         let hold = monitor.hold_admission();
         let worker = monitor.clone_for_test();
         let fp_for_worker = fp.clone();
-        let handle = thread::spawn(move || worker.note_use("agent:chess", "c", "g1", &fp_for_worker, "game-1", "op-1"));
+        let handle = thread::spawn(move || {
+            worker.note_use("agent:chess", "c", "g1", &fp_for_worker, "game-1", "op-1")
+        });
         thread::sleep(Duration::from_millis(40));
         assert!(monitor.revoke_while_held(&hold, "g1"));
         drop(hold);
@@ -4907,7 +5171,11 @@ mod tests {
             panic!("requires approval");
         };
         let results = std::thread::scope(|scope| {
-            let threads: Vec<_> = (0..8).map(|_| scope.spawn(|| monitor.approve_pending(&pending_request_id, ApprovalChoice::Once))).collect();
+            let threads: Vec<_> = (0..8).map(|_| {
+                    scope.spawn(|| {
+                        monitor.approve_pending(&pending_request_id, ApprovalChoice::Once)
+                    })
+                }).collect();
             threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
         });
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
