@@ -34,7 +34,9 @@ pub(crate) fn composite_status(
 
     let (verdict, confidence) = if agent.is_some_and(|a| a.state == AgentState::Failed) {
         ("failed", "high")
-    } else if last_buffer_line.as_deref().is_some_and(is_tool_call_tail) {
+    } else if agent.is_some_and(|a| matches!(a.state, AgentState::Working | AgentState::Idle))
+        && last_buffer_line.as_deref().is_some_and(is_tool_call_tail)
+    {
         ("working", "high")
     } else {
         match agent.map(|state| &state.state) {
@@ -229,6 +231,23 @@ mod tests {
         assert_eq!(truncated["verdict"], "unknown");
         assert_eq!(truncated["confidence"], "low");
         assert_eq!(truncated["status_bar_truncated"], true);
+    }
+
+    #[test]
+    fn unidentified_program_output_does_not_prove_agent_work() {
+        let result = composite_status(None, &["⏺ Bash(cargo test)".into()]);
+        assert_eq!(result["verdict"], "unknown");
+        assert_eq!(result["confidence"], "low");
+        assert!(result["agent_state"].is_null());
+    }
+
+    #[test]
+    fn terminal_agent_result_beats_stale_tool_output() {
+        for state in [AgentState::Interrupted, AgentState::Completed, AgentState::Failed] {
+            let report = agent(state.clone(), None);
+            let result = composite_status(Some(&report), &["⏺ Bash(cargo test)".into()]);
+            assert_eq!(result["verdict"], state.as_str());
+        }
     }
 
     #[test]
