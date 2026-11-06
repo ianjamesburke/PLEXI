@@ -43,6 +43,10 @@ do_sync() {
     fi
     echo "==> Fast-forwarding local alpha to origin/alpha (local changes are preserved)"
     git fetch origin alpha
+    if [ "$(git rev-list --count origin/alpha..HEAD)" != 0 ]; then
+        echo "ERROR: local alpha contains commits absent from origin; preserve and reconcile them before landing." >&2
+        return 1
+    fi
     if ! git merge --ff-only origin/alpha; then
         echo "ERROR: alpha could not fast-forward; local edits and commits were preserved. Resolve the conflict or divergence and rerun; do not reset." >&2
         return 1

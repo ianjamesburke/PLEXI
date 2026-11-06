@@ -84,6 +84,15 @@ class LandingSafety(unittest.TestCase):
         self.assertNotEqual(self.script('merge-pr.sh', 'sync').returncode, 0)
         self.assertEqual(self.run_cmd('git', 'rev-parse', 'HEAD').stdout, old)
 
+    def test_sync_refuses_ahead_only_before_remote_merge(self):
+        (self.root / 'a').write_text('local committed\n')
+        self.run_cmd('git', 'commit', '-am', 'local')
+        old = self.run_cmd('git', 'rev-parse', 'HEAD').stdout
+        result = self.script('merge-pr.sh', 'sync')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('commits absent from origin', result.stderr)
+        self.assertEqual(self.run_cmd('git', 'rev-parse', 'HEAD').stdout, old)
+
     def test_lane_start_warns_and_excludes_dirty_alpha(self):
         (self.root / '.stint/tasks').mkdir(parents=True)
         (self.root / '.stint/tasks/1234-fix.md').write_text('status: todo\n')
