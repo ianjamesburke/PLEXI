@@ -65,8 +65,11 @@ def event(phase, **fields):
     print("cargo-lease: " + json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
     destination = os.environ.get("PLEXI_BUILD_TELEMETRY")
     if destination:
-        with open(destination, "a") as stream:
-            stream.write(json.dumps(record, sort_keys=True) + "\n")
+        try:
+            with open(destination, "a") as stream:
+                stream.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError as error:
+            print(f"cargo-lease: telemetry write failed at {destination}: {error}", file=sys.stderr)
 event("request")
 deadline = started + TIMEOUT_SECS
 acquired = False

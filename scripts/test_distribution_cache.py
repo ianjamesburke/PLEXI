@@ -100,7 +100,7 @@ class Cleanup(unittest.TestCase):
 
     def test_tampered_native_cache_requires_leased_fallback(self):
         cache = self.root / 'cache'
-        private = cache / self.native.parent.name
+        private = cache / self.native.parents[1].name / self.native.parent.name
         private.mkdir(parents=True)
         shutil.copy2(self.native, private / 'plexi-installer')
         shutil.copy2(self.native.parent / 'evidence.json', private / 'evidence.json')

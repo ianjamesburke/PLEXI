@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 
 pub fn build_info() -> serde_json::Value {
-    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "version_text": version_text(), "tag": build_tag(), "build_id": env!("PLEXI_BUILD_ID"), "source_commit": env!("PLEXI_SOURCE_COMMIT") })
+    serde_json::json!({ "version": env!("CARGO_PKG_VERSION"), "version_text": version_text(), "tag": build_tag(), "build_id": env!("PLEXI_BUILD_ID"), "source_commit": env!("PLEXI_SOURCE_COMMIT"), "test_channel": option_env!("PLEXI_BUILD_TEST_CHANNEL") })
 }
 /// The version every UI and CLI surface shows: this binary's compiled tag (or
 /// crate version) and short commit, e.g. `0.4.2 (abc1234)`. Profile markers

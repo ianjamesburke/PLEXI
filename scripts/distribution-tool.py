@@ -28,14 +28,16 @@ def identity():
     return {'schema': 1, 'sources': {str(p.relative_to(ROOT)): digest(p) for p in paths},
             'platform': [platform.system(), platform.machine()],
             'toolchain': subprocess.check_output(['rustc', '-vV'], text=True),
-            'flags': {k: v for k, v in os.environ.items() if k.startswith(('RUST', 'CARGO_PROFILE_'))}}
+            'flags': {k: v for k, v in os.environ.items() if k.startswith(('RUST', 'CARGO_')) and k != 'CARGO_TARGET_DIR' or k in ('CC', 'CXX', 'SDKROOT', 'DEVELOPER_DIR', 'MACOSX_DEPLOYMENT_TARGET')},
+            'cargo_home_config': {str(p): digest(p) for p in (Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo'))) / n for n in ('config', 'config.toml')) if p.is_file()}}
 
 
 def prepare():
     key = identity()
     common = subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], cwd=ROOT, text=True).strip()
     name = hashlib.sha256(common.encode()).hexdigest()[:16]
-    directory = Path(os.environ.get('PLEXI_DISTRIBUTION_CACHE_ROOT', str(Path.home() / '.cache/plexi-distribution'))) / name
+    identity_sha = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+    directory = Path(os.environ.get('PLEXI_DISTRIBUTION_CACHE_ROOT', str(Path.home() / '.cache/plexi-distribution'))) / name / identity_sha
     directory.mkdir(parents=True, exist_ok=True)
     binary = directory / 'plexi-installer'
     receipt = directory / 'evidence.json'
@@ -54,11 +56,20 @@ def prepare():
         if valid():
             return binary
         print('distribution-tool: cache miss; building authoritative installer under Cargo lease', file=sys.stderr)
-        subprocess.run(['bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'cargo', 'build',
-                        '--manifest-path', str(ROOT / 'Cargo.toml'), '--release', '-p',
-                        'plexi-distribution', '--bin', 'plexi-installer'], cwd=ROOT, check=True)
-        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--format-version=1', '--no-deps'], cwd=ROOT))
-        source = Path(metadata['target_directory']) / 'release/plexi-installer'
+        result = subprocess.run(['bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'cargo', 'build',
+                                 '--manifest-path', str(ROOT / 'Cargo.toml'), '--release', '-p',
+                                 'plexi-distribution', '--bin', 'plexi-installer',
+                                 '--message-format=json-render-diagnostics'], cwd=ROOT,
+                                stdout=subprocess.PIPE, text=True, check=True)
+        artifacts = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+        executables = {message['executable'] for message in artifacts
+                       if message.get('reason') == 'compiler-artifact'
+                       and message.get('target', {}).get('name') == 'plexi-installer'
+                       and message.get('executable')}
+        if len(executables) != 1:
+            raise ValueError('Cargo did not identify exactly one installer executable')
+        source = Path(executables.pop())
+        subprocess.run([str(source), '--help'], stdout=subprocess.DEVNULL, check=True)
         with tempfile.TemporaryDirectory(dir=directory) as temporary:
             copied = Path(temporary) / 'installer'
             shutil.copy2(source, copied)

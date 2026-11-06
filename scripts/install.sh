@@ -20,6 +20,7 @@ if [[ "$channel" == pr-* ]]; then export PLEXI_BUILD_TEST_CHANNEL="$channel"; el
 metadata="$(cargo metadata --format-version=1 --no-deps)"
 target="$(printf '%s' "$metadata" | uv run --no-project --python 3.11 python -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 if [[ "${PLEXI_REUSE_RELEASE_BUILD:-}" == 1 && "$channel" == pr-* && -x "$target/release/plexi" ]]; then
+  python3 scripts/build-evidence.py check "$repo" "$(git rev-parse HEAD)" "$channel" "$target/release/plexi"
   echo "install: reusing provenance-checked release binary (PLEXI_REUSE_RELEASE_BUILD)"
 else
   just build

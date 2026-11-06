@@ -9,16 +9,14 @@ def selection(paths):
         return True, "empty or unknown diff"
     # Only these native-only surfaces are proven unrelated. Everything else,
     # including protocol/runtime/build inputs and unknown paths, keeps smoke.
-    native = ("src/overlays/", "src/ui/", "src/editor/",
-              "src/host/context", "src/host/navigation",
-              "src/workspace/context")
+    native = {"src/overlays/toolbar.rs"}
     for path in paths:
-        if path.startswith(native) or path == "src/app/text_editor_app.rs":
+        if path in native:
             continue
         if path.endswith(".md") and path.startswith(("docs/", ".agents/", ".claude/")):
             continue
         return True, f"affected or unknown boundary: {path}"
-    return False, "native UI/context or workflow documentation only"
+    return False, "audited native toolbar or workflow documentation only"
 
 
 def main():

@@ -3,6 +3,7 @@
 # PLEXI_PR_TEST_FILTERS supplies newline-separated reviewed filters when automatic
 # selection is too broad. Empty selection from the selector means SDK checks only.
 set -euo pipefail
+driver_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 worktree="${1:?worktree required}"
 base_oid="${2:?base oid required}"
 scope="${3:-scoped}"
@@ -64,8 +65,8 @@ if [[ "$scope" == scoped && ${#filters[@]} -gt 0 ]]; then
   printf 'pr-install: scoped Rust filters=%s matched=%s base=%s\n' "${filters[*]}" "$matched" "$base_oid"
 fi
 sdk_selection="run: full candidate or legacy selector"
-if [[ "$scope" == scoped && -f scripts/pr-sdk-selection.py ]]; then
-  sdk_selection="$(python3 scripts/pr-sdk-selection.py "$base_oid")"
+if [[ "$scope" == scoped && -f "$driver_dir/pr-sdk-selection.py" ]]; then
+  sdk_selection="$(python3 "$driver_dir/pr-sdk-selection.py" "$base_oid")"
 fi
 if [[ "${PLEXI_PR_REQUIRE_SDK:-}" == 1 ]]; then
   sdk_selection="run: explicit qualification"

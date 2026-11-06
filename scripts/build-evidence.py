@@ -31,8 +31,9 @@ def identity(root, extra, sdk_tests=False):
     if output("git", "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("dirty source cannot reuse evidence")
     configs = {}
-    for parent in [*reversed(root.parents), root, Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))]:
-        directory = parent if parent.name == ".cargo" else parent / ".cargo"
+    directories = [parent / ".cargo" for parent in [*reversed(root.parents), root]]
+    directories.append(Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo"))))
+    for directory in directories:
         for name in ("config", "config.toml"):
             path = directory / name
             if path.is_file():
@@ -40,11 +41,11 @@ def identity(root, extra, sdk_tests=False):
     keys = {key: value for key, value in os.environ.items()
             if key.startswith(("CARGO_", "RUST", "LC_", "PYTHON", "UV_"))
             or key in {"LANG", "PATH", "CC", "CXX", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET",
-                       "PLEXI_BUILD_TEST_CHANNEL", "PLEXI_PR_TEST_FILTERS", "PLEXI_PR_REQUIRE_SDK"}}
+                       "DEVELOPER_DIR", "PLEXI_BUILD_TAG", "PLEXI_BUILD_TEST_CHANNEL", "PLEXI_PR_TEST_FILTERS", "PLEXI_PR_REQUIRE_SDK"}}
     # Target is artifact location, not a compiler input. A slot remains locked.
     keys.pop("CARGO_TARGET_DIR", None)
     if sdk_tests and len(extra) >= 2 and extra[1] == "scoped" and os.environ.get("PLEXI_PR_REQUIRE_SDK") != "1":
-        selector = root / "scripts/pr-sdk-selection.py"
+        selector = Path(__file__).with_name("pr-sdk-selection.py")
         if selector.is_file():
             sdk_tests = not output(sys.executable, str(selector), extra[0]).startswith("skip:")
     python_tests = None
@@ -55,7 +56,10 @@ def identity(root, extra, sdk_tests=False):
                               "--with", "pytest", "--with", "pytest-asyncio", "python", "-c",
                               "import sys,json; from importlib.metadata import distributions; "
                               "print(json.dumps([sys.executable,sys.version,sorted((d.metadata['Name'],d.version) for d in distributions())]))")
-    return {"python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
+    driver = {name: digest(Path(__file__).with_name(name))
+              for name in ("build-evidence.py", "pr-install-pretests.sh", "pr-sdk-selection.py")
+              if Path(__file__).with_name(name).is_file()}
+    return {"driver": driver, "python_tests": python_tests, "schema": SCHEMA, "head": output("git", "rev-parse", "HEAD"),
             "source": str(root), "channel_input": digest(root / ".channel") if (root / ".channel").is_file() else None,
             "toolchain": output("rustc", "-vV"), "cargo": output("cargo", "-vV"),
             "uv": output("uv", "--version"), "configs": configs, "environment": keys, "extra": extra}
@@ -113,6 +117,8 @@ def artifact(action, root, head, channel, binary):
     if key["head"] != head or os.environ.get("PLEXI_BUILD_TEST_CHANNEL") != channel:
         raise ValueError("candidate head or compiled channel environment mismatch")
     embedded = json.loads(subprocess.check_output([binary, "--build-info"], text=True))
+    if embedded.get("test_channel") != channel:
+        raise ValueError("binary compiled PR channel mismatch or unavailable")
     if embedded.get("source_commit") != head:
         raise ValueError("binary source commit mismatch")
     value = {"identity": key, "sha256": digest(binary)}

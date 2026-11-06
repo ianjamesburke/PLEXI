@@ -17,6 +17,8 @@ class InstallPretests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "scripts").mkdir()
+        self.helper = self.root / "scripts/pr-install-pretests.sh"
+        self.helper.write_text(HELPER.read_text())
         config = self.root / ".agents/skills/babysitter-v3/RUN_CONFIG.toml"
         config.parent.mkdir(parents=True)
         config.write_text((ROOT / ".agents/skills/babysitter-v3/RUN_CONFIG.toml").read_text())
@@ -40,7 +42,7 @@ class InstallPretests(unittest.TestCase):
         env.pop("PLEXI_PR_TEST_FILTERS", None)
         if "PLEXI_PR_TEST_FILTERS" in extra:
             env["PLEXI_PR_TEST_FILTERS"] = extra["PLEXI_PR_TEST_FILTERS"]
-        result = subprocess.run(["bash", str(HELPER), str(self.root), "b" * 40, scope,
+        result = subprocess.run(["bash", str(self.helper), str(self.root), "b" * 40, scope,
                                  "feature/alpha-cleanup" if final else "feature/1097-policy",
                                  "alpha" if final else "feature/alpha-cleanup"],
                                 env=env, capture_output=True, text=True)
@@ -64,10 +66,10 @@ class InstallPretests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("sdk_selection", ROOT / "scripts/pr-sdk-selection.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        for path in ("src/overlays/toolbar.rs", "src/host/context_navigation.rs"):
+        for path in ("src/overlays/toolbar.rs",):
             self.assertFalse(module.selection([path])[0], path)
         for path in ("sdk/python/plexi_sdk/app.py", "sdk/protocol/pgap.schema.json",
-                     "src/protocol/mod.rs", "src/host/wasm_python.rs", "apps/test/app.py",
+                     "src/protocol/mod.rs", "src/ui/shared.rs", "src/host/context.rs", "src/host/wasm_python.rs", "apps/test/app.py",
                      "src/app/python_env.rs", "scripts/package.py", "Cargo.toml", "unknown"):
             self.assertTrue(module.selection([path])[0], path)
         self.assertTrue(module.selection([])[0])

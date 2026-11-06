@@ -13,6 +13,15 @@ Settings (roles, aliases, limits, footers, paths) live in `RUN_CONFIG.toml` next
 
 Reserved child queues may explicitly select an alias from the size role's `_explicit` allowlist using `route --worker-alias`. Explicit lists never participate in automatic selection or exhaustion fallback. Keep the chosen alias in the batch record so the same route and independent-vendor gates apply.
 
+## Draft candidate handoff
+
+Every worker brief follows [TESTING.md — Draft PR and candidate qualification](../../../src/testing/TESTING.md#draft-pr-and-candidate-qualification).
+Workers may create a draft after focused checks/source review to acquire its PR
+channel, then run `just pr-candidate <PR>` and every other applicable gate before
+ready status or `pr:done`. Do not ask for an ordinary-channel release before
+that draft. Testers consume matching artifacts and pretest evidence under the
+slot lock, and still own independent installed affected-behavior validation.
+
 ## Hosted Rust verification
 
 `RUN_CONFIG.toml` `[ci].rust_host = "after_alpha"` defers the Rust host workflow

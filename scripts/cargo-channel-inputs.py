@@ -85,8 +85,11 @@ def main():
             record = {"schema": 1, "event": "cargo-artifacts", "command": command,
                       "fresh_artifacts": fresh, "compiled_artifacts": compiled,
                       "execution_seconds": time.monotonic() - started, "result": result}
-            with open(telemetry, "a") as stream:
-                stream.write(json.dumps(record) + "\n")
+            try:
+                with open(telemetry, "a") as stream:
+                    stream.write(json.dumps(record) + "\n")
+            except OSError as error:
+                print(f"cargo-artifacts: telemetry write failed at {telemetry}: {error}", file=sys.stderr)
             print("cargo-artifacts: " + json.dumps(record), file=sys.stderr)
             return result
         os.execvpe("cargo", ["cargo", *args], env)

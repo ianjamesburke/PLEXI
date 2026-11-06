@@ -38,7 +38,7 @@ class Lifecycle(unittest.TestCase):
     def test_artifact_rejects_mismatch_dirty_and_tamper(self):
         head = self.call('git', 'rev-parse', 'HEAD').stdout.strip()
         binary = self.root / 'plexi'
-        binary.write_text('#!/bin/sh\necho \'{"source_commit":"' + head + '"}\'\n')
+        binary.write_text('#!/bin/sh\necho \'{"source_commit":"' + head + '","test_channel":"pr-1"}\'\n')
         binary.chmod(0o755)
         command = ['python3', str(ROOT / 'scripts/build-evidence.py')]
         env = {**self.env, 'PLEXI_BUILD_TEST_CHANNEL': 'pr-1'}
@@ -99,6 +99,19 @@ class Lifecycle(unittest.TestCase):
             self.call(*command, env={**env, 'FIXTURE_EXIT': '1'})
         self.assertFalse(receipt.exists())
 
+    def test_custom_cargo_home_and_driver_are_fingerprinted(self):
+        from unittest.mock import patch
+        custom = self.root / 'custom-cargo'
+        custom.mkdir()
+        config = custom / 'config.toml'
+        config.write_text('[build]\njobs=1\n')
+        with patch.dict(os.environ, {'CARGO_HOME': str(custom)}):
+            first = EVIDENCE.identity(self.repo, [])
+            self.assertEqual(first['configs'][str(config)], EVIDENCE.digest(config))
+            self.assertIn('pr-install-pretests.sh', first['driver'])
+            config.write_text('[build]\njobs=2\n')
+            self.assertNotEqual(first, EVIDENCE.identity(self.repo, []))
+
     def test_slots_retain_and_reject_unowned_target(self):
         command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1',
                    'python3', '-c', 'import os,pathlib; p=pathlib.Path(os.environ["CARGO_TARGET_DIR"]); print(p); (p/"keep").touch()']
@@ -135,21 +148,44 @@ class Lifecycle(unittest.TestCase):
         events = [json.loads(line) for line in (self.root / 'telemetry').read_text().splitlines()]
         self.assertEqual([event['event'] for event in events], ['request', 'acquire', 'finish'])
         self.assertEqual(events[-1]['result'], 0)
+        self.call('bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'true',
+                  env={**env, 'PLEXI_BUILD_TELEMETRY': str(self.root / 'missing/telemetry')})
         self.assertGreaterEqual(events[-1]['execution_seconds'], 0)
         with self.assertRaises(subprocess.CalledProcessError):
             self.call('bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'false', env=env)
         self.assertEqual(json.loads((self.root / 'telemetry').read_text().splitlines()[-1])['result'], 1)
+
+    def test_actual_build_info_reports_compiled_channel_and_cargo_invalidates(self):
+        source = (ROOT / 'src/distribution.rs').read_text()
+        function = source[source.index('pub fn build_info()'):].split('\n}', 1)[0] + '\n}\n'
+        (self.repo / 'Cargo.toml').write_text('[package]\nname="identity_probe"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nserde_json="1"\n')
+        (self.repo / 'src').mkdir()
+        (self.repo / 'src/main.rs').write_text(function +
+            'fn version_text() -> &' + "'static str" + ' { "fixture" }\n'
+            'fn build_tag() -> String { "fixture".into() }\n'
+            'fn main() { println!("{}", build_info()); }\n')
+        env = {**self.env, 'CARGO_TARGET_DIR': str(self.root / 'target'),
+               'RUSTC_WRAPPER': '', 'PLEXI_CARGO_LOCK': str(self.root / 'fixture-lease'),
+               'CARGO_BUILD_JOBS': '1', 'PLEXI_SOURCE_COMMIT': 'fixture', 'PLEXI_BUILD_ID': 'fixture'}
+        for channel in ('pr-1', 'pr-2', None):
+            if channel:
+                env['PLEXI_BUILD_TEST_CHANNEL'] = channel
+            else:
+                env.pop('PLEXI_BUILD_TEST_CHANNEL', None)
+            self.call('bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'cargo', 'build', '--offline', env=env)
+            info = json.loads(self.call(str(self.root / 'target/debug/identity_probe'), env=env).stdout)
+            self.assertEqual(info['test_channel'], channel)
 
     def test_real_cargo_warm_path_move_and_seed(self):
         (self.repo / 'Cargo.toml').write_text('[package]\nname="cache_probe"\nversion="0.1.0"\nedition="2021"\n')
         (self.repo / 'src').mkdir()
         (self.repo / 'src/main.rs').write_text('fn main() { println!("probe"); }\n')
         target = self.root / 'target'
-        env = {**self.env, 'CARGO_TARGET_DIR': str(target), 'RUSTC_WRAPPER': ''}
+        env = {**self.env, 'CARGO_TARGET_DIR': str(target), 'RUSTC_WRAPPER': '', 'CARGO_BUILD_JOBS': '1', 'PLEXI_CARGO_LOCK': str(self.root / 'fixture-lease')}
         timings = []
         def build(repo, env):
             started = time.monotonic()
-            result = self.call('cargo', 'build', '--offline', '--message-format=json', cwd=repo, env=env)
+            result = self.call('bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'cargo', 'build', '--offline', '--message-format=json', cwd=repo, env=env)
             timings.append(time.monotonic() - started)
             return [json.loads(line)['fresh'] for line in result.stdout.splitlines()
                     if json.loads(line).get('reason') == 'compiler-artifact']
