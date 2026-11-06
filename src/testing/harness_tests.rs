@@ -64,7 +64,7 @@ fn foreground_and_background_programs_are_not_agents() {
     use std::time::{Duration, Instant};
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
-    for command in ["sleep 30\n", "sleep 30 &\n"] {
+    for command in ["sleep 30\n", "sleep 30 & PLEXI_TEST_JOB=$!\n"] {
         h.terminal_backend(id).process_command(BackendCommand::Write(command.as_bytes().to_vec()));
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
@@ -82,9 +82,10 @@ fn foreground_and_background_programs_are_not_agents() {
             assert!(Instant::now() < deadline, "process activity was not observed for {command:?}");
             std::thread::sleep(Duration::from_millis(20));
         }
-        h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
         if command.starts_with("sleep 30 &") {
-            h.terminal_backend(id).process_command(BackendCommand::Write(b"kill %1\n".to_vec()));
+            h.terminal_backend(id).process_command(BackendCommand::Write(b"kill \"$PLEXI_TEST_JOB\"\n".to_vec()));
+        } else {
+            h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
         }
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
