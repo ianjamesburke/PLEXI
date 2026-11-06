@@ -15235,6 +15235,9 @@ ask = ["pane.send"]
         crate::broker::gate::ContinuationState::Paused
     );
     assert_eq!(timed_out.run_outcome.as_deref(), Some("retry_required"));
+    h.app.sync_attention_queue();
+    let item = h.app.attention_queue.items.iter().find(|item| item.id == req_id).unwrap();
+    assert!(item.summary.contains("retry"), "the approval card must tell the person the caller stopped waiting: {}", item.summary);
 
     // User approves Allow once after the initial CLI call timed out.
     monitor
