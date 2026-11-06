@@ -132,11 +132,15 @@ class LandingSafety(unittest.TestCase):
         self.env['TEST_SHA'] = sha
         self.env['TEST_REMOTE'] = str(self.remote)
         self.env['TEST_GH_STATE'] = str(self.base / 'merged')
+        self.env['TEST_SCRIPTS'] = str(SCRIPTS)
+        self.stub('just', 'if [ \"$1\" = merge-pr ]; then shift; exec bash \"$TEST_SCRIPTS/merge-pr.sh\" \"$@\"; fi\necho \"$*\" >> \"$TEST_LOG\"')
         self.stub('gh', r"""
 if [ "$1 $2" = 'pr view' ]; then
   if [ -f "$TEST_GH_STATE" ]; then state=MERGED; else state=OPEN; fi
   if [[ "$*" == *closingIssuesReferences* ]]; then
     printf '\n'
+  elif [[ "$*" == *"--json headRefName --jq"* ]]; then
+    printf '%s\n' "$TEST_BRANCH"
   elif [[ "$*" == *'--jq'* ]]; then
     printf '{"branch":"%s","state":"%s","base":"alpha","body":"Stint: 1234"}\n' "$TEST_BRANCH" "$state"
   else
@@ -155,24 +159,24 @@ elif [ "$1 $2" = 'pr merge' ]; then
   touch "$TEST_GH_STATE"
 fi
 """)
-        result = self.script('merge-pr.sh', '1')
+        result = self.script('bs-merge.sh', '1')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.base / 'merged').exists())
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', '0' * 40)
+        result = self.script('bs-merge.sh', '1', '--reviewed-head', '0' * 40)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.base / 'merged').exists())
         (self.root / 'a').write_text('overlap\n')
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.root / 'a').read_text(), 'overlap\n')
         self.assertFalse((self.base / 'merged').exists())
         self.run_cmd('git', 'restore', 'a')
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / 'a').read_text(), 'feature\n')
         self.assertEqual((self.root / 'b').read_text(), 'local work\n')
         self.assertFalse(lane.exists())
-        result = self.script('merge-pr.sh', '1', '--reviewed-head', sha)
+        result = self.script('bs-merge.sh', '1', '--reviewed-head', sha)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
