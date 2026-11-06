@@ -64,13 +64,13 @@ assert_clean_lane() {
 }
 
 do_cleanup() {
-    local PR="$1" BRANCH="$2" WORKTREE_PATH="$ROOT/worktrees/$2"
+    local PR="$1" BRANCH="$2" REVIEWED_HEAD="$3" WORKTREE_PATH="$ROOT/worktrees/$2"
     local INFO STATE PR_BRANCH PR_HEAD LOCAL_HEAD REMOTE_HEAD
     INFO=$(gh pr view "$PR" --json state,headRefName,headRefOid)
     STATE=$(printf '%s' "$INFO" | jq -r .state)
     PR_BRANCH=$(printf '%s' "$INFO" | jq -r .headRefName)
     PR_HEAD=$(printf '%s' "$INFO" | jq -r .headRefOid)
-    if [ "$STATE" != MERGED ] || [ "$PR_BRANCH" != "$BRANCH" ] || ! [[ "$PR_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+    if [ "$STATE" != MERGED ] || [ "$PR_BRANCH" != "$BRANCH" ] || ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]] || [ "$PR_HEAD" != "$REVIEWED_HEAD" ]; then
         echo "ERROR: cannot establish merged PR #$PR and its exact lane head; no cleanup performed." >&2
         return 1
     fi
@@ -409,7 +409,7 @@ case "$CMD" in
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" "${3:?reviewed head SHA required}" ;;
     sync)     do_sync ;;
-    cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" ;;
+    cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" "${4:?reviewed head SHA required}" ;;
     close)    do_close "${2:?ISSUE required}" "${3:?PR required}" ;;
     close-stints)
         PR="${2:?PR required}"
@@ -464,15 +464,15 @@ case "$CMD" in
             echo "==> PR #$PR: $BRANCH ($(describe_closures "$ISSUE" "${STINT_ARGS[@]+"${STINT_ARGS[@]}"}"), state: $STATE)"
         fi
 
+        if ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: pass --reviewed-head with the full SHA independently reviewed and validated, including when resuming a merged PR." >&2
+            exit 1
+        fi
         # Advance the canonical checkout before touching the remote PR. Git refuses
         # overwriting local edits or dropping local commits.
         do_sync
         assert_clean_lane "$BRANCH"
         if [ "$STATE" != "MERGED" ]; then
-            if ! [[ "$REVIEWED_HEAD" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "ERROR: pass --reviewed-head with the full SHA independently reviewed and validated." >&2
-                exit 1
-            fi
             git fetch origin "$BRANCH"
             if [ "$(git rev-parse FETCH_HEAD)" != "$REVIEWED_HEAD" ]; then
                 echo "ERROR: PR branch no longer matches reviewed head; review the current head." >&2
@@ -495,7 +495,7 @@ case "$CMD" in
         fi
 
         do_sync
-        do_cleanup "$PR" "$BRANCH"
+        do_cleanup "$PR" "$BRANCH" "$REVIEWED_HEAD"
         if [ "$NO_ISSUE" -eq 1 ]; then
             echo "==> Skipping issue/stint close (no-issue)"
         else

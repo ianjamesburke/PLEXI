@@ -563,7 +563,7 @@ test-infra-scripts:
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
 #   just merge-squash 2155 <SHA>         — squash-merge reviewed head only
 #   just merge-sync                      — reset local alpha to origin/alpha
-#   just merge-cleanup 2155 feature/2155-foo
+#   just merge-cleanup 2155 feature/2155-foo <SHA>
 #   just merge-close 2144 2155
 #   just merge-close-stints 2186 0015 0016
 merge-rebase BRANCH:
@@ -575,8 +575,8 @@ merge-squash PR SHA:
 merge-sync:
     bash scripts/merge-pr.sh sync
 
-merge-cleanup PR BRANCH:
-    bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}}
+merge-cleanup PR BRANCH SHA:
+    bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}} {{SHA}}
 
 merge-close ISSUE PR:
     bash scripts/merge-pr.sh close {{ISSUE}} {{PR}}

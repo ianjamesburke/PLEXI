@@ -46,7 +46,7 @@ Verifies the reviewed head, squash-merges it, fast-forwards Alpha, retires only 
 | Error | Recovery |
 |-------|----------|
 | PR behind Alpha | Rebase the lane, repeat applicable validation and independent review, then retry with the new reviewed SHA |
-| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
+| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH <SHA> && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
 | Local edit conflicts with the PR or Alpha sync | Preserve the edit and resolve the conflict before retrying |
 | Diverged local alpha | Investigate and preserve local commits; do not reset |
 | `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR --reviewed-head <SHA> no-issue`. Otherwise fix the PR body's `Stint: <id>` or closing keyword first. |
@@ -56,7 +56,7 @@ Verifies the reviewed head, squash-merges it, fast-forwards Alpha, retires only 
 just merge-rebase <BRANCH>       # fetch + rebase feature branch on origin/alpha + force-push
 just merge-squash <PR> <SHA>     # squash-merge reviewed SHA only
 just merge-sync                  # fast-forward only, preserving local work
-just merge-cleanup <PR> <BRANCH> # clean PR channel and clean lane only
+just merge-cleanup <PR> <BRANCH> <SHA> # clean PR channel and clean lane only
 just merge-close-targets <PR> "<ISSUES>" "<STINTS>"  # close issues + mark stints done + append ship log
 ```
 
