@@ -152,6 +152,11 @@ fn run(args: Args) -> Result<i32> {
             let Some(receipt) = transaction::find_installation(&channel)? else {
                 return Ok(2);
             };
+            if receipt.channel != release::normalized_channel(&channel) {
+                return Err(Error::Invalid(
+                    "installation registry points to another channel".into(),
+                ));
+            }
             println!("{}", receipt.active.executable().display());
             return Ok(0);
         }

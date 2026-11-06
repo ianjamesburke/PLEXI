@@ -50,6 +50,23 @@ only warns. `--trash-strays`, or answering yes to the prompt shown when stdin
 is a terminal, renames them into `~/.Trash` (numbered on collision); nothing
 is deleted. The public bootstrap forwards the flag unchanged.
 
+## Repository installer cache
+
+`scripts/distribution-tool.sh` runs the authoritative native installer through a
+small verified executable cache outside disposable worktrees. The cache checks
+installer source, lockfile, toolchain, platform, flags and binary digest. Warm
+locate/remove calls do not invoke Cargo or its global lease. Missing or mismatched
+evidence rebuilds the native installer under the existing lease; this cold path
+is reported explicitly. `PLEXI_DISTRIBUTION_CACHE_ROOT` relocates this cache.
+Source installation uses the same helper.
+
+Cleanup accepts absence only from the native locator's exit code 2. Lookup,
+ownership or self-uninstall failures preserve files and return failure. The
+native locator rejects a registry pointing to another channel. Bundles,
+launchers, receipts and generations are removed by the owning native transaction,
+never by guessing channel filenames. Explicit ephemeral profile cleanup remains
+separate; standing-channel cleanup retains user data.
+
 ## Package
 
 `package.json` schema 1 records the source commit, compiled build identity,
