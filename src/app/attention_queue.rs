@@ -2532,6 +2532,13 @@ mod tests {
             .collect();
         assert_eq!(asks.len(), 2, "distinct requests must remain visible");
         assert_ne!(asks[0].id, asks[1].id);
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        for ask in &asks {
+            assert_eq!(monitor.get_continuation(&ask.id).and_then(|c| c.needs_you_id), Some(ask.id.clone()), "each request must keep its own continuation");
+        }
+        monitor.resolve_needs_you_from(&asks[0].id, false, ResolveSurface::Desktop).unwrap();
+        assert!(monitor.get_needs_you(&asks[1].id).unwrap().resolution.is_none());
+        assert_eq!(monitor.get_continuation(&asks[1].id).unwrap().state, crate::broker::gate::ContinuationState::WaitingUser);
     }
 
     #[test]
