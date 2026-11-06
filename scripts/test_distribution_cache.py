@@ -98,6 +98,29 @@ class Cleanup(unittest.TestCase):
         self.assertTrue(integration.exists())
         self.assertTrue(self.normal.exists())
 
+    def test_tampered_native_cache_requires_leased_fallback(self):
+        cache = self.root / 'cache'
+        private = cache / self.native.parent.name
+        private.mkdir(parents=True)
+        shutil.copy2(self.native, private / 'plexi-installer')
+        shutil.copy2(self.native.parent / 'evidence.json', private / 'evidence.json')
+        lock_path = self.root / 'cargo.lock'
+        env = {**os.environ, 'PLEXI_DISTRIBUTION_CACHE_ROOT': str(cache),
+               'PLEXI_CARGO_LOCK': str(lock_path), 'PLEXI_CARGO_LEASE_TIMEOUT_SECS': '0.01'}
+        command = ['bash', str(ROOT / 'scripts/distribution-tool.sh'), 'prepare']
+        with lock_path.open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertEqual(self.call(*command, env=env).returncode, 0)
+            with (private / 'plexi-installer').open('ab') as stream:
+                stream.write(b'tampered')
+            result = self.call(*command, env=env)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('cache miss', result.stderr)
+            self.assertIn('timed out', result.stderr)
+            shutil.copy2(self.native, private / 'plexi-installer')
+            (private / 'evidence.json').write_text('{broken')
+            self.assertNotEqual(self.call(*command, env=env).returncode, 0)
+
     def test_warm_authoritative_lookup_ignores_busy_cargo_lease(self):
         lock_path = self.root / 'cargo.lock'
         env = {**os.environ, 'PLEXI_DISTRIBUTION_HOME': str(self.share),
