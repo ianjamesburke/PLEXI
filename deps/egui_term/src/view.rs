@@ -351,7 +351,6 @@ impl<'a> TerminalView<'a> {
                             &event,
                             state,
                             self.backend,
-                            layout,
                         ));
                     } else if let egui::Event::Key {
                         key: Key::F,
@@ -456,7 +455,6 @@ impl<'a> TerminalView<'a> {
                                     content.terminal_size.cell_height as f32,
                                 )
                             };
-                            let ppp = layout.ctx.pixels_per_point();
                             if !is_alt_screen {
                                 // Scroll to bottom first so the cursor is in the viewport at its
                                 // natural position (display_offset=0 → cursor_y = cursor_line * cell_h).
@@ -470,7 +468,6 @@ impl<'a> TerminalView<'a> {
                                         SelectionType::Lines,
                                         0.0,
                                         cursor_y,
-                                        ppp,
                                     ),
                                 );
                                 // Scroll to top so SelectUpdate(0,0) resolves to the first historical line.
@@ -478,7 +475,7 @@ impl<'a> TerminalView<'a> {
                                     BackendCommand::ScrollToTop,
                                 );
                                 self.backend.process_command(
-                                    BackendCommand::SelectUpdate(0.0, 0.0, ppp),
+                                    BackendCommand::SelectUpdate(0.0, 0.0),
                                 );
                                 // Sync to make last_content reflect the freshly set selection.
                                 let _ = self.backend.sync();
@@ -652,7 +649,6 @@ impl<'a> TerminalView<'a> {
                 self.backend.process_command(BackendCommand::SelectUpdate(
                     clamped_x - grid_origin.x,
                     clamped_y - grid_origin.y,
-                    layout.ctx.pixels_per_point(),
                 ));
             }
         }
@@ -1312,14 +1308,12 @@ fn process_copy_mode_event(
     event: &egui::Event,
     state: &mut TerminalViewState,
     backend: &TerminalBackend,
-    layout: &Response,
 ) -> Vec<InputAction> {
     let content = backend.last_content();
     let screen_lines = content.terminal_size.screen_lines();
     let num_cols = content.terminal_size.columns();
     let cell_width = content.terminal_size.cell_width as f32;
     let cell_height = content.terminal_size.cell_height as f32;
-    let ppp = layout.ctx.pixels_per_point();
     let page = (screen_lines as i32 - 1).max(1);
 
     let cursor_px = |cm: &CopyModeState| -> (f32, f32) {
@@ -1333,7 +1327,6 @@ fn process_copy_mode_event(
 
     let advance_selection = |cm: &CopyModeState,
                              actions: &mut Vec<InputAction>,
-                             ppp: f32,
                              cell_width: f32,
                              cell_height: f32| {
         if cm.selection_start.is_some() {
@@ -1342,7 +1335,7 @@ fn process_copy_mode_event(
                 cm.line_in_viewport as f32 * cell_height,
             );
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectUpdate(x, y, ppp),
+                BackendCommand::SelectUpdate(x, y),
             ));
         }
     };
@@ -1393,7 +1386,7 @@ fn process_copy_mode_event(
             if cm.col > 0 {
                 cm.col -= 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowLeft,
@@ -1404,7 +1397,7 @@ fn process_copy_mode_event(
             if cm.col > 0 {
                 cm.col -= 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: right ----
         egui::Event::Text(t) if t == "l" => {
@@ -1412,7 +1405,7 @@ fn process_copy_mode_event(
             if cm.col + 1 < num_cols {
                 cm.col += 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowRight,
@@ -1423,7 +1416,7 @@ fn process_copy_mode_event(
             if cm.col + 1 < num_cols {
                 cm.col += 1;
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: up ----
         egui::Event::Text(t) if t == "k" => {
@@ -1434,7 +1427,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowUp,
@@ -1454,7 +1447,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Movement: down ----
         egui::Event::Text(t) if t == "j" => {
@@ -1465,7 +1458,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         egui::Event::Key {
             key: Key::ArrowDown,
@@ -1485,7 +1478,7 @@ fn process_copy_mode_event(
                 actions
                     .push(InputAction::BackendCall(BackendCommand::Scroll(-1)));
             }
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Page up ----
         egui::Event::Key {
@@ -1498,7 +1491,7 @@ fn process_copy_mode_event(
                 .push(InputAction::BackendCall(BackendCommand::Scroll(page)));
             cm.line_in_viewport =
                 cm.line_in_viewport.saturating_sub(page as usize);
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Page down ----
         egui::Event::Key {
@@ -1511,7 +1504,7 @@ fn process_copy_mode_event(
                 .push(InputAction::BackendCall(BackendCommand::Scroll(-page)));
             cm.line_in_viewport = (cm.line_in_viewport + page as usize)
                 .min(screen_lines.saturating_sub(1));
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
         },
         // ---- Jump to top (g) ----
         egui::Event::Text(t) if t == "g" => {
@@ -1519,7 +1512,7 @@ fn process_copy_mode_event(
             actions.push(InputAction::BackendCall(BackendCommand::ScrollToTop));
             cm.line_in_viewport = 0;
             cm.col = 0;
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
             log::info!("[copy-mode] jumped to top");
         },
         // ---- Jump to bottom (G) ----
@@ -1528,7 +1521,7 @@ fn process_copy_mode_event(
             actions
                 .push(InputAction::BackendCall(BackendCommand::ScrollToBottom));
             cm.line_in_viewport = screen_lines.saturating_sub(1);
-            advance_selection(cm, &mut actions, ppp, cell_width, cell_height);
+            advance_selection(cm, &mut actions, cell_width, cell_height);
             log::info!("[copy-mode] jumped to bottom");
         },
         // ---- Start visual selection (v) ----
@@ -1538,7 +1531,7 @@ fn process_copy_mode_event(
             cm.line_select = false;
             let (x, y) = cursor_px(cm);
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectStart(SelectionType::Simple, x, y, ppp),
+                BackendCommand::SelectStart(SelectionType::Simple, x, y),
             ));
             log::info!(
                 "[copy-mode] visual selection started at ({}, {})",
@@ -1553,7 +1546,7 @@ fn process_copy_mode_event(
             cm.line_select = true;
             let (x, y) = cursor_px(cm);
             actions.push(InputAction::BackendCall(
-                BackendCommand::SelectStart(SelectionType::Lines, x, y, ppp),
+                BackendCommand::SelectStart(SelectionType::Lines, x, y),
             ));
             log::info!(
                 "[copy-mode] line selection started at row {}",
@@ -1883,7 +1876,6 @@ fn build_start_select_command(
         selection_type,
         cursor_position.x - grid_origin.x,
         cursor_position.y - grid_origin.y,
-        layout.ctx.pixels_per_point(),
     )
 }
 
@@ -1904,7 +1896,6 @@ fn process_mouse_move(
         cursor_y,
         &terminal_content.terminal_size,
         terminal_content.grid.display_offset(),
-        layout.ctx.pixels_per_point(),
     );
 
     let mut actions = vec![];
@@ -1924,8 +1915,7 @@ fn process_mouse_move(
             InputAction::BackendCall(BackendCommand::SelectUpdate(
                 cursor_x,
                 cursor_y,
-                layout.ctx.pixels_per_point(),
-            ))
+                    ))
         };
 
         actions.push(cmd);

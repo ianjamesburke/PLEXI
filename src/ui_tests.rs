@@ -1776,6 +1776,173 @@ mod tests {
         assert!(std::path::Path::new(&path).exists());
     }
 
+    /// The scene DSL cannot seed PTY output or drag inside a terminal widget.
+    /// Exercise real pointer events, selection commands and highlight painting.
+    #[test]
+    fn terminal_selection_tracks_pointer_at_fractional_scale() {
+        for scale in [1.0, 1.1, 1.3] {
+            let mut h = PlexiUiHarness::new_sized_ppp(1100.0, 500.0, 2.0);
+            h.with_app_mut(|app| app.ui_scale = scale);
+            h.run_steps(3);
+            let id = add_focused_pane(&mut h);
+            let fixture = "0123456789".repeat(10);
+            h.with_app_mut(|app| {
+                app.sidebar_visible = false;
+                let terminal = TerminalPane::new(
+                    id,
+                    app.ctx.clone(),
+                    app.pty_event_tx.clone(),
+                    egui_term::BackendSettings {
+                        shell: "/bin/sh".into(),
+                        args: vec![
+                            "-c".into(),
+                            format!(
+                                "read -r line; printf '\\033[2J\\033[H{fixture}'; read -r line"
+                            ),
+                        ],
+                        working_directory: Some(app.router.active().root.clone()),
+                        ..Default::default()
+                    },
+                    16.0,
+                )
+                .expect("start selection fixture");
+                app.windows[app.active_window]
+                    .panes
+                    .insert(id, Pane::Terminal(Box::new(terminal)));
+            });
+            h.run_steps(3);
+            h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .process_command(egui_term::BackendCommand::Write(b"ready\n".to_vec()));
+            });
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            loop {
+                h.run_steps(2);
+                let ready = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .capture_lines(20)
+                        .iter()
+                        .any(|line| line.contains("01234567890123456789"))
+                });
+                if ready {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "selection fixture did not produce text"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            h.run_steps(3);
+            let rect = h
+                .harness()
+                .ctx
+                .read_response(egui_term::terminal_widget_id(id))
+                .expect("rendered terminal widget")
+                .rect;
+            let (width, height) = h.with_app_mut(|app| {
+                let size = app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .last_content()
+                    .terminal_size;
+                (size.cell_width as f32, size.cell_height as f32)
+            });
+            // Host terminal rendering reserves two logical points for glyph padding.
+            let origin = rect.min + egui::vec2(2.0, 0.0);
+            let at = |cell: f32| origin + egui::vec2(cell * width, height * 0.5);
+            h.harness().input_mut().events.extend([
+                egui::Event::PointerMoved(at(0.25)),
+                egui::Event::PointerButton {
+                    pos: at(0.25),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]);
+            h.step();
+            let columns = ((rect.width() - 2.0) / width).floor().min(80.0) as usize;
+            let mut previous = 0;
+            for step in 3..columns * 4 {
+                let cell = step as f32 / 4.0;
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(at(cell)));
+                h.step();
+                let selected = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .selectable_content()
+                });
+                assert!(selected.len() >= previous,
+                    "rightward drag moved selection backward: scale={scale}, cell={cell}, {previous}->{}", selected.len());
+                if step % 4 == 3 {
+                    let expected = step / 4 + 1;
+                    assert_eq!(selected, fixture[..expected], "scale={scale}, cell={cell}");
+                }
+                previous = selected.len();
+            }
+            h.save_screenshot(&evidence_png!(&format!("_scale_{scale}")))
+                .expect("render selected terminal text");
+            // Reverse the same drag across the whole line before releasing.
+            for col in (1..columns).rev() {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(at(col as f32 + 0.75)));
+                h.step();
+                let selected = h.with_app_mut(|app| {
+                    app.windows[app.active_window]
+                        .panes
+                        .get_mut(&id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap()
+                        .backend
+                        .selectable_content()
+                });
+                assert_eq!(
+                    selected,
+                    fixture[..col + 1],
+                    "reverse scale={scale}, col={col}"
+                );
+            }
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerButton {
+                    pos: at(1.75),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            h.step();
+        }
+    }
+
     #[test]
     fn screenshot_pane_corners_themes_scale_and_override() {
         for theme in ["catppuccin-mocha", "catppuccin-latte"] {

@@ -73,8 +73,8 @@ pub enum BackendCommand {
     Scroll(i32),
     ScrollToTop,
     ScrollToBottom,
-    SelectStart(SelectionType, f32, f32, f32),
-    SelectUpdate(f32, f32, f32),
+    SelectStart(SelectionType, f32, f32),
+    SelectUpdate(f32, f32),
     ClearSelection,
     ProcessLink(LinkAction, Point),
     MouseReport(MouseButton, Modifiers, Point, bool),
@@ -470,11 +470,11 @@ impl TerminalBackend {
                 log::info!("terminal scroll: jump to bottom");
                 term.grid_mut().scroll_display(Scroll::Bottom);
             },
-            BackendCommand::SelectStart(selection_type, x, y, ppp) => {
-                self.start_selection(&mut term, selection_type, x, y, ppp);
+            BackendCommand::SelectStart(selection_type, x, y) => {
+                self.start_selection(&mut term, selection_type, x, y);
             },
-            BackendCommand::SelectUpdate(x, y, ppp) => {
-                self.update_selection(&mut term, x, y, ppp);
+            BackendCommand::SelectUpdate(x, y) => {
+                self.update_selection(&mut term, x, y);
             },
             BackendCommand::ClearSelection => {
                 term.selection = None;
@@ -493,22 +493,15 @@ impl TerminalBackend {
         y: f32,
         terminal_size: &TerminalSize,
         display_offset: usize,
-        pixels_per_point: f32,
     ) -> Point {
-        // Snap cell dimensions to physical pixels so hit-testing matches the
-        // renderer, which calls .round_to_pixels() on each cell rect. Without
-        // snapping, rounding errors accumulate across columns on high-DPI
-        // displays, causing selection to lag one cell behind the visual grid.
-        let snapped_w = (terminal_size.cell_width as f32 * pixels_per_point)
-            .round()
-            / pixels_per_point;
-        let snapped_h = (terminal_size.cell_height as f32 * pixels_per_point)
-            .round()
-            / pixels_per_point;
-        let col = (x / snapped_w) as usize;
+        // Pointer coordinates and committed cell dimensions are logical
+        // points. The renderer rounds final cell edges, not the grid pitch:
+        // rounding the pitch here accumulates drift at fractional UI scales
+        // and disagrees with the half-cell boundary used by selection_side.
+        let col = (x / terminal_size.cell_width as f32) as usize;
         let col = min(Column(col), Column(terminal_size.num_cols as usize - 1));
 
-        let line = (y / snapped_h) as usize;
+        let line = (y / terminal_size.cell_height as f32) as usize;
         let line = min(line, terminal_size.num_lines as usize - 1);
 
         viewport_to_point(display_offset, Point::new(line, col))
@@ -1022,47 +1015,36 @@ impl TerminalBackend {
         selection_type: SelectionType,
         x: f32,
         y: f32,
-        pixels_per_point: f32,
     ) {
-        let location = Self::selection_point(
-            x,
-            y,
-            &self.size,
-            terminal.grid().display_offset(),
-            pixels_per_point,
+        let location = Self::selection_point(x, y, &self.size, terminal.grid().display_offset());
+        log::info!(
+            "terminal_selection: start pane={} cell={}x{} point={:?} type={:?}",
+            self.id,
+            self.size.cell_width,
+            self.size.cell_height,
+            location,
+            selection_type
         );
         terminal.selection = Some(Selection::new(
             selection_type,
             location,
-            self.selection_side(x),
+            Self::selection_side(x, &self.size),
         ));
     }
 
-    fn update_selection(
-        &mut self,
-        terminal: &mut Term<EventProxy>,
-        x: f32,
-        y: f32,
-        pixels_per_point: f32,
-    ) {
+    fn update_selection(&mut self, terminal: &mut Term<EventProxy>, x: f32, y: f32) {
         let display_offset = terminal.grid().display_offset();
         if let Some(ref mut selection) = terminal.selection {
-            let location = Self::selection_point(
-                x,
-                y,
-                &self.size,
-                display_offset,
-                pixels_per_point,
-            );
-            selection.update(location, self.selection_side(x));
+            let location = Self::selection_point(x, y, &self.size, display_offset);
+            selection.update(location, Self::selection_side(x, &self.size));
         }
     }
 
-    fn selection_side(&self, x: f32) -> Side {
-        let cell_x = x as usize % self.size.cell_width as usize;
-        let half_cell_width = (self.size.cell_width as f32 / 2.0) as usize;
-
-        if cell_x > half_cell_width {
+    fn selection_side(x: f32, size: &TerminalSize) -> Side {
+        let width = size.cell_width as f32;
+        // Beyond the grid, stay at the outer edge of the clamped cell rather
+        // than wrapping the side back to Left in unused pane space.
+        if x >= width * size.num_cols as f32 || x.max(0.0) % width >= width / 2.0 {
             Side::Right
         } else {
             Side::Left
@@ -1724,6 +1706,88 @@ impl EventListener for EventProxy {
 mod tests {
     use super::is_url_char;
     use super::TerminalBackend;
+
+    #[test]
+    fn selection_points_match_rendered_grid_at_fractional_scales() {
+        use super::TerminalSize;
+        for ppp in [1.0, 1.1, 1.3, 2.0, 2.2, 2.6] {
+            for width in [7, 8, 9, 11] {
+                let size = TerminalSize {
+                    cell_width: width,
+                    cell_height: 17,
+                    num_cols: 160,
+                    num_lines: 50,
+                    ..Default::default()
+                };
+                for col in [0, 3, 40, 100, 159] {
+                    for row in [0, 10, 49] {
+                        // The renderer positions cells with the committed
+                        // logical pitch, then rounds their final edges.
+                        let left = (col as f32 * width as f32 * ppp).round() / ppp;
+                        let right = ((col + 1) as f32 * width as f32 * ppp).round() / ppp;
+                        let x = (left + right) / 2.0;
+                        let y = (row as f32 + 0.5) * 17.0;
+                        let point = TerminalBackend::selection_point(x, y, &size, 5);
+                        assert_eq!(point.column.0, col, "ppp={ppp}, width={width}, x={x}");
+                        assert_eq!(point.line.0, row - 5, "ppp={ppp}, y={y}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn selection_drag_is_monotonic_and_clamps_to_outer_cell_edges() {
+        use super::{
+            Column, EventProxy, Line, Point, Selection, SelectionType, Side, Term, TerminalSize,
+        };
+        for width in [7, 8, 9, 11] {
+            let size = TerminalSize {
+                cell_width: width,
+                cell_height: 17,
+                num_cols: 160,
+                num_lines: 50,
+                ..Default::default()
+            };
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let term = Term::new(super::terminal_config(), &size, EventProxy(sender));
+            let mut selection = Selection::new(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            let mut previous = 0;
+            for step in 1..=(size.num_cols as usize + 3) * width as usize * 4 {
+                let x = step as f32 / 4.0;
+                let point = TerminalBackend::selection_point(x, 0.0, &size, 0);
+                selection.update(point, TerminalBackend::selection_side(x, &size));
+                let selected = selection
+                    .to_range(&term)
+                    .map_or(0, |range| range.end.column.0 + 1);
+                assert!(
+                    selected >= previous,
+                    "width={width}, x={x}: {previous}->{selected}"
+                );
+                previous = selected;
+            }
+            assert_eq!(previous, size.num_cols as usize);
+            for (x, side, col) in [
+                (-30.0, Side::Left, 0),
+                (0.0, Side::Left, 0),
+                (width as f32 * 160.0 + 2.0, Side::Right, 159),
+            ] {
+                assert_eq!(TerminalBackend::selection_side(x, &size), side);
+                assert_eq!(
+                    TerminalBackend::selection_point(x, -20.0, &size, 7),
+                    Point::new(Line(-7), Column(col))
+                );
+            }
+            assert_eq!(
+                TerminalBackend::selection_point(0.0, 9999.0, &size, 7).line,
+                Line(42)
+            );
+        }
+    }
 
     #[test]
     fn kitty_negotiation_queries_and_screen_stacks() {
