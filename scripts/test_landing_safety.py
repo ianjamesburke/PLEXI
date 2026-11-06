@@ -23,8 +23,12 @@ class LandingSafety(unittest.TestCase):
         (self.root / 'a').write_text('base\n')
         (self.root / 'b').write_text('base\n')
         (self.root / 'Cargo.toml').write_text('version = \"1.0.0\"\n')
-        (self.root / '.gitignore').write_text('ignored-data/\ntarget/\n')
-        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore')
+        (self.root / '.gitignore').write_text('ignored-data/\ntarget/\nassets/python/\n.venv/\n.pytest_cache/\n__pycache__/\n')
+        for name in ('assets/keep', 'sdk/python/tests/keep', 'apps/todo/keep'):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('tracked')
+        self.run_cmd('git', 'add', 'a', 'b', 'Cargo.toml', '.gitignore', 'assets', 'sdk', 'apps')
         self.run_cmd('git', 'commit', '-m', 'base')
         self.run_cmd('git', 'remote', 'add', 'origin', str(self.remote))
         self.run_cmd('git', 'push', '-u', 'origin', 'alpha')
@@ -134,6 +138,33 @@ class LandingSafety(unittest.TestCase):
         self.assertFalse(lane.exists())
         self.assertTrue(sibling.exists())
         self.assertEqual((self.base / 'calls').read_text().splitlines(), ['channel-clean pr-1', 'channel-clean pr-1'])
+
+    def test_cleanup_retires_generated_only_and_preserves_symlink_target(self):
+        branch = 'feature/stint-1234-generated'
+        lane = self.root / 'worktrees' / branch
+        self.run_cmd('git', 'worktree', 'add', '-b', branch, str(lane))
+        sha = self.run_cmd('git', 'rev-parse', branch).stdout.strip()
+        payload = json.dumps({'state': 'MERGED', 'headRefName': branch, 'headRefOid': sha})
+        self.stub('gh', "printf '%s\\n' '" + payload + "'")
+        outside = self.base / 'valuable'
+        outside.mkdir()
+        (outside / 'data').write_text('preserve')
+        (lane / 'target').symlink_to(outside, target_is_directory=True)
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, sha)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(lane.exists())
+        self.assertEqual((outside / 'data').read_text(), 'preserve')
+        (lane / 'target').unlink()
+        for name in ('target', 'assets/python', 'sdk/python/.venv',
+                     'sdk/python/.pytest_cache', 'sdk/python/tests/__pycache__',
+                     'apps/todo/__pycache__'):
+            path = lane / name
+            path.mkdir(parents=True, exist_ok=True)
+            (path / 'generated').write_text('cache')
+        result = self.script('merge-pr.sh', 'cleanup', '1', branch, sha)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(lane.exists())
+        self.assertEqual((outside / 'data').read_text(), 'preserve')
 
     def test_full_merge_requires_reviewed_head_and_preserves_unrelated_edits(self):
         branch = 'feature/stint-1234-fix'

@@ -167,7 +167,7 @@ TESTING:
    ```bash
    just bs-merge <PR_NUMBER> --reviewed-head <FULL_REVIEWED_SHA>
    ```
-   `just bs-merge` verifies and squash-merges the reviewed head into `alpha`, fast-forwards local `alpha` without discarding local edits, marks linked stints `done`, removes the feature worktree and branch only when there is no uncommitted or ignored content, uninstalls `plexi-pr-<PR_NUMBER>`, and publishes `status=merge:done`. If the PR is behind Alpha, rebase and repeat applicable validation and independent review before retrying. If cleanup reports ignored content, the PR and stint are complete but the lane is retained. Preserve or deliberately handle the listed content before retrying cleanup; Git would otherwise delete it.
+   `just bs-merge` verifies and squash-merges the reviewed head into `alpha`, fast-forwards local `alpha` without discarding local edits, marks linked stints `done`, and retires the feature worktree and branch when there are no uncommitted changes or unknown ignored files. Its cleanup classifier reports recognized disposable generated directories, which Git deletes with the worktree. Classification is by directory path: **all contents of a recognized directory are disposable**, including manually saved files. Keep valuable data outside them. It uninstalls `plexi-pr-<PR_NUMBER>` and publishes `status=merge:done`. If the PR is behind Alpha, rebase and repeat applicable validation and independent review before retrying. Unknown ignored content retains the lane: preserve or deliberately handle it before retrying cleanup.
 4. Confirm `stint show <id>` shows `status: done` and write:
    ```bash
    plexi pane slot write status merge:done --pane-id $PLEXI_PANE_ID --replace

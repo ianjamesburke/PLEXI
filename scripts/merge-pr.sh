@@ -14,6 +14,7 @@
 # Call sub-steps directly to resume after a failure (e.g. rebase conflict).
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 
@@ -91,13 +92,17 @@ do_cleanup() {
         # Git removes ignored files even without --force. Keep the entire lane
         # when they exist, and allow the merged stint to close truthfully.
         local IGNORED
-        IGNORED=$(git -C "$WORKTREE_PATH" ls-files --others --ignored --exclude-standard --directory --no-empty-directory)
+        IGNORED=$(python3 "$SCRIPT_DIR/cleanup-ignored.py" "$WORKTREE_PATH") || {
+            echo "ERROR: could not safely classify ignored lane content; retaining lane." >&2
+            return 1
+        }
         if [ -n "$IGNORED" ]; then
             echo "NOTICE: PR #$PR merged; retaining lane and branches to preserve ignored content: $WORKTREE_PATH" >&2
             printf '%s\n' "$IGNORED" >&2
             echo "Preserve or deliberately handle those files, then run: just merge-cleanup $PR $BRANCH $REVIEWED_HEAD" >&2
             return 0
         fi
+        echo "==> Retiring lane with recognized generated artifacts (if present)"
         git worktree remove "$WORKTREE_PATH"
     fi
     if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
