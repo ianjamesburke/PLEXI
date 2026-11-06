@@ -609,3 +609,54 @@ fn close_reveal_chooses_populated_child_page_over_remembered_empty_page() {
     assert_eq!(h.app.router.active().context_id, child);
     assert!(h.app.windows[h.app.active_window].panes.contains_key(&a));
 }
+
+#[test]
+fn close_reveal_when_last_sibling_page_is_removed() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    let parent_page = h.app.windows.iter().position(|w| w.context_id == parent).unwrap();
+    let parent_window = &mut h.app.windows[parent_page];
+    let tile = parent_window.tree.tiles.find_pane(&outside).unwrap();
+    if let Some(parent_tile) = parent_window.tree.tiles.parent_of(tile) {
+        if let Some(egui_tiles::Tile::Container(container)) = parent_window.tree.tiles.get_mut(parent_tile) {
+            container.remove_child(tile);
+        }
+    }
+    parent_window.tree.tiles.remove(tile);
+    parent_window.tree.simplify(&egui_tiles::SimplificationOptions {
+        all_panes_must_have_tabs: true,
+        ..Default::default()
+    });
+    let outside_pane = parent_window.panes.remove(&outside).unwrap();
+    let path = parent_window.path.clone();
+    let mut tree = egui_tiles::Tree::empty("sibling-page");
+    let tile = tree.tiles.insert_pane(outside);
+    tree.root = Some(tile);
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(), path, tree,
+        panes: std::collections::HashMap::from([(outside, outside_pane)]),
+        focused_pane: Some(tile), zoomed_pane: None, grid_x: 1, grid_y: 0,
+        window_id: 987_654_323, context_id: parent,
+    });
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.windows.iter().all(|w| w.window_id != 987_654_323));
+}
+
+#[test]
+fn close_reveal_does_not_enter_all_hidden_child() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    let parent = h.app.router.active().context_id;
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    assert!(h.app.zoom_out_of_context());
+    let child_page = h.app.windows.iter_mut().find(|w| w.context_id == child).unwrap();
+    for pane in child_page.panes.values_mut() { pane.set_hidden(true); }
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, parent);
+}
