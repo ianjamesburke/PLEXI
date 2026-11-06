@@ -1834,10 +1834,17 @@ impl AppRuntime {
 
     /// Returns None when this runtime does not support NotifyAction.
     pub(crate) fn try_queue_notify_action(&mut self, event: crate::protocol::PlexiEvent) -> Option<Result<(), String>> {
+        if !self.supports_notify_action() {
+            return None;
+        }
         match self {
             AppRuntime::Python(app) => Some(app.try_queue_outbound_event(event)),
             AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => None,
         }
+    }
+
+    pub(crate) fn supports_notify_action(&self) -> bool {
+        matches!(self, AppRuntime::Python(_)) && matches!(self.lifecycle().0, "starting" | "running")
     }
 
     /// Register a directed pipe on this runtime's local pipe registry so

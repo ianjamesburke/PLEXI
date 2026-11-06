@@ -89,6 +89,7 @@ pub enum QueueSource {
     },
     Notification {
         notify_id: String,
+        option_indices: Vec<usize>,
     },
     Synthetic {
         id: String,
@@ -797,12 +798,25 @@ impl PlexiApp {
             } else {
                 QueueCategory::Result
             };
-            let options = if !notif.tombstoned && !notif.options.is_empty() {
-                notif
-                    .options
+            let app_receiver = !notif.tombstoned && self.windows.iter()
+                .find_map(|win| win.panes.get(&notif.sender_pane_id))
+                .and_then(|pane| pane.as_app())
+                .is_some_and(|app| app.runtime.supports_notify_action());
+            let response_receiver = notif.response_file.is_some();
+            let uncertain = self.attention_queue.uncertain_notification_ids.contains(&notif.notify_id);
+            let option_indices: Vec<usize> = notif.options.iter().enumerate().filter_map(|(idx, option)| {
+                let host_receiver = option.host_action.as_deref().and_then(|action| action.strip_prefix("pane_focus:"))
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .is_some_and(|id| self.find_pane_in_any_window(id).is_some());
+                (!uncertain && (app_receiver || response_receiver || host_receiver)).then_some(idx)
+            }).collect();
+            let options = if !option_indices.is_empty() {
+                option_indices
                     .iter()
                     .enumerate()
-                    .map(|(idx, c)| QueueOption {
+                    .map(|(idx, source_idx)| {
+                        let c = &notif.options[*source_idx];
+                        QueueOption {
                         key: if c.value.is_empty() {
                             c.label.clone()
                         } else {
@@ -810,7 +824,7 @@ impl PlexiApp {
                         },
                         label: c.label.clone(),
                         recommended: idx == 0,
-                    })
+                    }})
                     .collect()
             } else {
                 Vec::new()
@@ -823,6 +837,7 @@ impl PlexiApp {
             } else {
                 format!("{}: {}", notif.title, notif.body)
             };
+            let summary = if uncertain { format!("Outcome unknown — {summary}") } else { summary };
             seen_ids.insert(bar_id.clone());
             bars.push(QueueBar {
                 id: bar_id,
@@ -838,6 +853,7 @@ impl PlexiApp {
                 locked: false,
                 source: QueueSource::Notification {
                     notify_id: notif.notify_id.clone(),
+                    option_indices,
                 },
             });
         }
@@ -1017,7 +1033,13 @@ impl PlexiApp {
                 .items
                 .iter()
                 .any(|b| b.id == overlay.ask_id && b.category == QueueCategory::Notice);
-            let pane_alive = is_notice || self.find_pane_in_any_window(overlay.pane_id).is_some();
+            let independent_notification_route = matches!(overlay.source, QueueSource::Notification { .. })
+                && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
+            let uncertain_notification = match &overlay.source {
+                QueueSource::Notification { notify_id, .. } => self.attention_queue.uncertain_notification_ids.contains(notify_id),
+                _ => false,
+            };
+            let pane_alive = is_notice || independent_notification_route || uncertain_notification || self.find_pane_in_any_window(overlay.pane_id).is_some();
             if !pane_alive {
                 log::info!(
                     "decision_overlay: closing because target pane {} died",
@@ -1565,7 +1587,7 @@ impl PlexiApp {
                     }
                 }
             }
-            QueueSource::Notification { notify_id } => {
+            QueueSource::Notification { notify_id, option_indices } => {
                 if self.attention_queue.uncertain_notification_ids.contains(notify_id) {
                     self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
                     self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "The action may already have happened. Check the recipient before taking further action.".into()));
@@ -1579,7 +1601,7 @@ impl PlexiApp {
                     let n = self.pending_notifications.remove(pos);
                     let host_action = n
                         .options
-                        .get(option_idx)
+                        .get(option_indices.get(option_idx).copied().unwrap_or(usize::MAX))
                         .and_then(|o| o.host_action.clone());
                     let delivered = self.deliver_notify_action(
                         n.sender_pane_id,
@@ -1908,7 +1930,7 @@ impl PlexiApp {
             .synthetic_items
             .retain(|b| b.id != bar.id);
         match &bar.source {
-            QueueSource::Notification { notify_id } => {
+            QueueSource::Notification { notify_id, .. } => {
                 self.pending_notifications
                     .retain(|n| &n.notify_id != notify_id);
                 self.save_notifications();
@@ -2637,6 +2659,35 @@ mod tests {
         );
         let pane_id = h.state().open_panes[0];
         assert_eq!(h.app.deliver_notify_action(pane_id, "builtin".into(), "Continue".into(), None, None, None), crate::app::notifications::NotifyDelivery::Unavailable);
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "builtin".into(), sender_pane_id: pane_id, title: "Choice".into(),
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-builtin").unwrap().options.is_empty());
+    }
+
+    #[test]
+    fn notification_projection_keeps_only_supported_host_action_and_its_identity() {
+        let mut h = HostHarness::new();
+        let source = h.add_focused_terminal();
+        let destination = h.add_test_pane();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "mixed".into(), sender_pane_id: source, title: "Choice".into(),
+            options: vec![
+                crate::protocol::NotifyOption { label: "Unsupported".into(), value: "bad".into(), shortcut: None, host_action: None },
+                crate::protocol::NotifyOption { label: "Open pane".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) },
+            ],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-mixed").unwrap();
+        assert_eq!(bar.options.len(), 1);
+        assert_eq!(bar.options[0].label, "Open pane");
+        assert!(h.app.open_decision_overlay_for_ask("notify-mixed"));
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert_eq!(h.app.active_focused_pane_id(), Some(destination));
     }
 
     #[test]
@@ -2674,11 +2725,49 @@ mod tests {
     }
 
     #[test]
+    fn dead_sender_does_not_hide_live_response_file_route() {
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("response");
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "independent-file".into(), sender_pane_id: u64::MAX, title: "Choice".into(),
+            response_file: Some(path.to_string_lossy().into_owned()),
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-independent-file"));
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "go");
+    }
+
+    #[test]
+    fn dead_sender_with_unknown_delivery_keeps_error_visible() {
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "unknown-dead".into(), sender_pane_id: u64::MAX, title: "Choice".into(),
+            response_file: Some("/dev/null/not-a-response".into()),
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-unknown-dead"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        h.app.sync_attention_queue();
+        assert!(h.app.attention_queue.decision_overlay.is_some(), "outcome error must remain visible");
+        assert!(h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-unknown-dead").unwrap().summary.contains("Outcome unknown"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+    }
+
+    #[test]
     fn removed_notification_cannot_receive_a_verdict() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
             notify_id: "stale".into(), sender_pane_id: pane_id, title: "Choice".into(),
+            response_file: Some("/dev/null/not-a-response".into()),
             options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
             ..Default::default()
         });
