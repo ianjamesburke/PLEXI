@@ -19,10 +19,10 @@ just build
 
 Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` omits `cfg(not(test))` paths; bare `cargo build` includes them but does not reject dead-code warnings under the justfile's `-D warnings` (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
 
-Then the CI lint job, verbatim:
+Then the strict lint gate through the managed Cargo recipe:
 
 ```bash
-cargo clippy --bin plexi -- -D warnings
+just clippy
 ```
 
 `just build` does not run clippy; this is the only step that catches what CI's `clippy` job will reject (`too_many_arguments`, `type_complexity`, `needless_borrow`, ...). Fix the code, never `#[allow]`. Second line of the evidence block: `clippy: ok`.
@@ -83,7 +83,7 @@ required-gate set automatically.
 
 ## Step 2 — Host Logic Evidence
 
-Run the PR-push filters from `scripts/scoped-tests.sh` using the `just test-host` array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), which shares test-profile flags with `just scene`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `cargo clippy --bin plexi -- -D warnings` apply unless the documented local markdown-only exemption is proven.
+Run the PR-push filters from `scripts/scoped-tests.sh` using the `just test-host` array invocation in [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate), which shares test-profile flags with `just scene`. The selector implements Step 1's classification; an empty result skips only the Rust test run. Script-specific checks and PGAP/UI evidence still apply. `just build` and `just clippy` apply unless the documented local markdown-only exemption is proven.
 
 Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for phase requirements and the scoped evidence schema. Features and batches, including direct-to-alpha stabilization slices, follow the applicable scoped, build, Clippy and independent-validation rules there. The full host suite belongs only to the final combined candidate. Do not add a full-suite run at each integration or tester install. Hosted Rust checks remain deferred; unrelated checks still gate.
 

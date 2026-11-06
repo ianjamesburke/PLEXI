@@ -9,7 +9,20 @@ fn main() {
     let channel = std::fs::read_to_string(".channel").unwrap_or_default();
     let title = match channel.trim() { "alpha" => "Plexi Alpha", "beta" => "Plexi Beta", _ => "Plexi" };
     println!("cargo:rustc-env=PLEXI_APP_TITLE={title}");
-    println!("cargo:rerun-if-changed=.channel");
+    // Managed invocations supply a fresh fingerprint before Cargo checks its
+    // cache. A missing file cannot be watched without rebuilding every time.
+    println!("cargo:rerun-if-env-changed=PLEXI_BUILD_CHANNEL_ROOT");
+    println!("cargo:rerun-if-env-changed=PLEXI_BUILD_CHANNEL_INPUT");
+    let managed_root = std::env::var_os("PLEXI_BUILD_CHANNEL_ROOT").map(std::path::PathBuf::from);
+    let manifest_root = std::env::var_os("CARGO_MANIFEST_DIR")
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    let managed = managed_root.is_some()
+        && managed_root == manifest_root
+        && std::env::var_os("PLEXI_BUILD_CHANNEL_INPUT").is_some();
+    if !managed {
+        // Raw Cargo retains conservative creation/change/removal detection.
+        println!("cargo:rerun-if-changed=.channel");
+    }
     println!("cargo:rerun-if-env-changed=PLEXI_BUILD_TAG");
     let commit = git(&["rev-parse", "HEAD"]);
     let short_commit = commit.get(..7).unwrap_or("unknown");
