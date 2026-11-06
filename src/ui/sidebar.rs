@@ -216,6 +216,9 @@ impl PlexiApp {
                     .is_some_and(|portal| portal.target_context_id == child)
             })
         });
+        let route_idx = route_idx.or_else(|| {
+            (is_active_context && ancestry.len() > 1).then_some(focused_idx).flatten()
+        });
         let focused_idx = if child.is_some() { None } else { focused_idx };
         Some(PaneDots {
             route_idx,
