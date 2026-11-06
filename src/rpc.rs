@@ -57,6 +57,11 @@ fn prune_expired(map: &mut HashMap<String, (Instant, IpcStream)>) {
 pub(crate) struct ReplyRegistry;
 
 impl ReplyRegistry {
+    /// Observe connection closure without taking or consuming the reply stream.
+    pub(crate) fn connected(response_file: &str) -> Option<bool> {
+        let guard = host_reply_streams().lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(response_file).map(|(_, stream)| crate::platform::ipc::peer_connected(stream))
+    }
     /// Associate `stream` with `response_file` so the subsequent
     /// [`write_response`] / [`write_json_response`] call answers over the open
     /// socket instead of touching the filesystem.

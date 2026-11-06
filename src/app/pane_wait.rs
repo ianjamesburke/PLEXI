@@ -1592,7 +1592,8 @@ impl PlexiApp {
             let caller_exited = item.peer_ancestry
                 .as_ref()
                 .and_then(|ancestry| ancestry.first())
-                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid));
+                .is_some_and(|pid| !crate::host::pane_liveness::pid_is_alive(*pid))
+                || item.response_file.as_deref().and_then(crate::rpc::ReplyRegistry::connected) == Some(false);
                     if caller_exited || now >= item.expires_at {
                 let detached = monitor.detach_pane_send_waiter(&item.pending_request_id);
                 if let Err(error) = &detached {
