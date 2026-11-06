@@ -61,6 +61,15 @@ assert_clean_lane() {
             git -C "$WORKTREE_PATH" status --short >&2
             return 1
         fi
+        # Git removes ignored files with a worktree even without --force. Their
+        # contents may be valuable, so do not treat them as disposable.
+        local IGNORED
+        IGNORED=$(git -C "$WORKTREE_PATH" ls-files --others --ignored --exclude-standard --directory --no-empty-directory)
+        if [ -n "$IGNORED" ]; then
+            echo "ERROR: lane has ignored content that worktree removal would delete; preserve it before cleanup: $WORKTREE_PATH" >&2
+            printf '%s\n' "$IGNORED" >&2
+            return 1
+        fi
     elif [ -e "$WORKTREE_PATH" ]; then
         echo "ERROR: unregistered lane path exists; inspect it before cleanup: $WORKTREE_PATH" >&2
         return 1

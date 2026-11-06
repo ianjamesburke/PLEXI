@@ -165,7 +165,7 @@ TESTING:
    ```bash
    just bs-merge <PR_NUMBER> --reviewed-head <FULL_REVIEWED_SHA>
    ```
-   `just bs-merge` verifies and squash-merges the reviewed head into `alpha`, fast-forwards local `alpha` without discarding local edits, marks linked stints `done`, removes the clean feature worktree and branch, uninstalls `plexi-pr-<PR_NUMBER>`, and publishes `status=merge:done`. If the PR is behind Alpha, rebase and repeat applicable validation and independent review before retrying.
+   `just bs-merge` verifies and squash-merges the reviewed head into `alpha`, fast-forwards local `alpha` without discarding local edits, marks linked stints `done`, removes the feature worktree and branch only when there is no uncommitted or ignored content, uninstalls `plexi-pr-<PR_NUMBER>`, and publishes `status=merge:done`. If the PR is behind Alpha, rebase and repeat applicable validation and independent review before retrying. If cleanup reports ignored content, preserve or deliberately handle that content before retrying; Git would otherwise delete it.
 4. Confirm `stint show <id>` shows `status: done` and write:
    ```bash
    plexi pane slot write status merge:done --pane-id $PLEXI_PANE_ID --replace
