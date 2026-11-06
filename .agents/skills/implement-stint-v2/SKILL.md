@@ -44,8 +44,10 @@ Once `bs-start` succeeds, publish your working slot state and name the pane:
 ```bash
 plexi pane slot write status impl:working --pane-id $PLEXI_PANE_ID --replace
 plexi pane slot write pipeline_phase "implement-stint-v2:<stint-id>" --pane-id $PLEXI_PANE_ID --replace
-plexi pane name $PLEXI_PANE_ID "impl-<stint-id>-<short-slug>"
+plexi-beta pane name "$PLEXI_PANE_ID" "<stint-id>: <short descriptive title>"
 ```
+
+Read the task title with `stint show` before naming the pane. Use the stint number plus a concise description of the actual work, for example `1147: Remove toolbar context dots`; never use only the ID or a generic label such as `implement`. For a batch, include the stint IDs and a shared descriptive title. Target the channel hosting your pane (normally `plexi-beta`). Set the explicit pane name rather than relying on an OSC terminal title, which can change during agent activity. If the harness exposes a conversation-renaming control, use the same title there too; do not invent a command if it does not. When reusing the pane for another stint, update its name. Outside Plexi, skip the pane command.
 
 `cd` into the worktree path printed by `just bs-start` (`worktrees/feature/stint-<id>[-<id>...]-<slug>`). **All implementation work lives inside this worktree.**
 
