@@ -8,7 +8,7 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 
 ## Source of Truth
 
-- **V1 plan + live state** → `TRUTH.md` (repo root, untracked, on the release owner's machine). When present it outranks `.stint/`, GitHub issues, beads, and external checklists. **Every interaction that changes repo state (commit, merge, PR open/close/park, stint change, ruling, finding) updates `TRUTH.md` in the same turn. No exceptions.**
+- **V1 plan + live state** → `TRUTH.md` (repo root, untracked, on the release owner's machine). When present it outranks `.stint/`, GitHub issues, beads, and external checklists. Update it when the project's current state, active blocker, standing decision, release/installed acceptance, or next action changes, or an existing claim becomes false. Routine commits, PR activity, task creation and validation runs do not require an entry by themselves.
 - **What shipped** → `git log --oneline -20`
 - **Product direction** → `NORTH_STAR.md`
 - **Feature specs** → `docs/*.md` (active PRMs; see `docs/AGENTS.md` for lifecycle rules)
@@ -16,6 +16,10 @@ Before editing any file, read the `AGENTS.md` in its directory if one exists. Ch
 - **Implementation tickets** → `.stint/` tasks (GitHub issues are optional; stint outranks issues, `TRUTH.md` outranks stint)
 
 Do not track in-progress work or completion status in this file.
+
+### Keeping TRUTH current
+
+Keep `TRUTH.md` a concise snapshot. Replace the affected statement in place and remove resolved blockers or superseded claims. Put task progress and detailed evidence in the stint, commit history in Git, and review evidence in the PR; link to those records when needed. Preserve the distinction between code complete, installed, and human accepted. Workflow instructions to update `TRUTH.md` use this same change criterion; they do not require an activity log. If nothing in the snapshot needs to change, leave it alone.
 
 ## Website
 
@@ -89,7 +93,7 @@ Every new feature must be instrumented: no new capability, command, or user-visi
 **Mandatory self-validation contract: [`src/testing/TESTING.md`](src/testing/TESTING.md).** Follow its phase-aware gates before pushing, integrating, or installing.
 - Test-first for host logic. Define done by the test, not the code. No partial merges.
 - Observable state belongs in TOML scenes; return values and invariants belong in Rust tests.
-- `linux` CI is advisory (runs with `continue-on-error`), not a merge gate. Record Linux-only failures in PR body and `TRUTH.md`.
+- `linux` CI is advisory (runs with `continue-on-error`), not a merge gate. Record Linux-only failures in the PR body; update `TRUTH.md` only when they change its current state or blockers.
 - Host UI changes: visual review via harness screenshot test is mandatory before shipping.
 
 ## Panic Discipline
