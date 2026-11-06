@@ -618,6 +618,11 @@ impl Pane {
         }
     }
 
+    /// An app's yellow health pip keeps its color without implying agent work.
+    pub fn static_health_pip(&self) -> bool {
+        self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
+    }
+
     /// Activity state for the unified activity dot. Generic terminal process
     /// liveness is tracked separately and does not imply agent activity.
     pub fn effective_activity(&self) -> Option<&crate::protocol::AgentState> {

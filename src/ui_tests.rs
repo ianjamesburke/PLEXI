@@ -2928,6 +2928,7 @@ mod tests {
             title: None,
             active: true,
             activity,
+            static_health_pip: false,
         };
         let windows = vec![MiniWindow {
             grid_x: 0,
@@ -3128,7 +3129,10 @@ mod tests {
         // and arrange the active window into a clean 2-row layout:
         //   Top row:    [lane-working | lane-blocked | lane-needs-you | lane-error]
         //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
-        let _ = h.close_pane(master_pane);
+        send_req(&mut h, crate::protocol::AppRequest::SetPipStatus {
+            pane_id: master_pane,
+            status: crate::protocol::PipStatus::Yellow,
+        });
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let win = &mut app.windows[app.active_window];
@@ -3136,10 +3140,11 @@ mod tests {
             let t_work = tiles.insert_pane(pane_working);
             let t_idle = tiles.insert_pane(pane_idle);
             let t_program = tiles.insert_pane(pane_program);
+            let t_app = tiles.insert_pane(master_pane);
             let t_blk = tiles.insert_pane(pane_blocked);
             let t_ny = tiles.insert_pane(pane_needs_you);
             let t_err = tiles.insert_pane(pane_error);
-            let top_row = tiles.insert_horizontal_tile(vec![t_program, t_work, t_idle, t_blk, t_ny, t_err]);
+            let top_row = tiles.insert_horizontal_tile(vec![t_program, t_work, t_idle, t_app, t_blk, t_ny, t_err]);
 
             let p_blk = tiles.insert_pane(portal_blocked);
             let p_ny = tiles.insert_pane(portal_needs_you);
@@ -3209,6 +3214,7 @@ mod tests {
             assert!(win.panes[&pane_program].effective_activity().is_none());
             assert_eq!(win.panes[&pane_working].effective_activity(), Some(&crate::protocol::AgentState::Working));
             assert_eq!(win.panes[&pane_idle].effective_activity(), Some(&crate::protocol::AgentState::Idle));
+            assert!(win.panes[&master_pane].static_health_pip());
             let p_blocked = win.panes[&portal_blocked]
                 .as_portal()
                 .expect("portal_blocked")

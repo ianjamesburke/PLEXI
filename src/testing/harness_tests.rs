@@ -3623,6 +3623,11 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         Some(&AgentState::Idle),
         "green pip -> Idle (green dot), overriding the Working agent state"
     );
+    h.inject_ipc(AppRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
+    h.run_frames(3);
+    let p = h.app.windows[0].panes.get(&pane).unwrap();
+    assert_eq!(p.effective_activity(), Some(&AgentState::Working));
+    assert!(p.static_health_pip(), "yellow app health keeps its color but is not an animated agent glyph");
 }
 
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`

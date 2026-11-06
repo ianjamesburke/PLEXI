@@ -149,6 +149,7 @@ pub(crate) fn gallery_rows(
                 focused_idx: Some(0),
                 hidden_indices: vec![],
                 activities: vec![],
+                static_health_pips: vec![],
             })
             .trailing_action(if index == 2 { "Delete" } else { "Open" })
             .selected(index == 1)
@@ -310,6 +311,7 @@ impl PlexiApp {
                                         focused_idx: Some(0),
                                         hidden_set: Default::default(),
                                         activities: vec![],
+                                        static_health_pips: Default::default(),
                                         windows: vec![],
                                     }),
                                 }

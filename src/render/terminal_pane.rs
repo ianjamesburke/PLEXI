@@ -81,7 +81,7 @@ pub fn render(
     pane_names: &HashMap<PaneId, String>,
     tab_info: &HashMap<TileId, TabGroupInfo>,
     tab_labels: &HashMap<PaneId, String>,
-    tab_activities: &HashMap<PaneId, AgentState>,
+    tab_activities: &HashMap<PaneId, (AgentState, bool)>,
     workspace_root: Option<&Path>,
     pane_title_font_size: f32,
     input: TerminalInput,
@@ -103,7 +103,7 @@ pub fn render(
                 .as_ref()
                 .map(|_| AgentState::NeedsYou)
         })
-        .or_else(|| tab_activities.get(pane_id).cloned());
+        .or_else(|| tab_activities.get(pane_id).map(|(state, _)| state.clone()));
     let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
     let border_escalation_color =
         crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
@@ -345,7 +345,7 @@ struct NameBarParams<'a> {
     pane_id: &'a PaneId,
     tab_info: &'a HashMap<TileId, TabGroupInfo>,
     tab_labels: &'a HashMap<PaneId, String>,
-    tab_activities: &'a HashMap<PaneId, AgentState>,
+    tab_activities: &'a HashMap<PaneId, (AgentState, bool)>,
     pane_names: &'a HashMap<PaneId, String>,
     pane_agent_state: Option<&'a AgentState>,
     is_error: bool,
@@ -378,7 +378,7 @@ fn render_name_bar_and_tabs(
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
-    let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id));
+    let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
         .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
     let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);

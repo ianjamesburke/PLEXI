@@ -57,6 +57,7 @@ mod tests {
             pane_id:Some(7), norm_rect:egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),
             kind:PaneKind::Terminal, focused:false,has_content:false,title:None,active:true,
             activity:Some(AgentState::NeedsYou),
+            static_health_pip:false,
         }] }];
         let key = egui::Id::new(("minimap_attention",Some(7_u64))).with("attention_entered");
         for n in 0..2 {
@@ -83,7 +84,7 @@ pub(crate) struct TabBarPaintParams<'a> {
     pub bar_rect: egui::Rect,
     pub group: &'a TabGroupInfo,
     pub tab_labels: &'a HashMap<PaneId, String>,
-    pub tab_activities: &'a HashMap<PaneId, AgentState>,
+    pub tab_activities: &'a HashMap<PaneId, (AgentState, bool)>,
     pub colors: &'a Colors,
     pub font_size: f32,
     pub overtake_hint: bool,
@@ -225,11 +226,11 @@ pub(crate) fn paint_tab_bar(
             0.0
         };
 
-        if let Some(state) = tab_activities.get(&pane_id) {
+        if let Some((state, static_health_pip)) = tab_activities.get(&pane_id) {
             let t = ctx.input(|i| i.time);
             let color = crate::ui::activity::dot_color_from_time(state, colors, t, i);
             let cx = tab_rect.left() + TAB_PIP_LEFT_PAD + TAB_PIP_RADIUS;
-            crate::ui::activity::paint_pip(painter, egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
+            crate::ui::activity::paint_pip(painter, egui::pos2(cx, tab_rect.center().y), TAB_PIP_RADIUS, (!static_health_pip).then_some(state), color, false);
         }
 
         let label = tab_labels
@@ -342,6 +343,7 @@ pub struct MiniPane {
     pub active: bool,
     /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
     pub activity: Option<crate::protocol::AgentState>,
+    pub static_health_pip: bool,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -547,7 +549,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         }
         let pane_rect = ui.available_rect_before_wrap();
 
-        let tab_activities: HashMap<PaneId, AgentState> = self
+        let tab_activities: HashMap<PaneId, (AgentState, bool)> = self
             .tab_info
             .get(&tile_id)
             .map(|group| {
@@ -557,7 +559,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     .filter_map(|id| {
                         self.panes
                             .get(id)
-                            .and_then(|p| p.effective_activity().cloned())
+                            .and_then(|p| p.effective_activity().cloned().map(|state| (state, p.static_health_pip())))
                             .map(|a| (*id, a))
                     })
                     .collect()
@@ -1272,7 +1274,8 @@ pub(crate) fn paint_portal_minimap(
                 } else {
                     crate::ui::activity::dot_color_from_time(state, colors, time, 0)
                 };
-                crate::ui::activity::paint_pip(painter, egui::pos2(cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R, cell.min.y + 2.0 + title_font_size * 0.5), ACTIVITY_DOT_R, Some(if is_error_cell { &AgentState::Failed } else { state }), color, false);
+                let glyph = if pane.static_health_pip && !is_error_cell { None } else { Some(if is_error_cell { &AgentState::Failed } else { state }) };
+                crate::ui::activity::paint_pip(painter, egui::pos2(cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R, cell.min.y + 2.0 + title_font_size * 0.5), ACTIVITY_DOT_R, glyph, color, false);
             }
 
             if !pane.has_content {

@@ -361,6 +361,19 @@ mod tests {
     use crate::config::ThemeConfig;
 
     #[test]
+    fn static_health_pip_keeps_color_without_animation() {
+        let ctx = egui::Context::default();
+        let frame = |time| ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| {
+            paint_pip(ui.painter(), egui::pos2(30.0, 30.0), 4.0, None, egui::Color32::YELLOW, false);
+        });
+        for n in 0..4 { frame(n as f64); }
+        let first = frame(4.0);
+        let second = frame(4.5);
+        assert_eq!(format!("{:?}", first.shapes), format!("{:?}", second.shapes));
+        assert_eq!(first.viewport_output[&egui::ViewportId::ROOT].repaint_delay, std::time::Duration::MAX);
+    }
+
+    #[test]
     fn working_arc_rotates_and_repaints_only_when_visible_and_motion_enabled() {
         let ctx = egui::Context::default();
         let frame = |time, state: &AgentState, reduced, visible| {
