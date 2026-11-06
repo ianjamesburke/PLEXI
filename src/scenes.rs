@@ -939,6 +939,18 @@ pub struct HeadlessBackend {
     /// `-WxH` appended to every `shot` stem when the scene declares a `sizes`
     /// matrix, so the passes write distinct files. `None` for a single size.
     shot_suffix: Option<String>,
+    seeded_pane_send: Option<(PathBuf, String)>,
+}
+
+impl Drop for HeadlessBackend {
+    fn drop(&mut self) {
+        if let Some((profile, id)) = self.seeded_pane_send.take() {
+            let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+            if let Err(error) = monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny) {
+                log::warn!("scene: failed to clear seeded pane.send approval: {error}");
+            }
+        }
+    }
 }
 
 /// Run a scene file. Writes `<out_dir>/<scene-stem>.json` and returns the
@@ -1099,6 +1111,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             out_dir: out_dir.to_path_buf(),
             no_shots,
             shot_suffix: suffix,
+            seeded_pane_send: None,
         });
 
         for step in &scene.steps {
@@ -2919,6 +2932,7 @@ impl HeadlessBackend {
                 };
                 monitor.detach_pane_send_waiter(&pending_request_id)
                     .map_err(|error| SceneError::new("seed_failed", error))?;
+                self.seeded_pane_send = Some((profile, pending_request_id));
                 self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
                 self.h.run_steps(2);
                 Ok(Some(StepDetail::Message { message: "seeded timed-out pane send".to_string() }))
