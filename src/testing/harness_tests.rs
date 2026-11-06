@@ -1,5 +1,41 @@
 use super::*;
 
+#[test]
+fn terminal_process_activity_is_not_agent_activity() {
+    use crate::protocol::AgentState;
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+    pane.as_terminal_mut().unwrap().activity = Some(AgentState::Working);
+    assert!(pane.agent().is_none());
+    assert_eq!(pane.effective_activity(), None);
+    let state = crate::host::context_state::ContextState::compute(
+        h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+    );
+    assert_eq!(state.active_agents, 0);
+
+    for (agent_state, expected) in [
+        (AgentState::Working, 1),
+        (AgentState::Idle, 0),
+        (AgentState::NeedsYou, 0),
+        (AgentState::Failed, 0),
+    ] {
+        let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+        pane.set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id: id,
+            state: agent_state.clone(),
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }));
+        assert_eq!(pane.effective_activity(), Some(&agent_state));
+        let state = crate::host::context_state::ContextState::compute(
+            h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+        );
+        assert_eq!(state.active_agents, expected);
+    }
+}
+
 fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app

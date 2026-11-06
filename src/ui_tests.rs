@@ -3429,7 +3429,13 @@ mod tests {
             terminal.outside_workspace_cached = false;
             terminal.outside_workspace_checked_at = Some(Instant::now());
             terminal.outside_workspace_root = Some(workspace_root);
-            terminal.activity = Some(crate::protocol::AgentState::Working);
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: id,
+                state: crate::protocol::AgentState::Working,
+                agent: "codex".into(),
+                detail: None,
+                session_id: None,
+            });
 
             let win = &mut app.windows[app.active_window];
             win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
@@ -3455,7 +3461,7 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Blocked);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Blocked;
         });
         h.run_steps(2);
         h.with_app(|app| {
@@ -3472,7 +3478,7 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Working);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Working;
         });
         h.run_steps(2);
         h.with_app(|app| {
