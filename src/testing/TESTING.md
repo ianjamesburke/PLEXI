@@ -45,7 +45,7 @@ A script that changes an installed boundary is not repository-only for this
 purpose. State the boundary and any skip explicitly; do not describe source
 checks as installed behavior. Aggregate records still require installed heads.
 
-Before a feature or batch push, `just build` compiles the installable release
+Before a feature or batch ready push (except the draft stage below), `just build` compiles the installable release
 binary with warnings denied, `scripts/scoped-tests.sh` proposes relevant Rust
 filters, and `just clippy` is the lint gate. Run
 relevant scene, script, SDK and specialized checks too. The sole local
@@ -79,16 +79,40 @@ No filters means no host Rust test is selected; run the affected script, SDK, do
 
 For observable changes, name the affected scene files and run each with `just scene <file>`; a changed `tests/scenes/*.toml` is itself a required selection. If no scene covers the behavior, add one as required by the testing contract. The selector does not infer the relevant scenes from UI paths, so an empty scene selection must be justified rather than silently treated as coverage. Shared scene-runner changes select `scene_suite`; expand to the suite for other cross-cutting changes when individual scenes cannot establish coverage. Preserve screenshot steps and inspect images for visual changes; state-only runs are not visual proof. The final full host suite includes `scene_suite`.
 
-### Avoiding duplicate installation work
+### Draft PR and candidate qualification
 
-When an independent tester is assigned, the tester owns the required PR install;
-the implementation worker does not first install the same head. The installer
-still runs its own scoped pretests and SDK smoke because the existing reuse stamp
-proves the channel, head and binary digest, not matching test outcomes. Reuse a
-release binary only under the installer's stamp checks; do not infer reusable
-test evidence from that stamp. The exact-head installed record and independent
-affected-behavior verification remain required wherever the phase policy calls
-for them. Reassess after any head or base movement.
+After focused checks and source review, commit and push a clean feature head and
+open a **draft** PR to acquire its channel number. This is the sole exception to
+the release/Clippy-before-push rule; draft status is not qualification or `pr:done`.
+Run `just pr-candidate <PR>` at the final head. It resolves that exact source,
+runs installer pretests, builds the release with compiled `pr-<PR>` identity and
+warnings denied, runs strict Clippy, and records the artifact digest. Run all
+other applicable scoped, script, SDK, docs and visual checks before ready status.
+A changed head/base/configuration requires reassessment and fresh matching evidence.
+Only then mark the PR ready and hand it to the independent tester.
+
+`just pr-candidate` and `just pr-install` use `scripts/build-cache.py`: two
+persistent, exclusively locked Cargo slots per repository under
+`~/.cache/plexi-build`. The lock covers the entire candidate/install operation;
+the global Cargo memory lease remains active. Slots survive feature cleanup.
+Before reuse, an owned slot exceeding the default retained-data threshold is
+reset; `PLEXI_BUILD_CACHE_MAX_BYTES` configures that threshold. This bounds retained
+slots, not peak temporary build space. `PLEXI_BUILD_CACHE_ROOT` relocates the pool.
+Never copy or share another lane's mutable target. For additional cache-backed
+checks use `python3 scripts/build-cache.py pr-<PR> just <check>`.
+
+The tester owns installation. `build-evidence.py` permits pretest reuse only for
+successful matching clean-source execution, including exact head/base/selection,
+source path, toolchain, Cargo configuration, relevant environment and receipt
+schema, with an intact execution log. Missing, dirty or mismatched evidence runs
+the checks. A candidate's verified head/channel/configuration and binary digest
+permit installation without another host release compilation. SDK selection,
+installed SDK digest verification and independent affected-behavior checks remain
+separate. An artifact stamp alone never proves test success.
+
+Each slot retains queue/acquire/finish events and Cargo fresh/compiled artifact
+counts in `telemetry.jsonl`. These distinguish waiting from execution; a warm
+cache is not a promise that changed source paths or build scripts avoid rebuilding.
 
 ### Aggregate evidence
 

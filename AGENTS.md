@@ -155,7 +155,7 @@ Every fact lives in exactly one place. Other files reference it; they never rest
 - **Service external I/O in `App::logic`, never `App::ui`:** eframe skips `App::ui` entirely when the window is hidden or occluded. All external drains (pane IPC, spawn queue, PTY events, shutdown, event-bus, screenshots, Python runtimes) must live in `App::logic`.
 - **App servicing axes:** `service_app_commands` in `App::logic` handles occluded windows; `AppRuntime::background_tick` handles inactive contexts. Both are required.
 - **`rustfmt` on mod files:** `rustfmt src/main.rs` reformats all reachable modules. Format only leaf files touched.
-- **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Always run `just build` before push.
+- **`cargo test` vs `just build`:** Test builds don't enforce dead-code warnings or non-test cfg blocks. Run the installable release gate before ready/merge; TESTING.md permits a focused-check draft push to acquire the PR channel before its final candidate build.
 - **Window close vs process exit:** Closing the window does not end the process. Every quit path must finish in `app::quit::exit_host`.
 - **Mid-frame exit skips `App::on_exit`:** Any exit outside `on_exit` (like `plexi host stop`) must explicitly invoke cleanups (e.g. `bank_final_focus_segment`).
 - **UI thread profiling:** Drag/resize stutter in `App::ui` is invisible to logic heartbeat. Use `PLEXI_UI_PROFILE=1` to profile.

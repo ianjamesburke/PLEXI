@@ -153,7 +153,7 @@ class InstallPretests(unittest.TestCase):
         self.assertEqual(commands, [])
 
     def test_recipe_resolves_scope_from_pr_metadata_and_records_it(self):
-        recipe = (ROOT / "justfile").read_text().split('pr-install number test_scope="scoped":', 1)[1]
+        recipe = (ROOT / "justfile").read_text().split('_pr-prepare number test_scope action:', 1)[1]
         recipe = recipe.split("\n# Generic channel install.", 1)[0]
         self.assertIn("headRefName,headRefOid,baseRefName,baseRefOid", recipe)
         self.assertIn('"$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"', recipe)

@@ -133,6 +133,11 @@ reassess the evidence and rerun the applicable head-dependent checks.
 
 ## Step 2 — Install
 
+The installer consumes a matching candidate artifact and successful pretest
+receipt under the persistent slot lock as defined by TESTING.md. A mismatch
+reruns the applicable work. Keep independent affected-behavior validation and
+the installed SDK guard; cache reuse is not independent acceptance.
+
 One recipe owns the mechanics — PR/branch/worktree resolution, the install, and provenance. `just pr-install` resolves and builds the PR's actual head itself (cwd-independent), so there is nothing to hand-derive here:
 
 ```bash

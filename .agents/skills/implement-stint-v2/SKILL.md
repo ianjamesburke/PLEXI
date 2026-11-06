@@ -71,17 +71,28 @@ Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisi
 
 ---
 
-## Step 3 — Mandatory Pre-Push Gate (`src/testing/TESTING.md`)
+## Step 3 — Draft identity, then mandatory ready gate
 
-Before pushing, run every applicable gate in the foreground from your worktree. The canonical policy in TESTING.md defines the proven unembedded markdown-only local exemption and separate aggregate requirements:
+Follow [TESTING.md — Draft PR and candidate qualification](../../../src/testing/TESTING.md#draft-pr-and-candidate-qualification).
+After focused checks and source review, commit/push a clean head and create the
+PR with `gh pr create --draft` to acquire its number. Do not publish `pr:done`.
+Run `just pr-candidate <PR>` for the final PR-channel release and strict Clippy.
+It retains a locked persistent cache and records matching pretest/artifact
+receipts. Complete every other applicable gate below, then update the PR evidence
+and run `gh pr ready <PR>`. The independent tester still owns installation.
+Do not first build an ordinary-channel release solely to create this draft.
+
+## Required qualification (`src/testing/TESTING.md`)
+
+Before marking ready, run every applicable gate in the foreground from your worktree. The canonical policy in TESTING.md defines the proven unembedded markdown-only local exemption and separate aggregate requirements:
 
 1. **Focused tests** for the changed module(s).
-2. **Release build (`-D warnings`, unless the policy exemption applies):**
+2. **Release build (`-D warnings`, unless the policy exemption applies):** The matching `just pr-candidate <PR>` release satisfies this gate; do not duplicate it. Outside that flow:
    ```bash
    just build
    ```
 3. **Relevant scoped tests:** Follow [TESTING.md — The Gate](../../../src/testing/TESTING.md#the-gate) for feature/batch selection, evidence, and independent installed checks. Run the selected libtest filters with its array invocation and stdin/environment isolation; include affected Python/shell/docs/SDK checks. Do not run a full host suite for a feature or batch integration. The final combined candidate uses the separate full-suite gate in TESTING.md. Record the actual scope and commands at the current head; hosted Rust checks stay deferred and other checks still gate.
-4. **Clippy lint gate (unless the policy exemption applies):**
+4. **Clippy lint gate (unless the policy exemption applies):** The matching candidate run includes this gate. Otherwise:
    ```bash
    just clippy
    ```
@@ -100,7 +111,7 @@ Before pushing, run every applicable gate in the foreground from your worktree. 
    ```bash
    git push -u origin <branch>
    ```
-2. Open the PR against `alpha`. Always include `Stint: <id>` (or `Stints: <id>, <id>`) in the PR body so `just merge-pr` automatically closes the stint(s):
+2. Update the existing qualified draft PR against `alpha` and mark it ready; create one only when no draft exists. Always include `Stint: <id>` (or `Stints: <id>, <id>`) in the PR body so `just merge-pr` automatically closes the stint(s):
    ```bash
    gh pr create --base alpha --head "<branch>" --title "<type>(<scope>): <summary> (stint <id>)" --body "$(cat <<'EOF'
    ## Summary

@@ -11,13 +11,13 @@ All commands run from the feature worktree.
 
 ## Step 0 — Installable build
 
-For the proven unembedded markdown-only local exemption, see TESTING.md; aggregate evidence requirements are separate. Otherwise run:
+For the proven unembedded markdown-only local exemption, see TESTING.md; aggregate evidence requirements are separate. For a PR candidate, use the draft/candidate sequence in TESTING.md; its exact-head release and Clippy satisfy this step without duplicate compilation. Outside that flow run:
 
 ```bash
 just build
 ```
 
-Release build under `-D warnings`, the same path `just pr-install` takes. Run it first; if it fails there is no evidence to collect. `cargo test` omits `cfg(not(test))` paths; bare `cargo build` includes them but does not reject dead-code warnings under the justfile's `-D warnings` (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
+Release build under `-D warnings`, the same path `just pr-install` takes. Complete it before ready status; focused checks may precede a draft push as TESTING.md specifies. `cargo test` omits `cfg(not(test))` paths; bare `cargo build` includes them but does not reject dead-code warnings under the justfile's `-D warnings` (root `AGENTS.md` Traps). Its result is the first line of the Test Evidence block: `just build: ok`.
 
 Then the strict lint gate through the managed Cargo recipe:
 

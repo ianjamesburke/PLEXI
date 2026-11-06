@@ -323,6 +323,14 @@ sdk-smoke:
 # selection requires reviewed newline-separated PLEXI_PR_TEST_FILTERS.
 # Removes the previous managed PR installation and profile first.
 pr-install number test_scope="scoped":
+    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} install
+
+# Build the final PR-channel candidate once, without installing it.
+pr-candidate number test_scope="scoped":
+    python3 scripts/build-cache.py pr-{{number}} just _pr-prepare {{number}} {{test_scope}} candidate
+
+[private]
+_pr-prepare number test_scope action:
     #!/usr/bin/env bash
     set -euo pipefail
     # pr-install must never build whatever tree the caller happens to be
@@ -368,27 +376,38 @@ pr-install number test_scope="scoped":
     if [[ -n "$_branch_wt" && -z "$_wt" && "$(git -C "$_branch_wt" rev-parse HEAD 2>/dev/null)" != "$_head_oid" ]]; then
       echo "note: worktree for $_head_ref is not at the PR head — building the PR head in the canonical pr-install tree instead."
     fi
-    # Canonical path: a dedicated detached worktree pinned to the PR's exact
-    # head. Shared across PRs so its target dir stays warm-ish.
+    # A separate detached source tree per PR; dependency warmth lives in the
+    # exclusive persistent slot, never in a shared mutable source checkout.
     if [[ -z "$_wt" ]]; then
-      _wt="$_repo_root/worktrees/pr-install"
+      _wt="$_repo_root/worktrees/pr-install-{{number}}"
       git -C "$_repo_root" worktree prune 2>/dev/null || true
       if [[ -d "$_wt" ]]; then
-        git -C "$_wt" checkout -qf --detach "$_head_oid"
+        if [[ -n "$(git -C "$_wt" status --porcelain)" ]]; then
+          echo "Error: detached PR source tree is dirty; preserving it: $_wt" >&2
+          exit 1
+        fi
+        git -C "$_wt" checkout -q --detach "$_head_oid"
       else
         git -C "$_repo_root" worktree add -q --detach "$_wt" "$_head_oid"
       fi
     fi
     # Backstop (PR #2463 guard, kept as defense in depth): the selected tree
     # must contain the PR's head commit.
-    if ! git -C "$_wt" merge-base --is-ancestor "$_head_oid" HEAD 2>/dev/null; then
+    if [[ "$(git -C "$_wt" rev-parse HEAD)" != "$_head_oid" ]]; then
       echo "Error: selected tree $_wt does not contain PR #{{number}}'s head commit ${_head_oid:0:8}."
       exit 1
     fi
     echo "pr-install: PR #{{number}} head=${_head_oid:0:8} ref=$_head_ref worktree=$_wt"
     # Pre-install tests and the build both run inside the resolved worktree,
     # never the caller's cwd.
-    bash "$_driver_root/scripts/pr-install-pretests.sh" "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
+    export PLEXI_BUILD_TEST_CHANNEL="pr-{{number}}"
+    python3 "$_driver_root/scripts/build-evidence.py" pretests "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
+    if [[ "{{action}}" == candidate ]]; then
+      ( cd "$_wt" && just build clippy )
+      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi"
+      echo "pr-candidate: release artifact ready; remaining qualification and independent validation still required"
+      exit 0
+    fi
     ( cd "$_wt" && bash scripts/pr-clean.sh {{number}} )
     # Binary reuse (stint 0637): skip the release build only when the selected
     # tree already holds a binary whose embedded sha equals the PR head, stamped
@@ -398,7 +417,7 @@ pr-install number test_scope="scoped":
     _reuse_note="built release binary"
     _reuse_env=""
     if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      if _reuse_verdict="$(bash "$_driver_root/scripts/pr-install-reuse.sh" check "$_wt" "$_head_oid" "pr-{{number}}")"; then
+      if _reuse_verdict="$(python3 "$_driver_root/scripts/build-evidence.py" check "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi")"; then
         _reuse_env="1"
         _reuse_note="reused existing artifact @ ${_head_oid:0:8}"
       else
@@ -417,7 +436,7 @@ pr-install number test_scope="scoped":
     # Record that this binary was built for pr-<N> at this head, so a later
     # install of the same head can prove it may reuse it.
     if grep -q 'PLEXI_REUSE_RELEASE_BUILD' "$_wt/scripts/install.sh"; then
-      bash "$_driver_root/scripts/pr-install-reuse.sh" stamp "$_wt" "$_head_oid" "pr-{{number}}" \
+      python3 "$_driver_root/scripts/build-evidence.py" stamp "$_wt" "$_head_oid" "pr-{{number}}" "$CARGO_TARGET_DIR/release/plexi" \
         || echo "pr-install: warning: could not stamp the release binary for reuse"
     fi
     # SDK guard (stint 0657): the binary's head sha says nothing about the
@@ -557,6 +576,7 @@ test-infra-scripts: test-build-inputs
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
+    uv run --no-project python scripts/test_build_lifecycle.py
     uv run --no-project python scripts/test_publish_pr_image.py
     uv run --no-project python scripts/test_probe_one_note_authority.py
     bash scripts/merge-pr.sh test-resolve-issue

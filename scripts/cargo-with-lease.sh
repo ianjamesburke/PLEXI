@@ -33,6 +33,8 @@ fi
 # (a codesign/keychain prompt, a cargo prompt, any interactive command).
 read -r -d '' PLEXI_CARGO_LEASE_PY <<'PY' || true
 import fcntl
+import json
+import uuid
 import os
 import subprocess
 import sys
@@ -52,7 +54,21 @@ if not argv:
 os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
 lock_fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
 
-deadline = time.monotonic() + TIMEOUT_SECS
+started = time.monotonic()
+run_id = str(uuid.uuid4())
+def event(phase, **fields):
+    record = {"schema": 1, "id": run_id, "event": phase, "time": time.time(),
+              "pid": os.getpid(), "cwd": os.getcwd(), "command": argv,
+              "channel": os.environ.get("PLEXI_BUILD_TEST_CHANNEL"),
+              "target": os.environ.get("CARGO_TARGET_DIR"),
+              "profile": "release" if "--release" in argv else "dev/test", **fields}
+    print("cargo-lease: " + json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+    destination = os.environ.get("PLEXI_BUILD_TELEMETRY")
+    if destination:
+        with open(destination, "a") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+event("request")
+deadline = started + TIMEOUT_SECS
 acquired = False
 while True:
     try:
@@ -65,6 +81,7 @@ while True:
         time.sleep(POLL_INTERVAL_SECS)
 
 if not acquired:
+    event("timeout", queue_seconds=time.monotonic() - started)
     print(
         f"cargo-lease: timed out after {TIMEOUT_SECS:.0f}s waiting for "
         f"the lock at {LOCK_PATH}",
@@ -72,6 +89,8 @@ if not acquired:
     )
     sys.exit(1)
 
+acquired_at = time.monotonic()
+event("acquire", queue_seconds=acquired_at - started)
 env = dict(os.environ)
 env["PLEXI_CARGO_LOCK_HELD"] = "1"
 # stdin/stdout/stderr are inherited unchanged (Popen default), so the
@@ -84,6 +103,7 @@ if rc < 0:
     # so a SIGKILLed wrapped command reports 137, Ctrl-C reports 130, etc.,
     # matching what every justfile call site and CI expect.
     rc = 128 + (-rc)
+event("finish", queue_seconds=acquired_at - started, execution_seconds=time.monotonic() - acquired_at, result=rc)
 sys.exit(rc)
 PY
 

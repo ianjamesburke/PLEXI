@@ -7,6 +7,8 @@ conservative file watch. No source-tree files are created.
 """
 
 import hashlib
+import json
+import time
 import os
 from pathlib import Path
 import subprocess
@@ -61,7 +63,33 @@ def cargo_environment(args, env):
 def main():
     try:
         env = cargo_environment(sys.argv[1:], os.environ)
-        os.execvpe("cargo", ["cargo", *sys.argv[1:]], env)
+        args = sys.argv[1:]
+        telemetry = env.get("PLEXI_BUILD_TELEMETRY")
+        if telemetry and args and args[0] == "build" and not any(a.startswith("--message-format") for a in args):
+            started = time.monotonic()
+            fresh = compiled = 0
+            command = ["cargo", *args, "--message-format=json-render-diagnostics"]
+            process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, text=True)
+            for line in process.stdout:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    print(line, end="", flush=True)
+                    continue
+                if message.get("reason") == "compiler-artifact":
+                    fresh += int(message.get("fresh", False))
+                    compiled += int(not message.get("fresh", False))
+                elif message.get("reason") == "compiler-message":
+                    print(message["message"].get("rendered", ""), end="", file=sys.stderr)
+            result = process.wait()
+            record = {"schema": 1, "event": "cargo-artifacts", "command": command,
+                      "fresh_artifacts": fresh, "compiled_artifacts": compiled,
+                      "execution_seconds": time.monotonic() - started, "result": result}
+            with open(telemetry, "a") as stream:
+                stream.write(json.dumps(record) + "\n")
+            print("cargo-artifacts: " + json.dumps(record), file=sys.stderr)
+            return result
+        os.execvpe("cargo", ["cargo", *args], env)
     except OSError as error:
         print(f"cargo-channel-input: {error}", file=sys.stderr)
         return 1
