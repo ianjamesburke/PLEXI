@@ -56,6 +56,48 @@ fn exited_agent_does_not_remain_working() {
     assert_ne!(pane.effective_activity(), Some(&AgentState::Working));
 }
 
+#[test]
+#[ignore = "requires-pty"]
+fn foreground_and_background_programs_are_not_agents() {
+    use crate::protocol::AgentState;
+    use egui_term::BackendCommand;
+    use std::time::{Duration, Instant};
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    for command in ["sleep 30\n", "sleep 30 &\n"] {
+        h.terminal_backend(id).process_command(BackendCommand::Write(command.as_bytes().to_vec()));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_frames(1);
+            let pane = h.app.windows[0].panes.get(&id).unwrap();
+            if pane.as_terminal().unwrap().activity == Some(AgentState::Working) {
+                assert!(pane.agent().is_none());
+                assert_eq!(pane.effective_activity(), None);
+                let state = crate::host::context_state::ContextState::compute(
+                    h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+                );
+                assert_eq!(state.active_agents, 0);
+                break;
+            }
+            assert!(Instant::now() < deadline, "process activity was not observed for {command:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+        if command.starts_with("sleep 30 &") {
+            h.terminal_backend(id).process_command(BackendCommand::Write(b"kill %1\n".to_vec()));
+        }
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_frames(1);
+            if h.app.windows[0].panes[&id].as_terminal().unwrap().activity.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "process did not exit for {command:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
 fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app
