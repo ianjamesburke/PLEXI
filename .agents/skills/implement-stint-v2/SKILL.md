@@ -27,14 +27,14 @@ From the repo root (`alpha`), start the lane with `just bs-start`:
 just bs-start <stint-id> [<stint-id> ...]
 ```
 
-`just bs-start` verifies that `alpha` is clean and synced with `origin/alpha`, mints `worktrees/feature/stint-<id>[-<id>...]-<slug>` from `alpha` HEAD, and runs `stint claim` on every stint.
+`just bs-start` verifies that committed `alpha` is synced with `origin/alpha` and warns that local edits are excluded, mints `worktrees/feature/stint-<id>[-<id>...]-<slug>` from `alpha` HEAD, and runs `stint claim` on every stint.
 
-If `just bs-start` fails because `alpha` is dirty or out of sync:
+If `just bs-start` fails because `alpha` is out of sync:
 ```bash
-plexi pane slot write last_error "alpha is dirty or out of sync" --pane-id $PLEXI_PANE_ID --replace
+plexi pane slot write last_error "alpha is out of sync" --pane-id $PLEXI_PANE_ID --replace
 plexi pane slot write status impl:blocked --pane-id $PLEXI_PANE_ID --replace
 plexi notify --title "Blocked: implement-stint-v2 <stint-id>" \
-  --body "Stint <stint-id> could not start because alpha is dirty or out of sync." \
+  --body "Stint <stint-id> could not start because alpha is out of sync." \
   --choice "Go to Context:pane_focus:$PLEXI_PANE_ID" \
   --scope context
 ```
@@ -163,9 +163,9 @@ TESTING:
    ```
 3. Merge and retire the lane with `just bs-merge`:
    ```bash
-   just bs-merge <PR_NUMBER>
+   just bs-merge <PR_NUMBER> --reviewed-head <FULL_REVIEWED_SHA>
    ```
-   `just bs-merge` rebases and squash-merges the PR into `alpha`, syncs local `alpha`, marks all linked stints `done`, cleans up the feature worktree and remote branch, sweeps merged worktrees/stale targets, uninstalls `plexi-pr-<PR_NUMBER>` (`just channel-clean pr-<PR_NUMBER>`), and publishes `status=merge:done`.
+   `just bs-merge` verifies and squash-merges the reviewed head into `alpha`, fast-forwards local `alpha` without discarding local edits, marks linked stints `done`, removes the feature worktree and branch only when there is no uncommitted or ignored content, uninstalls `plexi-pr-<PR_NUMBER>`, and publishes `status=merge:done`. If the PR is behind Alpha, rebase and repeat applicable validation and independent review before retrying. If cleanup reports ignored content, the PR and stint are complete but the lane is retained. Preserve or deliberately handle the listed content before retrying cleanup; Git would otherwise delete it.
 4. Confirm `stint show <id>` shows `status: done` and write:
    ```bash
    plexi pane slot write status merge:done --pane-id $PLEXI_PANE_ID --replace

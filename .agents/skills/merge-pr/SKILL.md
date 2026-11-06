@@ -35,28 +35,29 @@ pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" merging "" ""
 ## Step 1 — Run the Merge Script
 
 ```bash
-just bs-merge <PR_NUMBER>
-# or: just merge-pr <PR_NUMBER>
+just bs-merge <PR_NUMBER> --reviewed-head <FULL_REVIEWED_SHA>
+# or: just merge-pr <PR_NUMBER> --reviewed-head <FULL_REVIEWED_SHA>
 ```
 
-Handles: rebase, squash-merge, alpha sync, PR channel + profile uninstall (`just channel-clean pr-<PR>` and `just channel-clean-merged`), worktree & stale-target sweep (`just reap-merged-worktrees` and `just clean-stale-targets`), automatic `stint done` on linked stints, issue close, and ship log.
+Verifies the reviewed head, squash-merges it, fast-forwards Alpha, retires only that PR channel and clean worktree, and closes linked tasks and issues. If the PR is behind Alpha, rebase separately and repeat validation and independent review.
 
 **If it exits non-zero**, read the error and recover with sub-steps:
 
 | Error | Recovery |
 |-------|----------|
-| Rebase conflict | Resolve in `worktrees/$BRANCH`, then: `just merge-rebase $BRANCH` → `just merge-squash $PR` → continue below |
-| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
-| Dirty root worktree | Commit or restore changed files, re-run `just merge-pr $PR` |
-| `>1 unexpected commits` on local alpha | Investigate before proceeding; do not force-reset blindly |
-| `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR no-issue`. Otherwise fix the PR body's `Stint: <id>` or closing keyword first. |
+| PR behind Alpha | Rebase the lane, repeat applicable validation and independent review, then retry with the new reviewed SHA |
+| PR already merged | `just merge-sync && just merge-cleanup $PR $BRANCH <SHA> && just merge-close-targets $PR "$ISSUES" "$STINTS"` |
+| Local edit conflicts with the PR or Alpha sync | Preserve the edit and resolve the conflict before retrying |
+| Diverged local alpha | Investigate and preserve local commits; do not reset |
+| Ignored lane content | Merge completes and the lane is retained. Preserve or deliberately handle the listed files before retrying cleanup; Git removes ignored files with the worktree |
+| `could not resolve GitHub issue or stint tasks` | Only if the PR genuinely has nothing to close (standalone follow-up): `just merge-pr $PR --reviewed-head <SHA> no-issue`. Otherwise fix the PR body's `Stint: <id>` or closing keyword first. |
 
 **Available sub-steps:**
 ```bash
 just merge-rebase <BRANCH>       # fetch + rebase feature branch on origin/alpha + force-push
-just merge-squash <PR>           # squash-merge only
-just merge-sync                  # reset local alpha to origin/alpha (safe: fails if >1 unexpected commit)
-just merge-cleanup <PR> <BRANCH> # channel-clean pr-<PR> + channel-clean-merged + wtp remove + remote branch delete
+just merge-squash <PR> <SHA>     # squash-merge reviewed SHA only
+just merge-sync                  # fast-forward only, preserving local work
+just merge-cleanup <PR> <BRANCH> <SHA> # clean PR channel and clean lane only
 just merge-close-targets <PR> "<ISSUES>" "<STINTS>"  # close issues + mark stints done + append ship log
 ```
 
