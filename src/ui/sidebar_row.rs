@@ -111,6 +111,7 @@ fn abbreviate_home(path: &str) -> String {
 pub enum SidebarAction {
     None,
     Activate,
+    Ancestor { source: u64, target: u64 },
     Rename,
     Delete,
     DragStart,
@@ -118,6 +119,8 @@ pub enum SidebarAction {
 }
 
 pub struct PaneDots {
+    /// Portal on the active route, retained individually through overflow.
+    pub route_idx: Option<usize>,
     pub count: usize,
     pub focused_idx: Option<usize>,
     /// Set of dot indices that are hidden (rendered as stroke-only outlines).
@@ -138,7 +141,14 @@ pub struct PaneDotWindow {
     pub is_active: bool,
 }
 
+pub struct AncestryLevel {
+    pub context_id: u64,
+    pub name: String,
+    pub dots: Option<PaneDots>,
+}
+
 pub struct SidebarRow {
+    pub ancestry: Vec<AncestryLevel>,
     pub is_active: bool,
     pub is_dragging: bool,
     pub any_dragging: bool,
@@ -158,8 +168,7 @@ pub struct SidebarRow {
 /// One window's capsule inside the pip strip, in strip-local coordinates.
 struct PipGroup {
     /// Dot range this capsule covers, already clamped to the visible cap.
-    start: usize,
-    end: usize,
+    indices: Vec<usize>,
     is_return_target: bool,
     is_active: bool,
     x: f32,
@@ -197,43 +206,56 @@ impl PipLayout {
         }
         // A context always reports its spatial windows; a caller that supplies
         // none still gets one capsule, so there is exactly one layout path.
-        let ranges: Vec<(usize, usize, bool, bool)> = if capped == 0 {
-            Vec::new()
-        } else if dots.windows.is_empty() {
-            vec![(0, capped, false, false)]
+        let mut visible: Vec<usize> = (0..capped).collect();
+        if let Some(route) = dots.route_idx.filter(|&i| i < dots.count) {
+            if capped == 0 {
+                return None;
+            }
+            if !visible.contains(&route) {
+                visible.pop();
+                visible.push(route);
+                visible.sort_unstable();
+            }
+        }
+        let ranges: Vec<(Vec<usize>, bool, bool)> = if dots.windows.is_empty() {
+            vec![(visible, false, false)]
         } else {
             dots.windows
                 .iter()
-                .filter(|window| window.count > 0 && window.start < capped)
-                .map(|window| {
-                    (
-                        window.start,
-                        (window.start + window.count).min(capped),
+                .filter_map(|window| {
+                    let indices: Vec<_> = visible
+                        .iter()
+                        .copied()
+                        .filter(|i| (*i >= window.start) && (*i < window.start + window.count))
+                        .collect();
+                    (!indices.is_empty()).then_some((
+                        indices,
                         window.is_return_target,
                         window.is_active,
-                    )
+                    ))
                 })
                 .collect()
         };
-
-        let mut groups = Vec::with_capacity(ranges.len());
-        let mut x = 0.0_f32;
-        for (i, &(start, end, is_return_target, is_active)) in ranges.iter().enumerate() {
-            let width = (end - start).saturating_sub(1) as f32 * PANE_DOT_SPACING
+        let mut groups = Vec::new();
+        let mut x = 0.0;
+        for (indices, is_return_target, is_active) in ranges {
+            if indices.is_empty() {
+                continue;
+            }
+            if !groups.is_empty() {
+                x += WINDOW_GROUP_GAP;
+            }
+            let width = indices.len().saturating_sub(1) as f32 * PANE_DOT_SPACING
                 + PANE_DOT_RADIUS * 2.0
                 + WINDOW_GROUP_PAD_X * 2.0;
             groups.push(PipGroup {
-                start,
-                end,
+                indices,
                 is_return_target,
                 is_active,
                 x,
                 width,
             });
             x += width;
-            if i + 1 < ranges.len() {
-                x += WINDOW_GROUP_GAP;
-            }
         }
 
         let overflow = (dots.count > capped).then(|| dots.count - capped);
@@ -256,19 +278,28 @@ impl PipLayout {
     fn dot_center_x(&self, idx: usize) -> Option<f32> {
         self.groups
             .iter()
-            .find(|group| (group.start..group.end).contains(&idx))
+            .find(|group| group.indices.contains(&idx))
             .map(|group| {
                 group.x
                     + WINDOW_GROUP_PAD_X
                     + PANE_DOT_RADIUS
-                    + (idx - group.start) as f32 * PANE_DOT_SPACING
+                    + group.indices.iter().position(|&i| i == idx).unwrap_or(0) as f32
+                        * PANE_DOT_SPACING
             })
     }
 }
 
 /// Every rect the row paints or hit tests. Measured in row-local space (origin
 /// at the row's top-left), then translated onto the allocated rect.
+struct BreadcrumbGeometry {
+    index: usize,
+    rect: Rect,
+    galley: std::sync::Arc<egui::Galley>,
+}
+
 struct RowGeometry {
+    breadcrumbs: Vec<BreadcrumbGeometry>,
+    levels: Vec<(Pos2, Option<PipLayout>)>,
     rect: Rect,
     /// Index-number cell. Its center y is the title's center y, so the number
     /// shares the name's optical baseline instead of the whole row's.
@@ -359,15 +390,75 @@ impl RowGeometry {
             .max(pips.as_ref().map_or(0.0, |layout| layout.height))
             .max(badge_size.map_or(0.0, |size| size.y))
             .max(path_galley.as_ref().map_or(0.0, |g| g.size().y));
-        let state_top = identity_top + identity_h + TIER_GAP;
+        let mut breadcrumbs = Vec::new();
+        let mut breadcrumb_h = 0.0_f32;
+        if !row.ancestry.is_empty() {
+            // Wrap the path above the strips. Every ancestor remains a real hit
+            // target even at narrow widths; the current name gets a full line
+            // when necessary rather than disappearing behind ancestor overflow.
+            let font = egui::FontId::proportional(style::TEXT_META);
+            let mut x = content_left;
+            let mut y = identity_top + identity_h + TIER_GAP;
+            let mut line_h = 0.0_f32;
+            for (index, level) in row.ancestry.iter().enumerate() {
+                let label = if index == 0 {
+                    level.name.clone()
+                } else {
+                    format!("› {}", level.name)
+                };
+                let galley = crate::ui::text::elided_galley(
+                    ui,
+                    &label,
+                    font.clone(),
+                    lane,
+                    crate::ui::text::Side::Trailing,
+                );
+                if x > content_left && x + galley.size().x > content_right {
+                    y += line_h + style::SPACE_XS;
+                    x = content_left;
+                    line_h = 0.0;
+                }
+                let rect = Rect::from_min_size(Pos2::new(x, y), galley.size());
+                x += rect.width() + style::SPACE_SM;
+                line_h = line_h.max(rect.height());
+                breadcrumbs.push(BreadcrumbGeometry {
+                    index,
+                    rect,
+                    galley,
+                });
+            }
+            breadcrumb_h = y + line_h + TIER_GAP - (identity_top + identity_h + TIER_GAP);
+        }
+        let state_top = identity_top + identity_h + TIER_GAP + breadcrumb_h;
         let state_center_y = state_top + state_h / 2.0;
-        let height = state_top + state_h + ROW_PAD_V;
+        let levels: Vec<_> = row
+            .ancestry
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(index, level)| {
+                (
+                    Pos2::new(
+                        content_left,
+                        state_center_y + index as f32 * (PIP_STRIP_H + TIER_GAP),
+                    ),
+                    level
+                        .dots
+                        .as_ref()
+                        .and_then(|dots| PipLayout::measure(dots, lane)),
+                )
+            })
+            .collect();
+        let height =
+            state_top + state_h + ROW_PAD_V + levels.len() as f32 * (PIP_STRIP_H + TIER_GAP);
 
         let centered = |left: f32, size: Vec2| {
             Rect::from_min_size(Pos2::new(left, state_center_y - size.y / 2.0), size)
         };
 
         Self {
+            breadcrumbs,
+            levels,
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
             gutter: Rect::from_min_size(
                 Pos2::new(ROW_INDENT, identity_top),
@@ -398,6 +489,19 @@ impl RowGeometry {
 
     fn translated(self, offset: Vec2) -> Self {
         Self {
+            breadcrumbs: self
+                .breadcrumbs
+                .into_iter()
+                .map(|crumb| BreadcrumbGeometry {
+                    rect: crumb.rect.translate(offset),
+                    ..crumb
+                })
+                .collect(),
+            levels: self
+                .levels
+                .into_iter()
+                .map(|(origin, layout)| (origin + offset, layout))
+                .collect(),
             rect: self.rect.translate(offset),
             gutter: self.gutter.translate(offset),
             title: self.title.translate(offset),
@@ -459,12 +563,12 @@ fn paint_pips(
         painter.rect_filled(group_rect, WINDOW_GROUP_RADIUS, fill);
         painter.rect_stroke(group_rect, WINDOW_GROUP_RADIUS, stroke, StrokeKind::Inside);
 
-        for dot_i in group.start..group.end {
+        for (position, &dot_i) in group.indices.iter().enumerate() {
             let cx = origin.x
                 + group.x
                 + WINDOW_GROUP_PAD_X
                 + PANE_DOT_RADIUS
-                + (dot_i - group.start) as f32 * PANE_DOT_SPACING;
+                + position as f32 * PANE_DOT_SPACING;
             let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
             let focused = dots.focused_idx == Some(dot_i);
             let mut color = crate::ui::activity::pip_color(agent_state, focused, colors, t, dot_i)
@@ -474,7 +578,14 @@ fn paint_pips(
             }
             let center = Pos2::new(cx, cy).round_to_pixel_center(ppp);
             let glyph_state = agent_state.filter(|_| !dots.static_health_pips.contains(&dot_i));
-            crate::ui::activity::paint_pip(ui.painter(), center, PANE_DOT_RADIUS, glyph_state, color, dots.hidden_set.contains(&dot_i));
+            crate::ui::activity::paint_pip(
+                ui.painter(),
+                center,
+                PANE_DOT_RADIUS,
+                glyph_state,
+                color,
+                dots.hidden_set.contains(&dot_i),
+            );
         }
 
         // The pin is intentionally neutral: dot color describes agent activity,
@@ -490,7 +601,7 @@ fn paint_pips(
             // label carries the highlight instead.
             let Some(local_cx) = layout
                 .dot_center_x(focused_idx)
-                .filter(|_| (group.start..group.end).contains(&focused_idx))
+                .filter(|_| group.indices.contains(&focused_idx))
             else {
                 continue;
             };
@@ -598,10 +709,18 @@ impl SidebarRow {
             );
         }
 
-        if self.pane_dots.as_ref().is_some_and(|dots| dots.activities.iter().any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))) {
+        if self.pane_dots.as_ref().is_some_and(|dots| {
+            dots.activities
+                .iter()
+                .any(|s| matches!(s, Some(crate::protocol::AgentState::NeedsYou)))
+        }) {
             let visual = crate::ui::activity::attention(ui.ctx());
             if visual.alpha > 0.0 {
-                ui.painter().rect_filled(selection_inset(card), style::RADIUS_SM, colors.state_needs_you.gamma_multiply(0.16 * visual.alpha));
+                ui.painter().rect_filled(
+                    selection_inset(card),
+                    style::RADIUS_SM,
+                    colors.state_needs_you.gamma_multiply(0.16 * visual.alpha),
+                );
             }
         }
 
@@ -634,6 +753,92 @@ impl SidebarRow {
             geom.title_galley.clone(),
             title_color,
         );
+
+        let mut ancestor_action = None;
+        for crumb in &geom.breadcrumbs {
+            let level = &self.ancestry[crumb.index];
+            let current = crumb.index + 1 == self.ancestry.len();
+            crate::ui::snap::galley_snapped(
+                ui.painter(),
+                crumb.rect.min,
+                crumb.galley.clone(),
+                if current {
+                    colors.text_primary
+                } else {
+                    colors.text_secondary(colors.bg_sidebar)
+                },
+            );
+            let hit = ui.interact(
+                crumb.rect,
+                id.with(("ancestor", level.context_id)),
+                Sense::click(),
+            );
+            hit.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Button, true, current, &level.name)
+            });
+            if hit.clone().on_hover_text(&level.name).clicked() && !current {
+                ancestor_action = self.ancestry.last().map(|source| SidebarAction::Ancestor {
+                    source: source.context_id,
+                    target: level.context_id,
+                });
+            }
+        }
+        if let Some((origin, _)) = geom.levels.last() {
+            let highlight = Rect::from_min_size(
+                Pos2::new(origin.x, origin.y - PIP_STRIP_H / 2.0),
+                Vec2::new(
+                    (geom.rect.right() - ROW_PAD_RIGHT - origin.x).max(0.0),
+                    PIP_STRIP_H,
+                ),
+            );
+            ui.painter()
+                .rect_filled(highlight, style::RADIUS_SMALL, colors.bg_active);
+        }
+        for (index, (origin, layout)) in geom.levels.iter().enumerate() {
+            if let (Some(dots), Some(layout)) = (&self.ancestry[index + 1].dots, layout) {
+                paint_pips(
+                    ui,
+                    dots,
+                    *origin,
+                    layout,
+                    colors,
+                    row_alpha,
+                    self.is_dragging,
+                );
+            }
+            let parent = if index == 0 {
+                geom.pips.as_ref().map(|(o, l)| (*o, l))
+            } else {
+                geom.levels[index - 1]
+                    .1
+                    .as_ref()
+                    .map(|l| (geom.levels[index - 1].0, l))
+            };
+            let parent_dots = if index == 0 {
+                self.pane_dots.as_ref()
+            } else {
+                self.ancestry[index].dots.as_ref()
+            };
+            if let Some(((parent_origin, parent_layout), dots)) = parent.zip(parent_dots) {
+                if let Some(x) = dots
+                    .route_idx
+                    .and_then(|idx| parent_layout.dot_center_x(idx))
+                {
+                    let start = Pos2::new(parent_origin.x + x, parent_origin.y + PANE_DOT_RADIUS);
+                    let elbow_y = origin.y - PIP_STRIP_H / 2.0 - TIER_GAP / 2.0;
+                    let end_x = origin.x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS;
+                    ui.painter().add(egui::Shape::line(
+                        vec![
+                            start,
+                            Pos2::new(start.x, elbow_y),
+                            Pos2::new(end_x, elbow_y),
+                            Pos2::new(end_x, origin.y - PIP_STRIP_H / 2.0),
+                        ],
+                        Stroke::new(GROUP_STROKE_W, colors.border),
+                    ));
+                }
+            }
+        }
 
         // --- Pips -------------------------------------------------------------
         if let (Some(dots), Some((origin, layout))) = (&self.pane_dots, &geom.pips) {
@@ -718,7 +923,9 @@ impl SidebarRow {
             }
         }
 
-        let action = if self.draggable && response.double_clicked() {
+        let action = if let Some(action) = ancestor_action {
+            action
+        } else if self.draggable && response.double_clicked() {
             SidebarAction::Rename
         } else if self.draggable && response.drag_started() {
             SidebarAction::DragStart
@@ -740,8 +947,45 @@ impl SidebarRow {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ancestry_rows_share_left_edge_and_breadcrumbs_stay_bounded() {
+        for width in [140.0, 220.0, 320.0] {
+            in_frame(width, |ui| {
+                let mut item = row(true, 3, 20);
+                item.ancestry = (0..7).map(|index| AncestryLevel {
+                    context_id: index,
+                    name: format!("A long ancestor name {index}"),
+                    dots: Some(test_dots(20, one_window(20))),
+                }).collect();
+                let geom = RowGeometry::measure(ui, &item, width);
+                let left = geom.pips.as_ref().unwrap().0.x;
+                assert_eq!(geom.levels.len(), 6);
+                for (origin, layout) in &geom.levels {
+                    assert_eq!(origin.x, left);
+                    assert!(origin.x + layout.as_ref().unwrap().width <= width);
+                }
+                for crumb in &geom.breadcrumbs {
+                    assert!(crumb.rect.right() <= width);
+                    assert!(crumb.rect.bottom() < geom.pips.as_ref().unwrap().0.y);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn ancestry_portal_survives_overflow() {
+        let mut dots = test_dots(20, one_window(20));
+        dots.route_idx = Some(19);
+        for width in [80.0, 140.0, 220.0] {
+            let layout = PipLayout::measure(&dots, width).unwrap();
+            assert!(layout.width <= width);
+            assert!(layout.dot_center_x(19).is_some());
+        }
+    }
+
     fn test_dots(pane_count: usize, windows: Vec<PaneDotWindow>) -> PaneDots {
         PaneDots {
+            route_idx: None,
             count: pane_count,
             focused_idx: Some(0),
             hidden_set: std::collections::HashSet::new(),
@@ -762,6 +1006,7 @@ mod tests {
 
     fn row(action_enabled: bool, badge_count: usize, pane_count: usize) -> SidebarRow {
         SidebarRow {
+            ancestry: Vec::new(),
             is_active: true,
             is_dragging: false,
             any_dragging: false,

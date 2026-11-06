@@ -4060,6 +4060,48 @@ mod tests {
     /// inside its parent through the Portal tile instead. Removing the row must
     /// not remove the *signal*: the child's state still rolls up to the parent.
     #[test]
+    fn sidebar_ancestor_pointer_restores_context_and_folds_path() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
+        let cwd = h.workspace_root().to_path_buf();
+        let open = |h: &mut PlexiUiHarness| h.open_target(HarnessOpenTarget::Builtin { id: "file_browser", cwd: &cwd, args: &[] }).unwrap();
+        let pane = open(&mut h);
+        open(&mut h);
+        let (root, child) = h.with_app_mut(|app| {
+            app.sidebar_visible = true;
+            app.router.get_mut(0).name = "Root path".to_string().into();
+            let root = app.router.active().context_id;
+            app.push_pane_to_subcontext(Some("Child path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(root)).unwrap();
+            let child = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            (root, child)
+        });
+        open(&mut h);
+        let grandchild = h.with_app_mut(|app| {
+            app.push_pane_to_subcontext(Some("Grandchild path".into()), Some(pane));
+            let index = app.router.position(|c| c.parent_id == Some(child)).unwrap();
+            let id = app.router.get(index).context_id;
+            app.switch_workspace(index);
+            id
+        });
+        h.run_steps(3);
+        h.save_screenshot(&evidence_png!("_nested")).unwrap();
+        h.harness().get_by_label("Child path").click();
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, child));
+        assert!(!h.host_has_label("Grandchild path"));
+        h.with_app_mut(|app| {
+            let index = app.router.position(|c| c.context_id == grandchild).unwrap();
+            app.switch_workspace(index);
+            assert!(app.navigate_context_ancestor(grandchild, root));
+        });
+        h.run_steps(3);
+        h.with_app(|app| assert_eq!(app.router.active().context_id, root));
+        assert!(!h.host_has_label("Child path"));
+        h.save_screenshot(&evidence_png!("_root")).unwrap();
+    }
+
+    #[test]
     fn sidebar_renders_and_numbers_master_contexts_only() {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         let child_ctx_id = h.with_app_mut(|app| {

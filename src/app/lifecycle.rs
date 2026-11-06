@@ -4429,6 +4429,9 @@ impl PlexiApp {
                     }
                 }
             }
+            crate::protocol::AppRequest::NavigateContextAncestor { source, target } => {
+                self.navigate_context_ancestor(*source, *target);
+            }
             crate::protocol::AppRequest::ZoomOutOfContext => {
                 log::info!(
                     "pane_ipc: kind=zoom_out_of_context depth={}",

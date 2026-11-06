@@ -1,0 +1,39 @@
+# Active path remains visible after direct context entry, without a depth stack.
+sizes = [[520.0, 620.0], [1280.0, 800.0]]
+
+[[steps]]
+sidebar = true
+[[steps]]
+open = { kind = "builtin", id = "file_browser", as = "files" }
+[[steps]]
+open = { kind = "builtin", id = "file_browser", as = "root-spare" }
+[[steps]]
+focus = "files"
+[[steps]]
+push_to_subcontext = "Research child with a long descriptive name"
+[[steps]]
+switch_context = 1
+[[steps]]
+open = { kind = "builtin", id = "file_browser", as = "child-spare" }
+[[steps]]
+focus = "files"
+[[steps]]
+push_to_subcontext = "Current grandchild with a long descriptive name"
+[[steps]]
+switch_context = 2
+[[steps]]
+run_steps = 3
+[[steps]]
+assert = { context_count = 3, portal_count = 2, sidebar = true }
+[[steps]]
+assert_label = { target = "host", label = "Research child with a long descriptive name" }
+[[steps]]
+assert_label = { target = "host", label = "Current grandchild with a long descriptive name" }
+[[steps]]
+shot = "sidebar-active-ancestry.png"
+[[steps]]
+key = { target = "host", value = "cmd+escape" }
+[[steps]]
+run_steps = 2
+[[steps]]
+shot = "sidebar-parent-return.png"

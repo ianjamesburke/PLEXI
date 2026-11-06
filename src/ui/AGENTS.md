@@ -11,7 +11,7 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
 - `badge::badge` / `badge::badge_size` / `badge::paint_badge` for every pill badge — the WIT `Badge` node, the sidebar notification count, the terminal outside-workspace tag. Owns padding, radius, label font, and the width floor.
 - `text::elide` / `text::elided_galley` for any label that has to fit a width. Measured against the real font, `Side::Leading` for paths, `Side::Middle` for filenames/UUIDs/identifiers with distinguishing suffixes, and `Side::Trailing` for prose titles/descriptions, always U+2026. Never truncate by character count.
-- `sidebar_row::SidebarRow` for context-list rows. Two tiers, the same convention `ListRow` uses for a secondary line: identity on top (index gutter, name, close action), pane state below (per-window pip capsules, overflow count, notification badge, root path). It resolves every slot rect in one `measure` pass; never hand-place a piece of a sidebar row.
+- `sidebar_row::SidebarRow` for context-list rows. Two tiers, the same convention `ListRow` uses for a secondary line: identity on top (index gutter, name, close action), pane state below (per-window pip capsules, overflow count, notification badge, root path). The active root additionally carries a wrapped ancestry breadcrumb above aligned pip rows; child levels are never numbered or draggable. `RowGeometry` measures breadcrumbs, strips and their portal connections together; never hand-place a piece of a sidebar row. Disclosure settles immediately, including keyboard and reduced-motion paths.
 
 ## Design Tokens (`src/ui/style.rs`)
 

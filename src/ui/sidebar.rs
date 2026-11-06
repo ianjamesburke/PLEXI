@@ -170,18 +170,16 @@ impl PlexiApp {
                         &self.windows,
                     )
                     .status;
-                    let effective_status = if matches!(
-                        status,
-                        crate::host::context_state::ContextStatus::Idle
-                    ) {
-                        portal
-                            .context_state
-                            .as_ref()
-                            .map(|s| s.status.clone())
-                            .unwrap_or(status)
-                    } else {
-                        status
-                    };
+                    let effective_status =
+                        if matches!(status, crate::host::context_state::ContextStatus::Idle) {
+                            portal
+                                .context_state
+                                .as_ref()
+                                .map(|s| s.status.clone())
+                                .unwrap_or(status)
+                        } else {
+                            status
+                        };
                     return match effective_status {
                         crate::host::context_state::ContextStatus::NeedsYou => {
                             Some(crate::protocol::AgentState::NeedsYou)
@@ -203,7 +201,24 @@ impl PlexiApp {
             });
             activities.push(activity);
         }
+        let ancestry = self.router.active_ancestry();
+        let child = ancestry
+            .windows(2)
+            .find(|pair| self.router.get(pair[0]).context_id == ctx_id)
+            .map(|pair| self.router.get(pair[1]).context_id);
+        let route_idx = child.and_then(|child| {
+            pane_ids.iter().position(|id| {
+                self.windows
+                    .iter()
+                    .filter(|w| w.context_id == ctx_id)
+                    .find_map(|w| w.panes.get(id))
+                    .and_then(|p| p.as_portal())
+                    .is_some_and(|portal| portal.target_context_id == child)
+            })
+        });
+        let focused_idx = if child.is_some() { None } else { focused_idx };
         Some(PaneDots {
+            route_idx,
             count: pane_ids.len(),
             focused_idx,
             hidden_set,
@@ -260,8 +275,7 @@ const _: () = assert!(
 /// panes.
 pub(crate) fn sidebar_width_bounds(window_width: f32) -> (f32, std::ops::RangeInclusive<f32>) {
     let min_w = crate::ui::style::SIDEBAR_MIN_W;
-    let max_for_content =
-        (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
+    let max_for_content = (window_width - crate::ui::style::SIDEBAR_CONTENT_MIN_W).max(min_w);
     let max_w = max_for_content.min(crate::ui::style::SIDEBAR_MAX_W);
     let default_w = crate::ui::style::SIDEBAR_DEFAULT_W.clamp(min_w, max_w);
     (default_w, min_w..=max_w)
@@ -294,7 +308,10 @@ impl PlexiApp {
         let desired_w = ctx
             .data(|d| d.get_temp::<f32>(desired_id))
             .unwrap_or(crate::ui::style::SIDEBAR_DEFAULT_W)
-            .clamp(crate::ui::style::SIDEBAR_MIN_W, crate::ui::style::SIDEBAR_MAX_W);
+            .clamp(
+                crate::ui::style::SIDEBAR_MIN_W,
+                crate::ui::style::SIDEBAR_MAX_W,
+            );
         let was_clamped = ctx
             .data(|d| d.get_temp::<bool>(clamped_id))
             .unwrap_or(false);
@@ -329,8 +346,7 @@ impl PlexiApp {
 
         if let Some(state) = egui::containers::panel::PanelState::load(&ctx, panel_id) {
             let actual_w = state.rect.width();
-            let is_clamped =
-                max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
+            let is_clamped = max_w < desired_w - f32::EPSILON && actual_w >= max_w - f32::EPSILON;
             ctx.data_mut(|d| {
                 d.insert_temp(clamped_id, is_clamped);
                 if !is_clamped {
@@ -365,6 +381,7 @@ impl PlexiApp {
 
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
+        let mut ancestor_navigation = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut active_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -382,9 +399,11 @@ impl PlexiApp {
         self.sync_attention_queue();
 
         // Build display order: top-level contexts only. Subcontexts never appear
-        // in the sidebar — they are reached from inside their parent via its
-        // Portal tile — so they are never enumerated, numbered, or rendered.
+        // as independent entries. Only the active ancestry is disclosed inside
+        // its root card, without changing numbering or drag order.
         let display_order: Vec<usize> = self.router.top_level_order();
+        let ancestry = self.router.active_ancestry();
+        let active_root = ancestry.first().copied();
 
         // Partition: active contexts render in the main list, parked ones below.
         let active_order: Vec<usize> = display_order
@@ -418,7 +437,25 @@ impl PlexiApp {
                     let subtitle = Some(self.router.get(i).root.display().to_string());
 
                     let (action, response) = SidebarRow {
-                        is_active,
+                        ancestry: if active_root == Some(i) && ancestry.len() > 1 {
+                            ancestry
+                                .iter()
+                                .map(|&index| {
+                                    let context = self.router.get(index);
+                                    crate::ui::sidebar_row::AncestryLevel {
+                                        context_id: context.context_id,
+                                        name: context.name.to_string(),
+                                        dots: self.sidebar_pane_dots(
+                                            context.context_id,
+                                            index == self.router.active_idx(),
+                                        ),
+                                    }
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        },
+                        is_active: active_root == Some(i),
                         is_dragging,
                         any_dragging,
                         action_enabled: num_contexts > 1 && !any_dragging,
@@ -501,6 +538,9 @@ impl PlexiApp {
                         });
 
                         match action {
+                            SidebarAction::Ancestor { source, target } => {
+                                ancestor_navigation = Some((source, target));
+                            }
                             SidebarAction::Delete => {
                                 delete_context = Some(i);
                             }
@@ -555,6 +595,7 @@ impl PlexiApp {
                             let pane_dots = self.sidebar_pane_dots(ctx_id, false);
 
                             let (action, response) = SidebarRow {
+                                ancestry: Vec::new(),
                                 is_active: false,
                                 is_dragging: self.drag_context == Some(i),
                                 any_dragging: self.drag_context.is_some(),
@@ -790,6 +831,8 @@ impl PlexiApp {
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
+        } else if let Some((source, target)) = ancestor_navigation {
+            self.handle_pane_ipc_request(crate::protocol::AppRequest::NavigateContextAncestor { source, target });
         } else if let Some(i) = clicked_workspace {
             // Only top-level rows are rendered, so a click here is always a
             // lateral move between master contexts — never a descent into a

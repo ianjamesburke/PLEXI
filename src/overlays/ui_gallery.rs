@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{ButtonKind, choice_button, chrome_button, icon_button, toolbar_button},
+    button::{choice_button, chrome_button, icon_button, toolbar_button, ButtonKind},
     code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::chrome_section,
@@ -8,11 +8,11 @@ use crate::ui::{
     overlay::ModalShell,
     shortcuts::key_chip,
     surface::{
-        TrustTone, color_swatch, compact_copyable_command, copyable_command, empty_state_panel,
-        status_chip, trust_decision_panel,
+        color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
+        trust_decision_panel, TrustTone,
     },
     text_field::{TextArea, TextField},
-    toast::{ProgressDots, toast_caption},
+    toast::{toast_caption, ProgressDots},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -297,6 +297,7 @@ impl PlexiApp {
                         chrome_section(ui, "Sidebar rows", &colors, |ui| {
                             for (index, name) in data.names.iter().enumerate() {
                                 crate::ui::sidebar_row::SidebarRow {
+                                    ancestry: Vec::new(),
                                     is_active: index == 1,
                                     is_dragging: false,
                                     any_dragging: false,
@@ -307,6 +308,7 @@ impl PlexiApp {
                                     subtitle: Some(data.command.to_owned()),
                                     draggable: false,
                                     pane_dots: Some(crate::ui::sidebar_row::PaneDots {
+                                        route_idx: None,
                                         count: data.pips,
                                         focused_idx: Some(0),
                                         hidden_set: Default::default(),

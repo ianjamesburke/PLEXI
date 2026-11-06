@@ -581,7 +581,11 @@ impl PlexiApp {
                 (win_idx, focused_tile)
             }
         };
-        let Some(egui_tiles::Tile::Pane(pane_id)) = self.windows[parent_win_idx].tree.tiles.get(target_tile) else { return };
+        let Some(egui_tiles::Tile::Pane(pane_id)) =
+            self.windows[parent_win_idx].tree.tiles.get(target_tile)
+        else {
+            return;
+        };
         let pane_id = *pane_id;
         self.wrap_panes_to_subcontext(&[pane_id], pane_id, name);
     }
@@ -1440,6 +1444,28 @@ impl PlexiApp {
         }
     }
 
+    /// Validate the complete target before mutating focus. Repeated parent returns
+    /// share history/window restoration with keyboard and CLI parent navigation.
+    pub(crate) fn navigate_context_ancestor(&mut self, source: u64, target: u64) -> bool {
+        let path = self.router.active_ancestry();
+        let position = path
+            .iter()
+            .position(|&i| self.router.get(i).context_id == target);
+        if self.router.active().context_id != source || position.is_none() {
+            log::info!("breadcrumb_navigation: source={source} target={target} rejected=stale_source_or_nonancestor");
+            return false;
+        }
+        let steps = path.len() - 1 - position.unwrap_or(0);
+        for _ in 0..steps {
+            if !self.zoom_out_of_context() {
+                log::info!("breadcrumb_navigation: source={source} target={target} rejected=missing_parent");
+                return false;
+            }
+        }
+        log::info!("breadcrumb_navigation: source={source} target={target} accepted steps={steps}");
+        true
+    }
+
     /// Return to the immediate parent, restoring its entry window and focus when available.
     /// Ancestry is authoritative; navigation history is optional and may be stale after a switch.
     pub(crate) fn zoom_out_of_context(&mut self) -> bool {
@@ -1763,7 +1789,7 @@ impl PlexiApp {
                 .context_last_pane
                 .insert(new_ctx_id, active_pane_id);
             let vp = self.active_strip_viewport();
-        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+            let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
             let strip = self.ensure_authoritative_strip(new_ctx_id);
             strip.focus_pane(active_pane_id);
             if let Some(col_idx) = strip.find_column_for_pane(active_pane_id) {
@@ -2438,7 +2464,11 @@ impl PlexiApp {
         let ws = WorkspaceFile {
             version: 3,
             conjoined_contexts: self.conjoined_contexts.clone(),
-            strips: self.router.iter().map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id))).collect(),
+            strips: self
+                .router
+                .iter()
+                .map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id)))
+                .collect(),
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),
