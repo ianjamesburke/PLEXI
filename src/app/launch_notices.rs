@@ -6,6 +6,15 @@ impl PlexiApp {
     /// Log and notify once at startup. Build identity is compared by build id,
     /// so the managed Applications copy counts as the installed build.
     pub(crate) fn surface_launch_notices(&mut self) {
+        if let Some(error) = crate::workspace::load_failure_notice() {
+            self.queue_workspace_notice(
+                "Workspace could not be restored",
+                format!("{error}\nThe original file was preserved. Fix its permissions or restore a backup before restarting Plexi."),
+            );
+        }
+        if let Some(error) = crate::workspace::save_failure_notice(&crate::config::config_dir()) {
+            self.queue_workspace_notice("Workspace save failed", error);
+        }
         let receipt = crate::distribution::installed().unwrap_or_else(|error| {
             log::warn!("launch identity: cannot read installation: {error}");
             None
@@ -61,6 +70,26 @@ impl PlexiApp {
             "Old Plexi copies found",
             format!("These copies are not the managed installation and may launch an old build:\n{list}"),
         );
+    }
+
+    // Persistence failures must be visible even when ordinary notifications are muted
+    // or the notification queue is full.
+    fn queue_workspace_notice(&mut self, title: &str, body: String) {
+        let notify_id = crate::app::notifications::new_notify_id("workspace-error");
+        self.pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: notify_id.clone(),
+                title: title.to_string(),
+                body,
+                scope: crate::protocol::NotifyScope::Global,
+                required: true,
+                ..Default::default()
+            });
+        if self.current_notify_id.is_none() {
+            self.current_notify_id = Some(notify_id);
+        }
+        self.sync_attention_queue();
+        log::info!("workspace: queued launch error notice: {title}");
     }
 
     fn queue_launch_notice(&mut self, title: &str, body: String) {
