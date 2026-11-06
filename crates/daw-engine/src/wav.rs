@@ -87,12 +87,16 @@ pub fn decode(bytes: &[u8]) -> Result<WavData, String> {
     }
     let samples = match (format, bits) {
         (1, 16) => data
-            .chunks_exact(2)
-            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
             .collect::<Vec<f32>>(),
         (3, 32) => data
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect::<Vec<f32>>(),
         (format, bits) => {
             return Err(format!(

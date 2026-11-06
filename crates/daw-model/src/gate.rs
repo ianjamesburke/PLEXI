@@ -829,19 +829,19 @@ fn run_long_sequence() -> Result<usize, String> {
                 max_depth = max_depth.max(model.undo_depth());
                 // Interleaved undo/redo passes keep the history exercised
                 // (and pruned: an edit after an undo drops the redone group).
-                if applied % 5 == 0 {
+                if applied.is_multiple_of(5) {
                     model.apply(DawCommand::Undo);
                     check_invariants(&model, prev_revision)
                         .map_err(|e| format!("interleaved undo @{applied}: {e}"))?;
                     prev_revision = model.revision();
                 }
-                if applied % 13 == 0 {
+                if applied.is_multiple_of(13) {
                     model.apply(DawCommand::Redo);
                     check_invariants(&model, prev_revision)
                         .map_err(|e| format!("interleaved redo @{applied}: {e}"))?;
                     prev_revision = model.revision();
                 }
-                if applied % 97 == 0 {
+                if applied.is_multiple_of(97) {
                     check_history_round_trip(&mut model)
                         .map_err(|e| format!("round trip @{applied}: {e}"))?;
                 }
