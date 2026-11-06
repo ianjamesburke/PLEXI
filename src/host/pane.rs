@@ -618,10 +618,8 @@ impl Pane {
         }
     }
 
-    /// Activity state for the unified activity dot. App-reported pip status wins;
-    /// then hook-reported agent state; otherwise falls back to host-observed
-    /// terminal activity (foreground process running / exited). Portals have no
-    /// host-observed fallback yet.
+    /// Activity state for the unified activity dot. Generic terminal process
+    /// liveness is tracked separately and does not imply agent activity.
     pub fn effective_activity(&self) -> Option<&crate::protocol::AgentState> {
         if let Some(pip) = self.pip_status() {
             return Some(pip.as_agent_state());
@@ -630,7 +628,7 @@ impl Pane {
             return Some(&a.state);
         }
         match self {
-            Pane::Terminal(t) => t.activity.as_ref(),
+            Pane::Terminal(_) => None,
             Pane::App(a) => a
                 .overlay_replaced
                 .as_deref()

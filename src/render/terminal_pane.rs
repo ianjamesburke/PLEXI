@@ -99,7 +99,6 @@ pub fn render(
         .map(|a| a.state.clone())
         .or_else(|| terminal.agent.as_ref().map(|a| a.state.clone()))
         .or_else(|| terminal.observed_agent.as_ref().map(|a| a.state.clone()))
-        .or_else(|| terminal.activity.clone())
         .or_else(|| {
             terminal
                 .standby_session

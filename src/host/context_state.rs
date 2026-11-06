@@ -116,24 +116,6 @@ impl ContextState {
                             }
                         } else if t.exited {
                             PaneSummaryStatus::Idle
-                        } else if let Some(ref act) = t.activity {
-                            match act {
-                                AgentState::NeedsYou => {
-                                    has_needs_you = true;
-                                    PaneSummaryStatus::NeedsYou
-                                }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
-                                    has_blocked = true;
-                                    PaneSummaryStatus::Blocked
-                                }
-                                AgentState::Working => {
-                                    active_agents += 1;
-                                    PaneSummaryStatus::Active
-                                }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
-                            }
                         } else if let Some(ref sb) = t.standby_session {
                             match sb.last_state {
                                 AgentState::NeedsYou => {
