@@ -582,3 +582,30 @@ fn close_reveal_focus_history_skips_redundant_portal() {
     h.app.step_focus_history_forward();
     assert_eq!(h.app.router.active().context_id, child);
 }
+
+#[test]
+fn close_reveal_chooses_populated_child_page_over_remembered_empty_page() {
+    let mut h = HostHarness::new();
+    let [a, b, c, outside] = grid(&mut h);
+    assert!(h.app.wrap_panes_to_subcontext(&[a, b, c], a, None));
+    let child = h.app.router.active().context_id;
+    let child_path = h.app.windows[h.app.active_window].path.clone();
+    let empty_window = 987_654_322;
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: child_path,
+        tree: egui_tiles::Tree::empty("empty-child-page"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: empty_window,
+        context_id: child,
+    });
+    assert!(h.app.zoom_out_of_context());
+    h.app.context_active_window.insert(child, empty_window);
+    h.app.close_pane_by_id(outside);
+    assert_eq!(h.app.router.active().context_id, child);
+    assert!(h.app.windows[h.app.active_window].panes.contains_key(&a));
+}
