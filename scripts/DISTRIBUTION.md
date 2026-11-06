@@ -39,16 +39,11 @@ roots. Their canonical paths are persisted in the receipt and reused for
 updates. Source builds use `scripts/install.sh --from-source [channel]`, which
 builds and feeds the same package to the same transaction. It requires Rust,
 just, uv and Python 3.11 or newer. Arguments after the optional channel pass
-through to the installer, e.g. `scripts/install.sh --from-source beta --trash-strays`.
+through to the installer.
 
-After activation the installer lists other copies of the channel's Mac app
-outside the managed installation (`strays::find_strays`): `/Applications`,
-`~/Applications`, `~/Downloads` and `~/Desktop`, matched by
-`CFBundleIdentifier` or, without a readable identifier, by bundle name. The
-Trash, the installation root and owned integrations are excluded. By default it
-only warns. `--trash-strays`, or answering yes to the prompt shown when stdin
-is a terminal, renames them into `~/.Trash` (numbered on collision); nothing
-is deleted. The public bootstrap forwards the flag unchanged.
+The installer ignores other app bundles and does not offer to move or adopt
+legacy builds. An unowned item occupying a managed destination is preserved and
+the installation fails with its path so the user can choose another destination.
 
 ## Package
 
@@ -139,8 +134,7 @@ signature and extended attributes) into a hidden sibling scratch directory,
 then renames the old item aside and the copy into place under the transaction
 journal. After commit it runs `lsregister -f` on the copy and `lsregister -u` on
 the bundles inside the generation store; failures are logged, not fatal. Only
-our old link into this installation root or a copy the receipt records is
-replaced; anything else is refused. The receipt records the copy's main
+an item the previous receipt records is replaced; anything else is refused. The receipt records the copy's main
 executable digest rather than a marker file, because a file inside `Contents/`
 would break the code-signature seal. A copy lacks `package.json`, so the host
 locates its package through the receipt by build id. Uninstall unregisters and
@@ -152,8 +146,7 @@ running binary's compiled tag (or crate version) and short commit. At launch
 the host compares its build id with the channel receipt's active build, logs a
 warning and posts one notification naming the relaunch path when they differ.
 On macOS it also notifies about strays in `/Applications` and `~/Applications`;
-Downloads and Desktop are left to the installer because reading them from the
-app triggers privacy prompts. Launch never moves anything.
+Launch never moves anything.
 
 Bare `plexi` delegates to the pane's named channel only when `PLEXI_RUNNING=1`.
 Outside a pane it launches stable. Channel-named commands retain their channel.
@@ -179,11 +172,8 @@ Other channels, workspace files outside the profile, shared credentials and the
 shared host signing key remain intact. Credential cleanup runs before profile
 removal, and a cleanup failure is reported without removing the installation so
 it can be retried. Changed files and unowned development commands cause an error
-or remain outside the removal set. Legacy installations without receipts must
-be identified before adoption; discovery on PATH alone never establishes ownership.
-Shared WASI caches from older installations are retained. A legacy release's
-duplicated Unix command can be adopted only when its bytes match the payload at
-the exact historical channel path; the legacy payload itself is retained.
+or remain outside the removal set. Legacy installations without receipts are never adopted or modified.
+Shared WASI caches from older installations are retained.
 Repository channel-list, cleanup and smoke tools query the native installer's
 `list`/`locate` commands, including installations at custom destinations.
 
@@ -198,7 +188,9 @@ and run the packaged Calculator probe. A durable journal preserves the previous
 receipt and integrations before activation. File activation uses atomic writes
 on the destination filesystem. The installed target must pass the runtime probe
 before the journal is cleared. An interrupted transaction recovers on the next
-installer or launcher invocation; prior generations remain available.
+installer or launcher invocation; prior generations remain available. A launcher
+refuses to run while an installer holds the channel lock, rather than reading a
+receipt during activation.
 
 `plexi update --rollback` uses the same activation path for the retained previous
 package. Foreground and background updates call the distribution library

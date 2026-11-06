@@ -145,6 +145,27 @@ def main(args):
             # read ~/.bashrc. The completion must load from the login file.
             output = run(['bash', '-ilc', 'complete -p ' + name], env)
             assert f'complete -F _{name} {name}' in output.stdout, output
+        if os.name != 'nt':
+            # Matching old payload bytes no longer establish ownership.
+            legacy_payload = root / 'custom install/stable/plexi'
+            legacy_command = root / 'command bin/plexi'
+            legacy_payload.parent.mkdir(parents=True, exist_ok=True)
+            legacy_command.parent.mkdir(parents=True, exist_ok=True)
+            legacy_payload.write_bytes(b'legacy host')
+            legacy_command.write_bytes(b'legacy host')
+            refusal = install(old, False)
+            assert 'refusing to overwrite unowned integration' in refusal.stderr
+            assert legacy_command.read_bytes() == b'legacy host'
+            assert legacy_payload.read_bytes() == b'legacy host'
+            legacy_command.rename(root / 'legacy-command-preserved')
+        legacy_bundle = home / 'old-apps/Plexi.app/Contents/MacOS/plexi'
+        legacy_bundle.parent.mkdir(parents=True)
+        legacy_bundle.write_bytes(b'legacy bundle')
+        config = home / '.plexi/config.toml'
+        workspace = home / '.plexi/workspace.json'
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_bytes(b'# settings\nconfig_version = 1\n')
+        workspace.write_bytes(b'{"workspace":"preserved"}\n')
         initial = install(old)
         assert active() == 'old'
         check_dropin_completions('stable')
@@ -208,6 +229,9 @@ def main(args):
         finally:
             held.kill(); held.wait(timeout=10)
         assert active() == 'new'
+        assert legacy_bundle.read_bytes() == b'legacy bundle'
+        assert config.read_bytes() == b'# settings\nconfig_version = 1\n'
+        assert workspace.read_bytes() == b'{"workspace":"preserved"}\n'
         check_completions('new')
         assert json.loads(receipt_path.read_text())['previous']['build_id'] == 'old'
         run([installer, 'rollback', '--receipt', receipt_path.parent], env)
