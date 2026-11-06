@@ -28,7 +28,7 @@ wasm-python-shim:
     bash scripts/build-wasm-python-shim.sh
 
 dev:
-    bash scripts/cargo-with-lease.sh cargo build
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build
     target/debug/plexi
 
 # Run the website dev server at http://localhost:4321
@@ -43,7 +43,7 @@ website-deploy:
 # under website/public/registry/v1/. Republishing after an app fix is one
 # command. Builds the binary first so packaging uses the current tree.
 website-registry:
-    bash scripts/cargo-with-lease.sh cargo build --bin plexi
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --bin plexi
     python3 website/scripts/build-registry.py
 
 # Smoke-check production: pages, install redirect, registry index + artifact checksums.
@@ -53,7 +53,7 @@ website-smoke:
 # Run the full test suite — HostHarness regression tests + unit tests.
 # Skips release-gated experimental features and heavy scene renders during alpha dev.
 test:
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test -- \
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test -- \
         --skip assistant \
         --skip daw \
         --skip cloud \
@@ -68,7 +68,7 @@ test:
 # Run selected host tests with the same flags and isolation as `just scene`.
 # Pass libtest filters and options after the recipe name.
 test-host +args:
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test --bin plexi -- {{args}} < /dev/null
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi -- {{args}} < /dev/null
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -110,10 +110,10 @@ coverage-summary:
 # Scoped to the perf lint set only (`-A clippy::all` silences unrelated lints);
 # vendored deps/egui_term opts out via crate-level allows in its lib.rs.
 perf-clippy:
-    RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh cargo clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
+    RUSTC_WRAPPER= RUSTFLAGS= bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
 
 build:
-    bash scripts/cargo-with-lease.sh cargo build --release
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 
 # Linux bringup smoke check: drives a real host through the CLI on an X
 # display and asserts a signal at every step. Needs `just build` first.
@@ -247,7 +247,7 @@ check-sdk-lock:
 check-docs: check-parity check-cli-docs check-skill-docs check-config-docs check-sdk-docs check-capability-docs check-docs-coverage check-authoring-docs check-sdk-lock
 
 run:
-    bash scripts/cargo-with-lease.sh cargo build --release
+    bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
     target/release/plexi
 
 # Regenerate generated artifacts only when their source files changed.
@@ -544,6 +544,10 @@ uninstall channel="all":
 merge-pr PR *FLAGS:
     bash scripts/merge-pr.sh {{PR}} {{FLAGS}}
 
+# Real Cargo fixtures for managed optional channel inputs (offline builds).
+test-build-inputs:
+    uv run --no-project python scripts/test_cargo_channel_inputs.py
+
 # Self-tests for the pr-install / merge-pr infra scripts (no network, no builds).
 test-infra-scripts:
     uv run --no-project python scripts/test_docs_gate_scope.py
@@ -633,7 +637,7 @@ ship +issues:
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.
