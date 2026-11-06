@@ -1,5 +1,164 @@
 use super::*;
 
+#[test]
+fn terminal_process_activity_is_not_agent_activity() {
+    use crate::protocol::AgentState;
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+    pane.as_terminal_mut().unwrap().activity = Some(AgentState::Working);
+    assert!(pane.agent().is_none());
+    assert_eq!(pane.effective_activity(), None);
+    let state = crate::host::context_state::ContextState::compute(
+        h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+    );
+    assert_eq!(state.active_agents, 0);
+
+    for (agent_state, expected) in [
+        (AgentState::Working, 1),
+        (AgentState::Idle, 0),
+        (AgentState::NeedsYou, 0),
+        (AgentState::Failed, 0),
+    ] {
+        let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+        pane.set_agent(Some(crate::protocol::PaneAgentState {
+            pane_id: id,
+            state: agent_state.clone(),
+            agent: "codex".to_string(),
+            detail: None,
+            session_id: None,
+        }));
+        assert_eq!(pane.effective_activity(), Some(&agent_state));
+        let state = crate::host::context_state::ContextState::compute(
+            h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+        );
+        assert_eq!(state.active_agents, expected);
+    }
+}
+
+#[test]
+fn exited_agent_does_not_remain_working() {
+    use crate::protocol::{AgentState, PaneAgentState};
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+    pane.set_agent(Some(PaneAgentState {
+        pane_id: id,
+        state: AgentState::Working,
+        agent: "codex".into(),
+        detail: None,
+        session_id: None,
+    }));
+    let terminal = pane.as_terminal_mut().unwrap();
+    terminal.exited = true;
+    terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(0));
+    assert_ne!(pane.effective_agent().unwrap().state, AgentState::Working);
+    assert_ne!(pane.effective_activity(), Some(&AgentState::Working));
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn foreground_and_background_programs_are_not_agents() {
+    use crate::protocol::AgentState;
+    use egui_term::BackendCommand;
+    use std::time::{Duration, Instant};
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    for command in ["sleep 30\n", "sleep 30 & PLEXI_TEST_JOB=$!\n"] {
+        h.terminal_backend(id).process_command(BackendCommand::Write(command.as_bytes().to_vec()));
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_frames(1);
+            let pane = h.app.windows[0].panes.get(&id).unwrap();
+            if pane.as_terminal().unwrap().activity == Some(AgentState::Working) {
+                assert!(pane.agent().is_none());
+                assert_eq!(pane.effective_activity(), None);
+                let state = crate::host::context_state::ContextState::compute(
+                    h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+                );
+                assert_eq!(state.active_agents, 0);
+                break;
+            }
+            assert!(Instant::now() < deadline, "process activity was not observed for {command:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if command.starts_with("sleep 30 &") {
+            h.terminal_backend(id).process_command(BackendCommand::Write(b"kill \"$PLEXI_TEST_JOB\"\n".to_vec()));
+        } else {
+            h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+        }
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_frames(1);
+            if h.app.windows[0].panes[&id].as_terminal().unwrap().activity.is_none() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "process did not exit for {command:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn manually_launched_agent_exit_clears_working_report() {
+    assert_manual_agent_exit(crate::protocol::AgentState::Working, crate::protocol::AgentState::Interrupted);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn manually_launched_idle_agent_exit_is_not_idle() {
+    assert_manual_agent_exit(crate::protocol::AgentState::Idle, crate::protocol::AgentState::ExitedUnreported);
+}
+
+fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expected: crate::protocol::AgentState) {
+    use crate::protocol::PaneAgentState;
+    use egui_term::BackendCommand;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("codex");
+    std::fs::copy("/bin/sleep", &fake).unwrap();
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let command = format!("{} 30\n", fake.display());
+    h.terminal_backend(id).process_command(BackendCommand::Write(command.into_bytes()));
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+    loop {
+        h.run_frames(1);
+        if h.app.windows[0].panes[&id].as_terminal().unwrap().observed_agent.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let t = h.app.windows[0].panes[&id].as_terminal().unwrap();
+            let fg = t.backend.foreground_pid();
+            panic!("manual agent was not detected: shell={}, foreground={fg:?}, name={:?}, probe={:?}, tail={:?}",
+                t.backend.child_pid(), fg.and_then(|p| crate::host::shell::get_pid_name(p as u32)), fg.map(|p| crate::host::shell::get_pid_agent_probe(p as u32)),
+                t.backend.capture_lines(20));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(PaneAgentState {
+        pane_id: id, state: reported_state, agent: "codex".into(), detail: None, session_id: None,
+    }));
+    h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+    loop {
+        h.run_frames(1);
+        let pane = &h.app.windows[0].panes[&id];
+        let terminal = pane.as_terminal().unwrap();
+        if terminal.observed_agent.is_none() && terminal.activity.is_none() {
+            assert_eq!(pane.effective_agent().map(|a| a.state), Some(expected.clone()),
+                "shell={} fg={:?} last={:?} harness={:?} role={:?}",
+                terminal.backend.child_pid(), terminal.backend.foreground_pid(), terminal.last_observed_agent,
+                terminal.agent_harness, terminal.agent_role);
+            assert_eq!(pane.effective_activity(), Some(&expected));
+            break;
+        }
+        assert!(Instant::now() < deadline, "manual agent did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app
@@ -3475,6 +3634,13 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         Some(&AgentState::Idle),
         "green pip -> Idle (green dot), overriding the Working agent state"
     );
+    h.inject_ipc(AppRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
+    h.run_frames(3);
+    let p = h.app.windows[0].panes.get_mut(&pane).unwrap();
+    assert_eq!(p.effective_activity(), Some(&AgentState::Working));
+    assert!(!p.static_health_pip(), "an identified working agent still animates");
+    p.set_agent(None);
+    assert!(p.static_health_pip(), "yellow app health keeps its color without an agent animation");
 }
 
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
@@ -15636,6 +15802,23 @@ mod program_status_agent {
             .get(&pane)
             .and_then(|p| p.agent())
             .map(|a| (a.state.clone(), a.detail.clone()))
+    }
+
+    #[test]
+    fn ps7501_general_program_is_not_an_agent() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        for payload in ["state=working", "state=working:app=editor"] {
+            apply(&mut h, pane, payload);
+            let p = &h.app.windows[0].panes[&pane];
+            assert!(p.agent().is_none(), "{payload} must not identify an agent");
+            assert!(p.effective_activity().is_none());
+            let state = crate::host::context_state::ContextState::compute(
+                h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+            );
+            assert_eq!(state.active_agents, 0);
+            assert!(!p.as_terminal().unwrap().program_status.lock().unwrap().is_empty());
+        }
     }
 
     #[test]

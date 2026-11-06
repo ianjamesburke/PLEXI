@@ -671,6 +671,11 @@ fn palette_pips_for_context(
         focused_idx,
         hidden_indices,
         activities,
+        static_health_pips: pane_ids.iter().enumerate().filter_map(|(idx, pane_id)| {
+            windows.iter().filter(|w| w.context_id == ctx_id)
+                .find_map(|w| w.panes.get(pane_id))
+                .is_some_and(|pane| pane.static_health_pip()).then_some(idx)
+        }).collect(),
     })
 }
 
@@ -776,6 +781,7 @@ fn palette_pane_rows_for_context(
                         Vec::new()
                     },
                     activities: vec![pane.effective_activity().cloned()],
+                    static_health_pips: if pane.static_health_pip() { vec![0] } else { Vec::new() },
                 },
                 recency_rank: pane_recency_rank(
                     host_active_window_id,
@@ -1671,6 +1677,7 @@ impl PlexiApp {
                                         focused_idx: focused.then_some(0),
                                         hidden_indices: Vec::new(),
                                         activities: vec![Some(state.clone())],
+                                        static_health_pips: Vec::new(),
                                     })
                                     .selected(is_selected)
                                     .show(ui, &colors);
@@ -3476,6 +3483,7 @@ mod tests {
                 focused_idx: Some(1),
                 hidden_indices: vec![2],
                 activities: vec![None, None, None],
+                static_health_pips: Vec::new(),
             })
         );
     }
@@ -3495,6 +3503,7 @@ mod tests {
                 focused_idx: Some(5),
                 hidden_indices: vec![1, 4],
                 activities: vec![None, None, None, None, None, None],
+                static_health_pips: Vec::new(),
             })
         );
     }

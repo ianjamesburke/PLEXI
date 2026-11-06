@@ -3096,6 +3096,7 @@ mod tests {
             title: None,
             active: true,
             activity,
+            static_health_pip: false,
         };
         let windows = vec![MiniWindow {
             grid_x: 0,
@@ -3272,24 +3273,46 @@ mod tests {
         };
 
         let pane_working = split_pane(&mut h, "lane-working");
+        let pane_idle = split_pane(&mut h, "lane-idle");
         let pane_blocked = split_pane(&mut h, "lane-blocked");
         let pane_needs_you = split_pane(&mut h, "lane-needs-you");
         let pane_error = split_pane(&mut h, "lane-error");
+        let pane_program = h.with_app_mut(|app| {
+            let id = app.host.alloc_pane_id();
+            let mut terminal = crate::host::pane::TerminalPane::new(
+                id, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    working_directory: Some(ws_root.clone()),
+                    ..Default::default()
+                }, 14.0,
+            ).expect("spawn ordinary terminal");
+            terminal.name = Some("ordinary program".into());
+            terminal.backend.process_command(egui_term::BackendCommand::Write(b"sleep 30\n".to_vec()));
+            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            id
+        });
 
         // Set pane_working = Working, pane_blocked = Blocked, pane_needs_you = NeedsYou, pane_error = Error,
         // and arrange the active window into a clean 2-row layout:
         //   Top row:    [lane-working | lane-blocked | lane-needs-you | lane-error]
         //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
-        let _ = h.close_pane(master_pane);
+        send_req(&mut h, crate::protocol::AppRequest::SetPipStatus {
+            pane_id: master_pane,
+            status: crate::protocol::PipStatus::Yellow,
+        });
         h.with_app_mut(|app| {
             app.sidebar_visible = true;
             let win = &mut app.windows[app.active_window];
             let mut tiles = egui_tiles::Tiles::default();
             let t_work = tiles.insert_pane(pane_working);
+            let t_idle = tiles.insert_pane(pane_idle);
+            let t_program = tiles.insert_pane(pane_program);
+            let t_app = tiles.insert_pane(master_pane);
             let t_blk = tiles.insert_pane(pane_blocked);
             let t_ny = tiles.insert_pane(pane_needs_you);
             let t_err = tiles.insert_pane(pane_error);
-            let top_row = tiles.insert_horizontal_tile(vec![t_work, t_blk, t_ny, t_err]);
+            let top_row = tiles.insert_horizontal_tile(vec![t_program, t_work, t_idle, t_app, t_blk, t_ny, t_err]);
 
             let p_blk = tiles.insert_pane(portal_blocked);
             let p_ny = tiles.insert_pane(portal_needs_you);
@@ -3300,6 +3323,13 @@ mod tests {
             win.tree = egui_tiles::Tree::new("escalation_grid", root, tiles);
             win.focused_pane = Some(t_work);
         });
+        send_req(
+            &mut h,
+            serde_json::from_value(serde_json::json!({
+                "type": "set_agent_state", "pane_id": pane_idle,
+                "state": "idle", "agent": "codex"
+            })).unwrap(),
+        );
         send_req(
             &mut h,
             serde_json::from_value(serde_json::json!({
@@ -3348,6 +3378,11 @@ mod tests {
 
         h.with_app(|app| {
             let win = &app.windows[app.active_window];
+            assert!(win.panes[&pane_program].agent().is_none());
+            assert!(win.panes[&pane_program].effective_activity().is_none());
+            assert_eq!(win.panes[&pane_working].effective_activity(), Some(&crate::protocol::AgentState::Working));
+            assert_eq!(win.panes[&pane_idle].effective_activity(), Some(&crate::protocol::AgentState::Idle));
+            assert!(win.panes[&master_pane].static_health_pip());
             let p_blocked = win.panes[&portal_blocked]
                 .as_portal()
                 .expect("portal_blocked")
@@ -3429,7 +3464,13 @@ mod tests {
             terminal.outside_workspace_cached = false;
             terminal.outside_workspace_checked_at = Some(Instant::now());
             terminal.outside_workspace_root = Some(workspace_root);
-            terminal.activity = Some(crate::protocol::AgentState::Working);
+            terminal.agent = Some(crate::protocol::PaneAgentState {
+                pane_id: id,
+                state: crate::protocol::AgentState::Working,
+                agent: "codex".into(),
+                detail: None,
+                session_id: None,
+            });
 
             let win = &mut app.windows[app.active_window];
             win.panes.insert(id, Pane::Terminal(Box::new(terminal)));
@@ -3455,7 +3496,7 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Blocked);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Blocked;
         });
         h.run_steps(2);
         h.with_app(|app| {
@@ -3472,7 +3513,7 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_terminal_mut())
                 .expect("terminal pane");
-            term.activity = Some(crate::protocol::AgentState::Working);
+            term.agent.as_mut().unwrap().state = crate::protocol::AgentState::Working;
         });
         h.run_steps(2);
         h.with_app(|app| {

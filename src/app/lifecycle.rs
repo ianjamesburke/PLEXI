@@ -3228,8 +3228,9 @@ impl PlexiApp {
                         let captured = terminal
                             .backend
                             .capture_lines(crate::app::pane_status::capture_depth());
+                        let agent = pane.effective_agent();
                         let mut status =
-                            crate::app::pane_status::composite_status(pane.agent(), &captured);
+                            crate::app::pane_status::composite_status(agent.as_ref(), &captured);
                         crate::app::pane_status::apply_program_status(
                             &mut status,
                             &terminal
@@ -5456,8 +5457,26 @@ impl PlexiApp {
                     t.activity = new;
                 }
 
-                let reported =
-                    crate::program_status::reported_agent_state(*pane_id, &t.program_status);
+                // OSC 7501 describes arbitrary programs. Its state can refine
+                // an identified agent, but generic program activity is not
+                // itself evidence of agent identity.
+                let reported = crate::program_status::reported_agent_state(*pane_id, &t.program_status)
+                    .and_then(|mut report| {
+                        let known = report.agent == "claude-code"
+                            || crate::host::shell::known_agent_process(&report.agent).is_some();
+                        let identity = t.agent.as_ref().map(|a| a.agent.as_str())
+                            .or_else(|| t.observed_agent.as_ref().map(|a| a.agent.as_str()))
+                            .or(t.agent_harness.as_deref())
+                            .or(t.agent_role.as_deref())
+                            .or_else(|| t.reported_7501.as_ref().map(|a| a.agent.as_str()));
+                        if !known && identity.is_none() {
+                            return None;
+                        }
+                        if !known {
+                            report.agent = identity.unwrap_or_default().to_owned();
+                        }
+                        Some(report)
+                    });
                 let reported_changed = match (&t.reported_7501, &reported) {
                     (None, None) => false,
                     (Some(a), Some(b)) => {
@@ -5516,6 +5535,33 @@ impl PlexiApp {
                             }
                         })
                 };
+                // A manually started agent can return to the shell without
+                // exiting the terminal. Retire a stale working or idle hook only when
+                // the detector saw that same foreground agent and the shell
+                // has no remaining job. Preserve explicit attention/failure.
+                if let Some(agent) = &observed {
+                    t.last_observed_agent = Some(agent.agent.clone());
+                }
+                if !t.exited
+                    && observed.is_none()
+                    && fg == Some(shell_pid as i32)
+                    && t.activity.is_none()
+                {
+                    let departed = t.last_observed_agent.take();
+                    if let Some(hook) = t.agent.as_mut().filter(|hook| {
+                        matches!(hook.state, AgentState::Working | AgentState::Idle)
+                            && Some(hook.agent.as_str()) == departed.as_deref()
+                    }) {
+                        hook.state = if hook.state == AgentState::Working {
+                            AgentState::Interrupted
+                        } else {
+                            AgentState::ExitedUnreported
+                        };
+                        log::info!("observed agent: pane {pane_id} returned to shell; marking {:?}", hook.state);
+                        transitions.push((*pane_id, hook.clone()));
+                        observed_dirty = true;
+                    }
+                }
                 let was_stale_idle_fallback = t.agent.as_ref().is_some_and(|hook| {
                     hook.state == AgentState::Idle
                         && t.agent_reported_at.is_some_and(|reported| {

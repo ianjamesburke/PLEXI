@@ -618,19 +618,38 @@ impl Pane {
         }
     }
 
-    /// Activity state for the unified activity dot. App-reported pip status wins;
-    /// then hook-reported agent state; otherwise falls back to host-observed
-    /// terminal activity (foreground process running / exited). Portals have no
-    /// host-observed fallback yet.
+    /// An app's yellow health pip keeps its color without implying agent work.
+    pub fn static_health_pip(&self) -> bool {
+        self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
+            && !self.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+    }
+
+    /// Activity state for the unified activity dot. Generic terminal process
+    /// liveness is tracked separately and does not imply agent activity.
     pub fn effective_activity(&self) -> Option<&crate::protocol::AgentState> {
         if let Some(pip) = self.pip_status() {
             return Some(pip.as_agent_state());
+        }
+        if let Pane::Terminal(t) = self {
+            if t.is_agent_pane() && (t.exited || t.agent_completed || t.slots.contains_key("completed")) {
+                use crate::protocol::AgentState;
+                return Some(match t.effective_agent_state().0 {
+                    AgentState::Working => &AgentState::Working,
+                    AgentState::Idle => &AgentState::Idle,
+                    AgentState::NeedsYou => &AgentState::NeedsYou,
+                    AgentState::Blocked => &AgentState::Blocked,
+                    AgentState::Failed => &AgentState::Failed,
+                    AgentState::Interrupted => &AgentState::Interrupted,
+                    AgentState::Completed => &AgentState::Completed,
+                    AgentState::ExitedUnreported => &AgentState::ExitedUnreported,
+                });
+            }
         }
         if let Some(a) = self.agent() {
             return Some(&a.state);
         }
         match self {
-            Pane::Terminal(t) => t.activity.as_ref(),
+            Pane::Terminal(_) => None,
             Pane::App(a) => a
                 .overlay_replaced
                 .as_deref()
@@ -847,6 +866,8 @@ pub struct TerminalPane {
     /// output settle (`last_pty_output_at`). Covers both the pre-hook boot
     /// window and stale hook-Idle gaps.
     pub observed_agent: Option<crate::protocol::PaneAgentState>,
+    /// Last detected foreground identity until the shell is observed idle.
+    pub(crate) last_observed_agent: Option<String>,
     /// Agent state mapped from OSC 7501 program-status records, refreshed in
     /// `tick_terminal_activity`. Highest-priority signal: when set it wins over
     /// hook and observed state; `None` leaves the old selection untouched.
@@ -980,6 +1001,7 @@ impl TerminalPane {
             agent: None,
             agent_reported_at: None,
             observed_agent: None,
+            last_observed_agent: None,
             reported_7501: None,
             activity: None,
             slots: HashMap::new(),
@@ -1002,6 +1024,7 @@ impl TerminalPane {
         self.agent_harness.is_some()
             || self.agent_role.is_some()
             || self.agent.is_some()
+            || self.reported_7501.is_some()
             || self.observed_agent.is_some()
             || self.standby_session.is_some()
     }
@@ -1211,6 +1234,8 @@ impl TerminalPane {
             (crate::protocol::AgentState::Completed, detail)
         } else if let Some(status) = exit.filter(|s| s.is_failure()) {
             (crate::protocol::AgentState::Failed, Some(status.summary()))
+        } else if exit.is_some() && state == crate::protocol::AgentState::Working {
+            (crate::protocol::AgentState::Interrupted, detail)
         } else {
             (state, detail)
         }
@@ -1434,7 +1459,7 @@ mod agent_source_tests {
             (true, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Completed, "report"),
             (false, Some(ExitStatus::Code(3)), AgentState::Completed, AgentState::Completed, "report"),
             (false, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Failed, "exited (3)"),
-            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Working, "report"),
+            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Interrupted, "report"),
             (false, None, AgentState::Blocked, AgentState::Blocked, "report"),
         ] {
             let actual = super::TerminalPane::resolve_agent_state(completed, exit, reported, Some("report".into()));
