@@ -125,10 +125,37 @@ class Lifecycle(unittest.TestCase):
         for executable in (fake_cargo, fake_uv, fake_just):
             executable.chmod(0o755)
         env = {**self.env, 'PATH': str(commands) + ':' + self.env['PATH'],
-               'PLEXI_REUSE_RELEASE_BUILD': '1', 'FIXTURE_JUST': str(self.root / 'just-ran')}
+               'PLEXI_REUSE_RELEASE_BUILD': '1', 'FIXTURE_JUST': str(self.root / 'just-ran'),
+               'PLEXI_BUILD_EVIDENCE': str(ROOT / 'scripts/build-evidence.py')}
         with self.assertRaises(subprocess.CalledProcessError) as raised:
             self.call('bash', str(scripts / 'install.sh'), '--from-source', 'pr-1', env=env)
         self.assertIn('compiled PR channel mismatch', raised.exception.stderr)
+        self.assertFalse((self.root / 'just-ran').exists())
+        # Positive route with a real driver receipt: the PR copy lacks the
+        # driver's sibling harness files, so using that copy would reject it.
+        native = self.root / 'installer'
+        native.write_text('#!/bin/sh\necho installed > "$FIXTURE_INSTALLED"\n')
+        native.chmod(0o755)
+        (scripts / 'distribution-tool.sh').write_text('printf "%s\\n" "' + str(native) + '"\n')
+        fake_uv.write_text(fake_uv.read_text().replace('exec python3 "$@"',
+                            'if [ "$1" = scripts/package.py ]; then exit 0; fi\nexec python3 "$@"'))
+        security = commands / 'security'
+        security.write_text('#!/bin/sh\nexit 1\n')
+        security.chmod(0o755)
+        self.call('git', 'add', '.')
+        self.call('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'packaging fixture')
+        head = self.call('git', 'rev-parse', 'HEAD').stdout.strip()
+        binary.write_text("#!/bin/sh\necho '" + json.dumps({'source_commit': head, 'test_channel': 'pr-1'}) + "'\n")
+        env.update({'PLEXI_BUILD_TEST_CHANNEL': 'pr-1', 'FIXTURE_INSTALLED': str(self.root / 'installed')})
+        self.call('python3', str(ROOT / 'scripts/build-evidence.py'), 'stamp', str(self.repo), head,
+                  'pr-1', str(binary), env=env)
+        missing = dict(env)
+        missing.pop('PLEXI_BUILD_EVIDENCE')
+        with self.assertRaises(subprocess.CalledProcessError) as raised:
+            self.call('bash', str(scripts / 'install.sh'), '--from-source', 'pr-1', env=missing)
+        self.assertIn('requires the driver evidence checker', raised.exception.stderr)
+        self.call('bash', str(scripts / 'install.sh'), '--from-source', 'pr-1', env=env)
+        self.assertTrue((self.root / 'installed').exists())
         self.assertFalse((self.root / 'just-ran').exists())
 
     def test_custom_cargo_home_and_driver_are_fingerprinted(self):

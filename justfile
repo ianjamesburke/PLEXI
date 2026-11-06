@@ -401,6 +401,7 @@ _pr-prepare number test_scope action:
     # Pre-install tests and the build both run inside the resolved worktree,
     # never the caller's cwd.
     export PLEXI_BUILD_TEST_CHANNEL="pr-{{number}}"
+    export PLEXI_BUILD_EVIDENCE="$_driver_root/scripts/build-evidence.py"
     python3 "$_driver_root/scripts/build-evidence.py" pretests "$_wt" "$_base_oid" "{{test_scope}}" "$_head_ref" "$_base_ref"
     if [[ "{{action}}" == candidate ]]; then
       ( cd "$_wt" && just build clippy )
