@@ -1444,8 +1444,8 @@ impl PlexiApp {
         }
     }
 
-    /// Validate the complete target before mutating focus. Repeated parent returns
-    /// share history/window restoration with keyboard and CLI parent navigation.
+    /// Validate the complete target before mutating focus, sharing parent
+    /// history/window restoration with keyboard and CLI navigation.
     pub(crate) fn navigate_context_ancestor(&mut self, source: u64, target: u64) -> bool {
         let path = self.router.active_ancestry();
         let position = path
@@ -1455,14 +1455,20 @@ impl PlexiApp {
             log::info!("breadcrumb_navigation: source={source} target={target} rejected=stale_source_or_nonancestor");
             return false;
         }
-        let steps = path.len() - 1 - position.unwrap_or(0);
-        for _ in 0..steps {
-            if !self.zoom_out_of_context() {
+        let index = position.unwrap_or(0);
+        if let Some(&child_index) = path.get(index + 1) {
+            let child = self.router.get(child_index).context_id;
+            if !self.restore_context_parent(child, target, false) {
                 log::info!("breadcrumb_navigation: source={source} target={target} rejected=missing_parent");
                 return false;
             }
         }
-        log::info!("breadcrumb_navigation: source={source} target={target} accepted steps={steps}");
+        // A direct entry may leave unrelated history with no entry for target.
+        // Keep only genuine ancestors of the chosen location.
+        let ancestors: std::collections::HashSet<_> = path[..index].iter()
+            .map(|&i| self.router.get(i).context_id).collect();
+        self.router.depth_stack.retain(|(id, _, _)| ancestors.contains(id));
+        log::info!("breadcrumb_navigation: source={source} target={target} accepted");
         true
     }
 
@@ -1487,6 +1493,12 @@ impl PlexiApp {
             child_for_parent = parent_id;
             parent_id = next;
         }
+        self.restore_context_parent(child_for_parent, parent_id, true)
+    }
+
+    /// Shared history, window and pane restoration. Explicit breadcrumb targets
+    /// may inspect a revealed parent without changing its presentation flag.
+    fn restore_context_parent(&mut self, child_id: u64, parent_id: u64, honor_reveal: bool) -> bool {
         let Some(parent_idx) = self.router.position(|c| c.context_id == parent_id) else {
             log::warn!("context_navigation: missing parent={parent_id} child={child_id}");
             return false;
@@ -1501,7 +1513,7 @@ impl PlexiApp {
                 self.router.pop_depth().expect("matching entry retained")
             });
         self.conjoined_parent_focus = None;
-        self.switch_workspace(parent_idx);
+        self.switch_workspace_target(parent_idx, honor_reveal);
         if let Some((_, window_id, focus)) = entry {
             if let Some(index) = self
                 .windows
@@ -1529,7 +1541,7 @@ impl PlexiApp {
             .find_map(|(index, w)| {
                 w.panes.iter().find_map(|(id, pane)| match pane {
                     crate::host::pane::Pane::Portal(portal)
-                        if portal.target_context_id == child_for_parent =>
+                        if portal.target_context_id == child_id =>
                     {
                         w.tree.tiles.find_pane(id).map(|tile| (index, tile))
                     }
@@ -1731,9 +1743,13 @@ impl PlexiApp {
     /// This is the standard path for context navigation. Focus-history traversal
     /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        self.switch_workspace_target(new_ctx_idx, true);
+    }
+
+    fn switch_workspace_target(&mut self, new_ctx_idx: usize, honor_reveal: bool) {
         let mut new_ctx_idx = new_ctx_idx;
         let mut redirected = false;
-        for _ in 0..self.router.len() {
+        for _ in 0..if honor_reveal { self.router.len() } else { 0 } {
             let id = self.router.get(new_ctx_idx).context_id;
             let Some(child) = self.revealed_child(id) else { break };
             let Some(index) = self.router.position(|c| c.context_id == child) else { break };

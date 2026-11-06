@@ -119,7 +119,7 @@ pub enum SidebarAction {
 }
 
 pub struct PaneDots {
-    /// Portal on the active route, retained individually through overflow.
+    /// Route portal (or current leaf focus), retained individually through overflow.
     pub route_idx: Option<usize>,
     pub count: usize,
     pub focused_idx: Option<usize>,
@@ -755,6 +755,7 @@ impl SidebarRow {
         );
 
         let mut ancestor_action = None;
+        let mut breadcrumb_hovered = false;
         for crumb in &geom.breadcrumbs {
             let level = &self.ancestry[crumb.index];
             let current = crumb.index + 1 == self.ancestry.len();
@@ -773,6 +774,7 @@ impl SidebarRow {
                 id.with(("ancestor", level.context_id)),
                 Sense::click(),
             );
+            breadcrumb_hovered |= hit.hovered();
             hit.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::Button, true, current, &level.name)
             });
@@ -904,6 +906,8 @@ impl SidebarRow {
 
         if in_close {
             response.clone().on_hover_text("Delete context");
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        } else if breadcrumb_hovered {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else {
             let content = Rect::from_min_max(

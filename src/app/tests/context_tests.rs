@@ -4351,6 +4351,7 @@ fn breadcrumb_navigation_restores_parent_chain_and_rejects_deleted_target() {
     let source = h.app.router.get(grandchild).context_id;
     h.app.switch_workspace(grandchild);
     h.app.router.depth_stack.clear();
+    h.app.router.depth_stack.push((source, u64::MAX, None));
     let windows = h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>();
     h.app.handle_pane_ipc_request(crate::protocol::AppRequest::NavigateContextAncestor { source, target: root });
     assert_eq!(h.app.router.active().context_id, root);
@@ -4358,4 +4359,26 @@ fn breadcrumb_navigation_restores_parent_chain_and_rejects_deleted_target() {
     assert_eq!(windows, h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>());
     assert!(!h.app.navigate_context_ancestor(source, child_id));
     assert_eq!(h.app.router.active().context_id, root);
+}
+
+#[test]
+fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    h.add_test_pane();
+    let root = h.app.router.active().context_id;
+    h.app.push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
+    let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    let child = h.app.router.get(child_index).context_id;
+    let root_window = h.app.windows.iter().position(|w| w.context_id == root).unwrap();
+    let win = &mut h.app.windows[root_window];
+    let portal_id = *win.panes.iter().find(|(_,p)| p.as_portal().is_some()).unwrap().0;
+    win.panes.retain(|id,_| *id == portal_id);
+    win.tree.root = win.tree.tiles.find_pane(&portal_id);
+    win.panes.get_mut(&portal_id).unwrap().as_portal_mut().unwrap().reveal_after_close = true;
+    h.app.switch_workspace(child_index);
+    assert_eq!(h.app.revealed_child(root), Some(child));
+    assert!(h.app.navigate_context_ancestor(child, root));
+    assert_eq!(h.app.router.active().context_id, root);
+    assert_eq!(h.app.revealed_child(root), Some(child));
 }

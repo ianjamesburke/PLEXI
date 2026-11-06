@@ -4083,7 +4083,7 @@ mod tests {
                     let win = &mut app.windows[window];
                     let panes = crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, win.tree.root().unwrap());
                     let pane_id = *panes.last().unwrap();
-                    win.panes.insert(pane_id, Pane::Portal(Box::new(crate::host::pane::PortalPane { pane_id, target_context_id: target, context_state: None, hidden: false })));
+                    win.panes.insert(pane_id, Pane::Portal(Box::new(crate::host::pane::PortalPane { pane_id, target_context_id: target, context_state: None, hidden: false, reveal_after_close: false })));
                 }
                 for win in &mut app.windows {
                     let panes = crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, win.tree.root().unwrap());
@@ -4102,8 +4102,10 @@ mod tests {
                     win.focused_pane = panes.last().and_then(|id| win.tree.tiles.find_pane(id));
                 }
                 app.switch_workspace(leaf_idx);
+                app.set_ui_scale(scale);
             });
             h.run_steps(3);
+            h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.01));
             h.save_screenshot(&evidence_png!(format!("_{width}_{scale}"))).unwrap();
             assert!(h.host_has_label("Current grandchild with a long descriptive name"));
         }
