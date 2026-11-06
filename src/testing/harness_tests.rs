@@ -3625,9 +3625,11 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
     );
     h.inject_ipc(AppRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
     h.run_frames(3);
-    let p = h.app.windows[0].panes.get(&pane).unwrap();
+    let p = h.app.windows[0].panes.get_mut(&pane).unwrap();
     assert_eq!(p.effective_activity(), Some(&AgentState::Working));
-    assert!(p.static_health_pip(), "yellow app health keeps its color but is not an animated agent glyph");
+    assert!(!p.static_health_pip(), "an identified working agent still animates");
+    p.set_agent(None);
+    assert!(p.static_health_pip(), "yellow app health keeps its color without an agent animation");
 }
 
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
