@@ -202,6 +202,28 @@ fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json:
         })
 }
 
+fn live_context_pane_count(panes: &serde_json::Value, target: PaneId) -> Result<usize, SceneError> {
+    let entries = panes.as_array().ok_or_else(|| {
+        SceneError::new("live_json_invalid", "pane list did not return an array")
+    })?;
+    if entries.iter().any(|pane| {
+        pane.get("id").and_then(serde_json::Value::as_u64).is_none()
+            || pane.get("context_id").and_then(serde_json::Value::as_u64).is_none()
+    }) {
+        return Err(SceneError::new(
+            "live_json_invalid",
+            "pane list contains a pane without an id or owning context",
+        ));
+    }
+    let context_id = entries.iter()
+        .find(|pane| pane.get("id").and_then(serde_json::Value::as_u64) == Some(target))
+        .and_then(|pane| pane.get("context_id").and_then(serde_json::Value::as_u64))
+        .ok_or_else(|| SceneError::new("missing_target", "target pane has no live context"))?;
+    Ok(entries.iter().filter(|pane| {
+        pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
+    }).count())
+}
+
 fn live_seed_to_clear(
     owned_host: bool,
     attached_host: bool,
@@ -564,6 +586,8 @@ pub struct AssertSpec {
     /// Pane handle used by app lifecycle and tree assertions.
     pub target: Option<String>,
     pub pane_count: Option<usize>,
+    /// All owned panes across pages in the target pane's context.
+    pub context_pane_count: Option<usize>,
     pub window_count: Option<usize>,
     pub context_count: Option<usize>,
     /// Portal panes across all windows.
@@ -1405,19 +1429,19 @@ impl LiveBackend {
                 ));
             }
         }
-        let pane = format!("cwd={}", env!("CARGO_MANIFEST_DIR"));
         // Hermetic by construction: a runner-owned host must never restore
         // (or overwrite) the channel's saved session — stale panes from a
-        // human session would pollute every live assertion.
-        self.command(
+        // human session would pollute every live assertion. The fresh host
+        // already creates its root terminal; --pane would queue a second one
+        // after readiness and race the scene's initial topology.
+        self.command_with_cwd(
             &[
                 "host".to_string(),
                 "start".to_string(),
                 "--ephemeral".to_string(),
-                "--pane".to_string(),
-                pane,
             ],
             false,
+            Some(Path::new(env!("CARGO_MANIFEST_DIR"))),
         )?;
         self.owned_host = true;
         if let Some(owner_file) = &self.owner_file {
@@ -2007,6 +2031,16 @@ impl LiveBackend {
                 "pane_count: expected {expected}, got {}",
                 host.pane_count
             ));
+        }
+        if let Some(expected) = spec.context_pane_count {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = live_context_pane_count(&self.json(&["pane", "list"])?, pane_id)?;
+            if actual != expected {
+                failures.push(format!("context_pane_count: expected {expected}, got {actual}"));
+            }
         }
         if let Some(expected) = spec
             .window_count
@@ -3259,6 +3293,19 @@ impl HeadlessBackend {
         if let Some(v) = spec.pane_count {
             expect("pane_count", v.to_string(), host.pane_count.to_string());
         }
+        if let Some(expected) = spec.context_pane_count {
+            let target = spec.target.as_deref().ok_or_else(|| {
+                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+            })?;
+            let pane_id = self.handles.resolve(target)?;
+            let actual = self.h.with_app(|app| {
+                let context_id = app.windows.iter()
+                    .find(|window| window.panes.contains_key(&pane_id))?.context_id;
+                Some(app.windows.iter().filter(|window| window.context_id == context_id)
+                    .map(|window| window.panes.len()).sum::<usize>())
+            }).ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
+            expect("context_pane_count", expected.to_string(), actual.to_string());
+        }
         if let Some(v) = spec.window_count {
             expect("window_count", v.to_string(), host.window_count.to_string());
         }
@@ -3929,8 +3976,25 @@ mod tests {
         let report = run_scene(&scene, temp.path(), true);
         assert!(!report.passed, "an extra parent pane must prevent a scene pass");
         assert!(report.steps.iter().any(|step| step.error.as_ref().is_some_and(|error| {
-            error.code == "assertion_failed" && error.message.contains("focused")
-        })), "the focused-child assertion must catch the absent transition: {report:?}");
+            error.code == "assertion_failed" && error.message.contains("context_pane_count")
+        })), "the pre-close topology assertion must catch the extra pane: {report:?}");
+    }
+
+    #[test]
+    fn live_context_pane_count_uses_target_ownership_across_pages() {
+        let panes = serde_json::json!([
+            {"id": 1, "context_id": 8, "window_id": 10, "type": "terminal"},
+            {"id": 2, "context_id": 8, "window_id": 11, "type": "portal"},
+            {"id": 3, "context_id": 9, "window_id": 12, "type": "app"}
+        ]);
+        assert_eq!(live_context_pane_count(&panes, 1).unwrap(), 2);
+        assert_eq!(live_context_pane_count(&panes, 3).unwrap(), 1);
+        assert_eq!(live_context_pane_count(&panes, 99).unwrap_err().code, "missing_target");
+        assert_eq!(
+            live_context_pane_count(&serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]), 1)
+                .unwrap_err().code,
+            "live_json_invalid"
+        );
     }
 
     #[test]
@@ -3977,6 +4041,7 @@ if [ "$1" = "host" ] && [ "$2" = "status" ]; then
 fi
 if [ "$1" = "host" ] && [ "$2" = "start" ]; then
     mkdir -p "$state_dir"
+    printf '%s\n' "$*" > "$state_dir/start-args"
     touch "$state_dir/running"
     echo "started"
     exit 0
@@ -4043,6 +4108,22 @@ exit 1
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         std::env::remove_var("PLEXI_SCENE_BIN");
         backend
+    }
+
+    #[test]
+    fn live_owned_host_does_not_enqueue_a_second_terminal() {
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let script_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let mut backend = fake_live_backend(
+            "test-single-seed", script_dir.path(), state_dir.path(), out_dir.path(), true,
+        );
+        backend.start_or_attach().unwrap();
+        let args = std::fs::read_to_string(state_dir.path().join("start-args")).unwrap();
+        assert_eq!(args.trim(), "host start --ephemeral");
+        backend.teardown();
+        assert!(backend.teardown.ok);
     }
 
     #[test]
