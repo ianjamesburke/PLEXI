@@ -1293,6 +1293,14 @@ impl PermissionMonitor {
                     row.resolution.is_none()
                         && row.kind == filed.kind
                         && row.run_tag.as_deref() == Some(tag)
+                        && (!matches!(filed.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+                            || (row.actor == filed.actor
+                                && row.resource == filed.resource
+                                && row.summary == filed.summary
+                                && match (row.details.as_ref(), details.as_ref()) {
+                                    (Some(a), Some(b)) if a.correlation_id.is_some() || b.correlation_id.is_some() => a.correlation_id == b.correlation_id,
+                                    _ => true,
+                                }))
                         && (filed.kind != NeedsYouKind::PermissionRequest
                             || row.resource == filed.resource)
                 }) {

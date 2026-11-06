@@ -335,14 +335,26 @@ impl PlexiApp {
             egui::Key::A if !is_question => {
                 self.resolve_from_desktop(id, true, "approval keyboard")
             }
-            egui::Key::D => self.resolve_from_desktop(id, false, "approval keyboard"),
+            egui::Key::D if !is_question => {
+                self.resolve_from_desktop(id, false, "approval keyboard")
+            }
             egui::Key::Enter if is_question && choices.is_empty() => {
-                let pane = record.details.as_ref().and_then(|d| d.pane_id).or_else(|| {
-                    record
-                        .actor
-                        .strip_prefix("pane:")
-                        .and_then(|s| s.parse().ok())
-                });
+                let pane = record
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.pane_id)
+                    .or_else(|| {
+                        record
+                            .actor
+                            .strip_prefix("pane:")
+                            .and_then(|s| s.parse().ok())
+                    })
+                    .or_else(|| {
+                        record
+                            .resource
+                            .strip_prefix("pane:")
+                            .and_then(|s| s.parse().ok())
+                    });
                 if let Some((win, tile)) = pane.and_then(|p| self.find_pane_in_any_window(p)) {
                     self.active_window = win;
                     self.set_window_focused_pane(win, tile);
@@ -807,7 +819,8 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(!is_open(&monitor, &req));
-        assert!(h.app.approval_keyboard.id.is_none());
+        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+        h.app.leave_approval();
 
         let change = file_item(&monitor, K::PermissionChange, "run-b", &[]);
         h.app.focus_approval();

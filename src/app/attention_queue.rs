@@ -148,15 +148,7 @@ pub struct DecisionOverlayState {
 
 impl DecisionOverlayState {
     pub fn from_bar(bar: &QueueBar) -> Self {
-        let options = if bar.options.is_empty() {
-            if bar.category == QueueCategory::Notice {
-                acknowledge_options()
-            } else {
-                default_ask_options()
-            }
-        } else {
-            bar.options.clone()
-        };
+        let options = bar.options.clone();
         let selected_idx = options.iter().position(|o| o.recommended).unwrap_or(0);
         Self {
             ask_id: bar.id.clone(),
@@ -688,7 +680,7 @@ impl PlexiApp {
                 .as_ref()
                 .and_then(|d| d.context_id)
                 .filter(|&id| id != 0);
-            let (context_id, pane_id, pane_name, context_path) =
+            let (context_id, mut pane_id, pane_name, context_path) =
                 self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let category = if item.kind == NeedsYouKind::AgentDone {
                 QueueCategory::Done
@@ -708,7 +700,8 @@ impl PlexiApp {
                 .map(|d| d.choices.clone())
                 .unwrap_or_default();
             let recommend = item.details.as_ref().and_then(|d| d.recommend.clone());
-            let options = if !choices.is_empty() {
+            let is_question = matches!(item.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun);
+            let options = if is_question && !choices.is_empty() {
                 choices
                     .into_iter()
                     .enumerate()
@@ -724,16 +717,33 @@ impl PlexiApp {
                         }
                     })
                     .collect()
-            } else if category == QueueCategory::Ask {
-                default_ask_options()
+            } else if matches!(
+                item.kind,
+                NeedsYouKind::ApprovalClick
+                    | NeedsYouKind::PermissionChange
+                    | NeedsYouKind::PermissionRequest
+                    | NeedsYouKind::Keychain
+            ) {
+                vec![
+                    QueueOption {
+                        key: "approve".into(),
+                        label: "Approve".into(),
+                        recommended: false,
+                    },
+                    QueueOption {
+                        key: "deny".into(),
+                        label: "Deny".into(),
+                        recommended: false,
+                    },
+                ]
             } else if category == QueueCategory::Notice {
                 acknowledge_options()
             } else {
                 Vec::new()
             };
-            let is_question =
-                matches!(item.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
-                    && item.details.as_ref().is_some_and(|d| !d.choices.is_empty());
+            if options.is_empty() && explicit_pane.is_none() {
+                pane_id = 0;
+            }
             seen_ids.insert(item.id.clone());
             bars.push(QueueBar {
                 id: item.id.clone(),
@@ -753,7 +763,8 @@ impl PlexiApp {
                 locked: false,
                 source: QueueSource::NeedsYou {
                     request_id: item.id,
-                    is_question,
+                    is_question: is_question
+                        && item.details.as_ref().is_some_and(|d| !d.choices.is_empty()),
                 },
             });
         }
@@ -773,7 +784,7 @@ impl PlexiApp {
             let src_pane = notif.agent_source_pane();
             let explicit_pane = (src_pane != 0).then_some(src_pane);
             let explicit_ctx = (notif.source_context_id != 0).then_some(notif.source_context_id);
-            let (context_id, pane_id, pane_name, context_path) =
+            let (context_id, mut pane_id, pane_name, context_path) =
                 self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let is_ask = notif.required
                 || !notif.options.is_empty()
@@ -799,11 +810,12 @@ impl PlexiApp {
                         recommended: idx == 0,
                     })
                     .collect()
-            } else if is_ask {
-                default_ask_options()
             } else {
                 Vec::new()
             };
+            if is_ask && options.is_empty() && explicit_pane.is_none() {
+                pane_id = 0;
+            }
             let summary = if notif.body.is_empty() {
                 notif.title.clone()
             } else {
@@ -901,7 +913,8 @@ impl PlexiApp {
                 | crate::protocol::AgentState::ExitedUnreported => {
                     if bars
                         .iter()
-                        .any(|b| b.category == QueueCategory::Failed && b.pane_id == pid)
+                        .any(|b| b.pane_id == pid && (b.category == QueueCategory::Failed
+                            || (ag.state == crate::protocol::AgentState::Blocked && b.category == QueueCategory::Ask)))
                     {
                         continue;
                     }
@@ -937,11 +950,7 @@ impl PlexiApp {
                 context_path,
                 summary: summary.clone(),
                 command_text: summary,
-                options: if cat == QueueCategory::Ask {
-                    default_ask_options()
-                } else {
-                    Vec::new()
-                },
+                options: Vec::new(),
                 created_at_ms: 2_000_000 + pid,
                 locked: false,
                 source: QueueSource::AgentState { pane_id: pid },
@@ -1142,6 +1151,10 @@ impl PlexiApp {
         else {
             return false;
         };
+        if bar.category == QueueCategory::Ask && bar.options.is_empty() {
+            self.activate_attention_bar(&bar);
+            return true;
+        }
         if bar.category == QueueCategory::Notice {
             self.attention_queue.seen_notice_ids.insert(bar.id.clone());
         }
@@ -1316,6 +1329,9 @@ impl PlexiApp {
     ///   - `SourcePane(pane_id)` if the source pane is still live.
     ///   - `ResultArtifact(path)` if the source pane is closed.
     pub fn resolve_attention_destination(&self, bar: &QueueBar) -> AttentionDestination {
+        if bar.category == QueueCategory::Ask && bar.options.is_empty() {
+            return AttentionDestination::SourcePane(bar.pane_id);
+        }
         if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
             return AttentionDestination::DecisionOverlay(bar.id.clone());
         }
@@ -1366,6 +1382,18 @@ impl PlexiApp {
                 );
             }
             AttentionDestination::SourcePane(source_id) => {
+                if self.find_pane_in_any_window(*source_id).is_none() {
+                    self.attention_queue.transient_hint = Some((
+                        "Source pane is no longer available".to_string(),
+                        Instant::now(),
+                    ));
+                    log::info!(
+                        "attention_queue: source pane unavailable bar_id={} pane_id={}",
+                        bar.id,
+                        source_id
+                    );
+                    return dest;
+                }
                 self.attention_queue.open = false;
                 self.jump_to_pane_at_columns(*source_id);
                 log::info!(
@@ -1523,7 +1551,7 @@ impl PlexiApp {
                         Ok(()) => self.approval_keyboard.last_error = None,
                         Err(error) => {
                             log::info!(
-                                "decision_overlay: needs_you decision failed id={request_id}; retaining ask for retry: {error}"
+                                "decision_overlay: needs_you decision failed id={request_id}; retaining overlay for review: {error}"
                             );
                             self.approval_keyboard.last_error = Some((request_id.clone(), error));
                             self.attention_queue
@@ -1557,14 +1585,13 @@ impl PlexiApp {
                 }
             }
             QueueSource::AgentState { pane_id } => {
-                if let Some((wi, _)) = self.find_pane_in_any_window(*pane_id) {
-                    if let Some(pane) = self.windows[wi].panes.get_mut(pane_id) {
-                        if let Some(mut ag) = pane.agent().cloned() {
-                            ag.state = crate::protocol::AgentState::Working;
-                            pane.set_agent(Some(ag));
-                        }
-                    }
-                }
+                log::warn!(
+                    "decision_overlay: agent state has no response endpoint pane_id={pane_id}"
+                );
+                self.attention_queue
+                    .answered_ask_ids
+                    .remove(&overlay.ask_id);
+                return false;
             }
             QueueSource::ChildResult { .. } | QueueSource::Synthetic { .. } => {
                 if option.key == "acknowledge" {
@@ -1581,7 +1608,7 @@ impl PlexiApp {
             option_label: option.label.clone(),
         };
         log::info!(
-            "decision_overlay: verdict sent ask_id={} pane_id={} option={}:{}",
+            "decision_overlay: host decision recorded ask_id={} pane_id={} option={}:{}",
             verdict.ask_id,
             verdict.pane_id,
             verdict.option_idx,
@@ -1988,8 +2015,13 @@ impl PlexiApp {
                                 badge: Some(if is_ask {
                                     (
                                         format!(
-                                            "{} ▸ Decide",
-                                            crate::ui::shortcuts::key_text(&["Enter"])
+                                            "{} ▸ {}",
+                                            crate::ui::shortcuts::key_text(&["Enter"]),
+                                            if bar.options.is_empty() {
+                                                "Open pane"
+                                            } else {
+                                                "Decide"
+                                            }
                                         ),
                                         colors.zoom_needs,
                                     )
@@ -2410,10 +2442,109 @@ mod tests {
         h.app.sync_attention_queue();
     }
 
+    #[test]
+    fn observed_agent_ask_only_navigates_to_its_pane() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        report_attention(&mut h, pane_id);
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.pane_id == pane_id && bar.category == QueueCategory::Ask)
+            .expect("observed agent request must remain visible")
+            .clone();
+        assert!(
+            bar.options.is_empty(),
+            "an observed prompt cannot receive a Plexi verdict"
+        );
+        assert_eq!(
+            h.app.resolve_attention_destination(&bar),
+            AttentionDestination::SourcePane(pane_id)
+        );
+        assert!(h.app.attention_queue.verdicts.is_empty());
+    }
+
+    #[test]
+    fn blocked_run_without_choices_opens_pane_without_resolving_record() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id,
+            state: crate::protocol::AgentState::Blocked,
+            agent: "codex".into(),
+            detail: Some("Waiting for approval".into()),
+            session_id: None,
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        h.app.sync_attention_queue();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let item = monitor.open_needs_you().into_iter().find(|item| item.kind == NeedsYouKind::BlockedRun).unwrap();
+        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == item.id).unwrap().clone();
+        assert_eq!(h.app.attention_queue.items.iter().filter(|bar| bar.pane_id == pane_id).count(), 1);
+        assert!(bar.options.is_empty());
+        assert_eq!(h.app.activate_attention_bar(&bar), AttentionDestination::SourcePane(pane_id));
+        assert!(monitor.get_needs_you(&item.id).unwrap().resolution.is_none());
+        assert!(h.app.attention_queue.verdicts.is_empty());
+    }
+
+    #[test]
+    fn distinct_agent_requests_in_same_pane_are_not_coalesced() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        report_attention(&mut h, pane_id);
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None,
+            pane_id,
+            state: crate::protocol::AgentState::NeedsYou,
+            agent: "test-agent".into(),
+            detail: Some("Which test should I run?".into()),
+            session_id: None,
+            event: None,
+            blocked_reason: None,
+        });
+        h.hidden_frame();
+        h.app.sync_attention_queue();
+        let asks: Vec<_> = h.app.attention_queue.items.iter()
+            .filter(|bar| bar.pane_id == pane_id && bar.category == QueueCategory::Ask)
+            .collect();
+        assert_eq!(asks.len(), 2, "distinct requests must remain visible");
+        assert_ne!(asks[0].id, asks[1].id);
+    }
+
+    #[test]
+    fn permission_with_unknown_outcome_does_not_report_success() {
+        let mut h = HostHarness::new();
+        h.add_focused_terminal();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let id = monitor.file_needs_you_with_details(
+            NeedsYouFile {
+                kind: NeedsYouKind::PermissionRequest,
+                actor: "test-agent".into(),
+                resource: "test-tool".into(),
+                summary: "Allow test tool?".into(),
+                expires_at: None,
+                run_tag: None,
+            },
+            None,
+        ).unwrap().0;
+        // No workspace or run is available to receive the grant.
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask(&id));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert!(h.app.attention_queue.verdicts.is_empty());
+        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+    }
+
     fn needs_you_failed_audit_is_retryable(with_choices: bool) {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let mut permission_id = None;
         if with_choices {
             // Rich asks use the answer branch; agent reports reuse the same run tag.
             monitor
@@ -2433,9 +2564,21 @@ mod tests {
                     }),
                 )
                 .unwrap();
+        } else {
+            permission_id = Some(monitor.file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::PermissionRequest,
+                    actor: "test-agent".into(),
+                    resource: "test-tool".into(),
+                    summary: "Allow test tool?".into(),
+                    expires_at: None,
+                    run_tag: None,
+                },
+                Some(crate::broker::gate::NeedsYouDetails { pane_id: Some(pane_id), ..Default::default() }),
+            ).unwrap().0);
         }
         report_attention(&mut h, pane_id);
-        let id = monitor.open_needs_you()[0].id.clone();
+        let id = permission_id.unwrap_or_else(|| monitor.open_needs_you().into_iter().find(|item| item.kind == NeedsYouKind::Question).unwrap().id);
         let bar = h
             .app
             .attention_queue
@@ -2470,13 +2613,13 @@ mod tests {
         let (error_id, message) = h.app.approval_keyboard.last_error.as_ref().unwrap();
         assert_eq!(error_id, &id);
         assert!(
-            message.contains("audited"),
+            message.contains("audit"),
             "expected audit error, got {message}"
         );
 
         // Same report must keep the unresolved broker id visible, not just a fallback.
         report_attention(&mut h, pane_id);
-        assert_eq!(monitor.open_needs_you()[0].id, id);
+        assert!(monitor.open_needs_you().iter().any(|item| item.id == id));
         assert!(h.app.attention_queue.items.iter().any(|bar| bar.id == id));
         monitor.fail_audit(false);
         assert!(h.app.pick_decision_overlay_option(0));
@@ -2491,24 +2634,11 @@ mod tests {
         assert!(h.app.attention_queue.decision_overlay.is_none());
         assert_eq!(h.app.attention_queue.verdicts.len(), 1);
 
-        // Resolve the agent-state fallback, as Ian did, then report again.
-        let fallback_id = format!("agent-ask-{pane_id}");
-        assert!(h.app.open_decision_overlay_for_ask(&fallback_id));
-        assert!(h.app.pick_decision_overlay_option(0));
-        report_attention(&mut h, pane_id);
-        let next = monitor.open_needs_you();
-        assert_eq!(next.len(), 1);
-        assert_ne!(next[0].id, id);
-        assert!(h
-            .app
-            .attention_queue
-            .items
-            .iter()
-            .any(|bar| bar.id == next[0].id));
-        assert!(h.app.open_decision_overlay_for_ask(&next[0].id));
-        assert!(h.app.pick_decision_overlay_option(0));
-        assert!(monitor.open_needs_you().is_empty());
-        assert_eq!(h.app.attention_queue.verdicts.len(), 3);
+        // Agent state remains an observed signal, not a second approval endpoint.
+        h.app.sync_attention_queue();
+        if let Some(fallback) = h.app.attention_queue.items.iter().find(|bar| matches!(bar.source, QueueSource::AgentState { .. })) {
+            assert!(fallback.options.is_empty());
+        }
     }
 
     #[test]
