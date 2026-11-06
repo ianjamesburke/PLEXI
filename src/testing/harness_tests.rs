@@ -15787,6 +15787,23 @@ mod program_status_agent {
     }
 
     #[test]
+    fn ps7501_general_program_is_not_an_agent() {
+        let mut h = HostHarness::new();
+        let pane = h.add_focused_terminal();
+        for payload in ["state=working", "state=working:app=editor"] {
+            apply(&mut h, pane, payload);
+            let p = &h.app.windows[0].panes[&pane];
+            assert!(p.agent().is_none(), "{payload} must not identify an agent");
+            assert!(p.effective_activity().is_none());
+            let state = crate::host::context_state::ContextState::compute(
+                h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+            );
+            assert_eq!(state.active_agents, 0);
+            assert!(!p.as_terminal().unwrap().program_status.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn ps7501_pane_agent_follows_reports_without_screen_text() {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
