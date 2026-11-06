@@ -2317,15 +2317,18 @@ mod tests {
         let pane_id = add_focused_pane(&mut h);
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-        let id = monitor
-            .file_needs_you(crate::broker::gate::NeedsYouFile {
+        let (id, _) = monitor
+            .file_needs_you_with_details(crate::broker::gate::NeedsYouFile {
                 kind: crate::broker::gate::NeedsYouKind::Question,
                 actor: "codex".into(),
                 resource: format!("pane:{pane_id}"),
                 summary: "Ready to continue the attention-cue repair on Alpha".into(),
                 expires_at: None,
                 run_tag: Some(format!("pane:{pane_id}")),
-            })
+            }, Some(crate::broker::gate::NeedsYouDetails {
+                choices: vec!["Continue".to_string()],
+                ..Default::default()
+            }))
             .unwrap();
         h.with_app_mut(|app| assert!(app.open_decision_overlay_for_ask(&id)));
         monitor.fail_audit(true);
