@@ -268,50 +268,58 @@ fn record_scope_allow(
 }
 
 /// Sync `agent.json` and any active run in `runs.jsonl` when a soft grant expires.
-pub fn expire_soft_grant_in_workspace(workspace: &Path, actor_id: &str, tool: &str) {
+pub fn expire_soft_grant_in_workspace(
+    workspace: &Path,
+    actor_id: &str,
+    tool: &str,
+) -> Result<(), String> {
     let agent_id = actor_id.strip_prefix("agent:").unwrap_or(actor_id);
     let agent_dir = agents_root(workspace).join(agent_id);
-    if crate::agent::authority_file_migrating_legacy(&agent_dir).is_some() {
-        if let Ok(mut card) = read_agent(&agent_dir) {
-            let mut changed = false;
-            for grant in &mut card.grants {
-                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
-                {
-                    grant.decision = "ask".to_string();
-                    grant.expires_at = None;
-                    changed = true;
-                }
+    if agent_dir.join("agent.json").exists() || agent_dir.join("head.json").exists() {
+        let mut card = read_agent(&agent_dir).map_err(|error| {
+            log::error!("agents_api: failed to read authority for {agent_id}: {error}");
+            error
+        })?;
+        let mut changed = false;
+        for grant in &mut card.grants {
+            if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow" {
+                grant.decision = "ask".to_string();
+                grant.expires_at = None;
+                changed = true;
             }
-            if changed {
-                if let Err(error) = write_definition(workspace, &card) {
-                    log::error!(
-                        "agents_api: failed to update expired soft grant on agent {}: {error}",
-                        card.id
-                    );
-                }
-            }
+        }
+        if changed {
+            write_authority(&agent_dir, &card)?;
         }
     }
     let _guard = journal_lock().lock().unwrap_or_else(|e| e.into_inner());
-    if let Ok(runs) = load_runs(workspace) {
-        for mut run in runs {
-            if !run.active || (run.actor_id != actor_id && run.agent_id != agent_id) {
-                continue;
-            }
-            let mut changed = false;
-            for grant in &mut run.grants {
-                if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow"
-                {
-                    grant.decision = "ask".to_string();
-                    grant.expires_at = None;
-                    changed = true;
-                }
-            }
-            if changed {
-                let _ = append_run_record(workspace, &run);
+    let runs = load_runs(workspace).map_err(|error| {
+        log::error!("agents_api: failed to load runs during grant expiry: {error}");
+        error
+    })?;
+    for mut run in runs {
+        if !run.active || (run.actor_id != actor_id && run.agent_id != agent_id) {
+            continue;
+        }
+        let mut changed = false;
+        for grant in &mut run.grants {
+            if grant.tool == tool && grant.kind == GrantKind::Soft && grant.decision == "allow" {
+                grant.decision = "ask".to_string();
+                grant.expires_at = None;
+                changed = true;
             }
         }
+        if changed {
+            append_run_record(workspace, &run).map_err(|error| {
+                log::error!(
+                    "agents_api: failed to update expired grant on run {}: {error}",
+                    run.id
+                );
+                error
+            })?;
+        }
     }
+    Ok(())
 }
 
 /// Grant `tool=allow` on `run_id` only (in `runs.jsonl`), without modifying `agent.json`.
@@ -346,7 +354,9 @@ pub fn grant_tool_for_run(workspace: &Path, run_id: &str, tool: &str) -> Result<
 
 fn write_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
     let dir = agents_root(workspace).join(&card.id);
-    fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
+    let parent = agents_root(workspace);
+    fs::create_dir_all(&parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
+    fs::create_dir(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     let prompt = format!(
         "# {}\n\nGuidance only. This file grants no tools and no scopes.\nReporting line: {}.\n",
         card.display_name,
@@ -379,21 +389,34 @@ fn write_definition(workspace: &Path, card: &AgentAuthorityRecord) -> Result<(),
     );
     fs::write(dir.join("settings.toml"), settings)
         .map_err(|error| format!("write settings.toml: {error}"))?;
-    let body = serde_json::to_string_pretty(card).map_err(|error| error.to_string())?;
-    fs::write(dir.join("agent.json"), body)
-        .map_err(|error| format!("write agent.json: {error}"))?;
-    Ok(())
+    write_authority(&dir, card)
+}
+
+fn write_authority(dir: &Path, card: &AgentAuthorityRecord) -> Result<(), String> {
+    let result = serde_json::to_string_pretty(card)
+        .map_err(|error| format!("serialize authority: {error}"))
+        .and_then(|body| {
+            fs::write(dir.join("agent.json"), body)
+                .map_err(|error| format!("write {}: {error}", dir.join("agent.json").display()))
+        });
+    if let Err(error) = &result {
+        log::error!("agents_api: failed to write authority: {error}");
+    }
+    result
 }
 
 fn read_agent(dir: &Path) -> Result<AgentAuthorityRecord, String> {
     let path = crate::agent::authority_file_migrating_legacy(dir)
         .ok_or_else(|| format!("no agent.json in {}", dir.display()))?;
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let raw =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     serde_json::from_str(&raw).map_err(|error| format!("agent.json in {}: {error}", dir.display()))
 }
 
-fn list_agent_authorities(workspace: &Path, include_temporary: bool) -> Result<Vec<AgentAuthorityRecord>, String> {
+fn list_agent_authorities(
+    workspace: &Path,
+    include_temporary: bool,
+) -> Result<Vec<AgentAuthorityRecord>, String> {
     let root = agents_root(workspace);
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -585,7 +608,7 @@ fn create_agent(req: CreateAgent<'_>) -> Value {
         }
     }
     let dir = agents_root(req.workspace).join(req.name);
-    if crate::agent::authority_file_migrating_legacy(&dir).is_some() {
+    if dir.exists() {
         return json!({"ok": false, "error_code": "agent_exists", "error": format!("agent '{}' already exists", req.name)});
     }
     let now = gate.now_secs();
@@ -695,7 +718,10 @@ fn issue_run(req: IssueRun<'_>) -> Value {
             "idempotent": true,
         });
     }
-    if let Some(active) = runs.iter().find(|run| run.agent_id == agent.id && run.active) {
+    if let Some(active) = runs
+        .iter()
+        .find(|run| run.agent_id == agent.id && run.active)
+    {
         log::info!(
             "agents_api: assignment_conflict agent={} active_run={} admission={admission_id}",
             agent.id,
@@ -785,7 +811,9 @@ fn issue_run(req: IssueRun<'_>) -> Value {
 fn find_agent(workspace: &Path, id: &str) -> Result<AgentAuthorityRecord, Value> {
     let dir = agents_root(workspace).join(id);
     let definition = match crate::cli::agent::resolve_agent_definition_in(
-        id, &crate::config::config_dir(), Some(workspace),
+        id,
+        &crate::config::config_dir(),
+        Some(workspace),
     ) {
         Ok((definition, _)) => definition,
         Err(error) => {
@@ -794,7 +822,9 @@ fn find_agent(workspace: &Path, id: &str) -> Result<AgentAuthorityRecord, Value>
                     "ok": false, "error_code": "agent_unrecognised",
                     "error": format!("agent directory {} is unrecognised: {}", dir.display(), issue.issue.describe()),
                 }),
-                None => json!({"ok": false, "error_code": "agent_not_found", "error": if dir.exists() { error } else { format!("no agent '{id}'") }}),
+                None => {
+                    json!({"ok": false, "error_code": "agent_not_found", "error": if dir.exists() { error } else { format!("no agent '{id}'") }})
+                }
             });
         }
     };
@@ -803,7 +833,10 @@ fn find_agent(workspace: &Path, id: &str) -> Result<AgentAuthorityRecord, Value>
             .map_err(|error| json!({"ok": false, "error_code": "io_error", "error": error}))?;
         return Ok(authority);
     }
-    log::info!("agents_api: resolved identity {} with no local authority", definition.id);
+    log::info!(
+        "agents_api: resolved identity {} with no local authority",
+        definition.id
+    );
     Ok(AgentAuthorityRecord {
         id: definition.id,
         display_name: definition.display_name,
@@ -1041,10 +1074,7 @@ pub fn handle_request(op: &str, payload: &Value) -> Value {
         }
         "list_grants" => list_grants(&workspace),
         "spawn_run" => {
-            let agent_id = payload
-                .get("agent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let agent_id = payload.get("agent").and_then(|v| v.as_str()).unwrap_or("");
             let agent = match find_agent(&workspace, agent_id) {
                 Ok(agent) => agent,
                 Err(error) => return error,
@@ -1482,10 +1512,7 @@ fn execute_tool(workspace: &Path, run: &RunRecord, tool: &str, input_json: &str)
 
 pub fn projection(workspace: &Path) -> Value {
     let workspace = crate::platform::path::canonical_or_self(workspace);
-    let agents = handle_request(
-        "list_agents",
-        &json!({"workspace": workspace, "all": true}),
-    );
+    let agents = handle_request("list_agents", &json!({"workspace": workspace, "all": true}));
     let runs = handle_request("list_runs", &json!({"workspace": &workspace}));
     let pending = serde_json::to_value(monitor().list_pending()).unwrap_or(json!([]));
     json!({
@@ -1696,6 +1723,64 @@ mod tests {
     }
 
     #[test]
+    fn expiry_preserves_custom_definition_and_migrates_legacy_authority() {
+        let fix = Fixture::new();
+        assert_eq!(
+            create(&fix, "worker", &["agents.review=allow:soft"])["ok"],
+            true
+        );
+        let dir = agents_root(fix.ws()).join("worker");
+        let persona = b"# Custom persona\nNever replace this.\n";
+        let settings = b"# User formatting\n[agent]\nid = \"worker\"\ncustom = true\n";
+        fs::write(dir.join("AGENT.md"), persona).unwrap();
+        fs::write(dir.join("settings.toml"), settings).unwrap();
+        fs::rename(dir.join("agent.json"), dir.join("head.json")).unwrap();
+        expire_soft_grant_in_workspace(fix.ws(), "agent:worker", "agents.review").unwrap();
+        assert_eq!(fs::read(dir.join("AGENT.md")).unwrap(), persona);
+        assert_eq!(fs::read(dir.join("settings.toml")).unwrap(), settings);
+        let record = read_agent(&dir).unwrap();
+        assert_eq!(record.grants[0].decision, "ask");
+        assert!(record.grants[0].expires_at.is_none());
+        assert!(dir.join("agent.json").is_file());
+    }
+
+    #[test]
+    fn agent_pane_cannot_replace_existing_definition_or_authority() {
+        let fix = Fixture::new();
+        assert_eq!(create(&fix, "worker", &["agents.ping=allow"])["ok"], true);
+        let dir = agents_root(fix.ws()).join("worker");
+        let before = fs::read(dir.join("agent.json")).unwrap();
+        let result = handle_request(
+            "create_agent",
+            &json!({
+                "workspace": fix.ws(), "name": "worker", "caller_pane": 7,
+                "caller_agent": "worker", "grants": ["agents.ping=allow"]
+            }),
+        );
+        assert_eq!(result["error_code"], "agent_exists", "{result}");
+        assert_eq!(fs::read(dir.join("agent.json")).unwrap(), before);
+        fs::rename(dir.join("agent.json"), dir.join("saved.json")).unwrap();
+        let persona = fs::read(dir.join("AGENT.md")).unwrap();
+        let result = create(&fix, "worker", &[]);
+        assert_eq!(result["error_code"], "agent_exists", "{result}");
+        assert_eq!(fs::read(dir.join("AGENT.md")).unwrap(), persona);
+        assert!(!dir.join("agent.json").exists());
+    }
+
+    #[test]
+    fn authority_write_failure_is_returned() {
+        let fix = Fixture::new();
+        assert_eq!(create(&fix, "worker", &["agents.ping=allow"])["ok"], true);
+        let dir = agents_root(fix.ws()).join("worker");
+        let record = read_agent(&dir).unwrap();
+        fs::rename(dir.join("agent.json"), dir.join("saved.json")).unwrap();
+        fs::create_dir(dir.join("agent.json")).unwrap();
+        assert!(write_authority(&dir, &record)
+            .unwrap_err()
+            .contains("agent.json"));
+    }
+
+    #[test]
     fn agent_lands_under_neutral_agents_dir_and_lists() {
         let fix = Fixture::new();
         let created = create(&fix, "worker", &["agents.ping=allow", "agents.review=ask"]);
@@ -1722,7 +1807,10 @@ mod tests {
         assert_eq!(workspace_agent.display_name, "worker");
         assert_eq!(workspace_agent.grants[0].tool, "agents.ping");
         fs::remove_file(agents_root(fix.ws()).join("worker/agent.json")).unwrap();
-        assert_eq!(find_agent(fix.ws(), "worker").unwrap().display_name, "worker");
+        assert_eq!(
+            find_agent(fix.ws(), "worker").unwrap().display_name,
+            "worker"
+        );
     }
 
     #[test]
@@ -1730,9 +1818,15 @@ mod tests {
         let fix = Fixture::new();
         create(&fix, "worker", &["agents.ping=allow"]);
         fs::remove_file(agents_root(fix.ws()).join("worker/agent.json")).unwrap();
-        let spawned = handle_request("spawn_run", &json!({"workspace": fix.ws(), "agent": "worker"}));
+        let spawned = handle_request(
+            "spawn_run",
+            &json!({"workspace": fix.ws(), "agent": "worker"}),
+        );
         assert_eq!(spawned["ok"], true, "{spawned}");
-        let call = handle_request("call", &json!({"workspace": fix.ws(), "run_id": spawned["run"]["id"], "tool": "agents.ping", "input_json": "{}"}));
+        let call = handle_request(
+            "call",
+            &json!({"workspace": fix.ws(), "run_id": spawned["run"]["id"], "tool": "agents.ping", "input_json": "{}"}),
+        );
         assert_eq!(call["error_code"], "permission_denied", "{call}");
     }
 
@@ -2271,7 +2365,8 @@ mod tests {
         let dir = agents_root(fix.ws()).join("lead-120cadfb");
         fs::rename(dir.join("agent.json"), dir.join("head.json")).unwrap();
 
-        let card = find_agent(fix.ws(), "lead-120cadfb").expect("the legacy authority record resolves");
+        let card =
+            find_agent(fix.ws(), "lead-120cadfb").expect("the legacy authority record resolves");
         assert_eq!(card.id, "lead-120cadfb");
         assert_eq!(card.grants[0].tool, "agents.ping");
         assert!(
