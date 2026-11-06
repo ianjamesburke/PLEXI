@@ -1152,7 +1152,14 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
         }
         h.focus_pane(terminal);
         let pid = h.terminal_backend(terminal).child_pid();
-        assert_eq!(crate::host::shell::get_pid_cwd_fresh(pid).unwrap().canonicalize().unwrap(), directory.canonicalize().unwrap(), "shell must remain in the executed cd directory");
+        assert_eq!(
+            crate::host::shell::get_pid_cwd_fresh(pid)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "shell must remain in the executed cd directory"
+        );
         h.app.open_file_browser();
         let browser = h.app.windows[0]
             .panes
@@ -1179,12 +1186,20 @@ fn file_browser_fallback_uses_explicit_context_not_active_router() {
     let caller = h.add_test_pane();
     let other = tempfile::tempdir().unwrap();
     h.app.router.push(crate::host::context::Context {
-        name: "Other".into(), root: other.path().to_path_buf(), description: None,
-        context_id: caller_context + 100000, parent_id: None, depth: 0, parked: false,
+        name: "Other".into(),
+        root: other.path().to_path_buf(),
+        description: None,
+        context_id: caller_context + 100000,
+        parent_id: None,
+        depth: 0,
+        parked: false,
     });
     h.app.router.set_active(1);
     for pane in [Some(caller), Some(u64::MAX), None] {
-        assert_eq!(h.app.file_browser_start_directory(pane, caller_context), root);
+        assert_eq!(
+            h.app.file_browser_start_directory(pane, caller_context),
+            root
+        );
     }
 }
 
@@ -1199,19 +1214,38 @@ fn file_browser_unavailable_terminal_directory_falls_back() {
     let directory = root.join("removed");
     std::fs::create_dir(&directory).unwrap();
     let marker = root.join("ready");
-    h.terminal_backend(terminal).process_command(egui_term::BackendCommand::Write(
-        format!("cd '{}' && touch '{}'\n", directory.display(), marker.display()).into_bytes(),
-    ));
-    let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!(
+                "cd '{}' && touch '{}'\n",
+                directory.display(),
+                marker.display()
+            )
+            .into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
     while !marker.exists() {
         assert!(std::time::Instant::now() < deadline);
         h.run_frames(1);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     std::fs::remove_dir(&directory).unwrap();
-    assert_eq!(h.app.file_browser_start_directory(Some(terminal), context), root);
-    h.app.windows[0].panes.get_mut(&terminal).unwrap().as_terminal_mut().unwrap().exited = true;
-    assert_eq!(h.app.file_browser_start_directory(Some(terminal), context), root);
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
 }
 
 #[test]
@@ -1220,31 +1254,90 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
     let mut h = crate::testing::HostHarness::new();
     let terminal = h.add_focused_terminal();
-    let expected = crate::host::shell::get_pid_cwd_fresh(h.terminal_backend(terminal).child_pid()).unwrap();
+    let expected = h.workspace_root().join("caller-directory");
+    let unrelated_directory = h.workspace_root().join("focused-directory");
+    let unrelated = h.add_focused_terminal();
+    for (pane, directory) in [(terminal, &expected), (unrelated, &unrelated_directory)] {
+        std::fs::create_dir(directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(pane)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    h.focus_pane(unrelated);
     let caller_context = h.app.windows[0].context_id;
     let other_root = tempfile::tempdir().unwrap();
     let other_context = caller_context + 100000;
     h.app.router.push(crate::host::context::Context {
-        name: "Other".into(), root: other_root.path().to_path_buf(), description: None,
-        context_id: other_context, parent_id: None, depth: 0, parked: false,
+        name: "Other".into(),
+        root: other_root.path().to_path_buf(),
+        description: None,
+        context_id: other_context,
+        parent_id: None,
+        depth: 0,
+        parked: false,
     });
     h.app.windows.push(crate::host::context::Window {
-        name: "Other".into(), path: other_root.path().to_path_buf(),
-        tree: egui_tiles::Tree::empty("explorer_other"), panes: std::collections::HashMap::new(),
-        focused_pane: None, zoomed_pane: None, grid_x: 0, grid_y: 1, window_id: 90001, context_id: other_context,
+        name: "Other".into(),
+        path: other_root.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("explorer_other"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 90001,
+        context_id: other_context,
     });
     h.app.active_window = 1;
     h.app.router.set_active(1);
     h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
-        type_id: "file_browser".into(), layout: Some("split_h".into()), args: vec![],
-        from_pane_id: Some(terminal), request_id: None, response_file: None, ephemeral: false,
-        cwd: None, no_focus: true, path: None, workspace_root: None, target_context: None,
-        context_name: None, name: None, agent_cmd: None, boot_timeout_secs: None,
-        worktree: None, result_schema: None, peer_ancestry: None,
+        type_id: "file_browser".into(),
+        layout: Some("split_h".into()),
+        args: vec![],
+        from_pane_id: Some(terminal),
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: None,
+        no_focus: true,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
     });
     h.hidden_frame();
-    let browser = h.app.windows[0].panes.values().find_map(|pane| pane.as_app().filter(|app| app.runtime.type_id() == "file_browser")).unwrap();
-    assert_eq!(browser.workspace_root.canonicalize().unwrap(), expected.canonicalize().unwrap());
+    let browser = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_app()
+                .filter(|app| app.runtime.type_id() == "file_browser")
+        })
+        .unwrap();
+    assert_eq!(
+        browser.workspace_root.canonicalize().unwrap(),
+        expected.canonicalize().unwrap()
+    );
     assert_eq!(h.app.active_window, 1);
     assert_eq!(h.app.router.active().context_id, other_context);
     assert!(h.app.windows[1].panes.is_empty());

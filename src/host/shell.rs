@@ -1463,15 +1463,24 @@ mod tests {
     fn pid_cwd_fresh_bypasses_recent_cached_directory() {
         let root = tempfile::tempdir().unwrap();
         let mut child = std::process::Command::new("/bin/sleep")
-            .arg("30").current_dir(root.path())
-            .stdin(std::process::Stdio::null()).spawn().unwrap();
+            .arg("30")
+            .current_dir(root.path())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         let pid = child.id();
-        CWD_CACHE.lock().unwrap().insert(pid, (PathBuf::from("/stale-cwd"), Instant::now()));
+        CWD_CACHE
+            .lock()
+            .unwrap()
+            .insert(pid, (PathBuf::from("/stale-cwd"), Instant::now()));
         let current = get_pid_cwd_fresh(pid);
         child.kill().unwrap();
         child.wait().unwrap();
         CWD_CACHE.lock().unwrap().remove(&pid);
-        assert_eq!(current.unwrap().canonicalize().unwrap(), root.path().canonicalize().unwrap());
+        assert_eq!(
+            current.unwrap().canonicalize().unwrap(),
+            root.path().canonicalize().unwrap()
+        );
         assert!(get_pid_cwd_fresh(pid).is_none());
     }
 
