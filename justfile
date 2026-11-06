@@ -425,13 +425,14 @@ _pr-prepare number test_scope action:
         echo "pr-install: not reusing a prior binary ($_reuse_verdict)"
       fi
     fi
-    if rg -q 'cargo-with-lease\.sh' "$_wt/scripts/install.sh"; then
+    if rg -q 'cargo-with-lease\.sh|distribution-tool\.sh' "$_wt/scripts/install.sh"; then
       ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" bash scripts/install.sh --from-source "pr-{{number}}" )
     else
       # Older PR heads predate the leaf wrapper. Treat their opaque install
       # script as the compatibility leaf; newer heads acquire inside their
-      # own bundle invocation and must never acquire twice.
-      ( cd "$_wt" && "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
+      # build/helper invocation and must never lease the whole packaging step.
+      # Preserve verified reuse even for older supported installer leaves.
+      ( cd "$_wt" && PLEXI_REUSE_RELEASE_BUILD="$_reuse_env" "$_driver_root/scripts/cargo-with-lease.sh" bash scripts/install.sh --from-source "pr-{{number}}" )
     fi
     bash "$_driver_root/scripts/pr-install-seed-profile.sh" seed "{{number}}"
     # Record that this binary was built for pr-<N> at this head, so a later

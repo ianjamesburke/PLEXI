@@ -171,6 +171,33 @@ class Lifecycle(unittest.TestCase):
             config.write_text('[build]\njobs=2\n')
             self.assertNotEqual(first, EVIDENCE.identity(self.repo, []))
 
+    def test_actual_install_dispatch_preserves_reuse_and_leaf_leases(self):
+        recipe = (ROOT / 'justfile').read_text()
+        dispatch = recipe[recipe.index('    if rg -q '):].split('\n    bash "$_driver_root/scripts/pr-install-seed-profile.sh"', 1)[0]
+        dispatch = dispatch.replace('{{number}}', '1')
+        scripts = self.repo / 'scripts'
+        scripts.mkdir()
+        wrapper = scripts / 'cargo-with-lease.sh'
+        wrapper.write_text('#!/bin/bash\necho outer >> "$FIXTURE_OUTER"\nexec "$@"\n')
+        wrapper.chmod(0o755)
+        installed = self.root / 'installed'
+        outer = self.root / 'outer'
+        env = {**self.env, 'FIXTURE_INSTALLED': str(installed), 'FIXTURE_OUTER': str(outer)}
+        # Execute the production dispatch for each installer generation. The
+        # current installer delegates leases through distribution-tool.sh;
+        # older leaf wrappers name cargo-with-lease.sh directly.
+        for marker, expects_outer in [('distribution-tool.sh', False), ('cargo-with-lease.sh', False), ('legacy', True)]:
+            with self.subTest(marker=marker):
+                installed.unlink(missing_ok=True)
+                outer.unlink(missing_ok=True)
+                (scripts / 'install.sh').write_text('#!/bin/bash\n# ' + marker + '\n'
+                    'test "${PLEXI_REUSE_RELEASE_BUILD:-}" = 1 || exit 91\n'
+                    'printf "%s\\n" "$*" > "$FIXTURE_INSTALLED"\n')
+                self.call('bash', '-c', '_wt="$1"; _driver_root="$1"; _reuse_env=1;\n' + dispatch,
+                          'fixture', str(self.repo), env=env)
+                self.assertEqual(installed.read_text().strip(), '--from-source pr-1')
+                self.assertEqual(outer.exists(), expects_outer)
+
     def test_slots_retain_and_reject_unowned_target(self):
         command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1',
                    'python3', '-c', 'import os,pathlib; p=pathlib.Path(os.environ["CARGO_TARGET_DIR"]); print(p); (p/"keep").touch()']
