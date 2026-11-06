@@ -327,6 +327,8 @@ pub enum RunOutcome {
     OutcomeUnknown,
     /// The original waiter ended before the decision; no operation was sent.
     RetryRequired,
+    /// A host-owned operation was denied and cannot be retried under this ID.
+    Canceled,
 }
 
 impl RunOutcome {
@@ -335,6 +337,7 @@ impl RunOutcome {
             Self::Unblocked => "unblocked",
             Self::OutcomeUnknown => "outcome_unknown",
             Self::RetryRequired => "retry_required",
+            Self::Canceled => "canceled",
         }
     }
 }
@@ -1732,7 +1735,6 @@ impl PermissionMonitor {
                 run_outcome: self.stored_outcome(id),
             });
         }
-        let mut outcome = self.run_outcome_for(id);
         let final_resolution = if approve {
             NeedsYouResolution::Approved
         } else if row.kind == NeedsYouKind::Integrity {
@@ -1740,6 +1742,7 @@ impl PermissionMonitor {
         } else {
             NeedsYouResolution::Denied
         };
+        let mut outcome = self.decision_run_outcome(id, final_resolution);
         match row.kind {
             NeedsYouKind::ApprovalClick => {
                 let choice = if approve {
@@ -1948,6 +1951,16 @@ impl PermissionMonitor {
         }
     }
 
+    fn decision_run_outcome(&self, id: &str, resolution: NeedsYouResolution) -> RunOutcome {
+        if resolution == NeedsYouResolution::Denied
+            && self.get_continuation(id).is_some_and(|record| record.request_fingerprint.is_some())
+        {
+            RunOutcome::Canceled
+        } else {
+            self.run_outcome_for(id)
+        }
+    }
+
     fn origin_is_current(&self, id: &str) -> bool {
         self.origins
             .lock()
@@ -2114,7 +2127,7 @@ impl PermissionMonitor {
         let outcome = if decision == "outcome_unknown" {
             RunOutcome::OutcomeUnknown
         } else {
-            self.run_outcome_for(id)
+            self.decision_run_outcome(id, resolution)
         };
         self.update_continuation_on_needs_you(
             id,
@@ -2551,7 +2564,17 @@ impl PermissionMonitor {
                     .needs_you_id
                     .as_ref()
                     .is_some_and(|ny_id| open_ids.contains(ny_id));
-                if record.state == ContinuationState::Paused
+                if waiting_on_restored_open
+                    && record.request_fingerprint.is_some()
+                    && record.state == ContinuationState::WaitingUser
+                {
+                    // Pane sends persist OutcomeUnknown before dispatch. An
+                    // unclaimed waiting record therefore proves no effect ran;
+                    // the old process's waiter is gone, so require exact retry.
+                    record.state = ContinuationState::Paused;
+                    record.run_outcome = Some(RunOutcome::RetryRequired.as_str().to_string());
+                    dirty = true;
+                } else if record.state == ContinuationState::Paused
                     && matches!(record.run_outcome.as_deref(), Some("retry_required" | "retry_requires_authorization_check"))
                     && record.resolution == Some(NeedsYouResolution::Approved)
                 {
@@ -4811,6 +4834,62 @@ mod tests {
             instance_id: binding.instance_id.unwrap_or(0),
             target_type: binding.target_type,
         })
+    }
+
+    #[test]
+    fn pane_send_restart_before_decision_preserves_exact_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::open_profile(dir.path());
+        let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"waiting-restart"}"#;
+        let fingerprint = fingerprint_args(args).unwrap();
+        let mut base = binding(&fingerprint);
+        base.target_type = TargetType::Capability;
+        base.target_id = "pane.send".into();
+        base.call_id = "pane-send".into();
+        let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+            panic!("approval needed")
+        };
+        assert_eq!(monitor.get_continuation("waiting-restart").unwrap().state, ContinuationState::WaitingUser);
+        drop(monitor);
+
+        let restored = PermissionMonitor::open_profile(dir.path());
+        let record = restored.get_continuation("waiting-restart").unwrap();
+        assert_eq!(record.state, ContinuationState::Paused);
+        assert_eq!(record.run_outcome.as_deref(), Some("retry_required"));
+        restored.approve_pending(&pending_request_id, ApprovalChoice::Once).unwrap();
+        assert!(matches!(admit_of(&restored, &base, args), Admission::Proceed { .. }));
+        assert_eq!(restored.claim_pane_send("waiting-restart", &base.actor_id, 9, 42, &fingerprint).unwrap(), PaneSendClaim::Claimed);
+        assert_eq!(restored.claim_pane_send("waiting-restart", &base.actor_id, 9, 42, &fingerprint).unwrap(), PaneSendClaim::OutcomeUnknown,
+            "a durable dispatch marker must still prevent replay after execution may have started");
+    }
+
+    #[test]
+    fn pane_send_denial_after_timeout_is_terminal_in_reconciliation() {
+        for via_socket in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let monitor = PermissionMonitor::open_profile(dir.path());
+            let args = r#"{"pane_id":42,"text_fingerprint":"hash","operation_id":"deny-detached"}"#;
+            let mut base = binding(&fingerprint_args(args).unwrap());
+            base.target_type = TargetType::Capability;
+            base.target_id = "pane.send".into();
+            base.call_id = "pane-send".into();
+            let Admission::Required { pending_request_id } = admit_of(&monitor, &base, args) else {
+                panic!("approval needed")
+            };
+            monitor.detach_pane_send_waiter(&pending_request_id).unwrap();
+            if via_socket {
+                let receipt = monitor.resolve_needs_you_from(&pending_request_id, false, ResolveSurface::Socket).unwrap();
+                assert_eq!(receipt.run_outcome.as_str(), "canceled");
+            } else {
+                monitor.approve_pending(&pending_request_id, ApprovalChoice::Deny).unwrap();
+            }
+            let record = monitor.get_continuation("deny-detached").unwrap();
+            assert_eq!(record.state, ContinuationState::Canceled);
+            assert_eq!(record.run_outcome.as_deref(), Some("canceled"));
+            drop(monitor);
+            let restored = PermissionMonitor::open_profile(dir.path());
+            assert_eq!(restored.get_continuation("deny-detached").unwrap().run_outcome.as_deref(), Some("canceled"));
+        }
     }
 
     #[test]
