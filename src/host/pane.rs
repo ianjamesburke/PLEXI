@@ -624,6 +624,21 @@ impl Pane {
         if let Some(pip) = self.pip_status() {
             return Some(pip.as_agent_state());
         }
+        if let Pane::Terminal(t) = self {
+            if t.is_agent_pane() && (t.exited || t.agent_completed || t.slots.contains_key("completed")) {
+                use crate::protocol::AgentState;
+                return Some(match t.effective_agent_state().0 {
+                    AgentState::Working => &AgentState::Working,
+                    AgentState::Idle => &AgentState::Idle,
+                    AgentState::NeedsYou => &AgentState::NeedsYou,
+                    AgentState::Blocked => &AgentState::Blocked,
+                    AgentState::Failed => &AgentState::Failed,
+                    AgentState::Interrupted => &AgentState::Interrupted,
+                    AgentState::Completed => &AgentState::Completed,
+                    AgentState::ExitedUnreported => &AgentState::ExitedUnreported,
+                });
+            }
+        }
         if let Some(a) = self.agent() {
             return Some(&a.state);
         }
@@ -1000,6 +1015,7 @@ impl TerminalPane {
         self.agent_harness.is_some()
             || self.agent_role.is_some()
             || self.agent.is_some()
+            || self.reported_7501.is_some()
             || self.observed_agent.is_some()
             || self.standby_session.is_some()
     }
@@ -1209,6 +1225,8 @@ impl TerminalPane {
             (crate::protocol::AgentState::Completed, detail)
         } else if let Some(status) = exit.filter(|s| s.is_failure()) {
             (crate::protocol::AgentState::Failed, Some(status.summary()))
+        } else if exit.is_some() && state == crate::protocol::AgentState::Working {
+            (crate::protocol::AgentState::Interrupted, detail)
         } else {
             (state, detail)
         }
@@ -1432,7 +1450,7 @@ mod agent_source_tests {
             (true, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Completed, "report"),
             (false, Some(ExitStatus::Code(3)), AgentState::Completed, AgentState::Completed, "report"),
             (false, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Failed, "exited (3)"),
-            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Working, "report"),
+            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Interrupted, "report"),
             (false, None, AgentState::Blocked, AgentState::Blocked, "report"),
         ] {
             let actual = super::TerminalPane::resolve_agent_state(completed, exit, reported, Some("report".into()));

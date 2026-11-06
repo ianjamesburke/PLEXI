@@ -93,12 +93,10 @@ pub fn render(
             .exit_status
             .as_ref()
             .is_some_and(|s| s.is_failure());
-    let pane_agent_state = terminal
-        .reported_7501
-        .as_ref()
-        .map(|a| a.state.clone())
-        .or_else(|| terminal.agent.as_ref().map(|a| a.state.clone()))
-        .or_else(|| terminal.observed_agent.as_ref().map(|a| a.state.clone()))
+    let pane_agent_state = (terminal.agent.is_some()
+        || terminal.reported_7501.is_some()
+        || terminal.observed_agent.is_some())
+        .then(|| terminal.effective_agent_state().0)
         .or_else(|| {
             terminal
                 .standby_session
