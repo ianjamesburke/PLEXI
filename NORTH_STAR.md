@@ -26,6 +26,10 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 3. **Keyboard-first. The mouse is optional.** Every interaction has a keyboard path, and the fast path is the default path.
 
+    **Every action is a command.** Cmd+P is the discovery path for every user-facing Plexi action: moving focus, launching apps, opening contexts, moving panes, and changing settings. A central command registry gives each action a stable identity, searchable name and aliases, explicit targets and arguments, and availability rules. The palette and configurable keybindings invoke the same command; shortcuts are the learned fast path. Commands remain discoverable when unavailable and explain what they need. Any exception must have an explicit product or security reason.
+
+    Opening the palette preserves the invoking pane and selection. Pane commands act on selected panes when a selection exists, otherwise on the focused pane, and show which targets they will affect. CLI and agent entry points share command behavior and retain their capability checks; discoverability never grants authority.
+
 4. **Every Plexi feature is reachable through the Plexi CLI.** 99% of commands are run by agents. The CLI is the product — the primary interface for humans and agents alike, never a developer escape hatch. If a feature isn't in the CLI, it doesn't exist for the agent.
 
 5. **`--help` covers the entire surface.** An agent — or a person whose first terminal was last month — can learn all of Plexi without leaving it. Help text explains what, why, and what it connects to. It is load-bearing: agents discover capabilities by reading it.
