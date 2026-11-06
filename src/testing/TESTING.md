@@ -143,6 +143,11 @@ completes.
 
 A scene file is a list of steps: setup, actions, structured assertions, optional screenshots. **The scene file IS the test** — `scene_suite` globs `tests/scenes/*.toml`, so adding a file adds a regression test. Runner: `src/scenes.rs`.
 
+Use `clear_seed = true` as the first step only when a scene needs an empty
+initial topology. Headless runs require an already-empty harness; live runs
+close only the sole seed terminal of a fresh runner-owned host and refuse
+attached hosts or scenes that have already opened panes.
+
 ```toml
 size = [1280.0, 800.0]      # optional, default 1280x800
 sizes = [[520.0, 400.0], [1280.0, 800.0]]
