@@ -644,11 +644,9 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     );
 }
 
-/// The file browser must open at the context root when one is set, not the
-/// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
-/// (context.root → focused cwd → home) that every other new-pane path uses.
+/// Without an invoking terminal, Explorer falls back to the context root.
 #[test]
-fn file_browser_opens_at_context_root() {
+fn file_browser_without_terminal_opens_at_context_root() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
@@ -670,7 +668,7 @@ fn file_browser_opens_at_context_root() {
     assert_eq!(
         fb_root.as_deref(),
         Some(root.as_path()),
-        "file browser should open at the context root, not the focused pane CWD"
+        "file browser without a terminal should use the context root"
     );
 }
 
@@ -1119,4 +1117,129 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
     assert_ne!(value["tag"], "v999.0.0");
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_fresh_open_tracks_terminal_cd() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let terminal = h.add_focused_terminal();
+    for name in ["first", "second"] {
+        let directory = root.join(name);
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(terminal)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "terminal did not execute cd"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.app.open_file_browser();
+        let browser = h.app.windows[0]
+            .panes
+            .values()
+            .find_map(|pane| {
+                pane.as_app()
+                    .filter(|app| app.runtime.type_id() == "file_browser")
+            })
+            .unwrap();
+        assert_eq!(
+            browser.workspace_root.canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
+        h.app.open_file_browser(); // focused Explorer toggles closed, restoring the terminal
+        h.focus_pane(terminal);
+    }
+}
+
+#[test]
+fn file_browser_fallback_uses_explicit_context_not_active_router() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let caller_context = h.app.windows[0].context_id;
+    let caller = h.add_test_pane();
+    let other = tempfile::tempdir().unwrap();
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(), root: other.path().to_path_buf(), description: None,
+        context_id: caller_context + 100000, parent_id: None, depth: 0, parked: false,
+    });
+    h.app.router.set_active(1);
+    for pane in [Some(caller), Some(u64::MAX), None] {
+        assert_eq!(h.app.file_browser_start_directory(pane, caller_context), root);
+    }
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_unavailable_terminal_directory_falls_back() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let context = h.app.windows[0].context_id;
+    let terminal = h.add_focused_terminal();
+    let directory = root.join("removed");
+    std::fs::create_dir(&directory).unwrap();
+    let marker = root.join("ready");
+    h.terminal_backend(terminal).process_command(egui_term::BackendCommand::Write(
+        format!("cd '{}' && touch '{}'\n", directory.display(), marker.display()).into_bytes(),
+    ));
+    let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::remove_dir(&directory).unwrap();
+    assert_eq!(h.app.file_browser_start_directory(Some(terminal), context), root);
+    h.app.windows[0].panes.get_mut(&terminal).unwrap().as_terminal_mut().unwrap().exited = true;
+    assert_eq!(h.app.file_browser_start_directory(Some(terminal), context), root);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
+    let mut h = crate::testing::HostHarness::new();
+    let terminal = h.add_focused_terminal();
+    let expected = crate::host::shell::get_pid_cwd_fresh(h.terminal_backend(terminal).child_pid()).unwrap();
+    let caller_context = h.app.windows[0].context_id;
+    let other_root = tempfile::tempdir().unwrap();
+    let other_context = caller_context + 100000;
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(), root: other_root.path().to_path_buf(), description: None,
+        context_id: other_context, parent_id: None, depth: 0, parked: false,
+    });
+    h.app.windows.push(crate::host::context::Window {
+        name: "Other".into(), path: other_root.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("explorer_other"), panes: std::collections::HashMap::new(),
+        focused_pane: None, zoomed_pane: None, grid_x: 0, grid_y: 1, window_id: 90001, context_id: other_context,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+        type_id: "file_browser".into(), layout: Some("split_h".into()), args: vec![],
+        from_pane_id: Some(terminal), request_id: None, response_file: None, ephemeral: false,
+        cwd: None, no_focus: true, path: None, workspace_root: None, target_context: None,
+        context_name: None, name: None, agent_cmd: None, boot_timeout_secs: None,
+        worktree: None, result_schema: None, peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let browser = h.app.windows[0].panes.values().find_map(|pane| pane.as_app().filter(|app| app.runtime.type_id() == "file_browser")).unwrap();
+    assert_eq!(browser.workspace_root.canonicalize().unwrap(), expected.canonicalize().unwrap());
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(h.app.router.active().context_id, other_context);
+    assert!(h.app.windows[1].panes.is_empty());
 }

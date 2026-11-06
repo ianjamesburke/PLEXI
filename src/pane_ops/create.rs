@@ -2052,19 +2052,15 @@ impl PlexiApp {
             }
         }
 
-        // Resolve via the canonical new-pane resolver so the file browser
-        // honors the context root when set (context.root → focused-pane cwd →
-        // home), matching every other new-pane path. A GUI launch whose focused
-        // cwd is "/" still falls back to home.
-        let cwd = self
-            .resolve_new_pane_cwd(None)
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!(
-            "open_file_browser: cwd={} context_root={:?}",
-            cwd.display(),
-            self.router.active().root
-        );
+        // Bind the invoking pane and its owning context before opening the overlay.
+        let caller = ctx
+            .focused_pane
+            .and_then(|tile| ctx.find_first_pane_in(tile))
+            .and_then(|tile| match ctx.tree.tiles.get(tile) {
+                Some(egui_tiles::Tile::Pane(id)) => Some(*id),
+                _ => None,
+            });
+        let cwd = self.file_browser_start_directory(caller, ctx.context_id);
 
         let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
 
@@ -2079,6 +2075,56 @@ impl PlexiApp {
             Some("overlay"),
             None,
         );
+    }
+
+    /// Fresh Explorer launches follow the invoking live terminal's current cwd.
+    /// Nonterminal, standby, exited, missing or deleted cwd falls back to the
+    /// caller's context root, then home. Existing Explorer state is not retargeted.
+    pub(crate) fn file_browser_start_directory(
+        &self,
+        caller: Option<PaneId>,
+        context_id: u64,
+    ) -> PathBuf {
+        let terminal = caller.and_then(|id| {
+            self.windows
+                .iter()
+                .filter(|window| window.context_id == context_id)
+                .find_map(|window| window.panes.get(&id))
+                .and_then(Pane::as_terminal)
+        });
+        if let Some(terminal) = terminal {
+            if !terminal.exited && terminal.standby_session.is_none() {
+                if let Some(cwd) =
+                    crate::host::shell::get_pid_cwd_fresh(terminal.backend.child_pid())
+                {
+                    match cwd.try_exists() {
+                        Ok(true) if cwd.is_dir() => {
+                            log::info!("file_browser: launch caller={caller:?} context={context_id} cwd={} source=terminal", cwd.display());
+                            return cwd;
+                        }
+                        result => log::warn!(
+                            "file_browser: unusable terminal cwd={} caller={caller:?}: {result:?}",
+                            cwd.display()
+                        ),
+                    }
+                } else {
+                    log::warn!("file_browser: current cwd unavailable caller={caller:?} context={context_id}");
+                }
+            } else {
+                log::info!(
+                    "file_browser: caller={caller:?} has no live terminal cwd; using fallback"
+                );
+            }
+        }
+        let cwd = self
+            .context_root_for(context_id)
+            .filter(|root| root != &PathBuf::from("/") && root.is_dir())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        log::info!(
+            "file_browser: launch caller={caller:?} context={context_id} cwd={} source=fallback",
+            cwd.display()
+        );
+        cwd
     }
 
     /// Locate an open instance of app `manifest_id`, including one currently

@@ -1870,6 +1870,21 @@ impl PlexiApp {
 
                 let active = self.active_window;
                 let mut cwd_override = spec.cwd.clone();
+                // Snapshot Explorer's caller directory before any focus redirect.
+                // An explicit --cwd retains precedence; other app policies are unchanged.
+                if cwd_override.is_none()
+                    && matches!(&spec.target, crate::app::launch_spec::PaneLaunchTarget::AppId(id) if id == "file_browser")
+                {
+                    if let Some(caller) = spec.from_pane_id {
+                        if let Some((window, _)) = self.find_pane_in_any_window(caller) {
+                            cwd_override = Some(self.file_browser_start_directory(
+                                Some(caller),
+                                self.windows[window].context_id,
+                            ));
+                        }
+                    }
+                }
+
                 let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
                 let mut launch_result: Result<(), String> = Ok(());
                 if matches!(
