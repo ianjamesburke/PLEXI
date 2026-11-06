@@ -469,23 +469,6 @@ impl PlexiApp {
         });
     }
 
-    pub(crate) fn focused_or_first_pane_in_context(&self, context_id: u64) -> Option<u64> {
-        let win = self.windows.iter().find(|w| w.context_id == context_id)?;
-        if let Some(tile) = win.focused_pane {
-            let pane_tile = match win.tree.tiles.get(tile) {
-                Some(egui_tiles::Tile::Pane(_)) => Some(tile),
-                Some(egui_tiles::Tile::Container(_)) => win.find_first_pane_in(tile),
-                None => None,
-            };
-            if let Some(pt) = pane_tile {
-                if let Some(egui_tiles::Tile::Pane(pid)) = win.tree.tiles.get(pt) {
-                    return Some(*pid);
-                }
-            }
-        }
-        win.panes.keys().min().copied()
-    }
-
     /// Resolve `(context_id, pane_id, pane_name, context_path)` for a queue item
     /// from its optional pane and context bindings, without drifting with the
     /// currently focused window when either binding is known.
@@ -516,32 +499,13 @@ impl PlexiApp {
                 let ctx_path = self.context_breadcrumb_string(ctx_id);
                 return (ctx_id, pid, pane_name, ctx_path);
             }
-            let ctx_id = valid_ctx.unwrap_or_else(|| self.router.active().context_id);
+            let ctx_id = valid_ctx.unwrap_or(0);
             let ctx_path = self.context_breadcrumb_string(ctx_id);
             return (ctx_id, pid, format!("pane-{pid}"), ctx_path);
         }
 
-        if let Some(ctx_id) = valid_ctx {
-            if let Some(pid) = self.focused_or_first_pane_in_context(ctx_id) {
-                let (_, _, pane_name, _) = self.resolve_queue_item_origin(Some(pid), Some(ctx_id));
-                let ctx_path = self.context_breadcrumb_string(ctx_id);
-                return (ctx_id, pid, pane_name, ctx_path);
-            }
-            let ctx_path = self.context_breadcrumb_string(ctx_id);
-            return (ctx_id, 1, "pane-1".to_string(), ctx_path);
-        }
-
-        let fallback_pane = self.active_focused_pane_id().unwrap_or(1);
-        if let Some((win_idx, _)) = self.find_pane_in_any_window(fallback_pane) {
-            let ctx_id = self.windows[win_idx].context_id;
-            let (_, _, pane_name, ctx_path) =
-                self.resolve_queue_item_origin(Some(fallback_pane), Some(ctx_id));
-            (ctx_id, fallback_pane, pane_name, ctx_path)
-        } else {
-            let ctx_id = self.router.active().context_id;
-            let ctx_path = self.context_breadcrumb_string(ctx_id);
-            (ctx_id, fallback_pane, format!("pane-{fallback_pane}"), ctx_path)
-        }
+        let ctx_id = valid_ctx.unwrap_or(0);
+        (ctx_id, 0, "Unknown source".to_string(), self.context_breadcrumb_string(ctx_id))
     }
 
     pub(crate) fn describe_pane_for_queue(&self, pane_id: u64) -> (u64, String, String) {
@@ -1060,11 +1024,14 @@ impl PlexiApp {
                 .any(|b| b.id == overlay.ask_id && b.category == QueueCategory::Notice);
             let independent_notification_route = matches!(overlay.source, QueueSource::Notification { .. })
                 && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
+            let unbound_host_decision = overlay.pane_id == 0
+                && matches!(overlay.source, QueueSource::BrokerPending { .. } | QueueSource::NeedsYou { .. })
+                && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
             let uncertain_notification = match &overlay.source {
                 QueueSource::Notification { notify_id, .. } => self.pending_notifications.iter().any(|n| &n.notify_id == notify_id && n.delivery_unknown),
                 _ => false,
             };
-            let pane_alive = is_notice || independent_notification_route || uncertain_notification || self.find_pane_in_any_window(overlay.pane_id).is_some();
+            let pane_alive = is_notice || independent_notification_route || unbound_host_decision || uncertain_notification || self.find_pane_in_any_window(overlay.pane_id).is_some();
             if !pane_alive {
                 log::info!(
                     "decision_overlay: closing because target pane {} died",
@@ -1209,7 +1176,7 @@ impl PlexiApp {
             self.attention_queue.seen_notice_ids.insert(bar.id.clone());
         }
         // Host notices are not about any pane: stay where the person is.
-        if bar.category != QueueCategory::Notice {
+        if bar.category != QueueCategory::Notice && bar.pane_id != 0 {
             self.jump_to_pane_at_columns(bar.pane_id);
         }
         self.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&bar));
@@ -1384,6 +1351,9 @@ impl PlexiApp {
         }
         if matches!(bar.category, QueueCategory::Ask | QueueCategory::Notice) {
             return AttentionDestination::DecisionOverlay(bar.id.clone());
+        }
+        if bar.pane_id == 0 {
+            return AttentionDestination::SourcePane(0);
         }
 
         if let Some(parent_id) = self.find_parent_pane_id(bar.pane_id) {
@@ -2805,6 +2775,60 @@ mod tests {
         h.hidden_frame();
         assert!(path.exists(), "pending={:?} error={:?} overlay={:?}", h.app.attention_queue.pending_notification_decision, h.app.approval_keyboard.last_error, h.app.attention_queue.decision_overlay.as_ref().map(|o| &o.ask_id));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "go");
+    }
+
+    #[test]
+    fn unbound_notifications_do_not_inherit_or_navigate_to_focused_pane() {
+        let mut h = HostHarness::new();
+        let focused = h.add_focused_terminal();
+        if let Some(pane) = h.app.windows[0].panes.get_mut(&focused).and_then(|p| p.as_terminal_mut()) {
+            pane.name = Some("unrelated-codex".into());
+        }
+        let context = h.app.router.active().context_id;
+        let dir = tempfile::tempdir().unwrap();
+        let response = dir.path().join("response");
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "unbound-choice".into(), title: "CLI request".into(), source_context_id: context,
+            response_file: Some(response.to_string_lossy().into_owned()), required: true,
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "restored".into(), title: "Old CLI request".into(), source_context_id: context,
+            tombstoned: true, delivery_unknown: true, required: true,
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        for id in ["notify-unbound-choice", "notify-restored"] {
+            let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == id).unwrap();
+            assert_eq!(bar.context_id, context);
+            assert_eq!(bar.pane_id, 0, "{id} has no pane binding");
+            assert_ne!(bar.pane_name, "unrelated-codex");
+        }
+        assert!(h.app.open_decision_overlay_for_ask("notify-unbound-choice"));
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert_eq!(std::fs::read_to_string(response).unwrap(), "go");
+        assert_eq!(h.app.active_focused_pane_id(), Some(focused));
+    }
+
+    #[test]
+    fn unbound_question_does_not_inherit_focused_pane() {
+        let mut h = HostHarness::new();
+        let focused = h.add_focused_terminal();
+        let context = h.app.router.active().context_id;
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let id = monitor.file_needs_you_with_details(NeedsYouFile {
+            kind: NeedsYouKind::Question, actor: "agent:unbound".into(), resource: "task".into(),
+            summary: "Choose a branch".into(), expires_at: None, run_tag: None,
+        }, Some(crate::broker::gate::NeedsYouDetails { context_id: Some(context), choices: vec!["Alpha".into()], ..Default::default() })).unwrap().0;
+        h.app.sync_attention_queue();
+        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == id).unwrap();
+        assert_eq!(bar.context_id, context);
+        assert_eq!(bar.pane_id, 0);
+        assert!(h.app.open_decision_overlay_for_ask(&id));
+        assert!(h.app.pick_decision_overlay_option(0));
+        assert_eq!(monitor.get_needs_you(&id).unwrap().answer.as_deref(), Some("Alpha"));
+        assert_eq!(h.app.active_focused_pane_id(), Some(focused));
     }
 
     #[test]

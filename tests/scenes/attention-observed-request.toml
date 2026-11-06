@@ -7,6 +7,9 @@ open = { kind = "builtin", id = "agents", as = "agents" }
 seed_notification = { title = "Codex needs your attention", body = "Review the pending request in the source pane.", required = true, focused_source = true }
 
 [[steps]]
+seed_notification = { title = "Earlier CLI request", body = "The original source is no longer available.", required = true }
+
+[[steps]]
 assert_label = { target = "host", label = "Attention Queue" }
 
 [[steps]]
