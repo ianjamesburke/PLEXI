@@ -274,7 +274,7 @@ fn run_socket_connection(
 #[cfg(unix)]
 #[test]
 fn pane_send_disconnected_socket_does_not_dispatch_after_approval() {
-    pane_send_socket_approval(true);
+    pane_send_socket_approval(true, false);
 }
 
 #[test]
@@ -302,7 +302,13 @@ fn pane_send_rejects_missing_reply_stream_before_dispatch() {
 #[cfg(unix)]
 #[test]
 fn pane_send_connected_socket_receives_approval_and_dispatches_once() {
-    pane_send_socket_approval(false);
+    pane_send_socket_approval(false, false);
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_persistent_grant_deduplicates_and_unknown_claim_never_replays() {
+    pane_send_socket_approval(false, true);
 }
 
 #[cfg(unix)]
@@ -336,7 +342,7 @@ fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
 }
 
 #[cfg(unix)]
-fn pane_send_socket_approval(disconnect: bool) {
+fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
     use std::io::Read as _;
     use std::io::Write as _;
     use std::time::Duration;
@@ -376,7 +382,7 @@ fn pane_send_socket_approval(disconnect: bool) {
     // The peer process remains alive while only its socket is closed.
     if disconnect { drop(client.take()); }
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-    monitor.approve_pending(&pending, crate::broker::gate::ApprovalChoice::Once).unwrap();
+    monitor.approve_pending(&pending, if persistent { crate::broker::gate::ApprovalChoice::Always } else { crate::broker::gate::ApprovalChoice::Once }).unwrap();
     h.hidden_frame();
     if disconnect {
         assert!(h.terminal_backend(target).take_input_tap().is_empty(), "a disconnected caller must not trigger a late write");
@@ -392,6 +398,39 @@ fn pane_send_socket_approval(disconnect: bool) {
         assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"], true);
         assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello", "one approval writes exactly once");
         assert_eq!(monitor.get_continuation("socket-liveness-test").unwrap().state, crate::broker::gate::ContinuationState::Completed);
+        if persistent {
+            let dispatch = |h: &mut crate::testing::HostHarness, operation: &str, name: &str| {
+                let reply = profile.path().join(name);
+                h.inject_ipc(serde_json::from_value(serde_json::json!({
+                    "type": "send_to_pane", "pane_id": target, "text": "hello",
+                    "operation_id": operation, "response_file": reply,
+                    "peer_ancestry": [std::process::id(), caller_pid]
+                })).unwrap());
+                h.hidden_frame();
+                serde_json::from_slice::<serde_json::Value>(&std::fs::read(reply).unwrap()).unwrap()
+            };
+            let duplicate = dispatch(&mut h, "socket-liveness-test", "duplicate");
+            assert_eq!(duplicate["duplicate"], true, "{duplicate}");
+            assert!(h.terminal_backend(target).take_input_tap().is_empty());
+
+            let fresh = dispatch(&mut h, "persistent-fresh", "fresh");
+            assert_eq!(fresh["ok"], true, "the persistent grant permits a fresh operation: {fresh}");
+            assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello");
+            assert!(monitor.list_pending().is_empty());
+
+            // Seed the durable pre-effect claim left by a crash. The boundary
+            // must return unknown and never execute it under the still-live grant.
+            let text_hash = crate::broker::gate::fingerprint_args(&serde_json::json!({"text":"hello"}).to_string()).unwrap();
+            let fingerprint = crate::broker::gate::fingerprint_args(&serde_json::json!({
+                "pane_id":target, "submit":false, "paste":false,
+                "text_fingerprint":text_hash, "operation_id":"persistent-unknown"
+            }).to_string()).unwrap();
+            let context = h.app.windows.iter().find(|window| window.panes.contains_key(&caller)).unwrap().context_id;
+            assert_eq!(monitor.claim_pane_send("persistent-unknown", &format!("pane:{caller}"), context, target, &fingerprint).unwrap(), crate::broker::gate::PaneSendClaim::Claimed);
+            let unknown = dispatch(&mut h, "persistent-unknown", "unknown");
+            assert_eq!(unknown["error_code"], "outcome_unknown", "{unknown}");
+            assert!(h.terminal_backend(target).take_input_tap().is_empty(), "unknown claimed operation must not replay");
+        }
     }
 }
 
