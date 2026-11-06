@@ -461,6 +461,7 @@ impl PlexiApp {
                                         title,
                                         active: !is_exited,
                                         activity,
+                                        static_health_pip: pane_ref.is_some_and(|pane| pane.static_health_pip()),
                                     }
                                 }).collect();
                                 Some(crate::spatial::tiling::MiniWindow {
@@ -911,7 +912,7 @@ impl PlexiApp {
                         let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
                         let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
                         let zoomed_tab_labels = behavior.tab_labels.clone();
-                        let zoomed_tab_activities: HashMap<PaneId, AgentState> = zoomed_tab_info
+                        let zoomed_tab_activities: HashMap<PaneId, (AgentState, bool)> = zoomed_tab_info
                             .as_ref()
                             .map(|group| {
                                 group
@@ -921,7 +922,7 @@ impl PlexiApp {
                                         behavior
                                             .panes
                                             .get(id)
-                                            .and_then(|p| p.effective_activity().cloned())
+                                            .and_then(|p| p.effective_activity().cloned().map(|state| (state, p.static_health_pip())))
                                             .map(|a| (*id, a))
                                     })
                                     .collect()

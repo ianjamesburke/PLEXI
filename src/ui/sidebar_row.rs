@@ -124,6 +124,7 @@ pub struct PaneDots {
     pub hidden_set: std::collections::HashSet<usize>,
     /// Per-dot agent state (parallel to dot index). `None` means no agent.
     pub activities: Vec<Option<crate::protocol::AgentState>>,
+    pub static_health_pips: std::collections::HashSet<usize>,
     /// Contiguous pane ranges, one per spatial window in this context.
     pub windows: Vec<PaneDotWindow>,
 }
@@ -472,7 +473,8 @@ fn paint_pips(
                 color = color.gamma_multiply(0.4);
             }
             let center = Pos2::new(cx, cy).round_to_pixel_center(ppp);
-            crate::ui::activity::paint_pip(ui.painter(), center, PANE_DOT_RADIUS, agent_state, color, dots.hidden_set.contains(&dot_i));
+            let glyph_state = agent_state.filter(|_| !dots.static_health_pips.contains(&dot_i));
+            crate::ui::activity::paint_pip(ui.painter(), center, PANE_DOT_RADIUS, glyph_state, color, dots.hidden_set.contains(&dot_i));
         }
 
         // The pin is intentionally neutral: dot color describes agent activity,
@@ -744,6 +746,7 @@ mod tests {
             focused_idx: Some(0),
             hidden_set: std::collections::HashSet::new(),
             activities: vec![None; pane_count],
+            static_health_pips: Default::default(),
             windows,
         }
     }

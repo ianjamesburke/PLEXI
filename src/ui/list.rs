@@ -219,6 +219,7 @@ pub(crate) struct ListRowPips {
     pub hidden_indices: Vec<usize>,
     /// Per-pip agent state (parallel to pip index). `None` = no agent.
     pub activities: Vec<Option<crate::protocol::AgentState>>,
+    pub static_health_pips: Vec<usize>,
 }
 
 pub struct ListRow<'a> {
@@ -837,7 +838,8 @@ fn draw_pips(
             time,
             dot_i,
         );
-        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, agent_state, color, hidden);
+        let glyph_state = agent_state.filter(|_| !pips.static_health_pips.contains(&dot_i));
+        crate::ui::activity::paint_pip(ui.painter(), center, PANE_PIP_RADIUS, glyph_state, color, hidden);
     }
     if pips.count > capped {
         let overflow_x = start_x + dots_width(capped) + style::SPACE_XS;
@@ -956,6 +958,7 @@ mod tests {
                 focused_idx: Some(1),
                 hidden_indices: vec![2],
                 activities: vec![None, None, None],
+                static_health_pips: vec![],
             });
 
             assert!(row.metadata_lane_width(ui) > 0.0);
