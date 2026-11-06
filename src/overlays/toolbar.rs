@@ -4,31 +4,6 @@ use crate::ui::button;
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            // Workspace dots
-            let sidebar_contexts: Vec<usize> = (0..self.router.len()).collect();
-            if sidebar_contexts.len() > 1 {
-                let dot_radius = 4.0;
-                let dot_spacing = 12.0;
-                let total_width = (sidebar_contexts.len() as f32) * dot_spacing;
-                let (rect, _) = ui.allocate_exact_size(
-                    Vec2::new(total_width, ui.available_height()),
-                    egui::Sense::hover(),
-                );
-                let y = rect.center().y;
-                let start_x = rect.left() + dot_radius;
-                for (dot_i, ctx_i) in sidebar_contexts.iter().enumerate() {
-                    let cx = start_x + (dot_i as f32) * dot_spacing;
-                    let color = if *ctx_i == self.router.active_idx() {
-                        self.colors.accent
-                    } else {
-                        self.colors.bg_active
-                    };
-                    ui.painter()
-                        .circle_filled(egui::pos2(cx, y), dot_radius, color);
-                }
-                ui.add_space(4.0);
-            }
-
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if host_ui_gallery_available()
