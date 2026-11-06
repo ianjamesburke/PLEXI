@@ -1347,8 +1347,6 @@ pub enum AppRequest {
     },
     /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
     ZoomOutOfContext,
-    /// Return along authoritative ancestry, rejecting stale UI actions.
-    NavigateContextAncestor { source: u64, target: u64 },
     /// Push a pane into a new sub-context. Sent by `plexi context push`.
     /// `pane_id` targets the caller's pane (PLEXI_PANE_ID); when absent, the
     /// focused pane is pushed.

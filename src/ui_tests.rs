@@ -4054,11 +4054,6 @@ mod tests {
         h.save_screenshot(&evidence_png!()).expect("render failed");
     }
 
-    /// Stint 0241: the sidebar is master-context navigation only. Every slot is
-    /// a numbered, keyboard-addressable top-level destination, so a subcontext
-    /// is never rendered and never consumes a number — it is reached from
-    /// inside its parent through the Portal tile instead. Removing the row must
-    /// not remove the *signal*: the child's state still rolls up to the parent.
     #[test]
     fn screenshot_sidebar_ancestry_overflow_scale_matrix() {
         for (width, scale) in [(520.0, 1.0), (1100.0, 1.0), (1100.0, 1.5)] {
@@ -4137,6 +4132,14 @@ mod tests {
             id
         });
         h.run_steps(3);
+        h.with_app_mut(|app| {
+            app.router.get_mut(0).parked = true;
+            app.parked_section_expanded = false;
+        });
+        h.run_steps(3);
+        assert!(h.host_has_label("Child path"), "active parked ancestry remains reachable");
+        h.with_app_mut(|app| app.router.get_mut(0).parked = false);
+        h.run_steps(3);
         h.save_screenshot(&evidence_png!("_nested")).unwrap();
         h.harness().get_by_label("Child path").click();
         h.run_steps(3);
@@ -4154,6 +4157,11 @@ mod tests {
         h.save_screenshot(&evidence_png!("_root")).unwrap();
     }
 
+    /// Stint 0241: the sidebar is master-context navigation only. Every slot is
+    /// a numbered, keyboard-addressable top-level destination, so a subcontext
+    /// is never rendered and never consumes a number — it is reached from
+    /// inside its parent through the Portal tile instead. Removing the row must
+    /// not remove the *signal*: the child's state still rolls up to the parent.
     #[test]
     fn sidebar_renders_and_numbers_master_contexts_only() {
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);

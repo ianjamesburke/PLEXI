@@ -289,15 +289,16 @@ impl PipLayout {
     }
 }
 
-/// Every rect the row paints or hit tests. Measured in row-local space (origin
-/// at the row's top-left), then translated onto the allocated rect.
+/// One measured breadcrumb label and hit target.
 struct BreadcrumbGeometry {
     index: usize,
     rect: Rect,
     galley: std::sync::Arc<egui::Galley>,
 }
 
+/// Every row slot, measured locally and translated together for paint and input.
 struct RowGeometry {
+    connectors: Vec<[Pos2; 4]>,
     breadcrumbs: Vec<BreadcrumbGeometry>,
     levels: Vec<(Pos2, Option<PipLayout>)>,
     rect: Rect,
@@ -449,6 +450,22 @@ impl RowGeometry {
                 )
             })
             .collect();
+        let mut connectors = Vec::new();
+        for (index, (origin, _)) in levels.iter().enumerate() {
+            let parent = if index == 0 {
+                pips.as_ref().map(|layout| (Pos2::new(content_left, state_center_y), layout, row.pane_dots.as_ref()))
+            } else {
+                levels[index - 1].1.as_ref().map(|layout| (levels[index - 1].0, layout, row.ancestry[index].dots.as_ref()))
+            };
+            if let Some((parent_origin, layout, Some(dots))) = parent {
+                if let Some(x) = dots.route_idx.and_then(|idx| layout.dot_center_x(idx)) {
+                    let start = Pos2::new(parent_origin.x + x, parent_origin.y + PANE_DOT_RADIUS);
+                    let elbow_y = origin.y - PIP_STRIP_H / 2.0 - TIER_GAP / 2.0;
+                    let end_x = origin.x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS;
+                    connectors.push([start, Pos2::new(start.x, elbow_y), Pos2::new(end_x, elbow_y), Pos2::new(end_x, origin.y - PIP_STRIP_H / 2.0)]);
+                }
+            }
+        }
         let height =
             state_top + state_h + ROW_PAD_V + levels.len() as f32 * (PIP_STRIP_H + TIER_GAP);
 
@@ -457,6 +474,7 @@ impl RowGeometry {
         };
 
         Self {
+            connectors,
             breadcrumbs,
             levels,
             rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
@@ -489,6 +507,7 @@ impl RowGeometry {
 
     fn translated(self, offset: Vec2) -> Self {
         Self {
+            connectors: self.connectors.into_iter().map(|points| points.map(|p| p + offset)).collect(),
             breadcrumbs: self
                 .breadcrumbs
                 .into_iter()
@@ -774,7 +793,7 @@ impl SidebarRow {
                 id.with(("ancestor", level.context_id)),
                 Sense::click(),
             );
-            breadcrumb_hovered |= hit.hovered();
+            breadcrumb_hovered |= hit.hovered() && !current;
             hit.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::Button, true, current, &level.name)
             });
@@ -808,38 +827,9 @@ impl SidebarRow {
                     self.is_dragging,
                 );
             }
-            let parent = if index == 0 {
-                geom.pips.as_ref().map(|(o, l)| (*o, l))
-            } else {
-                geom.levels[index - 1]
-                    .1
-                    .as_ref()
-                    .map(|l| (geom.levels[index - 1].0, l))
-            };
-            let parent_dots = if index == 0 {
-                self.pane_dots.as_ref()
-            } else {
-                self.ancestry[index].dots.as_ref()
-            };
-            if let Some(((parent_origin, parent_layout), dots)) = parent.zip(parent_dots) {
-                if let Some(x) = dots
-                    .route_idx
-                    .and_then(|idx| parent_layout.dot_center_x(idx))
-                {
-                    let start = Pos2::new(parent_origin.x + x, parent_origin.y + PANE_DOT_RADIUS);
-                    let elbow_y = origin.y - PIP_STRIP_H / 2.0 - TIER_GAP / 2.0;
-                    let end_x = origin.x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS;
-                    ui.painter().add(egui::Shape::line(
-                        vec![
-                            start,
-                            Pos2::new(start.x, elbow_y),
-                            Pos2::new(end_x, elbow_y),
-                            Pos2::new(end_x, origin.y - PIP_STRIP_H / 2.0),
-                        ],
-                        Stroke::new(GROUP_STROKE_W, colors.border),
-                    ));
-                }
-            }
+        }
+        for points in &geom.connectors {
+            ui.painter().add(egui::Shape::line(points.to_vec(), Stroke::new(GROUP_STROKE_W, colors.border)));
         }
 
         // --- Pips -------------------------------------------------------------
@@ -961,9 +951,15 @@ mod tests {
                     name: format!("A long ancestor name {index}"),
                     dots: Some(test_dots(20, one_window(20))),
                 }).collect();
+                item.pane_dots.as_mut().unwrap().route_idx = Some(19);
                 let geom = RowGeometry::measure(ui, &item, width);
                 let left = geom.pips.as_ref().unwrap().0.x;
                 assert_eq!(geom.levels.len(), 6);
+                assert_eq!(geom.connectors.len(), 1, "missing route portals create no connector");
+                let (parent, layout) = geom.pips.as_ref().unwrap();
+                assert_eq!(geom.connectors[0][0].x, parent.x + layout.dot_center_x(19).unwrap());
+                assert_eq!(geom.connectors[0][3].x, geom.levels[0].0.x + WINDOW_GROUP_PAD_X + PANE_DOT_RADIUS);
+                assert_eq!(geom.connectors[0][3].y, geom.levels[0].0.y - PIP_STRIP_H / 2.0);
                 for (origin, layout) in &geom.levels {
                     assert_eq!(origin.x, left);
                     assert!(origin.x + layout.as_ref().unwrap().width <= width);

@@ -1451,11 +1451,14 @@ impl PlexiApp {
         let position = path
             .iter()
             .position(|&i| self.router.get(i).context_id == target);
-        if self.router.active().context_id != source || position.is_none() {
+        if self.router.active().context_id != source {
             log::info!("breadcrumb_navigation: source={source} target={target} rejected=stale_source_or_nonancestor");
             return false;
         }
-        let index = position.unwrap_or(0);
+        let Some(index) = position else {
+            log::info!("breadcrumb_navigation: source={source} target={target} rejected=nonancestor");
+            return false;
+        };
         if let Some(&child_index) = path.get(index + 1) {
             let child = self.router.get(child_index).context_id;
             if !self.restore_context_parent(child, target, false) {
@@ -1805,7 +1808,7 @@ impl PlexiApp {
                 .context_last_pane
                 .insert(new_ctx_id, active_pane_id);
             let vp = self.active_strip_viewport();
-            let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
+        let (viewport_w, gap) = (vp.canvas_rect.width(), vp.gap);
             let strip = self.ensure_authoritative_strip(new_ctx_id);
             strip.focus_pane(active_pane_id);
             if let Some(col_idx) = strip.find_column_for_pane(active_pane_id) {
@@ -2480,11 +2483,7 @@ impl PlexiApp {
         let ws = WorkspaceFile {
             version: 3,
             conjoined_contexts: self.conjoined_contexts.clone(),
-            strips: self
-                .router
-                .iter()
-                .map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id)))
-                .collect(),
+            strips: self.router.iter().map(|ctx| (ctx.context_id, self.strip_for_context(ctx.context_id))).collect(),
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
             next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),
