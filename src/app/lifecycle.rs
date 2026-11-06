@@ -5516,6 +5516,28 @@ impl PlexiApp {
                             }
                         })
                 };
+                // A manually started agent can return to the shell without
+                // exiting the terminal. Retire a stale working hook only when
+                // the detector saw that same foreground agent and the shell
+                // has no remaining job. Preserve explicit attention/failure.
+                if let Some(agent) = &observed {
+                    t.last_observed_agent = Some(agent.agent.clone());
+                }
+                if !t.exited
+                    && observed.is_none()
+                    && fg == Some(shell_pid as i32)
+                    && t.activity.is_none()
+                {
+                    let departed = t.last_observed_agent.take();
+                    if let Some(hook) = t.agent.as_mut().filter(|hook| {
+                        hook.state == AgentState::Working && Some(hook.agent.as_str()) == departed.as_deref()
+                    }) {
+                        log::info!("observed agent: pane {pane_id} returned to shell while working; marking interrupted");
+                        hook.state = AgentState::Interrupted;
+                        transitions.push((*pane_id, hook.clone()));
+                        observed_dirty = true;
+                    }
+                }
                 let was_stale_idle_fallback = t.agent.as_ref().is_some_and(|hook| {
                     hook.state == AgentState::Idle
                         && t.agent_reported_at.is_some_and(|reported| {

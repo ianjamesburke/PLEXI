@@ -98,6 +98,56 @@ fn foreground_and_background_programs_are_not_agents() {
     }
 }
 
+#[test]
+#[ignore = "requires-pty"]
+fn manually_launched_agent_exit_clears_working_report() {
+    use crate::protocol::{AgentState, PaneAgentState};
+    use egui_term::BackendCommand;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("codex");
+    std::fs::copy("/bin/sleep", &fake).unwrap();
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let command = format!("{} 30\n", fake.display());
+    h.terminal_backend(id).process_command(BackendCommand::Write(command.into_bytes()));
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+    loop {
+        h.run_frames(1);
+        if h.app.windows[0].panes[&id].as_terminal().unwrap().observed_agent.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let t = h.app.windows[0].panes[&id].as_terminal().unwrap();
+            let fg = t.backend.foreground_pid();
+            panic!("manual agent was not detected: shell={}, foreground={fg:?}, name={:?}, probe={:?}, tail={:?}",
+                t.backend.child_pid(), fg.and_then(|p| crate::host::shell::get_pid_name(p as u32)), fg.map(|p| crate::host::shell::get_pid_agent_probe(p as u32)),
+                t.backend.capture_lines(20));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(PaneAgentState {
+        pane_id: id, state: AgentState::Working, agent: "codex".into(), detail: None, session_id: None,
+    }));
+    h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+    loop {
+        h.run_frames(1);
+        let pane = &h.app.windows[0].panes[&id];
+        let terminal = pane.as_terminal().unwrap();
+        if terminal.observed_agent.is_none() && terminal.activity.is_none() {
+            assert_ne!(pane.effective_agent().map(|a| a.state), Some(AgentState::Working),
+                "shell={} fg={:?} last={:?} harness={:?} role={:?}",
+                terminal.backend.child_pid(), terminal.backend.foreground_pid(), terminal.last_observed_agent,
+                terminal.agent_harness, terminal.agent_role);
+            assert_ne!(pane.effective_activity(), Some(&AgentState::Working));
+            break;
+        }
+        assert!(Instant::now() < deadline, "manual agent did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app
