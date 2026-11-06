@@ -155,6 +155,12 @@ the restored package. To recover a pre-migration workspace with an older build,
 run `plexi-alpha host workspace-rollback --to-channel recovery` with a new
 channel name. The export is the earlier workspace; later changes stay in Alpha.
 
+Use `pane status <id>` for an agent's reported state and supporting terminal
+evidence. A tool-like output line can suggest work only after the pane has an
+identified agent. General OSC program status remains available in
+`program_status` and is labeled with its source. Use `pane state` to inspect
+process liveness separately from agent state.
+
 ```bash
 plexi host start --ephemeral --timeout-secs 15
 plexi host status --json
