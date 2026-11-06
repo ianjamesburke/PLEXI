@@ -42,6 +42,7 @@ pub(crate) fn composite_status(
         match agent.map(|state| &state.state) {
             Some(AgentState::Working) => ("working", "high"),
             Some(AgentState::Interrupted) => ("interrupted", "high"),
+            Some(AgentState::ExitedUnreported) => ("exited_unreported", "high"),
             Some(AgentState::Completed) => ("completed", "high"),
             Some(AgentState::Blocked | AgentState::NeedsYou)
                 if detail
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn terminal_agent_result_beats_stale_tool_output() {
-        for state in [AgentState::Interrupted, AgentState::Completed, AgentState::Failed] {
+        for state in [AgentState::Interrupted, AgentState::Completed, AgentState::Failed, AgentState::ExitedUnreported] {
             let report = agent(state.clone(), None);
             let result = composite_status(Some(&report), &["⏺ Bash(cargo test)".into()]);
             assert_eq!(result["verdict"], state.as_str());

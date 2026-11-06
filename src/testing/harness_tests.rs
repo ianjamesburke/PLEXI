@@ -101,7 +101,17 @@ fn foreground_and_background_programs_are_not_agents() {
 #[test]
 #[ignore = "requires-pty"]
 fn manually_launched_agent_exit_clears_working_report() {
-    use crate::protocol::{AgentState, PaneAgentState};
+    assert_manual_agent_exit(crate::protocol::AgentState::Working, crate::protocol::AgentState::Interrupted);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn manually_launched_idle_agent_exit_is_not_idle() {
+    assert_manual_agent_exit(crate::protocol::AgentState::Idle, crate::protocol::AgentState::ExitedUnreported);
+}
+
+fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expected: crate::protocol::AgentState) {
+    use crate::protocol::PaneAgentState;
     use egui_term::BackendCommand;
     use std::time::{Duration, Instant};
     let dir = tempfile::tempdir().unwrap();
@@ -127,7 +137,7 @@ fn manually_launched_agent_exit_clears_working_report() {
         std::thread::sleep(Duration::from_millis(20));
     }
     h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(PaneAgentState {
-        pane_id: id, state: AgentState::Working, agent: "codex".into(), detail: None, session_id: None,
+        pane_id: id, state: reported_state, agent: "codex".into(), detail: None, session_id: None,
     }));
     h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -136,11 +146,11 @@ fn manually_launched_agent_exit_clears_working_report() {
         let pane = &h.app.windows[0].panes[&id];
         let terminal = pane.as_terminal().unwrap();
         if terminal.observed_agent.is_none() && terminal.activity.is_none() {
-            assert_ne!(pane.effective_agent().map(|a| a.state), Some(AgentState::Working),
+            assert_eq!(pane.effective_agent().map(|a| a.state), Some(expected.clone()),
                 "shell={} fg={:?} last={:?} harness={:?} role={:?}",
                 terminal.backend.child_pid(), terminal.backend.foreground_pid(), terminal.last_observed_agent,
                 terminal.agent_harness, terminal.agent_role);
-            assert_ne!(pane.effective_activity(), Some(&AgentState::Working));
+            assert_eq!(pane.effective_activity(), Some(&expected));
             break;
         }
         assert!(Instant::now() < deadline, "manual agent did not exit");
