@@ -1127,6 +1127,8 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
     let root = h.workspace_root();
     h.app.set_context_root(root.clone(), None);
     let terminal = h.add_focused_terminal();
+    let _unrelated = h.add_focused_terminal();
+    h.focus_pane(terminal);
     for name in ["first", "second"] {
         let directory = root.join(name);
         std::fs::create_dir(&directory).unwrap();
@@ -1161,6 +1163,7 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
             "shell must remain in the executed cd directory"
         );
         h.app.open_file_browser();
+        h.run_frames(3);
         // Overlay replacement retains the invoking terminal slot. The harness
         // seed is also a FileBrowser runtime, so never pick an arbitrary runtime.
         let browser = h.app.windows[0].panes[&terminal].as_app().unwrap();
@@ -1337,4 +1340,92 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     assert_eq!(h.app.active_window, 1);
     assert_eq!(h.app.router.active().context_id, other_context);
     assert!(h.app.windows[1].panes.is_empty());
+    let browser_id = browser.id;
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    let runtime_cwd = |h: &crate::testing::HostHarness| {
+        let state = h.app.windows[0].panes[&browser_id]
+            .as_app()
+            .unwrap()
+            .runtime
+            .serialize_state()
+            .unwrap();
+        std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap()
+    };
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "unrelated focus must not retarget Explorer"
+    );
+    h.focus_pane(browser_id);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "Explorer focus must preserve its caller's directory"
+    );
+
+    let next = h.workspace_root().join("caller-after-open");
+    std::fs::create_dir(&next).unwrap();
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!("cd '{}'\n", next.display()).into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while runtime_cwd(&h) != next.canonicalize().unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Explorer must still follow its own linked terminal"
+        );
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        next.canonicalize().unwrap(),
+        "dead linked owner must not fall back to an unrelated terminal"
+    );
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let saved = root.join("saved-navigation");
+    std::fs::create_dir(&saved).unwrap();
+    std::fs::write(saved.join("one.txt"), "one").unwrap();
+    std::fs::write(saved.join("two.txt"), "two").unwrap();
+    let browser_id = h.add_test_pane();
+    let state = serde_json::json!({"cwd": saved, "selected": 1});
+    let restored = crate::pane_ops::create::restore_builtin_app_pane(
+        "file_browser",
+        browser_id,
+        root,
+        Some(&state),
+    )
+    .unwrap();
+    h.app.windows[0].panes.insert(browser_id, restored);
+    let _unrelated = h.add_focused_terminal();
+    h.run_frames(3);
+    let app = h.app.windows[0].panes[&browser_id].as_app().unwrap();
+    assert!(app.linked_pane_id.is_none());
+    let after = app.runtime.serialize_state().unwrap();
+    assert_eq!(after["cwd"], state["cwd"]);
+    assert_eq!(after["selected"], 1);
 }

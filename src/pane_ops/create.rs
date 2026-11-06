@@ -185,9 +185,11 @@ fn require_wasm_experiment() -> Result<(), String> {
     }
 }
 
+pub(crate) const FILE_BROWSER_CWD_GROUP: &str = "file-browser-cwd";
+
 fn builtin_default_group(type_id: &str) -> Option<String> {
     match type_id {
-        "file_browser" => Some("cwd".to_string()),
+        "file_browser" => Some(FILE_BROWSER_CWD_GROUP.to_string()),
         _ => None,
     }
 }
@@ -2064,14 +2066,13 @@ impl PlexiApp {
 
         let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
 
-        // Built-in file browser gets full permissions, joins the "cwd" group so
-        // it follows linked-terminal directory changes.
+        // Track only the invoking terminal, including its overlay replacement.
         let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(
             app,
             perms,
             cwd,
-            Some("cwd".to_string()),
+            Some(FILE_BROWSER_CWD_GROUP.to_string()),
             Some("overlay"),
             None,
         );
