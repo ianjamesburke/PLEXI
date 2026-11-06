@@ -217,6 +217,8 @@ pub struct AttentionQueueState {
     pub dismissed_ids: HashSet<String>,
     /// Answered ask IDs so each ask is decided at most once.
     pub answered_ask_ids: HashSet<String>,
+    /// Responses that may already have caused effects must not be replayed.
+    pub uncertain_notification_ids: HashSet<String>,
     /// Recorded verdicts sent from the Decision Overlay (for tests and audit).
     pub verdicts: Vec<DecisionVerdict>,
     /// Open Decision Overlay state (`None` unless explicitly opened).
@@ -1564,6 +1566,11 @@ impl PlexiApp {
                 }
             }
             QueueSource::Notification { notify_id } => {
+                if self.attention_queue.uncertain_notification_ids.contains(notify_id) {
+                    self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                    self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "The action may already have happened. Check the recipient before taking further action.".into()));
+                    return false;
+                }
                 if let Some(pos) = self
                     .pending_notifications
                     .iter()
@@ -1582,12 +1589,19 @@ impl PlexiApp {
                         n.response_file.clone(),
                         host_action,
                     );
-                    if !delivered {
+                    if delivered != crate::app::notifications::NotifyDelivery::Delivered {
                         self.pending_notifications.insert(pos, n);
                         self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
-                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(),
-                            "Could not deliver the response. The recipient may have received the action; check it before retrying.".into()));
-                        log::warn!("decision_overlay: notification response failed id={notify_id}; outcome unknown");
+                        let message = match delivered {
+                            crate::app::notifications::NotifyDelivery::Unavailable => "The recipient is no longer available." ,
+                            crate::app::notifications::NotifyDelivery::OutcomeUnknown => {
+                                self.attention_queue.uncertain_notification_ids.insert(notify_id.clone());
+                                "The action may already have happened. Check the recipient before taking further action."
+                            },
+                            crate::app::notifications::NotifyDelivery::Delivered => "The response was delivered.",
+                        };
+                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), message.into()));
+                        log::warn!("decision_overlay: notification response failed id={notify_id}; outcome={delivered:?}");
                         return false;
                     }
                     self.save_notifications();
@@ -2600,6 +2614,63 @@ mod tests {
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h.app.approval_keyboard.last_error.is_some());
+    }
+
+    #[test]
+    fn notification_without_live_receiver_is_not_delivered() {
+        let mut h = HostHarness::new();
+        let terminal = h.add_focused_terminal();
+        for pane_id in [terminal, u64::MAX] {
+            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive an app event");
+        }
+    }
+
+    #[test]
+    fn builtin_without_notify_event_handler_is_not_a_receiver() {
+        let mut h = HostHarness::new();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "note").unwrap();
+        h.app.open_builtin_app_pane(
+            Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(path)),
+            crate::app::permissions::AppPermissions::builtin(), dir.path().to_path_buf(), None, Some("split_h"), None,
+        );
+        let pane_id = h.state().open_panes[0];
+        assert_eq!(h.app.deliver_notify_action(pane_id, "builtin".into(), "Continue".into(), None, None, None), crate::app::notifications::NotifyDelivery::Unavailable);
+    }
+
+    #[test]
+    fn notification_partial_delivery_cannot_repeat_host_action() {
+        let mut h = HostHarness::new();
+        let source = h.add_focused_terminal();
+        let destination = h.add_test_pane();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "partial".into(), sender_pane_id: source, title: "Choice".into(),
+            response_file: Some("/dev/null/not-a-response".into()),
+            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-partial"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert_eq!(h.app.active_focused_pane_id(), Some(destination));
+        assert!(h.app.pane_navigate(source));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert_eq!(h.app.active_focused_pane_id(), Some(source), "retry must not replay host action");
+        assert!(h.app.attention_queue.verdicts.is_empty());
+    }
+
+    #[test]
+    fn notification_response_file_and_host_action_are_valid_routes() {
+        let mut h = HostHarness::new();
+        let source = h.add_focused_terminal();
+        let destination = h.add_test_pane();
+        let dir = tempfile::tempdir().unwrap();
+        let response = dir.path().join("response");
+        assert_eq!(h.app.deliver_notify_action(u64::MAX, "file".into(), "Continue".into(), Some("go".into()), Some(response.to_string_lossy().into_owned()), None), crate::app::notifications::NotifyDelivery::Delivered);
+        assert_eq!(std::fs::read_to_string(response).unwrap(), "go");
+        assert_eq!(h.app.deliver_notify_action(source, "host".into(), "Open".into(), None, None, Some(format!("pane_focus:{destination}"))), crate::app::notifications::NotifyDelivery::Delivered);
+        assert_eq!(h.app.active_focused_pane_id(), Some(destination));
     }
 
     #[test]

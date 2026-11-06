@@ -4267,6 +4267,10 @@ impl LivePythonPane {
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+        let _ = self.try_queue_outbound_event(event);
+    }
+
+    pub(crate) fn try_queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) -> Result<(), String> {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
@@ -4276,6 +4280,7 @@ impl LivePythonPane {
                         self.app_id
                     );
                     self.error = Some(error.to_string());
+                    return Err(error.to_string());
                 }
             }
             Err(error) => {
@@ -4284,8 +4289,10 @@ impl LivePythonPane {
                     self.app_id
                 );
                 self.error = Some(error.to_string());
+                return Err(error.to_string());
             }
         }
+        Ok(())
     }
 
     pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {

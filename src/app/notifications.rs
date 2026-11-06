@@ -17,6 +17,13 @@ pub(crate) const NOTIFY_OUTCOME_QUEUE_FULL: &str = "queue_full";
 /// the next live arrival, rather than growing without limit for a session.
 pub(crate) const MAX_PENDING_NOTIFICATIONS: usize = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyDelivery {
+    Delivered,
+    Unavailable,
+    OutcomeUnknown,
+}
+
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
     pub notify_id: String,
@@ -365,7 +372,7 @@ impl PlexiApp {
         value: Option<String>,
         response_file: Option<String>,
         host_action: Option<String>,
-    ) -> bool {
+    ) -> NotifyDelivery {
         log::info!(
             "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
         );
@@ -382,24 +389,35 @@ impl PlexiApp {
         );
         // Execute host-side action synchronously before writing the response
         // file so the navigation is complete before the shell unblocks.
+        let mut delivered = false;
+        let mut failed = false;
+        let mut uncertain = false;
         if let Some(ref action) = host_action {
             if let Some(id_str) = action.strip_prefix("pane_focus:") {
                 if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                    self.pane_navigate(pane_id_target);
+                    if self.pane_navigate(pane_id_target) {
+                        delivered = true;
+                    } else {
+                        failed = true;
+                    }
                 } else {
                     log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                    failed = true;
                 }
             } else {
                 log::warn!("notify:action: unknown host_action {:?}", action);
+                failed = true;
             }
         }
-        let mut response_written = true;
         if let Some(rf) = &response_file {
             let content = value.as_deref().unwrap_or("");
             if crate::rpc::write_response(rf, content.as_bytes()) {
                 log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+                delivered = true;
             } else {
-                response_written = false;
+                // A failed stream write may have delivered a partial response.
+                failed = true;
+                uncertain = true;
             }
         }
         // Search all windows for the sender pane — it may not be in the
@@ -411,16 +429,32 @@ impl PlexiApp {
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
-                    app.runtime
-                        .queue_outbound_event(crate::protocol::PlexiEvent::NotifyAction {
+                    match app.runtime
+                        .try_queue_notify_action(crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        });
+                        }) {
+                        Some(Ok(())) => delivered = true,
+                        Some(Err(error)) => {
+                            log::warn!("notify:action: app delivery failed: {error}");
+                            failed = true;
+                            uncertain = true;
+                        }
+                        None => log::info!("notify:action: app runtime does not support notification responses"),
+                    }
                 }
             }
         }
-        response_written
+        if uncertain || (failed && delivered) {
+            NotifyDelivery::OutcomeUnknown
+        } else if failed {
+            NotifyDelivery::Unavailable
+        } else if delivered {
+            NotifyDelivery::Delivered
+        } else {
+            NotifyDelivery::Unavailable
+        }
     }
 
     /// Resolve app-notification provenance without consulting focus. A live
