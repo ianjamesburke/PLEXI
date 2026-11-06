@@ -583,7 +583,14 @@ impl PlexiApp {
                     .get("receipt")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                match monitor.complete_continuation(id, state, receipt) {
+                if monitor.get_continuation(id).is_some_and(|record| record.request_fingerprint.is_some()) {
+                    log::info!("needs_you: refused external completion of host-owned operation {id}");
+                    serde_json::json!({
+                        "ok": false,
+                        "error_code": "host_owned_operation",
+                        "error": "pane send outcomes are recorded by the host",
+                    })
+                } else { match monitor.complete_continuation(id, state, receipt) {
                     Ok(continuation) => serde_json::json!({
                         "ok": true,
                         "continuation": continuation,
@@ -592,7 +599,7 @@ impl PlexiApp {
                         "ok": false,
                         "error": error,
                     }),
-                }
+                } }
             }
             _ => serde_json::json!({
                 "ok": false,

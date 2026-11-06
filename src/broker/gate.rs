@@ -2552,7 +2552,7 @@ impl PermissionMonitor {
                     .as_ref()
                     .is_some_and(|ny_id| open_ids.contains(ny_id));
                 if record.state == ContinuationState::Paused
-                    && record.run_outcome.as_deref() == Some("retry_required")
+                    && matches!(record.run_outcome.as_deref(), Some("retry_required" | "retry_requires_authorization_check"))
                     && record.resolution == Some(NeedsYouResolution::Approved)
                 {
                     // The operation never ran, but ephemeral grants belong to
@@ -4840,6 +4840,9 @@ mod tests {
             continuation.run_outcome.as_deref(),
             Some("retry_requires_authorization_check")
         );
+        drop(restored);
+        let restored = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(restored.get_continuation("send-restart").unwrap().run_outcome.as_deref(), Some("retry_requires_authorization_check"));
         let Admission::Required {
             pending_request_id: renewed,
         } = admit_of(&restored, &base, args)
@@ -4878,6 +4881,12 @@ mod tests {
                 .unwrap(),
             PaneSendClaim::Conflict
         );
+        assert_eq!(restored.claim_pane_send("send-done", "pane:1", 2, 42, "fp-done").unwrap(), PaneSendClaim::Claimed);
+        restored.complete_continuation("send-done", ContinuationState::Completed, None).unwrap();
+        drop(restored);
+        let completed = PermissionMonitor::open_profile(dir.path());
+        assert_eq!(completed.claim_pane_send("send-done", "pane:1", 2, 42, "fp-done").unwrap(), PaneSendClaim::Completed,
+            "a completed operation remains deduplicated after restart");
 
         let broken = tempfile::tempdir().unwrap();
         let unavailable = PermissionMonitor::open_profile(broken.path());

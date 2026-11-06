@@ -15148,6 +15148,7 @@ ask = ["pane.send"]
 fn pane_send_allow_once_retry_consumes_grant_and_succeeds() {
     let mut h = HostHarness::new();
     let target_pane = h.add_focused_terminal();
+    h.terminal_backend(target_pane).enable_input_tap();
     let ws = h.workspace_root();
     let agent_dir = ws.join(".plexi").join("agents").join("lead");
     std::fs::create_dir_all(&agent_dir).expect("create agent dir");
@@ -15306,6 +15307,17 @@ ask = ["pane.send"]
     h.hidden_frame();
     let duplicate = read_json_response(&duplicate_reply);
     assert_eq!(duplicate["duplicate"], true, "{duplicate}");
+    assert_eq!(h.terminal_backend(target_pane).take_input_tap(), b"attempt 1",
+        "the original send writes once, and the duplicate writes nothing");
+
+    let forged_reply = temp_response(&ws, "send-forged-completion");
+    h.app.handle_needs_you_api("complete", &serde_json::json!({
+        "id": "op-pane-send-1", "state": "running"
+    }), &[lead_pid], &forged_reply);
+    let forged = read_json_response(&forged_reply);
+    assert_eq!(forged["error_code"], "host_owned_operation", "{forged}");
+    assert_eq!(monitor.get_continuation("op-pane-send-1").unwrap().state,
+        crate::broker::gate::ContinuationState::Completed);
 
     let conflict_reply = temp_response(&ws, "send-retry-conflict");
     h.inject_ipc(AppRequest::SendToPane {
@@ -15323,6 +15335,8 @@ ask = ["pane.send"]
         conflict["error_code"], "operation_id_conflict",
         "{conflict}"
     );
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a conflicting retry must not write terminal input");
 
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
@@ -15357,10 +15371,23 @@ ask = ["pane.send"]
     h.hidden_frame();
     let disconnected = read_json_response(&reply_3);
     assert_eq!(disconnected["error_code"], "caller_disconnected");
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a dead caller's late approval must not write terminal input");
     assert_eq!(
         monitor.get_continuation(&disconnected_id).unwrap().state,
         crate::broker::gate::ContinuationState::Paused
     );
+
+    let denied_id = h.app.pending_send_approvals.iter()
+        .find(|wait| wait.response_file.as_deref() == Some(unrelated_reply.as_str()))
+        .expect("unrelated waiter remains live").pending_request_id.clone();
+    monitor.approve_pending(&denied_id, crate::broker::gate::ApprovalChoice::Deny).unwrap();
+    h.hidden_frame();
+    let denied = read_json_response(&unrelated_reply);
+    assert_eq!(denied["error_code"], "permission_denied");
+    assert_eq!(denied["operation_state"], "cancelled");
+    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a denied request must not write terminal input");
 }
 
 #[test]
