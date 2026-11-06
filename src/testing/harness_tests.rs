@@ -36,6 +36,26 @@ fn terminal_process_activity_is_not_agent_activity() {
     }
 }
 
+#[test]
+fn exited_agent_does_not_remain_working() {
+    use crate::protocol::{AgentState, PaneAgentState};
+    let mut h = HostHarness::new();
+    let id = h.add_focused_terminal();
+    let pane = h.app.windows[0].panes.get_mut(&id).unwrap();
+    pane.set_agent(Some(PaneAgentState {
+        pane_id: id,
+        state: AgentState::Working,
+        agent: "codex".into(),
+        detail: None,
+        session_id: None,
+    }));
+    let terminal = pane.as_terminal_mut().unwrap();
+    terminal.exited = true;
+    terminal.exit_status = Some(crate::host::pane_lifecycle::ExitStatus::Code(0));
+    assert_ne!(pane.effective_agent().unwrap().state, AgentState::Working);
+    assert_ne!(pane.effective_activity(), Some(&AgentState::Working));
+}
+
 fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app
