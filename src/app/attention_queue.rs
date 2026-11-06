@@ -1152,6 +1152,7 @@ impl PlexiApp {
             return false;
         };
         if bar.category == QueueCategory::Ask && bar.options.is_empty() {
+            self.attention_queue.decision_overlay = None;
             self.activate_attention_bar(&bar);
             return true;
         }
@@ -2475,6 +2476,11 @@ mod tests {
             h.app.resolve_attention_destination(&bar),
             AttentionDestination::SourcePane(pane_id)
         );
+        let mut prior = bar.clone();
+        prior.options = default_ask_options();
+        h.app.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&prior));
+        assert!(h.app.open_decision_overlay_for_ask(&bar.id));
+        assert!(h.app.attention_queue.decision_overlay.is_none(), "navigation must close the previous decision");
         assert!(h.app.attention_queue.verdicts.is_empty());
     }
 
