@@ -626,11 +626,14 @@ impl PlexiApp {
                 pane_name,
                 context_id,
                 context_path,
-                summary: format!(
-                    "{} wants to use {}",
-                    self.approval_actor_label(&pending.actor_id),
-                    pending.tool.replace("__", " / ")
-                ),
+                summary: if monitor.get_continuation(&req_id).is_some_and(|record| {
+                    record.run_outcome.as_deref() == Some("retry_required")
+                }) {
+                    format!("{} stopped waiting. Approve, then retry {}.",
+                        self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                } else {
+                    format!("{} wants to use {}", self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                },
                 command_text: cmd_text,
                 options: default_ask_options(),
                 created_at_ms: created_ms,
