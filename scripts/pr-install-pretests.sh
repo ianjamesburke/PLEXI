@@ -63,12 +63,22 @@ if [[ "$scope" == scoped && ${#filters[@]} -gt 0 ]]; then
   done
   printf 'pr-install: scoped Rust filters=%s matched=%s base=%s\n' "${filters[*]}" "$matched" "$base_oid"
 fi
-just fetch-python-runtime sdk-smoke
+sdk_selection="run: full candidate or legacy selector"
+if [[ "$scope" == scoped && -f scripts/pr-sdk-selection.py ]]; then
+  sdk_selection="$(python3 scripts/pr-sdk-selection.py "$base_oid")"
+fi
+if [[ "${PLEXI_PR_REQUIRE_SDK:-}" == 1 ]]; then
+  sdk_selection="run: explicit qualification"
+fi
+echo "pr-install: SDK smoke $sdk_selection"
+if [[ "$sdk_selection" != skip:* ]]; then
+  just sdk-smoke
+fi
 if [[ "$scope" == full ]]; then
   echo "pr-install: full final-candidate pretests base=$base_oid"
   cargo_test
 elif [[ ${#filters[@]} -gt 0 ]]; then
   cargo_test "${filters[@]}"
 else
-  echo "pr-install: scoped pretests select no host Rust tests; SDK and affected-script checks remain required"
+  echo "pr-install: scoped pretests select no host Rust tests; affected-script checks remain required; SDK decision recorded above"
 fi

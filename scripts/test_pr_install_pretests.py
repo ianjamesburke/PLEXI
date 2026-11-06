@@ -47,6 +47,31 @@ class InstallPretests(unittest.TestCase):
         commands = self.log.read_text().splitlines() if self.log.exists() else []
         return result, commands
 
+    def test_native_diff_skips_sdk_but_explicit_and_full_require_it(self):
+        (self.root / "scripts/pr-sdk-selection.py").write_text('print("skip: native fixture")\n')
+        result, commands = self.run_scope()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("just sdk-smoke", commands)
+        self.log.unlink()
+        result, commands = self.run_scope(PLEXI_PR_REQUIRE_SDK="1")
+        self.assertIn("just sdk-smoke", commands)
+        self.log.unlink()
+        result, commands = self.run_scope(scope="full", final=True)
+        self.assertIn("just sdk-smoke", commands)
+
+    def test_sdk_boundary_selection_is_conservative(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sdk_selection", ROOT / "scripts/pr-sdk-selection.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for path in ("src/overlays/toolbar.rs", "src/host/context_navigation.rs"):
+            self.assertFalse(module.selection([path])[0], path)
+        for path in ("sdk/python/plexi_sdk/app.py", "sdk/protocol/pgap.schema.json",
+                     "src/protocol/mod.rs", "src/host/wasm_python.rs", "apps/test/app.py",
+                     "src/app/python_env.rs", "scripts/package.py", "Cargo.toml", "unknown"):
+            self.assertTrue(module.selection([path])[0], path)
+        self.assertTrue(module.selection([])[0])
+
     def test_batch_runs_only_selected_tests_and_sdk_smoke(self):
         result, commands = self.run_scope()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -55,7 +80,7 @@ class InstallPretests(unittest.TestCase):
         self.assertTrue(all("python3 scripts/cargo-channel-inputs.py test" in line for line in cargo))
         self.assertEqual(len(cargo), 2)  # list matches, then execute the selection
         self.assertTrue(all("-- cli::tests::affected" in line for line in cargo))
-        self.assertIn("just fetch-python-runtime sdk-smoke", commands)
+        self.assertIn("just sdk-smoke", commands)
 
     def test_legacy_worktree_without_helper_retains_raw_cargo_fallback(self):
         (self.root / "scripts/cargo-channel-inputs.py").unlink()
@@ -90,7 +115,7 @@ class InstallPretests(unittest.TestCase):
         result, commands = self.run_scope(filters="")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any("test --bin plexi" in line for line in commands))
-        self.assertIn("just fetch-python-runtime sdk-smoke", commands)
+        self.assertIn("just sdk-smoke", commands)
 
     def test_broad_fallback_requires_reviewed_filters(self):
         result, commands = self.run_scope(filters="::")
