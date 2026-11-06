@@ -230,6 +230,27 @@ fn live_seed_to_clear(
     })
 }
 
+fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError> {
+    let entries = panes.as_array().ok_or_else(|| {
+        SceneError::new("live_json_invalid", "pane list did not return an array")
+    })?;
+    let mut focused = entries.iter().filter(|pane| {
+        pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true)
+    });
+    let pane = focused.next().ok_or_else(|| {
+        SceneError::new("missing_target", "push_to_subcontext requires a focused pane")
+    })?;
+    if focused.next().is_some() {
+        return Err(SceneError::new(
+            "live_focus_ambiguous",
+            "pane list reported more than one focused pane",
+        ));
+    }
+    pane.get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
+        SceneError::new("live_json_invalid", "focused pane has no pane id")
+    })
+}
+
 fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
     match open {
         OpenSpec::Builtin { cwd, .. } => cwd.as_deref().map(resolve),
@@ -1892,12 +1913,7 @@ impl LiveBackend {
                 Ok(None)
             }
             Step::PushToSubcontext { push_to_subcontext } => {
-                let pane_id = self.last_app_pane.ok_or_else(|| {
-                    SceneError::new(
-                        "missing_target",
-                        "push_to_subcontext requires an opened pane",
-                    )
-                })?;
+                let pane_id = live_focused_pane_id(&self.json(&["pane", "list"])?)?;
                 let before = self
                     .json(&["context", "list"])?
                     .as_array()
@@ -3856,6 +3872,49 @@ mod tests {
         let error = backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, "unsafe_seed_clear");
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn live_push_to_subcontext_uses_focused_not_last_opened_pane() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = LIVE_ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("plexi-fake");
+        let marker = temp.path().join("pushed");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1 $2\" = \"pane list\" ]; then echo '[{{\"id\":2,\"focused\":true}},{{\"id\":3,\"focused\":false}}]'; exit 0; fi\nif [ \"$1 $2\" = \"context list\" ]; then if [ -f '{}' ]; then echo '[{{\"context_id\":1}},{{\"context_id\":2}}]'; else echo '[{{\"context_id\":1}}]'; fi; exit 0; fi\nif [ \"$1 $2 $4 $5\" = \"context push --pane-id 2\" ]; then touch '{}'; exit 0; fi\necho wrong-target >&2; exit 1\n",
+            marker.display(), marker.display()
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("PLEXI_SCENE_CHANNEL", "test-push");
+        let mut backend = LiveBackend::from_env(temp.path(), true).unwrap();
+        std::env::remove_var("PLEXI_SCENE_CHANNEL");
+        backend.binary = binary.to_string_lossy().into_owned();
+        backend.last_app_pane = Some(3);
+        backend.exec(&Step::PushToSubcontext { push_to_subcontext: "child".into() }, &mut Vec::new()).unwrap();
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn live_push_rejects_missing_or_ambiguous_focus() {
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([{"id": 1, "focused": false}]))
+                .unwrap_err().code,
+            "missing_target"
+        );
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([
+                {"id": 1, "focused": true}, {"id": 2, "focused": true}
+            ])).unwrap_err().code,
+            "live_focus_ambiguous"
+        );
+        assert_eq!(
+            live_focused_pane_id(&serde_json::json!([{"focused": true}]))
+                .unwrap_err().code,
+            "live_json_invalid"
+        );
     }
 
     #[test]
