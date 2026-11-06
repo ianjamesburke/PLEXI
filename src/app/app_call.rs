@@ -962,6 +962,7 @@ impl PlexiApp {
                         receipt.resolution.as_str(),
                         receipt.run_outcome.as_str()
                     );
+                    return Err("Approval was recorded, but the operation outcome is unknown. Check the requester before retrying.".to_string());
                 } else {
                     log::info!(
                         "permission_seal: desktop {label} resolved id={} resolution={} run_outcome={}",

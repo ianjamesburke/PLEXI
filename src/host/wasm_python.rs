@@ -2477,6 +2477,12 @@ fn unhandled_warn_is_due(last: Option<std::time::Instant>, now: std::time::Insta
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum OutboundEventError {
+    Encode(String),
+    Send(String),
+}
+
 impl LivePythonPane {
     /// Send an event to the CPython guest. Failure means the message was
     /// dropped: malformed JSON, closed stdin, or the guest-stdin hard cap.
@@ -4267,6 +4273,10 @@ impl LivePythonPane {
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
+        let _ = self.try_queue_outbound_event(event);
+    }
+
+    pub(crate) fn try_queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) -> Result<(), OutboundEventError> {
         cache_python_theme_for_relaunch(&mut self.config, &event);
         match encode_python_host_event(event) {
             Ok(value) => {
@@ -4276,6 +4286,7 @@ impl LivePythonPane {
                         self.app_id
                     );
                     self.error = Some(error.to_string());
+                    return Err(OutboundEventError::Send(error.to_string()));
                 }
             }
             Err(error) => {
@@ -4284,8 +4295,10 @@ impl LivePythonPane {
                     self.app_id
                 );
                 self.error = Some(error.to_string());
+                return Err(OutboundEventError::Encode(error.to_string()));
             }
         }
+        Ok(())
     }
 
     pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {

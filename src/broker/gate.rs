@@ -1293,6 +1293,14 @@ impl PermissionMonitor {
                     row.resolution.is_none()
                         && row.kind == filed.kind
                         && row.run_tag.as_deref() == Some(tag)
+                        && (!matches!(filed.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun)
+                            || (row.actor == filed.actor
+                                && row.resource == filed.resource
+                                && row.summary == filed.summary
+                                && match (row.details.as_ref(), details.as_ref()) {
+                                    (Some(a), Some(b)) if a.correlation_id.is_some() || b.correlation_id.is_some() => a.correlation_id == b.correlation_id,
+                                    _ => true,
+                                }))
                         && (filed.kind != NeedsYouKind::PermissionRequest
                             || row.resource == filed.resource)
                 }) {
@@ -2103,6 +2111,15 @@ impl PermissionMonitor {
         }
         let stored = {
             let mut map = self.continuations.lock().unwrap_or_else(|e| e.into_inner());
+            // A run can produce another request before an earlier one is settled.
+            // Keep each request addressable rather than replacing its predecessor.
+            if let Some(request_id) = record.needs_you_id.as_ref() {
+                if map.get(&record.run_id).is_some_and(|existing| {
+                    existing.needs_you_id.as_ref().is_some_and(|id| id != request_id)
+                }) {
+                    record.run_id = request_id.clone();
+                }
+            }
             if let Some(existing) = map.get_mut(&record.run_id) {
                 // Never overwrite a terminal completed/outcome_unknown record with an earlier state.
                 if matches!(

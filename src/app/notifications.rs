@@ -17,6 +17,13 @@ pub(crate) const NOTIFY_OUTCOME_QUEUE_FULL: &str = "queue_full";
 /// the next live arrival, rather than growing without limit for a session.
 pub(crate) const MAX_PENDING_NOTIFICATIONS: usize = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotifyDelivery {
+    Delivered,
+    Unavailable,
+    OutcomeUnknown,
+}
+
 #[derive(Clone)]
 pub(crate) struct PendingNotification {
     pub notify_id: String,
@@ -64,6 +71,8 @@ pub(crate) struct PendingNotification {
     /// True when the originating app pane has exited. The notification stays
     /// in the queue so the user can read it, but action buttons are hidden.
     pub tombstoned: bool,
+    /// Persisted before attempting an action; prevents replay after a crash.
+    pub delivery_unknown: bool,
     /// When `Some(t)`, the notification is invisible and exempt from timeout
     /// until `t` has elapsed (snooze). `None` means deliver immediately.
     pub deliver_after: Option<std::time::Instant>,
@@ -128,6 +137,7 @@ impl Default for PendingNotification {
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
             tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         }
@@ -172,6 +182,8 @@ struct PersistedNotification {
     /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
     enqueued_at_secs: u64,
     tombstoned: bool,
+    #[serde(default)]
+    delivery_unknown: bool,
     // deliver_after (snooze) is session-only — not persisted.
     // image_pipe_id and response_file are session handles — not persisted.
 }
@@ -182,6 +194,15 @@ pub(crate) fn save_pending_notifications_to(
     notifications: &[PendingNotification],
     path: &std::path::Path,
 ) {
+    if let Err(error) = try_save_pending_notifications_to(notifications, path) {
+        log::warn!("notify:persist: failed to save {:?}: {error}", path);
+    }
+}
+
+pub(crate) fn try_save_pending_notifications_to(
+    notifications: &[PendingNotification],
+    path: &std::path::Path,
+) -> Result<(), String> {
     let now_sys = crate::platform::clock::now_secs();
     let persisted: Vec<PersistedNotification> = notifications
         .iter()
@@ -208,19 +229,14 @@ pub(crate) fn save_pending_notifications_to(
                 on_dismiss: n.on_dismiss.clone(),
                 enqueued_at_secs,
                 tombstoned: n.tombstoned,
+                delivery_unknown: n.delivery_unknown,
             }
         })
         .collect();
-    match serde_json::to_string(&persisted) {
-        Ok(json) => match crate::platform::fs::atomic_write(path, json.as_bytes()) {
-            Ok(()) => log::info!(
-                "notify:persist: saved {} notification(s)",
-                notifications.len()
-            ),
-            Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-        },
-        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
-    }
+    let json = serde_json::to_string(&persisted).map_err(|e| e.to_string())?;
+    crate::platform::fs::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string())?;
+    log::info!("notify:persist: saved {} notification(s)", notifications.len());
+    Ok(())
 }
 
 /// Load persisted notifications from `path`. Drops entries older than 7 days.
@@ -274,6 +290,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
                 tombstoned: true,      // source pane is gone
+                delivery_unknown: p.delivery_unknown,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
             })
@@ -365,7 +382,7 @@ impl PlexiApp {
         value: Option<String>,
         response_file: Option<String>,
         host_action: Option<String>,
-    ) {
+    ) -> NotifyDelivery {
         log::info!(
             "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
         );
@@ -382,21 +399,35 @@ impl PlexiApp {
         );
         // Execute host-side action synchronously before writing the response
         // file so the navigation is complete before the shell unblocks.
+        let mut delivered = false;
+        let mut failed = false;
+        let mut uncertain = false;
         if let Some(ref action) = host_action {
             if let Some(id_str) = action.strip_prefix("pane_focus:") {
                 if let Ok(pane_id_target) = id_str.parse::<u64>() {
-                    self.pane_navigate(pane_id_target);
+                    if self.pane_navigate(pane_id_target) {
+                        delivered = true;
+                    } else {
+                        failed = true;
+                    }
                 } else {
                     log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                    failed = true;
                 }
             } else {
                 log::warn!("notify:action: unknown host_action {:?}", action);
+                failed = true;
             }
         }
         if let Some(rf) = &response_file {
             let content = value.as_deref().unwrap_or("");
             if crate::rpc::write_response(rf, content.as_bytes()) {
                 log::info!("notify:action: wrote {:?} to {:?}", content, rf);
+                delivered = true;
+            } else {
+                // A failed stream write may have delivered a partial response.
+                failed = true;
+                uncertain = true;
             }
         }
         // Search all windows for the sender pane — it may not be in the
@@ -408,14 +439,35 @@ impl PlexiApp {
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
-                    app.runtime
-                        .queue_outbound_event(crate::protocol::PlexiEvent::NotifyAction {
+                    match app.runtime
+                        .try_queue_notify_action(crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        });
+                        }) {
+                        Some(Ok(())) => delivered = true,
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Encode(error))) => {
+                            log::warn!("notify:action: app event encoding failed: {error}");
+                            failed = true;
+                        }
+                        Some(Err(crate::host::wasm_python::OutboundEventError::Send(error))) => {
+                            log::warn!("notify:action: app delivery failed: {error}");
+                            failed = true;
+                            uncertain = true;
+                        }
+                        None => log::info!("notify:action: app runtime does not support notification responses"),
+                    }
                 }
             }
+        }
+        if uncertain || (failed && delivered) {
+            NotifyDelivery::OutcomeUnknown
+        } else if failed {
+            NotifyDelivery::Unavailable
+        } else if delivered {
+            NotifyDelivery::Delivered
+        } else {
+            NotifyDelivery::Unavailable
         }
     }
 
@@ -687,6 +739,11 @@ impl PlexiApp {
             &self.pending_notifications,
             &crate::config::config_dir().join("notifications.json"),
         );
+    }
+
+    pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
+        self.prune_notification_images();
+        try_save_pending_notifications_to(&self.pending_notifications, &crate::config::config_dir().join("notifications.json"))
     }
 
     /// Drop decoded image state as soon as its notification leaves the live
