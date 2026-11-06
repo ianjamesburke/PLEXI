@@ -73,7 +73,7 @@ if (( ${#filters[@]} )); then
 fi
 ```
 
-`just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding a redundant rebuild when other Cargo settings match. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
+`just test-host <filter>...` and `just scene` share the justfile warning flags and test profile, avoiding rebuilds caused solely by mismatched warning flags; other changes or build-script invalidations can still trigger recompilation. The installer invokes its pretests under `just` with those same flags; raw Cargo can use different flags and trigger a rebuild.
 
 No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
 
