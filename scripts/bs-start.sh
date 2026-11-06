@@ -3,8 +3,8 @@
 #
 # Usage: bs-start.sh [--base feature/alpha-cleanup] [--manifest path] <stint-id> [<stint-id> ...]
 #
-# Asserts the selected base is clean and synced with origin (hard error naming what and
-# where otherwise), mints the wtp worktree feature/stint-<id>[-<id>...]-<slug>
+# Asserts the selected committed base is synced with origin (hard error naming what and
+# where otherwise), warns about excluded Alpha edits, mints the wtp worktree feature/stint-<id>[-<id>...]-<slug>
 # from that base HEAD, verifies the base, claims every given stint, and publishes
 # a slot report. Multiple ids form one batch lane: one worktree, one PR, and
 # a branch name `just merge-pr` resolves all the stints from.
@@ -65,13 +65,17 @@ if [[ "$base_branch" == "feature/alpha-cleanup" ]]; then
   uv run --no-project python "$SCRIPT_DIR/babysitter-policy.py" preflight "${stint_ids[@]}" "${manifest_args[@]}" >/dev/null
 fi
 
-# The selected base must be clean.
+# Aggregate bases remain clean; Alpha lanes use committed state and report excluded edits.
 git -C "$base_root" update-index -q --refresh || true
 dirty="$(git -C "$base_root" status --porcelain)"
 if [[ -n "$dirty" ]]; then
-  echo "bs-start: $base_branch is dirty at $base_root — commit or restore these before starting a lane:" >&2
+  if [[ "$base_branch" != "alpha" ]]; then
+    echo "bs-start: $base_branch is dirty at $base_root; aggregate base must be clean:" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+  echo "bs-start: Alpha has local edits; the new lane starts from committed Alpha and excludes these edits:" >&2
   echo "$dirty" >&2
-  exit 1
 fi
 
 # The selected base must be synced with origin (neither ahead nor behind).

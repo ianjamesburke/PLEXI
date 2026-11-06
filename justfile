@@ -554,13 +554,14 @@ test-infra-scripts:
     bash scripts/merge-pr.sh test-resolve-issue
     bash scripts/merge-pr.sh test-resolve-stints
     bash scripts/merge-pr.sh test-resolve-both
+    python3 scripts/test_landing_safety.py
     bash scripts/pr-install-reuse.sh self-test
     bash scripts/pr-install-verify-sdk.sh self-test
     bash scripts/pr-install-seed-profile.sh self-test
 
 # Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
 #   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
-#   just merge-squash 2155               — squash-merge only
+#   just merge-squash 2155 <SHA>         — squash-merge reviewed head only
 #   just merge-sync                      — reset local alpha to origin/alpha
 #   just merge-cleanup 2155 feature/2155-foo
 #   just merge-close 2144 2155
@@ -568,8 +569,8 @@ test-infra-scripts:
 merge-rebase BRANCH:
     bash scripts/merge-pr.sh rebase {{BRANCH}}
 
-merge-squash PR:
-    bash scripts/merge-pr.sh squash {{PR}}
+merge-squash PR SHA:
+    bash scripts/merge-pr.sh squash {{PR}} {{SHA}}
 
 merge-sync:
     bash scripts/merge-pr.sh sync
