@@ -10,7 +10,7 @@ def disposable(root: Path, entry: str) -> bool:
     path = PurePosixPath(entry.rstrip('/'))
     parts = path.parts
     allowed = (
-        parts in {('target',), ('assets', 'python'), ('sdk', 'python', '.venv'),
+        parts in {('target',), ('assets', 'python'), ('scripts', '__pycache__'), ('sdk', 'python', '.venv'),
                   ('sdk', 'python', '.pytest_cache')}
         or (len(parts) >= 3 and parts[0] in {'apps', 'sdk'} and parts[-1] == '__pycache__')
     )
