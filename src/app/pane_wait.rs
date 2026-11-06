@@ -1607,6 +1607,7 @@ impl PlexiApp {
                 } else {
                     "approval_wait_timeout"
                 };
+                log::info!("pane_send_approval: operation={} pending={} reason={reason}", item.operation_id, item.pending_request_id);
                     if let Some(ref rf) = item.response_file {
                         crate::rpc::write_json_response(
                             rf,
@@ -1667,6 +1668,7 @@ impl PlexiApp {
         self.pending_send_approvals = remaining_items;
         for item in approved_to_dispatch {
             self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                generated_operation_id: false,
                 pane_id: item.pane_id,
                 text: item.text,
                 operation_id: Some(item.operation_id),

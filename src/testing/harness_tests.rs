@@ -1105,6 +1105,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_a.path().to_path_buf(),
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
+                    terminal_authority: None,
                     id: 41,
                     kind: crate::workspace::SavedPaneKind::Portal { context_id: 20, reveal_after_close: false },
                     cwd: root_a.path().to_path_buf(),
@@ -1133,6 +1134,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 path: root_b.path().to_path_buf(),
                 tree: tree_b,
                 panes: vec![crate::workspace::SavedPane {
+                    terminal_authority: None,
                     id: 42,
                     kind: crate::workspace::SavedPaneKind::App,
                     cwd: root_b.path().to_path_buf(),
@@ -1328,6 +1330,7 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
 #[test]
 fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
     let record = crate::workspace::SavedPane {
+        terminal_authority: None,
         id: 7,
         kind: crate::workspace::SavedPaneKind::App,
         cwd: std::path::PathBuf::from("/tmp"),
@@ -1647,6 +1650,8 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let response_file = temp_response(tmp.path(), "send-text");
 
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "/settings".to_string(),
@@ -6295,6 +6300,7 @@ fn editor_gate_harness_matrix() {
                 let response = temp_response(tmp.path(), &format!("gate-{name}-{index}-{sub}"));
                 match input {
                     GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
+                        generated_operation_id: false,
                         paste: false,
                         pane_id,
                         text,
@@ -6408,6 +6414,7 @@ fn editor_gate_host_surfaces() {
     // no-op, so dirty the buffer first).
     let response = temp_response(tmp.path(), "gate-save-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "!".to_string(),
@@ -6492,6 +6499,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
 
     let response = temp_response(tmp.path(), "gate-save-fail-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "unsaveable".to_string(),
@@ -7049,6 +7057,7 @@ fn blank_text_editor_open_acquires_input_focus() {
 
     let text_response = temp_response(tmp.path(), "blank-editor-text");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "hello".to_string(),
@@ -8291,6 +8300,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     // selected prefill, and the rename must land in the source's own
     // directory (not the browse/host cwd).
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id,
         text: "QQ".to_string(),
@@ -8366,6 +8376,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     // Queue text for B while A's raw widget still holds egui focus.
     let response_file = temp_response(tmp.path(), "send-text-b");
     h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+        generated_operation_id: false,
         paste: false,
         pane_id: pane_b,
         text: "for-b-only".to_string(),
@@ -9753,6 +9764,7 @@ mod pane_send_submit_tests {
 
     fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             paste: false,
             pane_id: pane,
             text: text.to_string(),
@@ -9765,6 +9777,7 @@ mod pane_send_submit_tests {
 
     fn type_only(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             paste: false,
             pane_id: pane,
             text: text.to_string(),
@@ -12270,6 +12283,7 @@ mod agent_state_restoration_tests {
                     tree: active_tree,
                     panes: vec![
                         SavedPane {
+                            terminal_authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -12305,6 +12319,7 @@ mod agent_state_restoration_tests {
                             }),
                         },
                         SavedPane {
+                            terminal_authority: None,
                             id: 11,
                             kind: SavedPaneKind::Portal { context_id: 2, reveal_after_close: false },
                             cwd: PathBuf::new(),
@@ -12319,6 +12334,7 @@ mod agent_state_restoration_tests {
                             agent_session: None,
                         },
                         SavedPane {
+                            terminal_authority: None,
                             id: 12,
                             kind: SavedPaneKind::Portal { context_id: 3, reveal_after_close: false },
                             cwd: PathBuf::new(),
@@ -12344,6 +12360,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: bg_tree,
                     panes: vec![SavedPane {
+                        terminal_authority: None,
                         id: 20,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -12391,6 +12408,7 @@ mod agent_state_restoration_tests {
                     path: tmp.path().to_path_buf(),
                     tree: ephemeral_tree,
                     panes: vec![SavedPane {
+                        terminal_authority: None,
                         id: 30,
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
@@ -12544,6 +12562,7 @@ mod agent_state_restoration_tests {
         // 5. Explicit pane input resumes it via its Harness Adapter.
         let send_resp = temp_response(tmp.path(), "send-standby");
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             pane_id: 20,
             text: "Use BTreeMap\n".to_string(),
             submit: false,
@@ -12805,6 +12824,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 10: Pi agent pane with `session_id: None` -> bare `pi` launch.
                         SavedPane {
+                            terminal_authority: None,
                             id: 10,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -12839,6 +12859,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 11: Pi agent pane with unpersisted `session_id` (no file on disk) -> bare `pi` launch.
                         SavedPane {
+                            terminal_authority: None,
                             id: 11,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -12873,6 +12894,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 12: Pi agent pane with persisted `session_id` on disk -> `pi --session pi-persisted-12`.
                         SavedPane {
+                            terminal_authority: None,
                             id: 12,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -12919,6 +12941,7 @@ mod agent_state_restoration_tests {
                     panes: vec![
                         // Pane 20: Standby Pi pane with `session_id: None` -> bare `pi` on wake.
                         SavedPane {
+                            terminal_authority: None,
                             id: 20,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -12953,6 +12976,7 @@ mod agent_state_restoration_tests {
                         },
                         // Pane 21: Standby Pi pane with missing `session_id` -> bare `pi` on wake.
                         SavedPane {
+                            terminal_authority: None,
                             id: 21,
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
@@ -13080,6 +13104,7 @@ mod agent_state_restoration_tests {
         for pane_id in [20, 21] {
             let send_resp = temp_response(tmp.path(), &format!("wake-{pane_id}"));
             h.inject_ipc(AppRequest::SendToPane {
+                generated_operation_id: false,
                 pane_id,
                 text: "\n".to_string(),
                 submit: false,
@@ -14887,6 +14912,65 @@ allow = ["pane.send"]
 }
 
 #[test]
+fn restored_plain_agent_child_remains_brokered() {
+    let mut h = HostHarness::new();
+    let profile = h.profile_dir().to_path_buf();
+    let pane_id = h.add_focused_terminal();
+    let terminal = h.app.windows[0].panes.get_mut(&pane_id).unwrap().as_terminal_mut().unwrap();
+    let posture = crate::broker::PermissionPosture {
+        default_posture: crate::broker::Decision::Deny,
+        allow: Vec::new(), ask: Vec::new(), deny: vec!["pane.send".to_string()],
+    };
+    terminal.agent_spawned = true;
+    terminal.spawned_by = Some("agent:parent".to_string());
+    terminal.agent_permission_posture = Some(posture.clone());
+    assert!(!h.app.is_human_owned_pane(pane_id));
+    assert!(h.app.save_workspace_now());
+    let mut restored = HostHarness::from_profile_dir(&profile);
+    assert!(!restored.app.is_human_owned_pane(pane_id), "restored agent-created terminal must not acquire human authority");
+    assert_eq!(restored.app.pane_permission_posture(pane_id), Some(posture));
+    let caller_pid = restored.app.windows[0].panes[&pane_id].as_terminal().unwrap().backend.child_pid();
+    let target = restored.add_focused_terminal();
+    restored.terminal_backend(target).enable_input_tap();
+    let response = temp_response(&profile, "restored-plain-child-send");
+    restored.inject_ipc(AppRequest::SendToPane {
+        pane_id: target, text: "must not send".to_string(), operation_id: None,
+        generated_operation_id: false, submit: false, paste: false,
+        response_file: Some(response.clone()), peer_ancestry: Some(vec![caller_pid]),
+    });
+    restored.hidden_frame();
+    assert!(read_json_response(&response)["error"].as_str().unwrap().contains("permission_denied"));
+    assert!(restored.terminal_backend(target).take_input_tap().is_empty());
+}
+
+#[test]
+fn restored_terminal_authority_fails_closed_for_legacy_and_contradictory_records() {
+    let mut h = HostHarness::new();
+    let profile = h.profile_dir().to_path_buf();
+    let pane_id = h.add_focused_terminal();
+    assert!(h.app.is_human_owned_pane(pane_id));
+    assert!(h.app.save_workspace_now());
+    let saved = serde_json::to_vec(&crate::workspace::WorkspaceFile::load_from(&profile).unwrap()).unwrap();
+    let restored = HostHarness::from_profile_dir(&profile);
+    assert!(restored.app.is_human_owned_pane(pane_id), "explicit human authority must round-trip");
+    drop(restored);
+    for contradictory in [false, true] {
+        let mut old: crate::workspace::WorkspaceFile = serde_json::from_slice(&saved).unwrap();
+        let pane = old.windows.iter_mut().flat_map(|w| &mut w.panes).find(|p| p.id == pane_id).unwrap();
+        if contradictory {
+            let authority = pane.terminal_authority.as_mut().unwrap();
+            authority.spawned_by = Some("agent:parent".to_string());
+        } else {
+            // An older version ignores and drops the new field when it writes.
+            pane.terminal_authority = None;
+        }
+        old.save_to(&profile).unwrap();
+        let restored = HostHarness::from_profile_dir(&profile);
+        assert!(!restored.app.is_human_owned_pane(pane_id), "ambiguous or contradictory provenance must fail closed");
+    }
+}
+
+#[test]
 fn restored_agent_pane_enforces_permission_posture_on_pane_send() {
     let profile_dir = tempfile::tempdir().expect("profile_dir");
     let _profile_guard = crate::config::set_test_profile_dir(profile_dir.path().to_path_buf());
@@ -14940,6 +15024,7 @@ ask = ["pane.send"]
             tree,
             panes: vec![
                 crate::workspace::SavedPane {
+                    terminal_authority: None,
                     id: 10,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -14973,6 +15058,7 @@ ask = ["pane.send"]
                     }),
                 },
                 crate::workspace::SavedPane {
+                    terminal_authority: None,
                     id: 11,
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
@@ -15024,6 +15110,7 @@ ask = ["pane.send"]
         .child_pid();
     let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: 11,
         text: "hello from restored lead".to_string(),
         submit: false,
@@ -15096,6 +15183,7 @@ ask = ["pane.send"]
 
     let reply_1 = temp_response(&ws, "send-parked-1");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "first message".to_string(),
         submit: false,
@@ -15129,6 +15217,7 @@ ask = ["pane.send"]
     // Second send must require a fresh approval because the Once grant was consumed.
     let reply_2 = temp_response(&ws, "send-parked-2");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "second message".to_string(),
         submit: false,
@@ -15254,6 +15343,7 @@ ask = ["pane.send"]
     // same pane, even when the earlier caller has already timed out.
     let unrelated_reply = temp_response(&ws, "send-retry-unrelated");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "unrelated message".to_string(),
         submit: false,
@@ -15272,6 +15362,7 @@ ask = ["pane.send"]
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
         submit: false,
@@ -15300,6 +15391,7 @@ ask = ["pane.send"]
     // duplicate receipt, not write the same terminal input a second time.
     let duplicate_reply = temp_response(&ws, "send-retry-duplicate");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
         submit: false,
@@ -15325,6 +15417,7 @@ ask = ["pane.send"]
 
     let conflict_reply = temp_response(&ws, "send-retry-conflict");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "different text with same id".to_string(),
         submit: false,
@@ -15345,6 +15438,7 @@ ask = ["pane.send"]
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
     h.inject_ipc(AppRequest::SendToPane {
+        generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 3".to_string(),
         submit: false,
@@ -15685,6 +15779,7 @@ mod restore_followups_0983b {
                 path: tmp.path().to_path_buf(),
                 tree,
                 panes: vec![SavedPane {
+                    terminal_authority: None,
                     id: 30,
                     kind: SavedPaneKind::Terminal,
                     cwd: tmp.path().to_path_buf(),
@@ -15741,6 +15836,7 @@ mod restore_followups_0983b {
 
         let send_resp = temp_response(tmp.path(), "wake-30");
         h.inject_ipc(AppRequest::SendToPane {
+            generated_operation_id: false,
             pane_id: 30,
             text: "\n".to_string(),
             submit: false,

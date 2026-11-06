@@ -8,3 +8,9 @@ seed_pane_send_timeout = true
 
 [[steps]]
 shot = "attention-pane-send-timeout.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+shot = "attention-pane-send-decision.png"

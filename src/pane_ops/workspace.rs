@@ -2393,6 +2393,12 @@ impl PlexiApp {
                         runtime_kind: None,
                         launch: None,
                         slots: t.slots.clone(),
+                        terminal_authority: Some(crate::workspace::SavedTerminalAuthority {
+                            human_owned: self.is_human_owned_pane(id),
+                            spawned_by: t.spawned_by.clone(),
+                            parent_pane_id: t.parent_pane_id,
+                            permission_posture: t.agent_permission_posture.clone(),
+                        }),
                         agent_session: t.build_saved_agent_session_with_scrollback(
                             self.config.standby_scrollback_lines(),
                         ),
@@ -2436,6 +2442,7 @@ impl PlexiApp {
                         launch: a.runtime.launch_spec(),
                         slots: a.slots.clone(),
                         agent_session: None,
+                        terminal_authority: None,
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -2464,6 +2471,7 @@ impl PlexiApp {
                         launch: None,
                         slots: std::collections::HashMap::new(),
                         agent_session: None,
+                        terminal_authority: None,
                     });
                 }
             }
@@ -2527,6 +2535,7 @@ mod tests {
                     launch: None,
                     slots: std::collections::HashMap::new(),
                     agent_session: None,
+                    terminal_authority: None,
                 })
                 .collect(),
             focused_pane: None,

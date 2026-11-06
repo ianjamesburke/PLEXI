@@ -2159,7 +2159,8 @@ pub enum PaneCmd {
         /// does not read or change the system clipboard.
         #[arg(long, conflicts_with = "submit")]
         paste: bool,
-        /// Reuse this operation identity when explicitly retrying a waiting send.
+        /// Reuse an operation identity for a brokered agent send. Human and
+        /// unidentified callers are refused before sending when this is set.
         #[arg(long)]
         operation_id: Option<String>,
     },

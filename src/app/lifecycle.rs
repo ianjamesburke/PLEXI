@@ -2254,6 +2254,7 @@ impl PlexiApp {
                 pane_id,
                 text,
                 operation_id,
+                generated_operation_id,
                 submit,
                 paste,
                 response_file,
@@ -2305,6 +2306,16 @@ impl PlexiApp {
                             Some((caller, None))
                         }
                     });
+                if !*generated_operation_id && operation_id.is_some() && caller_and_posture.is_none() {
+                    log::info!("pane_send: explicit operation ID refused without a brokered caller");
+                    if let Some(rf) = response_file {
+                        write_json_response(rf, serde_json::json!({
+                            "error": "explicit operation IDs require a brokered agent caller; this send was not dispatched",
+                            "error_code": "idempotency_unavailable"
+                        }));
+                    }
+                    return;
+                }
                 let send_operation_id = operation_id
                     .clone()
                     .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));

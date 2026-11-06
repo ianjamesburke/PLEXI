@@ -306,6 +306,36 @@ fn pane_send_connected_socket_receives_approval_and_dispatches_once() {
 }
 
 #[cfg(unix)]
+#[test]
+fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
+    use std::io::{Read as _, Write as _};
+    let mut h = crate::testing::HostHarness::new();
+    let caller = h.add_focused_terminal();
+    let target = h.add_focused_terminal();
+    h.terminal_backend(target).enable_input_tap();
+    let caller_pid = h.app.windows[0].panes[&caller].as_terminal().unwrap().backend.child_pid();
+    let profile = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
+        let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(wake.clone(), "subscribe");
+        let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(wake, "publish");
+        let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+        client.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        let profile_path = profile.path().to_path_buf();
+        let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target, "text":"hello", "operation_id":"human-explicit", "response_file":profile.path().join("response")});
+        let mailbox = h.ipc_tx.clone();
+        let worker = std::thread::spawn(move || handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(vec![std::process::id(), caller_pid])));
+        writeln!(client, "{payload}").unwrap();
+        worker.join().unwrap();
+        h.hidden_frame();
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["error_code"], "idempotency_unavailable");
+    }
+    assert!(h.terminal_backend(target).take_input_tap().is_empty());
+}
+
+#[cfg(unix)]
 fn pane_send_socket_approval(disconnect: bool) {
     use std::io::Read as _;
     use std::io::Write as _;

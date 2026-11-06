@@ -1001,6 +1001,7 @@ pub fn pane_send_with_operation_cli(
     paste: bool,
     operation_id: Option<&str>,
 ) -> i32 {
+    let generated_operation_id = operation_id.is_none();
     let operation_id = operation_id
         .map(str::to_owned)
         .unwrap_or_else(|| format!("pane-send-{}", uuid::Uuid::new_v4()));
@@ -1015,6 +1016,7 @@ pub fn pane_send_with_operation_cli(
         "submit": submit,
         "paste": paste,
         "operation_id": operation_id,
+        "generated_operation_id": generated_operation_id,
         "peer_ancestry": [],
     });
     if submit {
@@ -1035,6 +1037,7 @@ pub fn pane_send_with_operation_cli(
                 return code;
             }
         };
+        report_duplicate_pane_send(&content);
         let outcome = submit_outcome(&content);
         outcome.report();
         return outcome.exit_code();
@@ -1056,7 +1059,18 @@ pub fn pane_send_with_operation_cli(
     if let Err(code) = super::check_reply_error(&content) {
         return code;
     }
+    report_duplicate_pane_send(&content);
     0
+}
+
+fn report_duplicate_pane_send(content: &str) {
+    if serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|value| value.get("duplicate").and_then(serde_json::Value::as_bool))
+        == Some(true)
+    {
+        eprintln!("pane send: this operation was already completed; no text was sent");
+    }
 }
 
 pub fn pane_heartbeat_cli(

@@ -110,6 +110,11 @@ After approval, retry the same text and target with `--operation-id
 exact text. If the outcome is unknown, check the target before taking further
 action; an automatic retry could repeat an effect.
 
+Explicit `--operation-id` requires a brokered agent caller. Human or
+unidentified callers receive an error before any text is sent; ordinary sends
+without the flag remain available. A completed operation reported as a
+duplicate does not send text again.
+
 Completed continuations must not repeat their mutation. For app-to-app data,
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.

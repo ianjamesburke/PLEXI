@@ -486,6 +486,7 @@ mod list_tests {
             paste: false,
             response_file: Some(send_resp.clone()),
             operation_id: None,
+            generated_operation_id: false,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
@@ -605,6 +606,7 @@ mod list_tests {
             paste: false,
             response_file: Some(send_resp.clone()),
             operation_id: None,
+            generated_operation_id: false,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();
@@ -663,6 +665,7 @@ mod list_tests {
             paste: false,
             response_file: Some(send_resp.clone()),
             operation_id: None,
+            generated_operation_id: false,
             peer_ancestry: None,
         };
         let send_line = serde_json::to_string(&send_req).unwrap();

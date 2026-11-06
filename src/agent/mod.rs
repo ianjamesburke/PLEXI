@@ -1848,6 +1848,7 @@ default = "ask"
             harness.app.dispatch_run_in_linked_terminal(sender, terminal, SENTINEL.to_string(), true);
             assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
             harness.app.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                generated_operation_id: false,
                 pane_id: terminal, text: SENTINEL.to_string(), submit: false, paste: false,
                 response_file: None, operation_id: None, peer_ancestry: None,
             });

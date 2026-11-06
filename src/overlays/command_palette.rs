@@ -2307,6 +2307,7 @@ impl PlexiApp {
                     shell_cmd.chars().count()
                 );
                 self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                    generated_operation_id: false,
                     pane_id,
                     text: shell_cmd.to_string(),
                     submit: true,
@@ -2669,6 +2670,7 @@ impl PlexiApp {
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
                     self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                        generated_operation_id: false,
                         pane_id,
                         text,
                         submit,

@@ -19,7 +19,7 @@ use super::{
 };
 
 const SCHEMA: u32 = 1;
-const ALWAYS_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+pub(crate) const ALWAYS_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 
 /// Process cache so Assistant, AgentHost, MCP, and `plexi app call` in one
 /// profile share grants. Tests with distinct profile directories stay isolated.
