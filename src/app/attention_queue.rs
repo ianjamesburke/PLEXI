@@ -1591,6 +1591,11 @@ impl PlexiApp {
                         return false;
                     }
                     self.save_notifications();
+                } else {
+                    self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                    self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "This request is no longer available.".into()));
+                    log::info!("decision_overlay: notification no longer available id={notify_id}");
+                    return false;
                 }
             }
             QueueSource::AgentState { pane_id } => {
@@ -2592,6 +2597,23 @@ mod tests {
         });
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask("notify-broken-response"));
+        assert!(!h.app.pick_decision_overlay_option(0));
+        assert!(h.app.attention_queue.verdicts.is_empty());
+        assert!(h.app.approval_keyboard.last_error.is_some());
+    }
+
+    #[test]
+    fn removed_notification_cannot_receive_a_verdict() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
+            notify_id: "stale".into(), sender_pane_id: pane_id, title: "Choice".into(),
+            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
+            ..Default::default()
+        });
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask("notify-stale"));
+        h.app.pending_notifications.clear();
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h.app.approval_keyboard.last_error.is_some());
