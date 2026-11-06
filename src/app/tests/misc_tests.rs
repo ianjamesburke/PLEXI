@@ -271,6 +271,100 @@ fn run_socket_connection(
     rx
 }
 
+#[cfg(unix)]
+#[test]
+fn pane_send_disconnected_socket_does_not_dispatch_after_approval() {
+    pane_send_socket_approval(true);
+}
+
+#[test]
+fn pane_send_rejects_missing_reply_stream_before_dispatch() {
+    #[derive(Default)]
+    struct MissingReply(Vec<u8>);
+    impl std::io::Write for MissingReply {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.write(bytes) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    impl SocketAckWriter for MissingReply {
+        fn requires_reply_stream(&self) -> bool { true }
+    }
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "test");
+    let profile = tempfile::tempdir().unwrap();
+    let mut reply = MissingReply::default();
+    let request = serde_json::json!({"type":"send_to_pane", "pane_id":1, "text":"hello", "response_file":profile.path().join("response")});
+    handle_socket_line_in(profile.path(), &request.to_string(), &mailbox, None, &mut reply);
+    assert!(rx.try_recv().is_err());
+    let response: serde_json::Value = serde_json::from_slice(&reply.0).unwrap();
+    assert_eq!(response["error_code"], "reply_connection_unavailable");
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_send_connected_socket_receives_approval_and_dispatches_once() {
+    pane_send_socket_approval(false);
+}
+
+#[cfg(unix)]
+fn pane_send_socket_approval(disconnect: bool) {
+    use std::io::Read as _;
+    use std::io::Write as _;
+    use std::time::Duration;
+    let mut h = crate::testing::HostHarness::new();
+    let target = h.add_focused_terminal();
+    h.terminal_backend(target).enable_input_tap();
+    let ws = h.workspace_root();
+    let agent = ws.join(".plexi/agents/socket-test");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(agent.join("AGENT.md"), "Test agent").unwrap();
+    std::fs::write(agent.join("settings.toml"), "[agent]\nid = \"socket-test\"\ndisplay_name = \"Socket test\"\ndefault_tier = \"medium\"\n[harness]\ncli = \"claude\"\n[permissions]\ndefault_posture = \"allow\"\nask = [\"pane.send\"]\n").unwrap();
+    let (caller, _) = h.app.spawn_agent_worker_pane("socket-test", "claude", "sleep 30", "test", None, false, None, Some(ws), None, None, true, None).unwrap();
+    let caller_pid = h.app.windows[0].panes[&caller].as_terminal().unwrap().backend.child_pid();
+    let mailbox = h.ipc_tx.clone();
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
+    let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(wake.clone(), "subscribe");
+    let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(wake, "publish");
+    let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+    let profile = tempfile::tempdir().unwrap();
+    let profile_path = profile.path().to_path_buf();
+    let response = profile.path().join("send-response");
+    let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target,
+        "text":"hello", "operation_id":"socket-liveness-test", "response_file": response});
+    let worker = std::thread::spawn(move || {
+        handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(vec![std::process::id(), caller_pid]));
+    });
+    writeln!(client, "{payload}").unwrap();
+    worker.join().unwrap();
+    let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+    while std::time::Instant::now() < deadline {
+        h.hidden_frame();
+        if !h.app.pending_send_approvals.is_empty() { break; }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pending = h.app.pending_send_approvals.first().expect("request parked").pending_request_id.clone();
+    let mut client = Some(client);
+    // The peer process remains alive while only its socket is closed.
+    if disconnect { drop(client.take()); }
+    let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+    monitor.approve_pending(&pending, crate::broker::gate::ApprovalChoice::Once).unwrap();
+    h.hidden_frame();
+    if disconnect {
+        assert!(h.terminal_backend(target).take_input_tap().is_empty(), "a disconnected caller must not trigger a late write");
+        assert_eq!(monitor.get_continuation("socket-liveness-test").unwrap().state, crate::broker::gate::ContinuationState::Paused);
+    } else {
+        let mut client = client.unwrap();
+        use std::os::fd::AsRawFd as _;
+        let mut poll = libc::pollfd { fd: client.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll points to one valid pollfd.
+        assert!(unsafe { libc::poll(&mut poll, 1, 3_000) } > 0, "reply must arrive within deadline");
+        let mut reply = String::new();
+        client.read_to_string(&mut reply).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"], true);
+        assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello", "one approval writes exactly once");
+        assert_eq!(monitor.get_continuation("socket-liveness-test").unwrap().state, crate::broker::gate::ContinuationState::Completed);
+    }
+}
+
 #[test]
 fn socket_connection_discards_valid_json_without_newline_frame() {
     let rx = run_socket_connection(br#"{"type":"wake"}"#);

@@ -738,9 +738,11 @@ pub(crate) trait SocketAckWriter: std::io::Write {
     fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
         None
     }
+    fn requires_reply_stream(&self) -> bool { false }
 }
 
 impl SocketAckWriter for crate::platform::ipc::IpcStream {
+    fn requires_reply_stream(&self) -> bool { true }
     fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
         self.try_clone().ok()
     }
@@ -915,6 +917,14 @@ pub(crate) fn handle_socket_line_in(
             if let Some(ref token) = reply_token {
                 if let Some(reply_stream) = ack_writer.clone_reply_stream() {
                     crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
+                } else if ack_writer.requires_reply_stream()
+                    && matches!(cmd, crate::protocol::AppRequest::SendToPane { .. })
+                {
+                    log::warn!("pane_ipc: refusing pane send without a retained reply stream");
+                    if let Err(error) = ack_writer.write_all(br#"{"error":"could not retain the reply connection; pane send was not dispatched","error_code":"reply_connection_unavailable"}"#) {
+                        log::warn!("pane_ipc: could not report missing reply connection: {error}");
+                    }
+                    return;
                 }
             }
             if mailbox.send(cmd).is_ok() {
