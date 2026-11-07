@@ -3097,7 +3097,7 @@ mod tests {
             kind,
             focused,
             has_content: true,
-            title: None,
+            title: Some("Investigate Plexi approval routing | PLEXI".into()),
             active: true,
             activity,
             static_health_pip: false,
@@ -3125,7 +3125,7 @@ mod tests {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(colors.bg_darkest))
                     .show_inside(ui, |ui| {
-                        paint_portal_minimap(ui.painter(), ui.max_rect(), &windows, &colors, 0.0);
+                        paint_portal_minimap(ui, ui.max_rect(), &windows, &colors, 0.0);
                     });
             });
         harness.run();
