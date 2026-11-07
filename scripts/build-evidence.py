@@ -55,8 +55,8 @@ def identity(root, extra, sdk_tests=False):
         # interpreter and test dependency versions. A failure disables reuse.
         python_tests = output("uv", "run", "--python", "3.12", "--project", "sdk/python",
                               "--with", "pytest", "--with", "pytest-asyncio", "python", "-c",
-                              "import sys,json; from importlib.metadata import distributions; "
-                              "print(json.dumps([sys.executable,sys.version,sorted((d.metadata['Name'],d.version) for d in distributions())]))")
+                              "import os,sys,json; from importlib.metadata import distributions; "
+                              "print(json.dumps([os.path.realpath(sys.executable or sys.exit('missing Python executable')),sys.version,sorted((d.metadata['Name'],d.version) for d in distributions())]))")
     tag = subprocess.run(["git", "describe", "--tags", "--exact-match", "HEAD"],
                          cwd=root, capture_output=True, text=True)
     driver = {name: digest(Path(__file__).with_name(name))

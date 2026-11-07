@@ -107,6 +107,57 @@ class Lifecycle(unittest.TestCase):
             self.call(*command, env={**env, 'FIXTURE_EXIT': '1'})
         self.assertFalse(receipt.exists())
 
+    def test_sdk_receipt_canonicalizes_interpreter_alias_but_not_inputs(self):
+        scripts = self.repo / 'scripts'
+        scripts.mkdir()
+        shutil.copy(ROOT / 'scripts/build-evidence.py', scripts)
+        (scripts / 'pr-install-pretests.sh').write_text('echo run >> "$FIXTURE_RUNS"\n')
+        project = self.repo / 'sdk/python'
+        project.mkdir(parents=True)
+        (project / 'pyproject.toml').write_text('[project]\nname="fixture"\nversion="1"\n')
+        self.call('git', 'add', '.')
+        self.call('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'fixture')
+
+        executables = self.root / 'interpreters'
+        executables.mkdir()
+        (executables / 'actual').write_text('interpreter one')
+        (executables / 'other').write_text('interpreter two')
+        (executables / 'python').symlink_to('actual')
+        (executables / 'python3').symlink_to('actual')
+        bin_dir = self.root / 'bin'
+        bin_dir.mkdir()
+        uv = bin_dir / 'uv'
+        uv.write_text('#!/usr/bin/env python3\n'
+                      'import os, sys, types, importlib.metadata\n'
+                      'if sys.argv[1:] == ["--version"]: print("uv fixture"); sys.exit()\n'
+                      'sys.executable = os.environ["FIXTURE_PYTHON"]\n'
+                      'sys.version = os.environ.get("FIXTURE_VERSION", "version one")\n'
+                      'importlib.metadata.distributions = lambda: [types.SimpleNamespace(metadata={"Name":"fixture"}, version=os.environ.get("FIXTURE_PACKAGE", "1"))]\n'
+                      'exec(sys.argv[-1])\n')
+        uv.chmod(0o755)
+        runs = self.root / 'runs'
+        env = {**self.env, 'PATH': f'{bin_dir}:{self.env["PATH"]}',
+               'CARGO_TARGET_DIR': str(self.root / 'target'), 'FIXTURE_RUNS': str(runs),
+               'FIXTURE_PYTHON': str(executables / 'python'),
+               'PLEXI_PR_REQUIRED_PTY_FILTERS': 'none', 'PLEXI_PR_REQUIRED_SCENES': 'none'}
+        command = ['python3', str(scripts / 'build-evidence.py'), 'pretests', str(self.repo), 'base', 'scoped', 'branch', 'alpha']
+        self.call(*command, env=env)
+        self.call(*command, env={**env, 'FIXTURE_PYTHON': str(executables / 'python3')})
+        self.assertEqual(len(runs.read_text().splitlines()), 1, 'equivalent aliases should reuse receipt')
+        for changed in ({'FIXTURE_PYTHON': str(executables / 'other')},
+                        {'FIXTURE_VERSION': 'version two'}, {'FIXTURE_PACKAGE': '2'}):
+            self.call(*command, env={**env, **changed})
+            count = len(runs.read_text().splitlines())
+            self.call(*command, env=env)
+            self.assertEqual(len(runs.read_text().splitlines()), count + 1)
+        (executables / 'python').unlink()
+        (executables / 'python').symlink_to('other')
+        count = len(runs.read_text().splitlines())
+        self.call(*command, env=env)
+        self.assertEqual(len(runs.read_text().splitlines()), count + 1, 'retargeted interpreter invalidates receipt')
+        self.call(*command, env={**env, 'FIXTURE_PYTHON': ''})
+        self.assertFalse((self.root / 'target/.plexi-pretests.json').exists())
+
     def test_install_leaf_refuses_unverified_reuse_flag(self):
         scripts = self.repo / 'scripts'
         scripts.mkdir()
