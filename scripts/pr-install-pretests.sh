@@ -83,3 +83,26 @@ elif [[ ${#filters[@]} -gt 0 ]]; then
 else
   echo "pr-install: scoped pretests select no host Rust tests; affected-script checks remain required; SDK decision recorded above"
 fi
+
+# Required opt-in PTY regressions are explicit; never run all ignored tests.
+while IFS= read -r filter; do
+  [[ -n "$filter" ]] || continue
+  if [[ "$filter" == :: || "$filter" == -* || ! "$filter" =~ [[:alnum:]_] ]]; then
+    echo "pr-install: invalid required PTY filter: $filter" >&2; exit 1
+  fi
+  listing="$(cargo_test "$filter" --ignored --list)"
+  count="$(printf '%s\n' "$listing" | awk -v filter="$filter" '/: test$/ && index($0, filter) {n++} END {print n+0}')"
+  [[ "$count" -gt 0 ]] || { echo "pr-install: required PTY filter matched zero tests: $filter" >&2; exit 1; }
+  echo "pr-install: required PTY filter=$filter matched=$count"
+  cargo_test "$filter" --ignored
+done <<< "${PLEXI_PR_REQUIRED_PTY_FILTERS:-}"
+
+# Scene paths are tracked inputs from the selected clean head, not arbitrary commands.
+while IFS= read -r scene; do
+  [[ -n "$scene" ]] || continue
+  if [[ "$scene" != tests/scenes/*.toml || "$scene" == *..* ]] || ! git ls-files --error-unmatch -- "$scene" >/dev/null 2>&1; then
+    echo "pr-install: invalid or untracked required scene: $scene" >&2; exit 1
+  fi
+  echo "pr-install: required scene=$scene"
+  just scene "$scene"
+done <<< "${PLEXI_PR_REQUIRED_SCENES:-}"

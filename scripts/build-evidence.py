@@ -41,7 +41,8 @@ def identity(root, extra, sdk_tests=False):
     keys = {key: value for key, value in os.environ.items()
             if key.startswith(("CARGO_", "RUST", "LC_", "PYTHON", "UV_"))
             or key in {"LANG", "PATH", "CC", "CXX", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET",
-                       "DEVELOPER_DIR", "PLEXI_BUILD_TAG", "PLEXI_BUILD_TEST_CHANNEL", "PLEXI_PR_TEST_FILTERS", "PLEXI_PR_REQUIRE_SDK"}}
+                       "DEVELOPER_DIR", "PLEXI_BUILD_TAG", "PLEXI_BUILD_TEST_CHANNEL", "PLEXI_PR_TEST_FILTERS", "PLEXI_PR_REQUIRE_SDK",
+                       "PLEXI_PR_REQUIRED_PTY_FILTERS", "PLEXI_PR_REQUIRED_SCENES"}}
     # Target is artifact location, not a compiler input. A slot remains locked.
     keys.pop("CARGO_TARGET_DIR", None)
     if sdk_tests and len(extra) >= 2 and extra[1] == "scoped" and os.environ.get("PLEXI_PR_REQUIRE_SDK") != "1":

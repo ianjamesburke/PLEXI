@@ -55,6 +55,8 @@ Read the task title with `stint show` before naming the pane. Use the stint numb
 
 ## Step 2 — Implement by Stint Size
 
+From the first regression test, use the task cache: `python3 scripts/build-cache.py task-<first-stint-id> just test-host <filters>`. For later candidate and installer commands, export `PLEXI_BUILD_CACHE_OWNER=task-<first-stint-id>`; include this owner in the tester handoff. The cache owner is not a compiled channel. Select required PTY filters and scenes using the environment inputs in TESTING.md before candidate compilation, and hand those same inputs to the tester for receipt reuse.
+
 Inspect the stint spec(s) first:
 ```bash
 stint show <stint-id>

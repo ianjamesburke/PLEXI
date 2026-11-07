@@ -140,6 +140,14 @@ If automatic selection returns `::`, set `PLEXI_PR_TEST_FILTERS` to reviewed new
 
 `just pr-install <PR> full` is supported only for the configured aggregate branch targeting its final base, when collecting final combined full-suite evidence. Do not use it for a feature or batch. Independent testing verifies the installed affected behavior rather than rerunning the worker's unrelated tests.
 
+Before candidate compilation, set `PLEXI_PR_REQUIRED_PTY_FILTERS` and
+`PLEXI_PR_REQUIRED_SCENES` to newline-separated reviewed PTY filters and tracked
+scene paths when those checks apply. Each PTY filter must match at least one
+ignored test; scenes run through `just scene`. A failure stops the candidate.
+These selections are part of the pretest receipt; provide the same values for
+installation to reuse it. This does not replace identifying the checks required
+by the actual change or inspecting images when visual review applies.
+
 ## Wall-clock budgets
 
 Default `cargo test --bin plexi` proves correctness, not idle-machine speed.

@@ -32,8 +32,12 @@ class InstallPretests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         just = self.bin / "just"
-        just.write_text('#!/bin/sh\nprintf "just %s\\n" "$*" >> "$PR_PRETEST_FIXTURE_LOG"\n')
+        just.write_text('#!/bin/sh\nprintf "just %s\\n" "$*" >> "$PR_PRETEST_FIXTURE_LOG"\n'
+                        'if [ "$1" = scene ]; then exit "${PR_PRETEST_FIXTURE_SCENE_EXIT:-0}"; fi\n')
         just.chmod(0o755)
+        git = self.bin / "git"
+        git.write_text('#!/bin/sh\nexit "${PR_PRETEST_FIXTURE_GIT_EXIT:-0}"\n')
+        git.chmod(0o755)
         self.log = self.root / "commands.log"
 
     def run_scope(self, scope="scoped", filters="cli::tests::affected", final=False, **extra):
@@ -48,6 +52,24 @@ class InstallPretests(unittest.TestCase):
                                 env=env, capture_output=True, text=True)
         commands = self.log.read_text().splitlines() if self.log.exists() else []
         return result, commands
+
+    def test_required_pty_and_scenes_are_executed_and_fail_closed(self):
+        env = {"PLEXI_PR_REQUIRED_PTY_FILTERS": "cli::tests::affected",
+               "PLEXI_PR_REQUIRED_SCENES": "tests/scenes/example.toml"}
+        result, commands = self.run_scope(**env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("--ignored --list" in line for line in commands))
+        self.assertTrue(any("--ignored" in line and "--list" not in line for line in commands))
+        self.assertIn("just scene tests/scenes/example.toml", commands)
+        self.log.unlink()
+        result, commands = self.run_scope(**env, PR_PRETEST_FIXTURE_ZERO="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("just scene" in line for line in commands))
+        self.log.unlink()
+        result, _ = self.run_scope(**env, PR_PRETEST_FIXTURE_SCENE_EXIT="1")
+        self.assertNotEqual(result.returncode, 0)
+        result, _ = self.run_scope(PLEXI_PR_REQUIRED_SCENES="../untracked.toml")
+        self.assertNotEqual(result.returncode, 0)
 
     def test_native_diff_skips_sdk_but_explicit_and_full_require_it(self):
         (self.root / "scripts/pr-sdk-selection.py").write_text('print("skip: native fixture")\n')

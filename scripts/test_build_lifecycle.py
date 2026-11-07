@@ -85,15 +85,17 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(runs.read_text().splitlines()), 2)
         self.call(*command, env={**env, 'RUSTFLAGS': '-D warnings'})
         self.assertEqual(len(runs.read_text().splitlines()), 3)
+        self.call(*command, env={**env, 'PLEXI_PR_REQUIRED_SCENES': 'tests/scenes/example.toml'})
+        self.assertEqual(len(runs.read_text().splitlines()), 4)
         receipt = self.root / 'target/.plexi-pretests.json'
         value = json.loads(receipt.read_text())
         value['result'] = 1
         receipt.write_text(json.dumps(value))
         self.call(*command, env=env)
-        self.assertEqual(len(runs.read_text().splitlines()), 4)
+        self.assertEqual(len(runs.read_text().splitlines()), 5)
         (self.root / 'target/.plexi-pretests.log').write_text('tampered')
         self.call(*command, env=env)
-        self.assertEqual(len(runs.read_text().splitlines()), 5)
+        self.assertEqual(len(runs.read_text().splitlines()), 6)
         receipt.unlink()
         with self.assertRaises(subprocess.CalledProcessError):
             self.call(*command, env={**env, 'FIXTURE_EXIT': '1'})
