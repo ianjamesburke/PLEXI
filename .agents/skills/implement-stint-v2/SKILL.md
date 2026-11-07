@@ -55,7 +55,7 @@ Read the task title with `stint show` before naming the pane. Use the stint numb
 
 ## Step 2 — Implement by Stint Size
 
-From the first regression test, use the task cache: `python3 scripts/build-cache.py task-<first-stint-id> just test-host <filters>`. For later candidate and installer commands, export `PLEXI_BUILD_CACHE_OWNER=task-<first-stint-id>`; include this owner in the tester handoff. The cache owner is not a compiled channel. Declare `PLEXI_PR_REQUIRED_PTY_FILTERS` and `PLEXI_PR_REQUIRED_SCENES` before candidate compilation as described in TESTING.md, using `none` for each inapplicable selection; hand the same inputs to the tester for receipt reuse.
+From the first regression test, use the task cache: `python3 scripts/build-cache.py task-<first-stint-id> just test-host <filters>`. For the candidate, prefix `just pr-candidate <PR>` with `PLEXI_BUILD_CACHE_OWNER=task-<first-stint-id>`; include the same command-scoped owner in the tester's `just pr-install` handoff. The cache owner is not a compiled channel. Declare `PLEXI_PR_REQUIRED_PTY_FILTERS` and `PLEXI_PR_REQUIRED_SCENES` before candidate compilation as described in TESTING.md, using `none` for each inapplicable selection; hand the same inputs to the tester for receipt reuse.
 
 Inspect the stint spec(s) first:
 ```bash

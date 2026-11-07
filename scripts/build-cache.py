@@ -14,10 +14,10 @@ MARKER = "plexi-owned-build-cache-v1"
 
 
 def run(channel, command):
-    if not any(channel.startswith(prefix) and channel[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
+    if not any(channel.startswith(prefix) and channel[len(prefix):].isascii() and channel[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
         raise ValueError("expected pr-<number> or task-<number>")
     owner = os.environ.get("PLEXI_BUILD_CACHE_OWNER", channel)
-    if not any(owner.startswith(prefix) and owner[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
+    if not any(owner.startswith(prefix) and owner[len(prefix):].isascii() and owner[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
         raise ValueError("invalid cache owner")
     if channel.startswith("task-") and owner != channel:
         raise ValueError("task cache owner must match task")
@@ -105,6 +105,6 @@ def run(channel, command):
 if __name__ == "__main__":
     try:
         sys.exit(run(sys.argv[1], sys.argv[2:]))
-    except (OSError, ValueError, subprocess.CalledProcessError, TimeoutError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"build-cache: {error}", file=sys.stderr)
         sys.exit(1)

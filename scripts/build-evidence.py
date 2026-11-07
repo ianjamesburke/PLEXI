@@ -78,7 +78,7 @@ def read(path):
 def receipt_run(arguments):
     for name in ("PLEXI_PR_REQUIRED_PTY_FILTERS", "PLEXI_PR_REQUIRED_SCENES"):
         value = os.environ.get(name, "")
-        if not value or (value != "none" and "none" in value.splitlines()):
+        if not value.strip() or (value != "none" and "none" in value.splitlines()):
             print(f"pretest-receipt: declare {name} (selections or 'none')", file=sys.stderr)
             return 1
     root, *selection = arguments

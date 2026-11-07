@@ -84,6 +84,8 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(runs.read_text().splitlines()), 1)
         with self.assertRaises(subprocess.CalledProcessError):
             self.call(*command, env={**env, 'PLEXI_PR_REQUIRED_SCENES': ''})
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.call(*command, env={**env, 'PLEXI_PR_REQUIRED_SCENES': '  '})
         self.assertEqual(len(runs.read_text().splitlines()), 1)
         self.call(*command[:-1], 'other-base', env=env)
         self.assertEqual(len(runs.read_text().splitlines()), 2)
@@ -228,6 +230,8 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(candidate[1], 'pr-42')
         with self.assertRaises(subprocess.CalledProcessError):
             self.call('python3', script, 'pr-42', 'true', env={**self.env, 'PLEXI_BUILD_CACHE_OWNER': '../bad'})
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.call('python3', script, 'pr-²', 'true')
 
     def test_busy_slots_timeout_and_oversized_retention(self):
         import fcntl
