@@ -1870,6 +1870,26 @@ impl PlexiApp {
 
                 let active = self.active_window;
                 let mut cwd_override = spec.cwd.clone();
+                let mut file_browser_follow_caller = false;
+                // Snapshot Explorer's caller directory before any focus redirect.
+                // An explicit --cwd retains precedence; other app policies are unchanged.
+                if cwd_override.is_none()
+                    && matches!(&spec.target, crate::app::launch_spec::PaneLaunchTarget::AppId(id) if id == "file_browser")
+                {
+                    if let Some(caller) = spec.from_pane_id {
+                        if let Some((window, _)) = self.find_pane_in_any_window(caller) {
+                            file_browser_follow_caller = self.windows[window]
+                                .panes
+                                .get(&caller)
+                                .is_some_and(|pane| pane.as_terminal().is_some());
+                            cwd_override = Some(self.file_browser_start_directory(
+                                Some(caller),
+                                self.windows[window].context_id,
+                            ));
+                        }
+                    }
+                }
+
                 let mut created_worktree: Option<crate::host::worktree::ManagedWorktree> = None;
                 let mut launch_result: Result<(), String> = Ok(());
                 if matches!(
@@ -2160,20 +2180,28 @@ impl PlexiApp {
                             .view_for_context(target_context_id, &self.router)
                             .placement_for(type_id),
                     );
-                    launch_result = self
-                        .launch_app_by_id_with_layout(
+                    let launched = if type_id == "file_browser" {
+                        self.launch_file_browser_with_layout(
+                            Some(placement),
+                            &spec.args,
+                            cwd_override,
+                            file_browser_follow_caller,
+                        )
+                    } else {
+                        self.launch_app_by_id_with_layout(
                             type_id,
                             Some(placement),
                             &spec.args,
                             cwd_override,
                         )
-                        .map(|existing_id| {
-                            // A dedup focused a live instance; the response must
-                            // report that pane, not the predicted id (#0336).
-                            if let Some(existing_id) = existing_id {
-                                response_pane_id = existing_id;
-                            }
-                        });
+                    };
+                    launch_result = launched.map(|existing_id| {
+                        // A dedup focused a live instance; the response must
+                        // report that pane, not the predicted id (#0336).
+                        if let Some(existing_id) = existing_id {
+                            response_pane_id = existing_id;
+                        }
+                    });
                     if spec.from_pane_id.is_some() {
                         self.active_window = active;
                         // Undo the temporary focus redirect when launch failed.

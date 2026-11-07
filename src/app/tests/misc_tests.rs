@@ -644,11 +644,9 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     );
 }
 
-/// The file browser must open at the context root when one is set, not the
-/// focused pane's CWD. Mirrors `resolve_new_pane_cwd`'s precedence
-/// (context.root → focused cwd → home) that every other new-pane path uses.
+/// Without an invoking terminal, Explorer falls back to the context root.
 #[test]
-fn file_browser_opens_at_context_root() {
+fn file_browser_without_terminal_opens_at_context_root() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
@@ -670,7 +668,7 @@ fn file_browser_opens_at_context_root() {
     assert_eq!(
         fb_root.as_deref(),
         Some(root.as_path()),
-        "file browser should open at the context root, not the focused pane CWD"
+        "file browser without a terminal should use the context root"
     );
 }
 
@@ -1119,4 +1117,427 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
     assert_ne!(value["tag"], "v999.0.0");
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_fresh_open_tracks_terminal_cd() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    h.app.set_context_root(root.clone(), None);
+    let terminal = h.add_focused_terminal();
+    let _unrelated = h.add_focused_terminal();
+    h.focus_pane(terminal);
+    for name in ["first", "second"] {
+        let directory = root.join(name);
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(terminal)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "terminal did not execute cd"
+            );
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.focus_pane(terminal);
+        let pid = h.terminal_backend(terminal).child_pid();
+        assert_eq!(
+            crate::host::shell::get_pid_cwd_fresh(pid)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "shell must remain in the executed cd directory"
+        );
+        h.app.open_file_browser();
+        h.run_frames(3);
+        // Overlay replacement retains the invoking terminal slot. The harness
+        // seed is also a FileBrowser runtime, so never pick an arbitrary runtime.
+        let browser = h.app.windows[0].panes[&terminal].as_app().unwrap();
+        assert_eq!(browser.manifest_id, "file_browser");
+        assert_eq!(
+            browser.workspace_root.canonicalize().unwrap(),
+            directory.canonicalize().unwrap()
+        );
+        h.app.open_file_browser(); // focused Explorer toggles closed, restoring the terminal
+        h.focus_pane(terminal);
+    }
+}
+
+#[test]
+fn file_browser_fallback_uses_explicit_context_not_active_router() {
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let caller_context = h.app.windows[0].context_id;
+    let caller = h.add_test_pane();
+    let other = tempfile::tempdir().unwrap();
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(),
+        root: other.path().to_path_buf(),
+        description: None,
+        context_id: caller_context + 100000,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.router.set_active(1);
+    for pane in [Some(caller), Some(u64::MAX), None] {
+        assert_eq!(
+            h.app.file_browser_start_directory(pane, caller_context),
+            root
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_unavailable_terminal_directory_falls_back() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let context = h.app.windows[0].context_id;
+    let terminal = h.add_focused_terminal();
+    let directory = root.join("removed");
+    std::fs::create_dir(&directory).unwrap();
+    let marker = root.join("ready");
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!(
+                "cd '{}' && touch '{}'\n",
+                directory.display(),
+                marker.display()
+            )
+            .into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while !marker.exists() {
+        assert!(std::time::Instant::now() < deadline);
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::fs::remove_dir(&directory).unwrap();
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    assert_eq!(
+        h.app.file_browser_start_directory(Some(terminal), context),
+        root
+    );
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let terminal = h.add_focused_terminal();
+    let expected = h.workspace_root().join("caller-directory");
+    let unrelated_directory = h.workspace_root().join("focused-directory");
+    let unrelated = h.add_focused_terminal();
+    for (pane, directory) in [(terminal, &expected), (unrelated, &unrelated_directory)] {
+        std::fs::create_dir(directory).unwrap();
+        let marker = directory.join("ready");
+        h.terminal_backend(pane)
+            .process_command(egui_term::BackendCommand::Write(
+                format!(
+                    "cd '{}' && touch '{}'\n",
+                    directory.display(),
+                    marker.display()
+                )
+                .into_bytes(),
+            ));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        while !marker.exists() {
+            assert!(std::time::Instant::now() < deadline);
+            h.run_frames(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    h.focus_pane(unrelated);
+    let caller_context = h.app.windows[0].context_id;
+    let other_root = tempfile::tempdir().unwrap();
+    let other_context = caller_context + 100000;
+    h.app.router.push(crate::host::context::Context {
+        name: "Other".into(),
+        root: other_root.path().to_path_buf(),
+        description: None,
+        context_id: other_context,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    h.app.windows.push(crate::host::context::Window {
+        name: "Other".into(),
+        path: other_root.path().to_path_buf(),
+        tree: egui_tiles::Tree::empty("explorer_other"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 1,
+        window_id: 90001,
+        context_id: other_context,
+    });
+    h.app.active_window = 1;
+    h.app.router.set_active(1);
+    h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+        type_id: "file_browser".into(),
+        layout: Some("split_h".into()),
+        args: vec![],
+        from_pane_id: Some(terminal),
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: None,
+        no_focus: true,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let browser = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_app()
+                .filter(|app| app.manifest_id == "file_browser")
+        })
+        .unwrap();
+    assert_eq!(
+        browser.workspace_root.canonicalize().unwrap(),
+        expected.canonicalize().unwrap()
+    );
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(h.app.router.active().context_id, other_context);
+    assert!(h.app.windows[1].panes.is_empty());
+    let browser_id = browser.id;
+    h.app.active_window = 0;
+    h.app.router.set_active(0);
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    let runtime_cwd = |h: &crate::testing::HostHarness| {
+        let state = h.app.windows[0].panes[&browser_id]
+            .as_app()
+            .unwrap()
+            .runtime
+            .serialize_state()
+            .unwrap();
+        std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+            .canonicalize()
+            .unwrap()
+    };
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "unrelated focus must not retarget Explorer"
+    );
+    h.focus_pane(browser_id);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        expected.canonicalize().unwrap(),
+        "Explorer focus must preserve its caller's directory"
+    );
+
+    let next = h.workspace_root().join("caller-after-open");
+    std::fs::create_dir(&next).unwrap();
+    h.terminal_backend(terminal)
+        .process_command(egui_term::BackendCommand::Write(
+            format!("cd '{}'\n", next.display()).into_bytes(),
+        ));
+    let deadline = std::time::Instant::now()
+        + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+    while runtime_cwd(&h) != next.canonicalize().unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Explorer must still follow its own linked terminal"
+        );
+        h.run_frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.app.windows[0]
+        .panes
+        .get_mut(&terminal)
+        .unwrap()
+        .as_terminal_mut()
+        .unwrap()
+        .exited = true;
+    h.focus_pane(unrelated);
+    h.run_frames(3);
+    assert_eq!(
+        runtime_cwd(&h),
+        next.canonicalize().unwrap(),
+        "dead linked owner must not fall back to an unrelated terminal"
+    );
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    let mut h = crate::testing::HostHarness::new();
+    let root = h.workspace_root();
+    let saved = root.join("saved-navigation");
+    std::fs::create_dir(&saved).unwrap();
+    std::fs::write(saved.join("one.txt"), "one").unwrap();
+    std::fs::write(saved.join("two.txt"), "two").unwrap();
+    let browser_id = h.add_test_pane();
+    let state = serde_json::json!({"cwd": saved, "selected": 1});
+    let restored = crate::pane_ops::create::restore_builtin_app_pane(
+        "file_browser",
+        browser_id,
+        root,
+        Some(&state),
+    )
+    .unwrap();
+    h.app.windows[0].panes.insert(browser_id, restored);
+    let _unrelated = h.add_focused_terminal();
+    h.run_frames(3);
+    let app = h.app.windows[0].panes[&browser_id].as_app().unwrap();
+    assert!(app.linked_pane_id.is_none());
+    let after = app.runtime.serialize_state().unwrap();
+    assert_eq!(after["cwd"], state["cwd"]);
+    assert_eq!(after["selected"], 1);
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn file_browser_explicit_directory_artifact_keeps_requested_root() {
+    let _shell = crate::host::shell::set_test_shell_override("/bin/sh");
+    for surface in ["artifact", "generic", "ipc", "generic-default"] {
+        let mut h = crate::testing::HostHarness::new();
+        let sender = h.add_test_pane();
+        let terminal = h.add_focused_terminal();
+        let directory = h.workspace_root().join("explicit-directory");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("requested.txt"), "requested").unwrap();
+        if surface == "generic-default" {
+            let marker = directory.join("ready");
+            h.terminal_backend(terminal)
+                .process_command(egui_term::BackendCommand::Write(
+                    format!(
+                        "cd '{}' && touch '{}'\n",
+                        directory.display(),
+                        marker.display()
+                    )
+                    .into_bytes(),
+                ));
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+            while !marker.exists() {
+                assert!(std::time::Instant::now() < deadline);
+                h.run_frames(1);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            h.focus_pane(terminal);
+        }
+        match surface {
+            "generic-default" => {
+                h.app
+                    .launch_app_by_id_with_layout("file_browser", Some("split_h".into()), &[], None)
+                    .unwrap();
+            }
+            "artifact" => h.app.dispatch_open_artifact(
+                sender,
+                directory.display().to_string(),
+                crate::protocol::ArtifactOpenMode::OpenInPane,
+            ),
+            "generic" => {
+                h.app
+                    .launch_app_by_id_with_layout(
+                        "file_browser",
+                        Some("split_h".into()),
+                        &[],
+                        Some(directory.clone()),
+                    )
+                    .unwrap();
+            }
+            _ => {
+                h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+                    type_id: "file_browser".into(),
+                    layout: Some("split_h".into()),
+                    args: vec![],
+                    from_pane_id: Some(terminal),
+                    request_id: None,
+                    response_file: None,
+                    ephemeral: false,
+                    cwd: Some(directory.display().to_string()),
+                    no_focus: false,
+                    path: None,
+                    workspace_root: None,
+                    target_context: None,
+                    context_name: None,
+                    name: None,
+                    agent_cmd: None,
+                    boot_timeout_secs: None,
+                    worktree: None,
+                    result_schema: None,
+                    peer_ancestry: None,
+                });
+                h.hidden_frame();
+            }
+        }
+        if surface == "generic-default" {
+            let browser = h.app.windows[0]
+                .panes
+                .values()
+                .find_map(|pane| {
+                    pane.as_app()
+                        .filter(|app| app.manifest_id == "file_browser")
+                })
+                .unwrap();
+            assert_eq!(
+                browser.workspace_root.canonicalize().unwrap(),
+                directory.canonicalize().unwrap(),
+                "implicit generic caller must bind before first frame"
+            );
+        }
+        h.run_frames(3);
+        let browser = h.app.windows[0]
+            .panes
+            .values()
+            .find_map(|pane| {
+                pane.as_app()
+                    .filter(|app| app.manifest_id == "file_browser")
+            })
+            .unwrap();
+        let state = browser.runtime.serialize_state().unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(state["cwd"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            directory.canonicalize().unwrap(),
+            "{surface} explicit directory must survive frame synchronization"
+        );
+    }
 }

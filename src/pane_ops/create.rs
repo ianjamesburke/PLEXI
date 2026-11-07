@@ -185,9 +185,11 @@ fn require_wasm_experiment() -> Result<(), String> {
     }
 }
 
+pub(crate) const FILE_BROWSER_CWD_GROUP: &str = "file-browser-cwd";
+
 fn builtin_default_group(type_id: &str) -> Option<String> {
     match type_id {
-        "file_browser" => Some("cwd".to_string()),
+        "file_browser" => Some(FILE_BROWSER_CWD_GROUP.to_string()),
         _ => None,
     }
 }
@@ -2052,33 +2054,78 @@ impl PlexiApp {
             }
         }
 
-        // Resolve via the canonical new-pane resolver so the file browser
-        // honors the context root when set (context.root → focused-pane cwd →
-        // home), matching every other new-pane path. A GUI launch whose focused
-        // cwd is "/" still falls back to home.
-        let cwd = self
-            .resolve_new_pane_cwd(None)
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!(
-            "open_file_browser: cwd={} context_root={:?}",
-            cwd.display(),
-            self.router.active().root
-        );
+        // Bind the invoking pane and its owning context before opening the overlay.
+        let caller = ctx
+            .focused_pane
+            .and_then(|tile| ctx.find_first_pane_in(tile))
+            .and_then(|tile| match ctx.tree.tiles.get(tile) {
+                Some(egui_tiles::Tile::Pane(id)) => Some(*id),
+                _ => None,
+            });
+        let cwd = self.file_browser_start_directory(caller, ctx.context_id);
 
         let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
 
-        // Built-in file browser gets full permissions, joins the "cwd" group so
-        // it follows linked-terminal directory changes.
+        // Track only the invoking terminal, including its overlay replacement.
         let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(
             app,
             perms,
             cwd,
-            Some("cwd".to_string()),
+            Some(FILE_BROWSER_CWD_GROUP.to_string()),
             Some("overlay"),
             None,
         );
+    }
+
+    /// Fresh Explorer launches follow the invoking live terminal's current cwd.
+    /// Nonterminal, standby, exited, missing or deleted cwd falls back to the
+    /// caller's context root, then home. Existing Explorer state is not retargeted.
+    pub(crate) fn file_browser_start_directory(
+        &self,
+        caller: Option<PaneId>,
+        context_id: u64,
+    ) -> PathBuf {
+        let terminal = caller.and_then(|id| {
+            self.windows
+                .iter()
+                .filter(|window| window.context_id == context_id)
+                .find_map(|window| window.panes.get(&id))
+                .and_then(Pane::as_terminal)
+        });
+        if let Some(terminal) = terminal {
+            if !terminal.exited && terminal.standby_session.is_none() {
+                if let Some(cwd) =
+                    crate::host::shell::get_pid_cwd_fresh(terminal.backend.child_pid())
+                {
+                    match cwd.try_exists() {
+                        Ok(true) if cwd.is_dir() => {
+                            log::info!("file_browser: launch caller={caller:?} context={context_id} cwd={} source=terminal", cwd.display());
+                            return cwd;
+                        }
+                        result => log::warn!(
+                            "file_browser: unusable terminal cwd={} caller={caller:?}: {result:?}",
+                            cwd.display()
+                        ),
+                    }
+                } else {
+                    log::warn!("file_browser: current cwd unavailable caller={caller:?} context={context_id}");
+                }
+            } else {
+                log::info!(
+                    "file_browser: caller={caller:?} has no live terminal cwd; using fallback"
+                );
+            }
+        }
+        let cwd = self
+            .context_root_for(context_id)
+            .filter(|root| root != &PathBuf::from("/") && root.is_dir())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        log::info!(
+            "file_browser: launch caller={caller:?} context={context_id} cwd={} source=fallback",
+            cwd.display()
+        );
+        cwd
     }
 
     /// Locate an open instance of app `manifest_id`, including one currently
@@ -2314,7 +2361,15 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, false)
+        let follow_file_browser_cwd = cwd_override.is_none();
+        self.launch_app_by_id_with_layout_inner(
+            id,
+            layout,
+            args,
+            cwd_override,
+            false,
+            follow_file_browser_cwd,
+        )
     }
 
     /// Like [`launch_app_by_id_with_layout`](Self::launch_app_by_id_with_layout)
@@ -2329,7 +2384,34 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        self.launch_app_by_id_with_layout_inner(id, layout, args, cwd_override, true)
+        let follow_file_browser_cwd = cwd_override.is_none();
+        self.launch_app_by_id_with_layout_inner(
+            id,
+            layout,
+            args,
+            cwd_override,
+            true,
+            follow_file_browser_cwd,
+        )
+    }
+
+    /// The IPC boundary has already distinguished caller-derived cwd from an
+    /// explicit directory. Carry that intent through the shared launch path.
+    pub(crate) fn launch_file_browser_with_layout(
+        &mut self,
+        layout: Option<String>,
+        args: &[String],
+        cwd: Option<PathBuf>,
+        follow_caller: bool,
+    ) -> Result<Option<PaneId>, String> {
+        self.launch_app_by_id_with_layout_inner(
+            "file_browser",
+            layout,
+            args,
+            cwd,
+            false,
+            follow_caller,
+        )
     }
 
     fn launch_app_by_id_with_layout_inner(
@@ -2339,7 +2421,18 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
         bypass_on_launch: bool,
+        follow_file_browser_cwd: bool,
     ) -> Result<Option<PaneId>, String> {
+        // Resolve an implicit Explorer caller before on-launch policy can move focus.
+        let cwd_override =
+            if id == "file_browser" && follow_file_browser_cwd && cwd_override.is_none() {
+                Some(self.file_browser_start_directory(
+                    self.focused_terminal_id(self.active_window),
+                    self.windows[self.active_window].context_id,
+                ))
+            } else {
+                cwd_override
+            };
         // "terminal" is a builtin pane type, not in the app registry.
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
@@ -2445,11 +2538,14 @@ impl PlexiApp {
         // Builtin app factory — resolved before the process registry; builtins never touch disk.
         if let Some(app) = builtin_factory(id, &cwd, args) {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
-            let group = self
-                .registries
-                .view_for_context(context_id, &self.router)
-                .group_for(id)
-                .or_else(|| builtin_default_group(app.type_id()));
+            let group = if id == "file_browser" && !follow_file_browser_cwd {
+                None
+            } else {
+                self.registries
+                    .view_for_context(context_id, &self.router)
+                    .group_for(id)
+                    .or_else(|| builtin_default_group(app.type_id()))
+            };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);

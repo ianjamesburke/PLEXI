@@ -10,7 +10,7 @@ The layout adapts to the pane width. Narrow splits use a compact list, medium an
 
 ## Opening the File Explorer
 
-Press `⌘E` from any focused terminal pane. The overlay opens over your current layout. It starts at the current working directory of that pane (tracked via OSC 7).
+Press `⌘E` from any focused terminal pane. The overlay opens over your current layout. A fresh Explorer starts at the invoking terminal’s current working directory, including changes made with `cd`. When no live terminal directory is available, it falls back to the context root, then your home directory. Reopening an existing Explorer preserves its navigation state.
 
 ## Navigation
 

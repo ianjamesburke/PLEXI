@@ -682,6 +682,12 @@ pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
         }
     }
 
+    get_pid_cwd_fresh(pid)
+}
+
+/// Probe the current directory at an explicit user action boundary, bypassing
+/// the short render-loop cache while refreshing it for subsequent readers.
+pub(crate) fn get_pid_cwd_fresh(pid: u32) -> Option<PathBuf> {
     let result = get_pid_cwd_uncached(pid);
 
     if let Some(ref path) = result {
@@ -1450,6 +1456,32 @@ mod tests {
                 Some("truecolor")
             );
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn pid_cwd_fresh_bypasses_recent_cached_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .current_dir(root.path())
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        CWD_CACHE
+            .lock()
+            .unwrap()
+            .insert(pid, (PathBuf::from("/stale-cwd"), Instant::now()));
+        let current = get_pid_cwd_fresh(pid);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        CWD_CACHE.lock().unwrap().remove(&pid);
+        assert_eq!(
+            current.unwrap().canonicalize().unwrap(),
+            root.path().canonicalize().unwrap()
+        );
+        assert!(get_pid_cwd_fresh(pid).is_none());
     }
 
     #[cfg(target_os = "macos")]

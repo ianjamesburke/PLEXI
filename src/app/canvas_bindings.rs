@@ -374,7 +374,7 @@ impl PlexiApp {
             app,
             perms,
             cwd,
-            Some("cwd".to_string()),
+            None, // Explicit directory intent must not follow a terminal.
             Some("split_v"),
             Some(0.5),
         );

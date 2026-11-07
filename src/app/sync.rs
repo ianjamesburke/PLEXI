@@ -7,11 +7,12 @@ use crate::plexi_ai::broker::PaneContext;
 impl PlexiApp {
     /// Synchronize app panes that join the `cwd` pane group with any terminal's
     /// working directory. Prefers the focused terminal; falls back to any terminal
-    /// in the active context, so the sync still happens when an app pane (like
-    /// the file browser) is the egui-focused tile. Synchronization is a direct
+    /// in the active context, so the sync still happens when an app pane is
+    /// the egui-focused tile. Synchronization is a direct
     /// `workspace_root` reassignment plus `AppRuntime::sync_cwd`; no event is
     /// emitted, and `sync_cwd` is a no-op for Python and WASM panes.
     pub(super) fn sync_app_cwd(&mut self) {
+        self.sync_file_browser_cwd();
         let active = self.active_window;
 
         // First try: focused pane if it's a terminal.
@@ -62,6 +63,67 @@ impl PlexiApp {
                         app.runtime.sync_cwd(&new_cwd);
                     }
                 }
+            }
+        }
+    }
+
+    /// Explorers follow their bound terminal, never whichever terminal happens
+    /// to be focused. Missing/dead owners leave navigation unchanged. Restored
+    /// Explorers have no persisted caller link, so they retain saved navigation.
+    fn sync_file_browser_cwd(&mut self) {
+        use crate::host::pane::{Pane, TerminalPane};
+
+        fn underlying_terminal(mut pane: &Pane) -> Option<&TerminalPane> {
+            loop {
+                if let Pane::Terminal(terminal) = pane {
+                    return Some(terminal);
+                }
+                pane = pane.as_app()?.overlay_replaced.as_deref()?;
+            }
+        }
+
+        let active = self.active_window;
+        let context_id = self.windows[active].context_id;
+        let updates: Vec<_> = self.windows[active]
+            .panes
+            .iter()
+            .filter_map(|(&id, pane)| {
+                let app = pane.as_app()?;
+                if app.pane_group.as_deref()
+                    != Some(crate::pane_ops::create::FILE_BROWSER_CWD_GROUP)
+                {
+                    return None;
+                }
+                let terminal = if let Some(owner) = app.linked_pane_id {
+                    self.windows
+                        .iter()
+                        .filter(|window| window.context_id == context_id)
+                        .find_map(|window| window.panes.get(&owner))
+                        .and_then(underlying_terminal)?
+                } else {
+                    // An overlay launched directly from a terminal owns that terminal.
+                    // An overlay launched from an app has no invoking terminal.
+                    app.overlay_replaced.as_deref()?.as_terminal()?
+                };
+                if terminal.exited || terminal.standby_session.is_some() {
+                    return None;
+                }
+                let cwd = shell::get_pid_cwd(terminal.backend.child_pid())?;
+                (app.workspace_root != cwd).then_some((id, cwd))
+            })
+            .collect();
+        for (id, cwd) in updates {
+            if let Some(app) = self.windows[active]
+                .panes
+                .get_mut(&id)
+                .and_then(Pane::as_app_mut)
+            {
+                log::info!(
+                    "file_browser: linked terminal cwd changed pane={id} cwd={}",
+                    cwd.display()
+                );
+                app.workspace_root = cwd.clone();
+                app.runtime.sync_cwd(&cwd);
             }
         }
     }
