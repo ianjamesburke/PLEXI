@@ -4755,6 +4755,47 @@ mod tests {
         assert!(right_half > 30, "clock icon right half must remain visible; found {right_half} pixels");
     }
 
+    /// The inverted cursor glyph must not spill into a differently colored cell.
+    #[test]
+    fn screenshot_terminal_cursor_clock_stays_in_cell() {
+        let mut h = PlexiUiHarness::new_sized_ppp(480.0, 240.0, 2.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let workspace = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/bin/sh".into(),
+                    args: vec![concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/terminal-clock.sh").into(), "cursor".into()],
+                    working_directory: Some(workspace), ..Default::default()
+                }, 18.0,
+            ).expect("start clock fixture");
+            app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(terminal)));
+            app.sidebar_visible = false;
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&id)
+                .and_then(|pane| pane.as_terminal_mut()).expect("fixture terminal")
+                .backend.capture_lines(50).iter().any(|line| line.contains("CLOCK_READY")));
+            if ready { h.run_steps(2); break; }
+            assert!(Instant::now() < deadline, "clock fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let image = h.render().expect("render clock fixture");
+        image.save(&evidence_png!()).expect("save clock screenshot");
+        // The cursor is on the clock cell; its amber inverted glyph must not
+        // paint into the blue cell to its right.
+        let spill = (189..224).flat_map(|y| (78..85).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let [r, g, b, _] = image.get_pixel(x, y).0;
+                r > 160 && g > 100 && b < 150
+            }).count();
+        assert_eq!(spill, 0, "inverted clock glyph spilled into the next cell");
+    }
+
     /// Exercise egui input ownership and the real terminal widget/PTY writer.
     /// Scene keys cannot express separate press, repeat and release events.
     #[test]

@@ -913,16 +913,14 @@ impl<'a> TerminalView<'a> {
         }
 
         painter.extend(shapes);
-        for (index, shape) in foreground.into_iter().enumerate() {
-            if let Some((_, clip)) =
-                cursor_glyph_clip.filter(|(glyph, _)| *glyph == index)
-            {
-                painter
-                    .with_clip_rect(clip.intersect(painter.clip_rect()))
-                    .add(shape);
-            } else {
-                painter.add(shape);
-            }
+        if let Some((index, clip)) = cursor_glyph_clip {
+            let mut after_cursor = foreground.split_off(index);
+            let cursor_glyph = after_cursor.remove(0);
+            painter.extend(foreground);
+            painter.with_clip_rect(clip).add(cursor_glyph);
+            painter.extend(after_cursor);
+        } else {
+            painter.extend(foreground);
         }
 
         // Copy-mode: block cursor highlight
