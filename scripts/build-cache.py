@@ -14,8 +14,13 @@ MARKER = "plexi-owned-build-cache-v1"
 
 
 def run(channel, command):
-    if not channel.startswith("pr-") or not channel[3:].isdigit():
-        raise ValueError("expected pr-<number>")
+    if not any(channel.startswith(prefix) and channel[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
+        raise ValueError("expected pr-<number> or task-<number>")
+    owner = os.environ.get("PLEXI_BUILD_CACHE_OWNER", channel)
+    if not any(owner.startswith(prefix) and owner[len(prefix):].isdigit() for prefix in ("pr-", "task-")):
+        raise ValueError("invalid cache owner")
+    if channel.startswith("task-") and owner != channel:
+        raise ValueError("task cache owner must match task")
     common = subprocess.check_output(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True).strip()
     namespace = hashlib.sha256(common.encode()).hexdigest()[:16]
     base = Path(os.environ.get("PLEXI_BUILD_CACHE_ROOT", str(Path.home() / ".cache/plexi-build"))) / namespace
@@ -25,16 +30,20 @@ def run(channel, command):
     # One PR may have both a worker and a tester waiting. Serialize that channel
     # before choosing a slot so they cannot mutate the same source/install via
     # different free slots.
-    with (base / f"{channel}.lock").open("a+") as channel_lock:
+    # Serialize both channel and owner; sorted acquisition avoids lock inversion.
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        locks = [stack.enter_context((base / f"{name}.lock").open("a+")) for name in sorted({channel, owner})]
         deadline = time.monotonic() + float(os.environ.get("PLEXI_BUILD_CACHE_TIMEOUT", "900"))
-        while True:
-            try:
-                fcntl.flock(channel_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("PR channel operation already active")
-                time.sleep(0.2)
+        for channel_lock in locks:
+            while True:
+                try:
+                    fcntl.flock(channel_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("cache owner or channel operation already active")
+                    time.sleep(0.2)
         slots = [base / f"slot-{index}" for index in range(2)]
         for slot in slots:
             slot.mkdir(exist_ok=True)
@@ -51,7 +60,7 @@ def run(channel, command):
         # Prefer the prior channel slot; otherwise least recently used.
         def rank(slot):
             record = slot / "last-channel"
-            matching = record.exists() and record.read_text() == channel
+            matching = record.exists() and record.read_text() == owner
             modified = record.stat().st_mtime if record.exists() else 0
             return (0 if matching else 1, -modified if matching else modified)
         slots.sort(key=rank)
@@ -77,9 +86,13 @@ def run(channel, command):
                         print(f"build-cache: discard owned oversized slot bytes={total}", flush=True)
                         shutil.rmtree(target)
                     target.mkdir(exist_ok=True)
-                    (slot / "last-channel").write_text(channel)
-                    env = {**os.environ, "CARGO_TARGET_DIR": str(target), "PLEXI_BUILD_TEST_CHANNEL": channel,
+                    (slot / "last-channel").write_text(owner)
+                    env = {**os.environ, "CARGO_TARGET_DIR": str(target),
                            "PLEXI_BUILD_TELEMETRY": str(slot / "telemetry.jsonl")}
+                    if channel.startswith("pr-"):
+                        env["PLEXI_BUILD_TEST_CHANNEL"] = channel
+                    else:
+                        env.pop("PLEXI_BUILD_TEST_CHANNEL", None)
                     print(f"build-cache: slot={slot} retained_bytes={total} wait_seconds={time.monotonic()-started:.3f}", flush=True)
                     return subprocess.call(command, env=env)
                 finally:
@@ -92,6 +105,6 @@ def run(channel, command):
 if __name__ == "__main__":
     try:
         sys.exit(run(sys.argv[1], sys.argv[2:]))
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError, TimeoutError) as error:
         print(f"build-cache: {error}", file=sys.stderr)
         sys.exit(1)

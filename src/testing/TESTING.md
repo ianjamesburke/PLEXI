@@ -100,6 +100,11 @@ reset; `PLEXI_BUILD_CACHE_MAX_BYTES` configures that threshold. This bounds reta
 slots, not peak temporary build space. `PLEXI_BUILD_CACHE_ROOT` relocates the pool.
 Never copy or share another lane's mutable target. For additional cache-backed
 checks use `python3 scripts/build-cache.py pr-<PR> just <check>`.
+Before a PR exists, use `python3 scripts/build-cache.py task-<stint> just
+<check>`. Set `PLEXI_BUILD_CACHE_OWNER=task-<stint>` for the later
+`just pr-candidate` and `just pr-install` to prefer that same slot. The task
+owner selects cache storage only; the candidate retains its compiled PR channel.
+Slots are bounded and may be reassigned when other owners use the pool.
 
 The tester owns installation. `build-evidence.py` permits pretest reuse only for
 successful matching clean-source execution, including exact head/base/selection,

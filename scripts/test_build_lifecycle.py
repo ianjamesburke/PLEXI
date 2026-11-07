@@ -210,6 +210,19 @@ class Lifecycle(unittest.TestCase):
             self.call(*command)
         self.assertTrue((target / 'keep').is_file())
 
+    def test_task_owner_carries_slot_without_claiming_pr_identity(self):
+        script = str(ROOT / 'scripts/build-cache.py')
+        probe = ['python3', '-c', 'import os; print(os.environ["CARGO_TARGET_DIR"], os.environ.get("PLEXI_BUILD_TEST_CHANNEL", "none"))']
+        task = self.call('python3', script, 'task-1164', *probe,
+                         env={**self.env, 'PLEXI_BUILD_TEST_CHANNEL': 'pr-999'}).stdout.splitlines()[-1].split()
+        candidate = self.call('python3', script, 'pr-42', *probe,
+                              env={**self.env, 'PLEXI_BUILD_CACHE_OWNER': 'task-1164'}).stdout.splitlines()[-1].split()
+        self.assertEqual(task[0], candidate[0])
+        self.assertEqual(task[1], 'none')
+        self.assertEqual(candidate[1], 'pr-42')
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.call('python3', script, 'pr-42', 'true', env={**self.env, 'PLEXI_BUILD_CACHE_OWNER': '../bad'})
+
     def test_busy_slots_timeout_and_oversized_retention(self):
         import fcntl
         command = ['python3', str(ROOT / 'scripts/build-cache.py'), 'pr-1', 'true']
