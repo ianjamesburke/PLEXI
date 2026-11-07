@@ -76,10 +76,14 @@ class Lifecycle(unittest.TestCase):
         self.call('git', 'add', '.')
         self.call('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'fixture')
         runs = self.root / 'runs'
-        env = {**self.env, 'CARGO_TARGET_DIR': str(self.root / 'target'), 'FIXTURE_RUNS': str(runs)}
+        env = {**self.env, 'CARGO_TARGET_DIR': str(self.root / 'target'), 'FIXTURE_RUNS': str(runs),
+               'PLEXI_PR_REQUIRED_PTY_FILTERS': 'none', 'PLEXI_PR_REQUIRED_SCENES': 'none'}
         command = ['python3', str(scripts / 'build-evidence.py'), 'pretests', str(self.repo), 'base', 'scoped', 'branch', 'alpha']
         self.call(*command, env=env)
         self.call(*command, env=env)
+        self.assertEqual(len(runs.read_text().splitlines()), 1)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.call(*command, env={**env, 'PLEXI_PR_REQUIRED_SCENES': ''})
         self.assertEqual(len(runs.read_text().splitlines()), 1)
         self.call(*command[:-1], 'other-base', env=env)
         self.assertEqual(len(runs.read_text().splitlines()), 2)

@@ -10,6 +10,15 @@ scope="${3:-scoped}"
 head_ref="${4:?head ref required}"
 base_ref="${5:?base ref required}"
 cd "$worktree"
+if [[ -z "${PLEXI_PR_REQUIRED_PTY_FILTERS:-}" || -z "${PLEXI_PR_REQUIRED_SCENES:-}" ]]; then
+  echo "pr-install: declare both required PTY filters and scenes (newline-separated selections or 'none')" >&2
+  exit 1
+fi
+for selection in "$PLEXI_PR_REQUIRED_PTY_FILTERS" "$PLEXI_PR_REQUIRED_SCENES"; do
+  if [[ "$selection" != none ]] && printf '%s\n' "$selection" | grep -qx none; then
+    echo "pr-install: 'none' must be the entire selection" >&2; exit 1
+  fi
+done
 case "$scope" in
   scoped) ;;
   full)
@@ -87,6 +96,7 @@ fi
 # Required opt-in PTY regressions are explicit; never run all ignored tests.
 while IFS= read -r filter; do
   [[ -n "$filter" ]] || continue
+  [[ "$filter" != none ]] || continue
   if [[ "$filter" == :: || "$filter" == -* || ! "$filter" =~ [[:alnum:]_] ]]; then
     echo "pr-install: invalid required PTY filter: $filter" >&2; exit 1
   fi
@@ -100,7 +110,8 @@ done <<< "${PLEXI_PR_REQUIRED_PTY_FILTERS:-}"
 # Scene paths are tracked inputs from the selected clean head, not arbitrary commands.
 while IFS= read -r scene; do
   [[ -n "$scene" ]] || continue
-  if [[ "$scene" != tests/scenes/*.toml || "$scene" == *..* ]] || ! git ls-files --error-unmatch -- "$scene" >/dev/null 2>&1; then
+  [[ "$scene" != none ]] || continue
+  if [[ "$scene" != tests/scenes/*.toml || "$scene" == *..* || -L "$scene" ]] || ! git ls-files --error-unmatch -- "$scene" >/dev/null 2>&1; then
     echo "pr-install: invalid or untracked required scene: $scene" >&2; exit 1
   fi
   echo "pr-install: required scene=$scene"

@@ -42,7 +42,8 @@ class InstallPretests(unittest.TestCase):
 
     def run_scope(self, scope="scoped", filters="cli::tests::affected", final=False, **extra):
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
-               "PR_PRETEST_FIXTURE_FILTERS": filters, "PR_PRETEST_FIXTURE_LOG": str(self.log), **extra}
+               "PR_PRETEST_FIXTURE_FILTERS": filters, "PR_PRETEST_FIXTURE_LOG": str(self.log),
+               "PLEXI_PR_REQUIRED_PTY_FILTERS": "none", "PLEXI_PR_REQUIRED_SCENES": "none", **extra}
         env.pop("PLEXI_PR_TEST_FILTERS", None)
         if "PLEXI_PR_TEST_FILTERS" in extra:
             env["PLEXI_PR_TEST_FILTERS"] = extra["PLEXI_PR_TEST_FILTERS"]
@@ -69,6 +70,12 @@ class InstallPretests(unittest.TestCase):
         result, _ = self.run_scope(**env, PR_PRETEST_FIXTURE_SCENE_EXIT="1")
         self.assertNotEqual(result.returncode, 0)
         result, _ = self.run_scope(PLEXI_PR_REQUIRED_SCENES="../untracked.toml")
+        self.assertNotEqual(result.returncode, 0)
+        result, _ = self.run_scope(PLEXI_PR_REQUIRED_SCENES="")
+        self.assertNotEqual(result.returncode, 0)
+        result, _ = self.run_scope(PLEXI_PR_REQUIRED_PTY_FILTERS="none\ncli::tests::affected")
+        self.assertNotEqual(result.returncode, 0)
+        result, _ = self.run_scope(**env, PR_PRETEST_FIXTURE_GIT_EXIT="1")
         self.assertNotEqual(result.returncode, 0)
 
     def test_native_diff_skips_sdk_but_explicit_and_full_require_it(self):
