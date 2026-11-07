@@ -717,7 +717,9 @@ impl<'a> TerminalView<'a> {
             global_bg,
         ))];
 
+        // Paint all backgrounds first so they cannot erase a neighboring glyph.
         let mut foreground = Vec::new();
+        let mut cursor_glyph_clip = None;
         for indexed in content.grid.display_iter() {
             let flags = indexed.cell.flags;
             let is_wide_char_spacer =
@@ -879,6 +881,19 @@ impl<'a> TerminalView<'a> {
                     continue;
                 }
 
+                if content.grid.cursor.point == indexed.point
+                    && self.has_focus
+                    && content.cursor_visible
+                    && matches!(
+                        content.cursor_shape,
+                        CursorShape::Block | CursorShape::HollowBlock
+                    )
+                    && state.cursor_visible
+                {
+                    // The inverted cursor glyph uses this cell's background color;
+                    // do not spill that color into the neighboring cell.
+                    cursor_glyph_clip = Some((foreground.len(), cell_rect));
+                }
                 foreground.push(painter.fonts_mut(|fonts| {
                     Shape::text(
                         fonts,
@@ -897,8 +912,18 @@ impl<'a> TerminalView<'a> {
             }
         }
 
-        shapes.extend(foreground);
         painter.extend(shapes);
+        for (index, shape) in foreground.into_iter().enumerate() {
+            if let Some((_, clip)) =
+                cursor_glyph_clip.filter(|(glyph, _)| *glyph == index)
+            {
+                painter
+                    .with_clip_rect(clip.intersect(painter.clip_rect()))
+                    .add(shape);
+            } else {
+                painter.add(shape);
+            }
+        }
 
         // Copy-mode: block cursor highlight
         if let Some(ref cm) = state.copy_mode {
