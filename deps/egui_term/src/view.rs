@@ -717,6 +717,7 @@ impl<'a> TerminalView<'a> {
             global_bg,
         ))];
 
+        let mut foreground = Vec::new();
         for indexed in content.grid.display_iter() {
             let flags = indexed.cell.flags;
             let is_wide_char_spacer =
@@ -772,7 +773,7 @@ impl<'a> TerminalView<'a> {
             // Handle hovered hyperlink underline
             if is_hovered_hyperling {
                 let underline_height = y + cell_height;
-                shapes.push(Shape::LineSegment {
+                foreground.push(Shape::LineSegment {
                     points: [
                         Pos2::new(x, underline_height),
                         Pos2::new(x + cell_width, underline_height),
@@ -803,31 +804,37 @@ impl<'a> TerminalView<'a> {
                     if state.cursor_visible {
                         match content.cursor_shape {
                             CursorShape::Block | CursorShape::HollowBlock => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    cell_rect,
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        cell_rect,
+                                        CornerRadius::default(),
+                                        cursor_color,
+                                    ),
+                                ));
                             },
                             CursorShape::Beam => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    Rect::from_min_size(
-                                        Pos2::new(x, y),
-                                        Vec2::new(2.0, cell_height),
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(x, y),
+                                            Vec2::new(2.0, cell_height),
+                                        ),
+                                        CornerRadius::default(),
+                                        cursor_color,
                                     ),
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                ));
                             },
                             CursorShape::Underline => {
-                                shapes.push(Shape::Rect(RectShape::filled(
-                                    Rect::from_min_size(
-                                        Pos2::new(x, y + cell_height - 2.0),
-                                        Vec2::new(cell_width, 2.0),
+                                foreground.push(Shape::Rect(
+                                    RectShape::filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(x, y + cell_height - 2.0),
+                                            Vec2::new(cell_width, 2.0),
+                                        ),
+                                        CornerRadius::default(),
+                                        cursor_color,
                                     ),
-                                    CornerRadius::default(),
-                                    cursor_color,
-                                )));
+                                ));
                             },
                             CursorShape::Hidden => {},
                         }
@@ -837,7 +844,7 @@ impl<'a> TerminalView<'a> {
                     painter.ctx().request_repaint_after(remaining);
                 } else {
                     // Unfocused: hollow outline, no blink
-                    shapes.push(Shape::Rect(RectShape::stroke(
+                    foreground.push(Shape::Rect(RectShape::stroke(
                         cell_rect,
                         CornerRadius::default(),
                         Stroke::new(1.0_f32, cursor_color),
@@ -863,7 +870,7 @@ impl<'a> TerminalView<'a> {
                 };
 
                 if graphics::maybe_push_graphics_element(
-                    &mut shapes,
+                    &mut foreground,
                     indexed.c,
                     cell_rect,
                     glyph_fg,
@@ -872,7 +879,7 @@ impl<'a> TerminalView<'a> {
                     continue;
                 }
 
-                shapes.push(painter.fonts_mut(|fonts| {
+                foreground.push(painter.fonts_mut(|fonts| {
                     Shape::text(
                         fonts,
                         Pos2 {
@@ -890,6 +897,7 @@ impl<'a> TerminalView<'a> {
             }
         }
 
+        shapes.extend(foreground);
         painter.extend(shapes);
 
         // Copy-mode: block cursor highlight
@@ -1913,9 +1921,8 @@ fn process_mouse_move(
             ))
         } else {
             InputAction::BackendCall(BackendCommand::SelectUpdate(
-                cursor_x,
-                cursor_y,
-                    ))
+                cursor_x, cursor_y,
+            ))
         };
 
         actions.push(cmd);
