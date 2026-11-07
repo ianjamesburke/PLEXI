@@ -27,20 +27,22 @@ from ._keys import normalize_key
 SPACE_XS: int = 4
 SPACE_SM: int = 8
 SPACE_MD: int = 12
+# SDK-only intermediate step; no matching host token.
 SPACE_LG: int = 16
 SPACE_XL: int = 24
 
-TEXT_HINT: int = 10
-TEXT_CAPTION: int = 11
-TEXT_BODY: int = 13
+TEXT_HINT: int = 11
+TEXT_CAPTION: int = 12
+TEXT_BODY: int = 14
+# SDK-only intermediate step; no matching host token.
 TEXT_HEADING: int = 15
-TEXT_TITLE: int = 18
-TEXT_TITLE_XL: int = 22
+TEXT_TITLE: int = 16
+TEXT_TITLE_XL: int = 28
 
-RADIUS_SM: int = 3
-RADIUS_MD: int = 6
-RADIUS_LG: int = 8
-RADIUS_BADGE: int = 10
+RADIUS_SM: int = 6
+RADIUS_MD: int = 10
+RADIUS_LG: int = 14
+RADIUS_BADGE: int = 6
 
 # Semantic color roles accepted by Badge / Banner (`decode_badge_color` in
 # `src/host/wasm_python.rs`).

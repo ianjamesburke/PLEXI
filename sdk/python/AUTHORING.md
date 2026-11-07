@@ -117,6 +117,20 @@ Pick one per app:
   from `init()` and advance simulation state from `RenderFrame` events. Do not
   build animation loops with timers.
 
+### Tree components and canvas commands
+
+Tree mode lays out native host nodes and handles widget input. Use `Column`,
+`HStack`, `Text`, `Button`, and `TextInput` for ordinary interfaces. Some SDK
+components are sugar that compose native nodes: for example, `Actions` builds a
+row of buttons and `FormField` combines a label and input. They do not add new
+wire node types. Inspect `to_node()` in `plexi_sdk.ui` or the node variants in
+`wit/plexi.wit` when you need to know what reaches the host.
+
+`Canvas` sends drawing commands instead of individual interactive widgets. Use
+`CanvasRect`, `CanvasCircle`, `CanvasLine`, and `CanvasText` for custom drawing;
+handle interaction in the app. A canvas can also be a child in a tree. See
+`apps/dev/component-gallery` for examples of tree components and their use.
+
 ## Effects
 
 Effects are dataclasses returned from `init()`/`update()`. The full list with
