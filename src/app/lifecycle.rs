@@ -3479,6 +3479,7 @@ impl PlexiApp {
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
                             capture_requested_at: None,
+                            initial_ui_frame: self.frame_tick.load(std::sync::atomic::Ordering::Relaxed),
                             expires_at: std::time::Instant::now()
                                 + crate::app::screenshot::SCREENSHOT_DEADLINE,
                         });
