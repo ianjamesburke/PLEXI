@@ -63,10 +63,33 @@ mod tests {
         for n in 0..2 {
             let _ = ctx.run_ui(egui::RawInput { time:Some(n as f64),..Default::default() }, |ui| {
                 let area = egui::Rect::from_min_size(egui::pos2(20.0*n as f32,0.0),egui::vec2(300.0,160.0));
-                paint_portal_minimap(ui.painter(),area,&windows,&colors,n as f64);
+                paint_portal_minimap(ui,area,&windows,&colors,n as f64);
             });
             assert_eq!(ctx.data(|d| d.get_temp::<f64>(key)),Some(0.0), "moving a portal must not re-enter NeedsYou");
         }
+    }
+
+    #[test]
+    fn minimap_narrow_title_paint_stays_within_tile() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let windows = [MiniWindow { grid_x: 0, grid_y: 0, panes: vec![MiniPane {
+            pane_id: Some(1), norm_rect: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(0.5, 1.0)),
+            kind: PaneKind::Terminal, focused: true, has_content: true,
+            title: Some("Investigate Plexi approval routing | PLEXI".into()), active: true,
+            activity: Some(AgentState::Working), static_health_pip: false,
+        }] }];
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            paint_portal_minimap(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0)), &windows, &colors, 0.0);
+        });
+        let text = output.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().contains("Investigate") => Some(t),
+            _ => None,
+        }).expect("title paint");
+        assert!(text.galley.text().ends_with('…'), "long title must show an ellipsis");
+        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+        let tile = egui::Rect::from_min_max(egui::pos2(3.0, 3.0), egui::pos2(97.0, 97.0));
+        assert!(tile.contains_rect(rect), "title {rect:?} exceeds tile {tile:?}");
     }
 
     #[test]
@@ -799,7 +822,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         );
                         let t = ui.input(|i| i.time);
                         paint_portal_minimap(
-                            ui.painter(),
+                            ui,
                             map_area,
                             &preview.windows,
                             &colors_for_portal,
@@ -1108,7 +1131,7 @@ fn collect_pane_ids_recursive(
 /// Each window gets a "monitor bezel" frame with a thin chrome bar, then
 /// its pane layout fills the body below.
 pub(crate) fn paint_portal_minimap(
-    painter: &egui::Painter,
+    ui: &egui::Ui,
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
@@ -1117,6 +1140,7 @@ pub(crate) fn paint_portal_minimap(
     if windows.is_empty() {
         return;
     }
+    let painter = ui.painter();
 
     // Determine grid extents so we know how many columns/rows to allocate.
     let max_gx = windows.iter().map(|w| w.grid_x).max().unwrap_or(0);
@@ -1313,14 +1337,15 @@ pub(crate) fn paint_portal_minimap(
                     } else {
                         1.0
                     };
-                    crate::ui::snap::text_snapped(
-                        painter,
-                        egui::pos2(content_area.min.x + title_x_offset, content_area.min.y),
-                        egui::Align2::LEFT_TOP,
-                        title,
-                        egui::FontId::proportional(font_size),
-                        title_color,
+                    use egui::emath::GuiRounding;
+                    let origin = egui::pos2(content_area.min.x + title_x_offset, content_area.min.y)
+                        .round_to_pixels(painter.pixels_per_point());
+                    let galley = crate::ui::text::elided_galley(
+                        ui, title, egui::FontId::proportional(font_size),
+                        (content_area.max.x - origin.x).max(0.0), crate::ui::text::Side::Trailing,
                     );
+                    let clipped = painter.with_clip_rect(cell);
+                    crate::ui::snap::galley_snapped(&clipped, origin, galley, title_color);
                     content_top += font_size + 2.0;
                 }
             }
