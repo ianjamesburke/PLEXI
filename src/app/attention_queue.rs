@@ -1706,6 +1706,11 @@ impl PlexiApp {
         if self.attention_queue.decision_overlay.is_none() {
             return KeyDisposition::Passthrough;
         }
+        if self.synthetic_input_frame {
+            input.clear();
+            log::info!("decision_overlay: rejected synthetic keyboard input");
+            return KeyDisposition::Consumed;
+        }
 
         // Plain Esc (and Cmd+Esc / Ctrl+Esc alias) closes the overlay leaving the ask queued.
         if input.consume_key(egui::Modifiers::NONE, Key::Escape)
@@ -2514,6 +2519,53 @@ mod tests {
     }
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
+
+    #[test]
+    fn synthetic_keyboard_cannot_approve_broker_pending_in_decision_overlay() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let root = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let result = crate::workspace::secrets::read_pane_secret(
+            &monitor,
+            &crate::workspace::secrets::InMemoryKeychain::new(),
+            &crate::workspace::secrets::SecretActor { kind: crate::broker::ActorType::Agent, id: format!("pane:{pane_id}") },
+            "CANARY",
+            &crate::workspace::secrets::SecretScope::Workspace { id: "ws".into(), root: root.path().to_owned() },
+            root.path(),
+        ).unwrap();
+        let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id, .. } = result else { panic!("expected pending approval") };
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask(&pending_id));
+        assert!(matches!(h.app.attention_queue.decision_overlay.as_ref().map(|o| &o.source), Some(QueueSource::BrokerPending { .. })), "overlay is not bound to broker pending");
+        h.app.synthetic_input_frame = true;
+        let mut input = PlexiInput::synthetic(vec![egui::Event::Key {
+            key: egui::Key::Num1, physical_key: None, pressed: true, repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }], egui::Modifiers::NONE);
+        h.app.handle_decision_overlay_input(&mut input);
+        assert!(monitor.show_pending(&pending_id).is_some(), "synthetic input approved broker request");
+        assert!(h.app.attention_queue.decision_overlay.is_some());
+        h.app.pending_pane_inputs.entry(pane_id).or_default().push(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Num1, physical_key: None, pressed: true, repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        });
+        h.frame(egui::RawInput::default());
+        assert!(!h.app.pending_pane_inputs.contains_key(&pane_id), "queued input was not delivered");
+        assert!(h.app.synthetic_input_frame, "delivered frame was not marked synthetic");
+        assert!(monitor.show_pending(&pending_id).is_some(), "queued pane input approved broker request");
+        assert!(h.app.attention_queue.decision_overlay.is_some());
+        h.app.synthetic_input_frame = false;
+        let mut human_input = PlexiInput::synthetic(vec![egui::Event::Key {
+            key: egui::Key::Num1, physical_key: Some(egui::Key::Num1), pressed: true, repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }], egui::Modifiers::NONE);
+        h.app.handle_decision_overlay_input(&mut human_input);
+        assert!(monitor.show_pending(&pending_id).is_none(), "desktop keyboard approval did not resolve request");
+    }
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
         h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
