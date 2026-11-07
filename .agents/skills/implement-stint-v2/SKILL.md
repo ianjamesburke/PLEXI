@@ -76,9 +76,15 @@ Read the `AGENTS.md` in any directory you plan to edit. Use the task’s provisi
 ## Step 3 — Draft identity, then mandatory ready gate
 
 Follow [TESTING.md — Draft PR and candidate qualification](../../../src/testing/TESTING.md#draft-pr-and-candidate-qualification).
-After focused checks and source review, commit/push a clean head and create the
+Complete focused tests, applicable visual inspection, and source review before
+starting the candidate. If a source reviewer is assigned, wait for that review
+and address its findings first; the independent installed-behavior tester still
+validates the qualified head afterward. Commit/push a clean head and create the
 PR with `gh pr create --draft` to acquire its number. Do not publish `pr:done`.
-Run `just pr-candidate <PR>` for the final PR-channel release and strict Clippy.
+Freeze the worktree while `just pr-candidate <PR>` runs for the final PR-channel
+release and strict Clippy; do not edit source or run a concurrent candidate in
+that worktree. If findings require a change, stop the obsolete candidate, fix
+and recheck the change, then qualify the new head.
 It retains a locked persistent cache and records matching pretest/artifact
 receipts. Complete every other applicable gate below, then update the PR evidence
 and run `gh pr ready <PR>`. The independent tester still owns installation.
