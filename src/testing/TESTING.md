@@ -227,6 +227,7 @@ shot = "balls.png"                          # optional; written to the out dir
 | `drag = { target = "<handle>", from = [x, y], to = [x, y], steps = 8, button = "left" }` | Pointer drag through the production input path: press, `steps` intermediate moves, release — one frame each (`AppRequest::DragPane`; `plexi pane drag` live). Endpoints are pane-pixel coordinates, or semantic node ids via `from_node`/`to_node` (the drag targets the node's rendered bounds center; nodes without recorded bounds fail loudly). |
 | `focus = "<handle>"` | Focus an opened pane through the production pane-navigation path (`plexi pane focus` live). |
 | `close = "<handle>"` | Close an opened pane through the production pane lifecycle path (`plexi pane close` live). |
+| `seed_failed_agent = true` | Set the focused pane to a failed agent state and open its attention bar. Headless-only; live runs return `unsupported_live_verb`. |
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
 | `push_to_subcontext = "Name"` | Push the focused pane into a new subcontext (creates a portal). |

@@ -921,6 +921,13 @@ impl PlexiApp {
             }
         }
         for (ctx_id, pid, pname, ag) in agent_entries {
+            if !self.attention_queue.dismissed_ids.is_empty()
+                && !matches!(ag.state, crate::protocol::AgentState::Failed
+                | crate::protocol::AgentState::Blocked
+                | crate::protocol::AgentState::ExitedUnreported)
+            {
+                self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pid}"));
+            }
             let (cat, prefix) = match ag.state {
                 crate::protocol::AgentState::NeedsYou => {
                     if bars
@@ -1431,11 +1438,15 @@ impl PlexiApp {
                     return dest;
                 }
                 self.attention_queue.open = false;
-                self.jump_to_pane_at_columns(*source_id);
+                let navigated = self.jump_to_pane_at_columns(*source_id);
+                if navigated && bar.category == QueueCategory::Failed && self.dismiss_queue_bar(&bar.id) {
+                    log::info!("attention_queue: dismissed failed bar on activation id={}", bar.id);
+                }
                 log::info!(
-                    "attention_queue: navigated result bar_id={} to source pane_id={}",
+                    "attention_queue: source pane navigation bar_id={} pane_id={} succeeded={}",
                     bar.id,
-                    source_id
+                    source_id,
+                    navigated
                 );
             }
             AttentionDestination::ResultArtifact(path) => {
@@ -2528,6 +2539,51 @@ mod tests {
         });
         h.hidden_frame();
         h.app.sync_attention_queue();
+    }
+
+    fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: crate::protocol::AgentState) {
+        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
+            detail: None, session_id: None, event: None, blocked_reason: None,
+        });
+        h.hidden_frame();
+        h.app.sync_attention_queue();
+    }
+
+    #[test]
+    fn failed_activation_dismisses_and_rearms_after_recovery() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        let id = format!("agent-failed-{pane_id}");
+        let bar = h.app.attention_queue.items.iter().find(|b| b.id == id).unwrap().clone();
+        let count = h.app.attention_queue.items.len();
+        assert_eq!(h.app.activate_attention_bar(&bar), AttentionDestination::SourcePane(pane_id));
+        assert!(!h.app.attention_queue.items.iter().any(|b| b.id == id));
+        assert_eq!(h.app.attention_queue.items.len(), count - 1);
+        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        assert!(!h.app.attention_queue.items.iter().any(|b| b.id == id));
+        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Working);
+        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        assert!(h.app.attention_queue.items.iter().any(|b| b.id == id));
+    }
+
+    #[test]
+    fn failed_bar_rearms_when_reports_arrive_before_queue_sync() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
+        let id = format!("agent-failed-{pane_id}");
+        assert!(h.app.dismiss_queue_bar(&id));
+        for state in [crate::protocol::AgentState::Working, crate::protocol::AgentState::Failed] {
+            h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+                peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
+                detail: None, session_id: None, event: None, blocked_reason: None,
+            });
+        }
+        h.hidden_frame();
+        h.app.sync_attention_queue();
+        assert!(h.app.attention_queue.items.iter().any(|b| b.id == id));
     }
 
     #[test]
