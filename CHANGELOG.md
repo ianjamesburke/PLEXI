@@ -1,6 +1,44 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.3] — 2026-11-07
+
+### Changes
+- fix(ui): bound portal minimap titles (#2998)
+- fix(build): normalize Python interpreter receipt identity
+- fix(build): tighten cache and qualification inputs
+- fix(testing): require explicit candidate check declarations
+- fix(testing): run required behavior checks before candidate
+- fix(build): preserve task cache owner across PR qualification
+- fix(explorer): follow invoking terminal current directory (#2997)
+- Fix pane send approval wait reconciliation (#2992)
+- fix(toolbar): remove context indicator dots (#2996)
+- fix(build): preserve verified reuse through installer dispatch
+- fix(build): carry driver evidence authority into installer
+- fix(build): bind candidate evidence to exact tag metadata
+- fix(build): close candidate and installer provenance gaps
+- fix(build): serialize PR operations and bind Python test environment
+- perf(distribution): cache authoritative cleanup tool and preserve unknown state
+- perf(build): retain owned caches and qualify one PR candidate
+- perf(testing): scope installer SDK smoke to affected boundaries
+- feat(sidebar): show active ancestry and aligned pip rows (#2995)
+- feat(context): reveal sole remaining subcontext (#2990)
+- fix(attention): offer only supported request actions (#2991)
+- fix(panes): distinguish program activity from working agents (#2989)
+- fix(terminal): align selection with the logical grid at fractional scale
+- fix(build): snapshot optional channel for managed Cargo (#2988)
+- Consolidate stint creation guidance
+- fix(testing): streamline targeted validation (#2985)
+- fix(overlays): toggle notes picker with its shortcut (#2984)
+- infra(agents): align risk-based validation workflow (#2983)
+- infra(testing): publish durable PR screenshots (#2982)
+- infra(testing): scope scene validation by risk (#2981)
+- fix(ui): animate working agent indicator (#2980)
+- fix(distribution): ignore foreign package.json when resolving Applications bundle package (#2975)
+- fix(distribution): install a real Applications bundle so Spotlight finds it (#2974)
+- fix(identity): show the running build's version; warn about stray app copies (#2973)
+- fix(config): keep config on every channel; skip only invalid keys (#2971)
+- fix(agent): focus and reveal a newly started interactive conversation (#2970)
 ## [0.4.2] — 2026-11-04
 
 ### Changes
