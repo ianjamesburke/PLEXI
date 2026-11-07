@@ -4786,8 +4786,15 @@ mod tests {
         }
         let image = h.render().expect("render clock fixture");
         image.save(&evidence_png!()).expect("save clock screenshot");
-        // The cursor is on the clock cell; its amber inverted glyph must not
-        // paint into the blue cell to its right.
+        // Fixed viewport coordinates: verify the dark cursor block is visible
+        // and contains an amber glyph before checking the blue cell to its right.
+        assert_eq!(image.get_pixel(55, 184).0[..3], [26, 29, 40], "cursor must be visible");
+        let glyph = (189..224).flat_map(|y| (56..72).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let [r, g, b, _] = image.get_pixel(x, y).0;
+                r > 160 && g > 100 && b < 150
+            }).count();
+        assert!(glyph > 30, "visible cursor must contain the inverted clock glyph");
         let spill = (189..224).flat_map(|y| (78..85).map(move |x| (x, y)))
             .filter(|&(x, y)| {
                 let [r, g, b, _] = image.get_pixel(x, y).0;
