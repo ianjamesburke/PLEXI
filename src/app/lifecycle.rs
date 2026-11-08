@@ -3758,6 +3758,7 @@ impl PlexiApp {
                             if let Some(mut a) = existing_agent {
                                 a.state = crate::protocol::AgentState::Completed;
                                 let _ = pane.set_agent(Some(a));
+                                self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pane_id}"));
                             }
                             break;
                         }
@@ -3929,6 +3930,12 @@ impl PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 if found {
+                    if !matches!(state, crate::protocol::AgentState::Failed
+                        | crate::protocol::AgentState::Blocked
+                        | crate::protocol::AgentState::ExitedUnreported)
+                    {
+                        self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pane_id}"));
+                    }
                     let provenance = Provenance {
                         source: if event.is_some() { Source::Hook } else { Source::LegacyReport },
                         agent_label: agent.clone(), session_id: session_id.clone(), raw_event: event.clone(),

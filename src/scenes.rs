@@ -405,6 +405,7 @@ pub enum Step {
     },
     /// Seed a pane-send approval whose caller has stopped waiting (headless).
     SeedPaneSendTimeout { seed_pane_send_timeout: bool },
+    SeedFailedAgent { seed_failed_agent: bool },
     /// Switch to the context at this router index.
     SwitchContext { switch_context: usize },
     /// Push the focused pane into a new subcontext with this name.
@@ -1984,6 +1985,9 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "seed_notification is headless-only; live scenes must notify through an app",
             )),
+            Step::SeedFailedAgent { .. } => Err(SceneError::new(
+                "unsupported_live_verb", "seed_failed_agent is headless-only",
+            )),
             Step::SeedPaneSendTimeout { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "seed_pane_send_timeout is headless-only",
@@ -2485,6 +2489,7 @@ fn step_label(step: &Step) -> String {
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
+        Step::SeedFailedAgent { seed_failed_agent } => format!("seed_failed_agent {seed_failed_agent}"),
         Step::SeedPaneSendTimeout { seed_pane_send_timeout } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
@@ -2908,6 +2913,25 @@ impl HeadlessBackend {
                 Ok(Some(StepDetail::Message {
                     message: format!("seeded notification {id}"),
                 }))
+            }
+            Step::SeedFailedAgent { seed_failed_agent } => {
+                if !seed_failed_agent {
+                    return Err(SceneError::new("seed_failed", "seed_failed_agent must be true"));
+                }
+                let seeded = self.h.with_app_mut(|app| {
+                    let Some(pane_id) = app.active_focused_pane_id() else { return false; };
+                    let Some(pane) = app.windows.iter_mut().find_map(|w| w.panes.get_mut(&pane_id)) else { return false; };
+                    if !pane.set_agent(Some(crate::protocol::PaneAgentState {
+                        pane_id, state: crate::protocol::AgentState::Failed,
+                        agent: "scene-agent".into(), detail: Some("Scene agent failed".into()), session_id: None,
+                    })) { return false; }
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
+                    app.attention_queue.items.iter().any(|bar| bar.id == format!("agent-failed-{pane_id}"))
+                });
+                if !seeded { return Err(SceneError::new("seed_failed", "failed agent bar was not created")); }
+                self.h.run_steps(2);
+                Ok(None)
             }
             Step::SeedPaneSendTimeout { seed_pane_send_timeout } => {
                 if !seed_pane_send_timeout {

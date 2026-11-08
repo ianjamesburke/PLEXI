@@ -1,0 +1,17 @@
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+seed_failed_agent = true
+
+[[steps]]
+assert_label = { target = "host", label = "Attention Queue" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+key = { target = "host", value = "cmd+i" }
+
+[[steps]]
+assert_label = { target = "host", label = "Queue is calm — no pending asks or results." }
