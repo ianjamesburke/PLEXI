@@ -2578,6 +2578,34 @@ mod tests {
         assert!(monitor.show_pending(&pending_id).is_none(), "desktop keyboard approval did not resolve request");
     }
 
+    #[test]
+    fn host_key_ipc_cannot_approve_broker_pending_in_decision_overlay() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let root = tempfile::tempdir().unwrap();
+        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+        let result = crate::workspace::secrets::read_pane_secret(
+            &monitor,
+            &crate::workspace::secrets::InMemoryKeychain::new(),
+            &crate::workspace::secrets::SecretActor { kind: crate::broker::ActorType::Agent, id: format!("pane:{pane_id}") },
+            "CANARY",
+            &crate::workspace::secrets::SecretScope::Workspace { id: "ws".into(), root: root.path().to_owned() },
+            root.path(),
+        ).unwrap();
+        let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id, .. } = result else { panic!("expected pending approval") };
+        h.app.sync_attention_queue();
+        assert!(h.app.open_decision_overlay_for_ask(&pending_id));
+        let response_file = root.path().join("host-key.json");
+        h.inject_ipc(crate::protocol::AppRequest::HostKey {
+            key: "1".to_string(),
+            response_file: response_file.to_string_lossy().into_owned(),
+        });
+        h.frame(egui::RawInput::default());
+        assert!(response_file.exists(), "host-key request was not handled");
+        assert!(monitor.show_pending(&pending_id).is_some(), "host-key IPC approved broker request");
+        assert!(h.app.attention_queue.decision_overlay.is_some());
+    }
+
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
         h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
             peer_ancestry: None,
