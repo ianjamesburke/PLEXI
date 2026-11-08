@@ -48,12 +48,27 @@ class Resize:
 
 @dataclass
 class FocusGained:
-    pass
+    """This pane is now the focused pane of the active context and the host
+    window is visible and OS-focused. Delivered after :class:`PaneShown`."""
 
 
 @dataclass
 class FocusLost:
-    pass
+    """This pane stopped being the focused pane (another pane or context took
+    focus, or the host window lost OS focus or was hidden). Delivered before
+    :class:`PaneHidden`."""
+
+
+@dataclass
+class PaneShown:
+    """This pane became visible: its context is active, the host window is not
+    minimized or occluded, and no other pane is zoomed over it."""
+
+
+@dataclass
+class PaneHidden:
+    """This pane stopped being visible. A pane that was focused always receives
+    :class:`FocusLost` first."""
 
 
 @dataclass

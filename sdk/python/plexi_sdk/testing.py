@@ -554,6 +554,14 @@ class AppHarness:
         """Inject a synthetic UI action — a button/tab/node click by handler id."""
         self._send({"type": "ui_action", "handler_id": handler_id})
 
+    def set_focus(self, focused: bool) -> None:
+        """Inject the host's per-pane focus event (``FocusGained`` / ``FocusLost``)."""
+        self._send({"type": "focus_gained" if focused else "focus_lost"})
+
+    def set_visible(self, visible: bool) -> None:
+        """Inject the host's per-pane visibility event (``PaneShown`` / ``PaneHidden``)."""
+        self._send({"type": "pane_shown" if visible else "pane_hidden"})
+
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""
         return render_draw_commands(self._draw_commands, self._width, self._height)
