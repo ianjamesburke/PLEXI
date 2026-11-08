@@ -1191,3 +1191,32 @@ fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
     // The previous install still serves its remembered grant.
     assert_eq!(rig.run_ok("still", "ok")["ok"], true);
 }
+
+#[test]
+fn uninstalling_an_app_removes_its_sealed_program_copies_and_only_its_own() {
+    let mut rig = Rig::installed();
+    rig.seal_base = crate::host::cli_ops::seal_base();
+    assert_eq!(rig.run_once_pair()["ok"], true);
+    let mine = rig.seal_base.join("ops-app");
+    assert!(mine.is_dir(), "the app has a sealed copy after a launch");
+    let other = rig.seal_base.join("other-app/prog/abc");
+    std::fs::create_dir_all(&other).unwrap();
+    let target_root = rig.app_dir.parent().unwrap().to_path_buf();
+    crate::cli::install_host::uninstall_one("ops-app", &target_root).unwrap();
+    assert!(!rig.app_dir.exists());
+    assert!(
+        !mine.exists(),
+        "uninstall must not leave executable copies behind"
+    );
+    assert!(other.exists(), "another app's copies are untouched");
+}
+
+#[test]
+fn an_app_id_that_could_escape_its_directory_is_refused() {
+    let mut rig = Rig::new();
+    rig.who.app_id = "../escape".into();
+    let reply = rig.submit("e", "fixture.echo", json!({"word": "x"}));
+    assert_eq!(code_of(&reply[0]), "package_invalid", "{}", reply[0]);
+    assert!(!crate::host::cli_ops::app_id_is_path_safe(".."));
+    assert!(crate::host::cli_ops::app_id_is_path_safe("stint-board.v2"));
+}

@@ -3856,7 +3856,7 @@ impl LivePythonPane {
         let monitor =
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
         let search_dirs = crate::host::cli_ops::search_dirs();
-        let seal_base = crate::config::config_dir().join("run").join("cli-ops");
+        let seal_base = crate::host::cli_ops::seal_base();
         let wake = self.cli_wake();
         let enabled =
             crate::release::feature_enabled(crate::release::ReleaseFeature::CliOperations);

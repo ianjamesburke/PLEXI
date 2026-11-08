@@ -553,6 +553,7 @@ pub fn uninstall_one(id: &str, target_root: &Path) -> Result<(), String> {
     }
     std::fs::remove_dir_all(&dest).map_err(|e| format!("remove {}: {e}", dest.display()))?;
     log::info!("uninstall: {id}");
+    crate::host::cli_ops::purge_app_copies(id);
     Ok(())
 }
 

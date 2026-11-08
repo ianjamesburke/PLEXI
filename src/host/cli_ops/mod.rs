@@ -9,6 +9,37 @@ pub mod service;
 
 use std::path::PathBuf;
 
+/// Where sealed program copies live: `<seal_base>/<app id>/<program>/<sha256>/`.
+pub(crate) fn seal_base() -> PathBuf {
+    crate::config::config_dir().join("run").join("cli-ops")
+}
+
+/// App ids that are safe to use as one directory name.
+pub(crate) fn app_id_is_path_safe(app_id: &str) -> bool {
+    !app_id.is_empty()
+        && !app_id.starts_with('.')
+        && app_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Remove every sealed program copy an app left behind. An uninstalled app must
+/// not leave executable copies on disk.
+pub(crate) fn purge_app_copies(app_id: &str) {
+    if !app_id_is_path_safe(app_id) {
+        return;
+    }
+    let dir = seal_base().join(app_id);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => log::info!("cli_ops: removed sealed copies of uninstalled app {app_id}"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => log::warn!(
+            "cli_ops: could not remove sealed copies {}: {error}",
+            dir.display()
+        ),
+    }
+}
+
 /// Directories a bare executable name is looked up in.
 pub(crate) fn search_dirs() -> Vec<PathBuf> {
     #[cfg(test)]

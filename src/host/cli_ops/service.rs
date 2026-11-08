@@ -556,6 +556,12 @@ impl CliOpService {
         operation_id: &str,
         values: &Map<String, Value>,
     ) -> Result<Admitted, (&'static str, String)> {
+        if !super::app_id_is_path_safe(&who.app_id) {
+            return Err((
+                code::PACKAGE_INVALID,
+                format!("app id '{}' cannot name a private directory", who.app_id),
+            ));
+        }
         let manifest_path = who.app_dir.join("manifest.toml");
         let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
             (
@@ -649,7 +655,7 @@ impl CliOpService {
         let opened =
             exec::open_and_identify(&admitted.identity.path).map_err(|e| exec_failure(&e))?;
         let sealed = opened
-            .seal(env.seal_base, &admitted.identity.sha256)
+            .seal(&env.seal_base.join(&who.app_id), &admitted.identity.sha256)
             .map_err(|e| exec_failure(&e))?;
         let spec = LaunchSpec {
             sealed,
