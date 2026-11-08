@@ -338,8 +338,6 @@ pub(crate) fn parse_help(cli_name: &str, text: &str, version: Option<String>) ->
         },
         commands,
         live_state: None,
-        plexi_app: None,
-        capabilities: vec![],
     }
 }
 
@@ -1005,8 +1003,6 @@ Command options:
                 commands: vec![],
             }],
             live_state: None,
-            plexi_app: None,
-            capabilities: vec![],
         };
         let json = serde_json::to_string_pretty(&descriptor).unwrap();
         std::fs::write(&cache_file, &json).unwrap();
@@ -1122,8 +1118,6 @@ collaborate (see also: git help workflows)
                 commands: vec![],
             }],
             live_state: None,
-            plexi_app: None,
-            capabilities: vec![],
         };
         let cache_file = cache_dir.join("version-cli.json");
         std::fs::write(
