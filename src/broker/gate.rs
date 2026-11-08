@@ -952,6 +952,25 @@ impl PermissionMonitor {
         req: AdmitRequest<'_>,
         posture: Option<&crate::broker::PermissionPosture>,
     ) -> Admission {
+        self.admit_inner(req, posture, None)
+    }
+
+    /// Admit one typed CLI operation. `disclosure` is the text the approval
+    /// shows the human in place of the raw argument JSON: it names the app,
+    /// workspace, executable, operation and the native program's ambient
+    /// authority. It is display only and never part of a binding.
+    pub fn admit_cli_operation(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
+        debug_assert!(req.tool.starts_with(CLI_OPERATION_TOOL_PREFIX));
+        debug_assert!(req.target_type == TargetType::CliOperation);
+        self.admit_inner(req, None, Some(disclosure))
+    }
+
+    fn admit_inner(
+        &self,
+        req: AdmitRequest<'_>,
+        posture: Option<&crate::broker::PermissionPosture>,
+        disclosure: Option<&str>,
+    ) -> Admission {
         let Ok(fingerprint) = fingerprint_args(req.input_json) else {
             log::info!(
                 "permission_monitor: deny invalid arguments tool={} call_id={}",
@@ -1027,7 +1046,7 @@ impl PermissionMonitor {
                 }
             }
             Decision::Ask => {
-                let id = self.persist_pending(&binding, req.tool, req.input_json);
+                let id = self.persist_pending(&binding, req.tool, req.input_json, disclosure);
                 let _ = self.audit_with(
                     &AuditFact {
                         kind: "ask".to_string(),
@@ -1054,7 +1073,13 @@ impl PermissionMonitor {
         }
     }
 
-    fn persist_pending(&self, binding: &ExactBinding, tool: &str, input_json: &str) -> String {
+    fn persist_pending(
+        &self,
+        binding: &ExactBinding,
+        tool: &str,
+        input_json: &str,
+        disclosure: Option<&str>,
+    ) -> String {
         let id = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(existing) = pending.iter().find(|row| same_pending(row, binding)).cloned()
@@ -1081,7 +1106,9 @@ impl PermissionMonitor {
                     id: id.clone(),
                     binding: binding.clone(),
                     tool: tool.to_string(),
-                    input_summary: summarize(input_json),
+                    input_summary: disclosure
+                        .map(str::to_string)
+                        .unwrap_or_else(|| summarize(input_json)),
                     created_at: self.now_secs(),
                 };
                 self.upsert_approval_needs_you(&row);
@@ -1210,9 +1237,13 @@ impl PermissionMonitor {
         );
         record.session_id = session_id;
         record.expires_at = expires_at;
+        // A remembered CLI operation grant ignores argument bytes but never the
+        // operation binding: values stay constrained by the definition's types.
         record.args_unbound = choice == ApprovalChoice::AllowTool
             || (binding.target_type == TargetType::Capability
-                && !(binding.target_id == "pane.send" && choice == ApprovalChoice::Once));
+                && !(binding.target_id == "pane.send" && choice == ApprovalChoice::Once))
+            || (binding.target_type == TargetType::CliOperation
+                && matches!(choice, ApprovalChoice::Session | ApprovalChoice::Always));
         self.store().record(record);
         if choice == ApprovalChoice::Always {
             // Drop the store guard before locking it again on failure. A
@@ -4314,6 +4345,10 @@ fn summarize(input_json: &str) -> String {
     text
 }
 
+/// Tool-name prefix of every CLI operation request: `cli.op.read` and
+/// `cli.op.mutate`. Read and mutate authority are distinct grants.
+pub const CLI_OPERATION_TOOL_PREFIX: &str = "cli.op.";
+
 pub fn operation_id_of(input_json: &str) -> String {
     serde_json::from_str::<serde_json::Value>(input_json)
         .ok()
@@ -4347,6 +4382,17 @@ pub(crate) fn revisions_from_output(output: Option<&str>) -> (String, String) {
 
 pub(crate) fn resource_of(tool: &str, input_json: &str) -> (ResourceScope, Option<String>) {
     let parsed = serde_json::from_str::<serde_json::Value>(input_json).ok();
+    if tool.starts_with(CLI_OPERATION_TOOL_PREFIX) {
+        // The caller derives `binding` from verified package, workspace,
+        // definition and executable identity. A missing one yields no resource,
+        // which no operation grant can match.
+        let binding = parsed
+            .as_ref()
+            .and_then(|value| value.get("binding"))
+            .and_then(|item| item.as_str())
+            .map(str::to_string);
+        return (ResourceScope::PackageIdentity, binding);
+    }
     let place_key = match tool {
         "secret.read" => Some("folder"),
         "secret.get" => Some("scope"),

@@ -96,6 +96,10 @@ pub enum PackageError {
         valid = Capability::all_str_values().join(", ")
     )]
     UnknownCapability { value: String, path: PathBuf },
+    #[error("invalid cli_operation in {path}: {message}")]
+    InvalidCliOperation { path: PathBuf, message: String },
+    #[error("manifest at {path} declares [[cli_operation]] but not the `cli.operations` capability — add it to [app.capabilities].capabilities")]
+    CliOperationsWithoutCapability { path: PathBuf },
     #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
     UnknownWasmCapability {
         value: String,
@@ -374,6 +378,11 @@ fn validate_dir_inner(
         &manifest.app.capabilities.capabilities,
         &app_dir.join("manifest.toml"),
     )?;
+    if !manifest.cli_operations.is_empty() && !capabilities.contains(&Capability::CliOperations) {
+        return Err(PackageError::CliOperationsWithoutCapability {
+            path: app_dir.join("manifest.toml"),
+        });
+    }
     let wasm_required_capabilities = parse_wasm_capabilities(
         &manifest.app.capabilities.wasm.required,
         &app_dir.join("manifest.toml"),
@@ -428,6 +437,12 @@ fn read_manifest(app_dir: &Path) -> Result<AppManifest, PackageError> {
             path: manifest_path,
         });
     }
+    crate::app::cli_operation::validate_all(&manifest.cli_operations).map_err(|e| {
+        PackageError::InvalidCliOperation {
+            path: manifest_path.clone(),
+            message: e.to_string(),
+        }
+    })?;
     // serde enforces id/name/entry presence; version is serde(default) so an
     // empty version must be rejected here — the artifact name needs it.
     for (field, value) in [
@@ -820,6 +835,43 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
     Ok(hex_string(&hasher.finalize()))
 }
 
+/// Host-written files at the app root that are not package content. Excluded so
+/// a version pin or the install marker never changes the content identity.
+const HOST_METADATA_FILES: [&str; 3] = [
+    "installed_version.txt",
+    "pinned_version.txt",
+    INSTALL_COMPLETE_MARKER,
+];
+
+/// Marker the installer writes last. An app directory without it is a partial
+/// or interrupted install and is never trusted for CLI operations.
+pub(crate) const INSTALL_COMPLETE_MARKER: &str = ".plexi-install-complete";
+
+/// Deterministic identity of an installed package's content: SHA-256 over the
+/// sorted `(relative path, file sha256, size)` of every regular file that
+/// package building includes, excluding host metadata. A symlink in included
+/// content is an error. Grants bind this value, so any file change, addition or
+/// removal produces a new identity and requires a new decision.
+pub(crate) fn content_digest(app_dir: &Path) -> Result<String, PackageError> {
+    let mut hasher = Sha256::new();
+    for (rel, size) in collect_files(app_dir)? {
+        if rel.parent().is_none_or(|p| p.as_os_str().is_empty())
+            && rel
+                .to_str()
+                .is_some_and(|name| HOST_METADATA_FILES.contains(&name))
+        {
+            continue;
+        }
+        let digest = sha256_file(&app_dir.join(&rel))?;
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(digest.as_bytes());
+        hasher.update([0]);
+        hasher.update(size.to_le_bytes());
+    }
+    Ok(hex_string(&hasher.finalize()))
+}
+
 fn hex_string(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
@@ -1103,6 +1155,101 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("main.py"), "# entry\nprint('hi')\n").unwrap();
+    }
+
+    const CLI_OP: &str = r#"
+[[cli_operation]]
+id = "echo.say"
+executable = "echo"
+argv = ["{word}"]
+timeout_ms = 1000
+[cli_operation.output]
+format = "text"
+max_bytes = 256
+[cli_operation.authority]
+mode = "read"
+[cli_operation.slots.word]
+type = "enum"
+values = ["hi"]
+"#;
+
+    #[test]
+    fn cli_operations_require_the_capability_and_a_valid_definition() {
+        let tmp = TempDir::new().unwrap();
+        write_app(tmp.path(), "ops", "");
+        let manifest = fs::read_to_string(tmp.path().join("manifest.toml")).unwrap();
+        fs::write(
+            tmp.path().join("manifest.toml"),
+            format!("{manifest}{CLI_OP}"),
+        )
+        .unwrap();
+        let error = validate_dir(tmp.path()).unwrap_err();
+        assert!(
+            matches!(error, PackageError::CliOperationsWithoutCapability { .. }),
+            "{error}"
+        );
+
+        write_app(tmp.path(), "ops", "\"cli.operations\"");
+        let manifest = fs::read_to_string(tmp.path().join("manifest.toml")).unwrap();
+        fs::write(
+            tmp.path().join("manifest.toml"),
+            format!("{manifest}{CLI_OP}"),
+        )
+        .unwrap();
+        validate_dir(tmp.path()).expect("valid operation package");
+
+        fs::write(
+            tmp.path().join("manifest.toml"),
+            format!("{manifest}{}", CLI_OP.replace("\"{word}\"", "\"x{word}\"")),
+        )
+        .unwrap();
+        let error = validate_dir(tmp.path()).unwrap_err();
+        assert!(
+            matches!(error, PackageError::InvalidCliOperation { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn content_digest_tracks_content_and_ignores_host_metadata() {
+        let tmp = TempDir::new().unwrap();
+        write_app(tmp.path(), "digest", "");
+        let base = content_digest(tmp.path()).unwrap();
+        assert_eq!(base, content_digest(tmp.path()).unwrap());
+
+        for name in HOST_METADATA_FILES {
+            fs::write(tmp.path().join(name), "metadata").unwrap();
+        }
+        assert_eq!(
+            base,
+            content_digest(tmp.path()).unwrap(),
+            "host metadata must not change identity"
+        );
+
+        fs::create_dir(tmp.path().join("__pycache__")).unwrap();
+        fs::write(tmp.path().join("__pycache__/x.pyc"), "bytecode").unwrap();
+        assert_eq!(
+            base,
+            content_digest(tmp.path()).unwrap(),
+            "caches must not change identity"
+        );
+
+        fs::write(tmp.path().join("main.py"), "# entry\nprint('changed')\n").unwrap();
+        let edited = content_digest(tmp.path()).unwrap();
+        assert_ne!(base, edited);
+        fs::write(tmp.path().join("extra.py"), "x").unwrap();
+        assert_ne!(
+            edited,
+            content_digest(tmp.path()).unwrap(),
+            "an added file changes identity"
+        );
+        fs::write(tmp.path().join("main.py"), "# entry\nprint('hi')\n").unwrap();
+        fs::remove_file(tmp.path().join("extra.py")).unwrap();
+        assert_eq!(
+            base,
+            content_digest(tmp.path()).unwrap(),
+            "restored content restores identity"
+        );
     }
 
     /// Read every entry of a built package into (path → bytes).

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -206,6 +206,30 @@ class McpClosed:
     answered; the app must fail them rather than wait."""
     server_id: str
     reason: str
+
+
+@dataclass
+class CliOperationResult:
+    """Host reply to :class:`effects.CliOperation`, correlated by
+    ``request_id``. On success ``ok`` is true and ``data`` holds the program's
+    output, bounded by the operation's declared limit: parsed JSON for a
+    ``json`` operation, a string for ``text``. On failure ``ok`` is false and
+    ``error_code`` is one of ``invalid_request``, ``disabled``,
+    ``capability_missing``, ``busy``, ``unknown_operation``,
+    ``package_invalid``, ``invalid_argument``, ``flag_like_argument``,
+    ``executable_missing``, ``executable_mismatch``, ``denied``,
+    ``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
+    ``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
+    ``error`` is a human-readable message and ``exit_code`` is set for
+    ``nonzero_exit``. A failure other than a nonzero exit, timeout or
+    cancellation means the program did not run."""
+    request_id: str
+    operation_id: str
+    ok: bool
+    data: Any = None
+    error_code: Optional[str] = None
+    error: Optional[str] = None
+    exit_code: Optional[int] = None
 
 
 @dataclass

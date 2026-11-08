@@ -104,6 +104,11 @@ pub enum Capability {
     /// the user configured", never "run this command" — an app holding it
     /// cannot reach a binary the user has not already listed.
     McpClient,
+    /// Request the typed one-shot CLI operations the app package declares in
+    /// `[[cli_operation]]` (stint 1175). Manifest membership only allows the app
+    /// to *ask*: every invocation is separately admitted by the permission
+    /// monitor against the exact operation, workspace, package and executable.
+    CliOperations,
 }
 
 impl fmt::Display for Capability {
@@ -152,6 +157,7 @@ impl Capability {
             Self::PermissionsManage => "See and change what other apps are allowed to do",
             Self::LogsRead => "Read the Plexi host log",
             Self::McpClient => "Talk to the MCP servers you have configured",
+            Self::CliOperations => "Ask to run the approved command-line operations it declares",
         }
     }
 
@@ -180,6 +186,7 @@ impl Capability {
             Self::PermissionsManage => "permissions.manage",
             Self::LogsRead => "logs.read",
             Self::McpClient => "mcp.client",
+            Self::CliOperations => "cli.operations",
         }
     }
 
@@ -211,6 +218,7 @@ impl Capability {
         Self::PermissionsManage,
         Self::LogsRead,
         Self::McpClient,
+        Self::CliOperations,
     ];
 
     /// All capability wire strings, derived from [`Capability::ALL`].
@@ -264,7 +272,8 @@ impl Capability {
             | Self::MidiOut
             | Self::FsPick
             | Self::LogsRead
-            | Self::McpClient => false,
+            | Self::McpClient
+            | Self::CliOperations => false,
         }
     }
 }
@@ -349,6 +358,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "permissions.manage" => Ok(Self::PermissionsManage),
             "logs.read" => Ok(Self::LogsRead),
             "mcp.client" => Ok(Self::McpClient),
+            "cli.operations" => Ok(Self::CliOperations),
             other => Err(UnknownCapability(other.to_string())),
         }
     }

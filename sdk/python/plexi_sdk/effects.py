@@ -197,6 +197,36 @@ class McpDisconnect:
 
 
 @dataclass
+class CliOperation:
+    """Request one typed command-line operation the app package declares in
+    ``[[cli_operation]]`` (requires the ``cli.operations`` capability and the
+    ``cli_operations`` experiment).
+
+    The app names an ``operation_id`` and supplies typed ``values`` for the
+    slots that operation declares. It never supplies an executable, argument
+    list, environment, working directory or shell text: the host rejects a
+    request that carries anything else. The person approves each operation in
+    the host's approval surface, which states that the program runs with their
+    account's full authority and is not confined.
+
+    Answered by :class:`events.CliOperationResult` carrying the same
+    ``request_id``. The request may wait for a decision, so it can be
+    outstanding for a while; use :class:`CliOperationCancel` to withdraw it.
+    """
+    request_id: str
+    operation_id: str
+    values: dict = field(default_factory=dict)
+
+
+@dataclass
+class CliOperationCancel:
+    """Withdraw an outstanding :class:`CliOperation`. A request still waiting
+    for approval fails with ``cancelled`` and never runs; a running program is
+    killed and answered with ``cancelled``. Unknown ids are ignored."""
+    request_id: str
+
+
+@dataclass
 class AiMessage:
     role: str
     content: str

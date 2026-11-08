@@ -76,6 +76,11 @@ pub struct AppManifest {
     /// means the app gets the default scope list (`["global"]`).
     #[serde(default)]
     pub state: Option<StateSection>,
+    /// `[[cli_operation]]` typed one-shot CLI operations the app may request
+    /// through host-brokered consent. Validated at check and install by
+    /// `crate::app::cli_operation::validate_all`; empty when omitted.
+    #[serde(default, rename = "cli_operation")]
+    pub cli_operations: Vec<crate::app::cli_operation::CliOperationDecl>,
 }
 
 /// v3 state section — `[state]`. Declares the ordered list of state scopes

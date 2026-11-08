@@ -10,6 +10,7 @@ pub(crate) mod card_gallery;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
 mod cli_actions;
+pub mod cli_operation;
 pub mod command_view_app;
 mod conjoined;
 mod dispatch;
