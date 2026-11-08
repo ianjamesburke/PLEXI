@@ -325,10 +325,20 @@ pub fn context_is_in_subtree(
 }
 
 impl PlexiApp {
+    /// Single entry for every host-owned decision intent (digit, Enter, click).
+    /// Injected input (pane send/key/click/drag, host key) shares a frame flag
+    /// that is never set for desktop events; such a frame can never decide.
     fn request_decision_overlay_option(&mut self, option_idx: usize) {
         let Some(overlay) = self.attention_queue.decision_overlay.as_ref() else {
             return;
         };
+        if self.synthetic_input_frame {
+            log::info!(
+                "decision_overlay: rejected synthetic decision ask_id={} option_idx={option_idx}",
+                overlay.ask_id
+            );
+            return;
+        }
         if matches!(overlay.source, QueueSource::Notification { .. }) {
             if self.attention_queue.pending_notification_decision.is_none() {
                 self.attention_queue.pending_notification_decision = Some((overlay.ask_id.clone(), option_idx));
@@ -2312,9 +2322,7 @@ impl PlexiApp {
                                 bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                                 pending_request_id: overlay.ask_id.clone(),
                             });
-                            if resp.clicked_by(egui::PointerButton::Primary)
-                                && !self.synthetic_input_frame
-                            {
+                            if resp.clicked_by(egui::PointerButton::Primary) {
                                 picked_option = Some(idx);
                             }
                             ui.add_space(style::SPACE_XS);
@@ -2531,81 +2539,376 @@ mod tests {
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
 
-    #[test]
-    fn synthetic_keyboard_cannot_approve_broker_pending_in_decision_overlay() {
-        let mut h = HostHarness::new();
-        let pane_id = h.add_focused_terminal();
-        let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let result = crate::workspace::secrets::read_pane_secret(
-            &monitor,
-            &crate::workspace::secrets::InMemoryKeychain::new(),
-            &crate::workspace::secrets::SecretActor { kind: crate::broker::ActorType::Agent, id: format!("pane:{pane_id}") },
-            "CANARY",
-            &crate::workspace::secrets::SecretScope::Workspace { id: "ws".into(), root: root.path().to_owned() },
-            root.path(),
-        ).unwrap();
-        let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id, .. } = result else { panic!("expected pending approval") };
-        h.app.sync_attention_queue();
-        assert!(h.app.open_decision_overlay_for_ask(&pending_id));
-        assert!(matches!(h.app.attention_queue.decision_overlay.as_ref().map(|o| &o.source), Some(QueueSource::BrokerPending { .. })), "overlay is not bound to broker pending");
-        h.app.synthetic_input_frame = true;
-        let mut input = PlexiInput::synthetic(vec![egui::Event::Key {
-            key: egui::Key::Num1, physical_key: None, pressed: true, repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }], egui::Modifiers::NONE);
-        h.app.handle_decision_overlay_input(&mut input);
-        assert!(monitor.show_pending(&pending_id).is_some(), "synthetic input approved broker request");
-        assert!(h.app.attention_queue.decision_overlay.is_some());
-        h.app.pending_pane_inputs.entry(pane_id).or_default().push(egui::RawInput {
-            events: vec![egui::Event::Key {
-                key: egui::Key::Num1, physical_key: None, pressed: true, repeat: false,
+    // ── Stint 1174: synthetic ingress can never decide a broker request ─────
+
+    use crate::workspace::secrets::{
+        InMemoryKeychain, ReadResult, SecretActor, SecretScope, SecretStore,
+    };
+
+    const PROTECTED_VALUE: &str = "protected-value";
+
+    /// A real broker pending request (`secret.get` from a pane) with its
+    /// Decision Overlay open. "Execution" is the protected read: it returns
+    /// the value only after a genuine grant.
+    struct BrokerDecision {
+        h: HostHarness,
+        pane_id: u64,
+        monitor: std::sync::Arc<PermissionMonitor>,
+        store: InMemoryKeychain,
+        actor: SecretActor,
+        scope: SecretScope,
+        root: tempfile::TempDir,
+        pending_id: String,
+    }
+
+    impl BrokerDecision {
+        fn new() -> Self {
+            let mut h = HostHarness::new();
+            let pane_id = h.add_focused_terminal();
+            let root = tempfile::tempdir().unwrap();
+            let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
+            let store = InMemoryKeychain::new();
+            store.set("plexi:ws:CANARY", PROTECTED_VALUE).unwrap();
+            let actor = SecretActor {
+                kind: crate::broker::ActorType::Agent,
+                id: format!("pane:{pane_id}"),
+            };
+            let scope = SecretScope::Workspace {
+                id: "ws".into(),
+                root: root.path().to_owned(),
+            };
+            let first = crate::workspace::secrets::read_pane_secret(
+                &monitor, &store, &actor, "CANARY", &scope, root.path(),
+            )
+            .unwrap();
+            let ReadResult::PermissionRequired { pending_id, .. } = first else {
+                panic!("expected a pending approval, got {first:?}");
+            };
+            h.app.sync_attention_queue();
+            assert!(h.app.open_decision_overlay_for_ask(&pending_id));
+            h.run_frames(2);
+            let overlay = h.app.attention_queue.decision_overlay.as_ref().unwrap();
+            assert!(
+                matches!(&overlay.source, QueueSource::BrokerPending { request_id } if *request_id == pending_id),
+                "overlay is not bound to the broker pending request"
+            );
+            Self { h, pane_id, monitor, store, actor, scope, root, pending_id }
+        }
+
+        /// The protected operation, retried exactly as the requester would.
+        fn retry_read(&self) -> ReadResult {
+            crate::workspace::secrets::read_pane_secret(
+                &self.monitor, &self.store, &self.actor, "CANARY", &self.scope, self.root.path(),
+            )
+            .unwrap()
+        }
+
+        /// Zero decision, zero grant, zero execution, overlay still open.
+        fn assert_undecided(&self, origin: &str) {
+            assert!(self.monitor.show_pending(&self.pending_id).is_some(), "{origin}: pending request was resolved");
+            assert!(self.monitor.approval_resolution(&self.pending_id).is_none(), "{origin}: a decision was recorded");
+            assert!(
+                !self.monitor.list_entries().iter().any(|e| e.kind == "allow" || e.kind == "deny"),
+                "{origin}: a grant or denial was minted"
+            );
+            assert!(self.h.app.attention_queue.verdicts.is_empty(), "{origin}: host verdict recorded");
+            assert!(self.h.app.attention_queue.answered_ask_ids.is_empty(), "{origin}: ask marked answered");
+            assert!(self.h.app.attention_queue.decision_overlay.is_some(), "{origin}: overlay closed");
+            assert!(
+                matches!(self.retry_read(), ReadResult::PermissionRequired { .. }),
+                "{origin}: the protected operation executed or changed state"
+            );
+        }
+
+        /// Queue one batch exactly as `plexi pane send` / `pane key` / `pane click`
+        /// do, run a frame through `raw_input_hook`, and prove the synthetic
+        /// marker was delivered with the frame (no vacuous pass).
+        fn inject_queued(&mut self, events: Vec<egui::Event>, origin: &str) {
+            // Production routes call `pane_navigate` before queueing.
+            assert!(self.h.app.pane_navigate(self.pane_id), "{origin}: pane could not be focused");
+            self.h.app.pending_pane_inputs.entry(self.pane_id).or_default().push(
+                egui::RawInput { events, ..Default::default() },
+            );
+            self.h.run_frames(1);
+            assert!(!self.h.app.pending_pane_inputs.contains_key(&self.pane_id), "{origin}: batch not delivered");
+            assert!(self.h.app.synthetic_input_frame, "{origin}: delivered frame was not marked synthetic");
+            self.assert_undecided(origin);
+        }
+
+        fn option_button_center(&self, option_idx: usize) -> egui::Pos2 {
+            let button = self
+                .h
+                .app
+                .approval_buttons
+                .iter()
+                .filter(|b| b.pending_request_id == self.pending_id)
+                .nth(option_idx)
+                .expect("decision overlay option button");
+            egui::pos2(
+                (button.bounds[0] + button.bounds[2]) / 2.0,
+                (button.bounds[1] + button.bounds[3]) / 2.0,
+            )
+        }
+
+        fn click_events(pos: egui::Pos2) -> Vec<egui::Event> {
+            let button = egui::PointerButton::Primary;
+            let modifiers = egui::Modifiers::NONE;
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button, pressed: true, modifiers },
+                egui::Event::PointerButton { pos, button, pressed: false, modifiers },
+            ]
+        }
+
+        fn press_event(key: egui::Key) -> egui::Event {
+            Self::key_edge(key, true)
+        }
+
+        fn key_edge(key: egui::Key, pressed: bool) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
                 modifiers: egui::Modifiers::NONE,
-            }],
-            ..Default::default()
-        });
-        h.frame(egui::RawInput::default());
-        assert!(!h.app.pending_pane_inputs.contains_key(&pane_id), "queued input was not delivered");
-        assert!(h.app.synthetic_input_frame, "delivered frame was not marked synthetic");
-        assert!(monitor.show_pending(&pending_id).is_some(), "queued pane input approved broker request");
-        assert!(h.app.attention_queue.decision_overlay.is_some());
-        h.app.synthetic_input_frame = false;
-        let mut human_input = PlexiInput::synthetic(vec![egui::Event::Key {
-            key: egui::Key::Num1, physical_key: Some(egui::Key::Num1), pressed: true, repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }], egui::Modifiers::NONE);
-        h.app.handle_decision_overlay_input(&mut human_input);
-        assert!(monitor.show_pending(&pending_id).is_none(), "desktop keyboard approval did not resolve request");
+            }
+        }
+
+        /// A keystroke as the OS delivers it: press then release.
+        fn tap(key: egui::Key) -> Vec<egui::Event> {
+            vec![Self::key_edge(key, true), Self::key_edge(key, false)]
+        }
+
+        /// Desktop frame releasing every decision key, so stages never leak held keys.
+        fn release_keys(&mut self) {
+            self.h.frame(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                events: [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Enter]
+                    .into_iter()
+                    .map(|key| Self::key_edge(key, false))
+                    .collect(),
+                ..Default::default()
+            });
+        }
+
+        pub const BARRAGE_STAGES: usize = 8;
+
+        /// Every production synthetic ingress, aimed at `option_idx` / its digit key.
+        fn synthetic_barrage(&mut self, option_idx: usize, digit: egui::Key) {
+            for stage in 0..Self::BARRAGE_STAGES {
+                self.barrage_stage(stage, option_idx, digit);
+            }
+        }
+
+        fn barrage_stage(&mut self, stage: usize, option_idx: usize, digit: egui::Key) {
+            let center = self.option_button_center(option_idx);
+            match stage {
+                0 => {
+                // pane key (app pane passthrough): queued Key batches. Text batches from
+                // pane send carry no Key event and are held until a text surface has focus.
+                self.inject_queued(Self::tap(digit), "pane key digit");
+                self.inject_queued(Self::tap(egui::Key::Enter), "pane key enter");
+                }
+                1 => {
+                // pane click on a builtin pane: queued pointer click on the button.
+                self.inject_queued(Self::click_events(center), "pane click");
+                }
+                2 => {
+                // pane drag pacing: one pointer batch per frame, press then release.
+                let button = egui::PointerButton::Primary;
+                let modifiers = egui::Modifiers::NONE;
+                let frames = std::collections::VecDeque::from([
+                    egui::RawInput {
+                        events: vec![
+                            egui::Event::PointerMoved(center),
+                            egui::Event::PointerButton { pos: center, button, pressed: true, modifiers },
+                        ],
+                        ..Default::default()
+                    },
+                    egui::RawInput {
+                        events: vec![egui::Event::PointerButton { pos: center, button, pressed: false, modifiers }],
+                        ..Default::default()
+                    },
+                ]);
+                self.h.app.pending_pane_pointer_frames.insert(self.pane_id, frames);
+                for _ in 0..2 {
+                    // A pointer press can move focus to the pane under it; production
+                    // re-focuses per request, so do the same before each paced frame.
+                    assert!(self.h.app.pane_navigate(self.pane_id), "pane drag: pane could not be focused");
+                    self.h.run_frames(1);
+                    assert!(self.h.app.synthetic_input_frame, "pane drag frame not marked synthetic");
+                    self.assert_undecided("pane drag");
+                }
+                assert!(!self.h.app.pending_pane_pointer_frames.contains_key(&self.pane_id), "drag schedule not drained");
+                }
+                3 => {
+                // host key IPC (enters after raw_input_hook, inside `logic`).
+                for key in [digit_str(option_idx), "enter".to_string()] {
+                    let response = self.root.path().join(format!("host-key-{key}.json"));
+                    self.h.inject_ipc(crate::protocol::AppRequest::HostKey {
+                        key: key.clone(),
+                        response_file: response.to_string_lossy().into_owned(),
+                    });
+                    self.h.run_frames(1);
+                    let body = std::fs::read_to_string(&response).expect("host-key request was not handled");
+                    assert!(body.contains("\"ok\":true"), "host-key {key} not accepted: {body}");
+                    assert!(self.h.app.synthetic_input_frame, "host-key {key} frame not marked synthetic");
+                    self.assert_undecided(&format!("host key {key}"));
+                }
+                }
+                4 => {
+                // pane key IPC to the terminal pane writes PTY bytes; it must not reach the overlay.
+                let response = self.root.path().join("key-pane.json");
+                self.h.inject_ipc(crate::protocol::AppRequest::KeyPane {
+                    pane_id: self.pane_id,
+                    key: digit_str(option_idx),
+                    response_file: Some(response.to_string_lossy().into_owned()),
+                });
+                self.h.run_frames(1);
+                assert!(response.exists(), "key-pane request was not handled");
+                self.assert_undecided("key-pane ipc");
+                }
+                5 => {
+                // Mixed frame: a physical key beside injected input fails closed.
+                self.h.inject_ipc(crate::protocol::AppRequest::HostKey {
+                    key: digit_str(option_idx),
+                    response_file: self.root.path().join("mixed.json").to_string_lossy().into_owned(),
+                });
+                self.h.frame(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                    events: Self::tap(digit),
+                    ..Default::default()
+                });
+                assert!(self.h.app.synthetic_input_frame);
+                self.assert_undecided("mixed synthetic and physical frame");
+                }
+                6 => {
+                    // egui rewrites `repeat` to `!first_press`: a key already down
+                    // from injected input is a held key when a desktop press arrives.
+                    self.inject_queued(vec![Self::press_event(digit)], "injected press left held");
+                    self.h.press_key(digit, egui::Modifiers::NONE);
+                    assert!(!self.h.app.synthetic_input_frame, "desktop frame was marked synthetic");
+                    self.assert_undecided("desktop press of a key held by injected input");
+                }
+                7 => {
+                // The decision entry point itself refuses while the frame is marked.
+                self.h.app.synthetic_input_frame = true;
+                self.h.app.request_decision_overlay_option(option_idx);
+                self.h.app.synthetic_input_frame = false;
+                self.assert_undecided("direct decision request");
+                }
+                _ => unreachable!("barrage stage"),
+            }
+            self.release_keys();
+            self.assert_undecided("after release");
+        }
+
+        fn physical_key(&mut self, digit: egui::Key) {
+            self.h.press_key(digit, egui::Modifiers::NONE);
+            assert!(!self.h.app.synthetic_input_frame, "physical frame was marked synthetic");
+        }
+
+        fn physical_click(&mut self, option_idx: usize) {
+            let center = self.option_button_center(option_idx);
+            self.h.frame(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
+                events: Self::click_events(center),
+                ..Default::default()
+            });
+            assert!(!self.h.app.synthetic_input_frame, "physical click frame was marked synthetic");
+        }
+
+        fn assert_decided(&self, choice: crate::broker::gate::ApprovalChoice) {
+            use crate::broker::gate::ApprovalChoice;
+            assert!(self.monitor.show_pending(&self.pending_id).is_none(), "genuine decision left the request pending");
+            assert_eq!(self.monitor.approval_resolution(&self.pending_id), Some(choice));
+            assert!(self.h.app.attention_queue.decision_overlay.is_none(), "overlay stayed open after decision");
+            assert_eq!(self.h.app.attention_queue.verdicts.len(), 1, "exactly one verdict");
+            let entry_kind = self.monitor.list_entries().iter().map(|e| e.kind.clone()).collect::<Vec<_>>();
+            match choice {
+                ApprovalChoice::Deny | ApprovalChoice::DenyAlways => {
+                    assert!(!matches!(self.retry_read(), ReadResult::Value(_)), "denied request executed");
+                }
+                ApprovalChoice::Once | ApprovalChoice::Always | ApprovalChoice::Session | ApprovalChoice::AllowTool => {
+                    assert!(
+                        matches!(self.retry_read(), ReadResult::Value(ref v) if v.as_str() == PROTECTED_VALUE),
+                        "genuine allow did not permit the operation (entries: {entry_kind:?})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn host_key_ipc_cannot_approve_broker_pending_in_decision_overlay() {
-        let mut h = HostHarness::new();
-        let pane_id = h.add_focused_terminal();
-        let root = tempfile::tempdir().unwrap();
-        let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let result = crate::workspace::secrets::read_pane_secret(
-            &monitor,
-            &crate::workspace::secrets::InMemoryKeychain::new(),
-            &crate::workspace::secrets::SecretActor { kind: crate::broker::ActorType::Agent, id: format!("pane:{pane_id}") },
-            "CANARY",
-            &crate::workspace::secrets::SecretScope::Workspace { id: "ws".into(), root: root.path().to_owned() },
-            root.path(),
-        ).unwrap();
-        let crate::workspace::secrets::ReadResult::PermissionRequired { pending_id, .. } = result else { panic!("expected pending approval") };
-        h.app.sync_attention_queue();
-        assert!(h.app.open_decision_overlay_for_ask(&pending_id));
-        let response_file = root.path().join("host-key.json");
-        h.inject_ipc(crate::protocol::AppRequest::HostKey {
-            key: "1".to_string(),
-            response_file: response_file.to_string_lossy().into_owned(),
-        });
-        h.frame(egui::RawInput::default());
-        assert!(response_file.exists(), "host-key request was not handled");
-        assert!(monitor.show_pending(&pending_id).is_some(), "host-key IPC approved broker request");
-        assert!(h.app.attention_queue.decision_overlay.is_some());
-        h.press_key(egui::Key::Num1, egui::Modifiers::NONE);
-        assert!(monitor.show_pending(&pending_id).is_none(), "physical input on the next frame did not resolve the request");
+    fn seeded_broker_decision_overlay_renders_for_visual_review() {
+        let mut f = BrokerDecision::new();
+        f.h.run_frames(3);
+        assert_eq!(f.h.app.approval_buttons.len(), 3, "overlay shows the three decision rows");
+        let path = std::env::temp_dir().join("plexi-1174-decision-overlay.png");
+        f.h.render_png(&path).expect("render seeded decision overlay");
+        assert!(path.exists(), "overlay screenshot was not written");
+        log::info!("decision_overlay: seeded screenshot written to {}", path.display());
+        eprintln!("SCREENSHOT {}", path.display());
+    }
+
+    fn digit_str(option_idx: usize) -> String {
+        (option_idx + 1).to_string()
+    }
+
+    fn assert_option(f: &BrokerDecision, option_idx: usize, key: &str) {
+        let overlay = f.h.app.attention_queue.decision_overlay.as_ref().unwrap();
+        assert_eq!(overlay.options[option_idx].key, key, "option order changed; digits would target the wrong choice");
+    }
+
+    #[test]
+    fn synthetic_ingress_cannot_allow_once_but_physical_key_can() {
+        let mut f = BrokerDecision::new();
+        assert_option(&f, 0, "allow_once");
+        f.synthetic_barrage(0, egui::Key::Num1);
+        f.physical_key(egui::Key::Num1);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Once);
+    }
+
+    #[test]
+    fn synthetic_ingress_cannot_grant_always_but_physical_key_can() {
+        let mut f = BrokerDecision::new();
+        assert_option(&f, 1, "allow_always");
+        f.synthetic_barrage(1, egui::Key::Num2);
+        f.physical_key(egui::Key::Num2);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Always);
+    }
+
+    #[test]
+    fn synthetic_ingress_cannot_deny_but_physical_key_can() {
+        let mut f = BrokerDecision::new();
+        assert_option(&f, 2, "deny");
+        f.synthetic_barrage(2, egui::Key::Num3);
+        f.physical_key(egui::Key::Num3);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Deny);
+    }
+
+    #[test]
+    fn physical_enter_confirms_selected_option_after_synthetic_attempts() {
+        let mut f = BrokerDecision::new();
+        f.synthetic_barrage(0, egui::Key::Num1);
+        f.physical_key(egui::Key::Enter);
+        f.assert_decided(crate::broker::gate::ApprovalChoice::Once);
+    }
+
+    #[test]
+    fn synthetic_ingress_cannot_decide_but_physical_click_can_for_every_option() {
+        use crate::broker::gate::ApprovalChoice;
+        for (idx, key, digit, choice) in [
+            (0, "allow_once", egui::Key::Num1, ApprovalChoice::Once),
+            (1, "allow_always", egui::Key::Num2, ApprovalChoice::Always),
+            (2, "deny", egui::Key::Num3, ApprovalChoice::Deny),
+        ] {
+            let mut f = BrokerDecision::new();
+            assert_option(&f, idx, key);
+            f.synthetic_barrage(idx, digit);
+            f.physical_click(idx);
+            f.assert_decided(choice);
+        }
     }
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
