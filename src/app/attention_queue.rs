@@ -2604,6 +2604,8 @@ mod tests {
         assert!(response_file.exists(), "host-key request was not handled");
         assert!(monitor.show_pending(&pending_id).is_some(), "host-key IPC approved broker request");
         assert!(h.app.attention_queue.decision_overlay.is_some());
+        h.press_key(egui::Key::Num1, egui::Modifiers::NONE);
+        assert!(monitor.show_pending(&pending_id).is_none(), "physical input on the next frame did not resolve the request");
     }
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
