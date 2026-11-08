@@ -1025,7 +1025,7 @@ mod tests {
         }
         assert_eq!(
             Capability::ALL.len(),
-            23,
+            24,
             "update Capability::ALL (and this count) when adding a variant"
         );
         assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());

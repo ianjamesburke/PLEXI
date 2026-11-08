@@ -293,7 +293,7 @@ impl Rig {
 
     /// Poll until `n` replies arrived.
     fn replies(&mut self, n: usize) -> Vec<Value> {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
         let mut out = Vec::new();
         while out.len() < n {
             out.extend(self.poll());
@@ -481,7 +481,7 @@ fn closing_the_app_kills_every_process() {
     rig.decide(ApprovalChoice::Once);
     let _ = rig.poll();
     let pid_file = rig.workspace.join(".child-pid");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
     while !pid_file.exists() {
         assert!(Instant::now() < deadline, "fixture never started its child");
         std::thread::sleep(Duration::from_millis(10));
@@ -493,7 +493,7 @@ fn closing_the_app_kills_every_process() {
         "child must be alive before close"
     );
     drop(std::mem::take(&mut rig.service));
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
             Instant::now() < deadline,

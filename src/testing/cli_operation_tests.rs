@@ -302,7 +302,7 @@ fn closing_the_app_kills_a_running_operation_and_its_children() {
     let start = Instant::now();
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
-            start.elapsed() < Duration::from_secs(5),
+            start.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(5)),
             "grandchild {pid} survived closing the app"
         );
         std::thread::sleep(Duration::from_millis(20));

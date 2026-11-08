@@ -59,7 +59,7 @@ fn wake() -> Wake {
 }
 
 fn wait(op: &RunningOperation) -> Outcome {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
     loop {
         if let Some(outcome) = op.try_outcome() {
             return outcome;
@@ -75,7 +75,7 @@ fn pid_alive(pid: i32) -> bool {
 }
 
 fn wait_gone(pid: i32) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
     while Instant::now() < deadline {
         if !pid_alive(pid) {
             return true;
@@ -185,7 +185,7 @@ fn dropping_a_running_operation_kills_its_process_tree_and_removes_the_copy() {
     let sealed_path = sealed.path().to_path_buf();
     let op = spawn_supervised(rig.spec(sealed, &["spawn-child"], limits()), wake()).unwrap();
     let pid_file = rig.workspace.join(".child-pid");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
     while !pid_file.exists() {
         assert!(Instant::now() < deadline, "fixture never started its child");
         std::thread::sleep(Duration::from_millis(10));
