@@ -43,6 +43,8 @@ pub struct PendingScreenshot {
     pub output_path: String,
     pub response_file: String,
     pub capture_requested_at: Option<std::time::Instant>,
+    /// UI frame count at enqueue, used to observe UI activity during the request.
+    pub initial_ui_frame: u64,
     /// Reply with a typed error once this instant passes. Set from
     /// [`SCREENSHOT_DEADLINE`] at enqueue time.
     pub expires_at: std::time::Instant,
@@ -62,7 +64,7 @@ impl PlexiApp {
         if self.pending_screenshots.is_empty() {
             return;
         }
-        self.expire_pending_screenshots();
+        self.expire_pending_screenshots(ctx);
         if self.pending_screenshots.is_empty() {
             return;
         }
@@ -85,7 +87,7 @@ impl PlexiApp {
     /// A silent stall is indistinguishable from a hung host, so this is the
     /// backstop that makes "no pixels available" an observable, actionable
     /// failure instead of a CLI-side timeout with an empty host log.
-    fn expire_pending_screenshots(&mut self) {
+    fn expire_pending_screenshots(&mut self, ctx: &egui::Context) {
         let now = std::time::Instant::now();
         if !self
             .pending_screenshots
@@ -98,17 +100,18 @@ impl PlexiApp {
             .into_iter()
             .partition(|request| now >= request.expires_at);
         self.pending_screenshots = live;
+        let viewport = ctx.input(|input| input.viewport().clone());
+        let ui_frame = self.frame_tick.load(std::sync::atomic::Ordering::Relaxed);
         for request in expired {
-            let error = format!(
-                "screenshot readback did not complete within {}s: the host window produced no \
-                 frame (display asleep, window minimized or fully occluded, or GPU readback \
-                 stalled)",
-                SCREENSHOT_DEADLINE.as_secs()
+            let error = screenshot_timeout_error(
+                viewport.minimized,
+                viewport.occluded,
+                viewport.focused,
+                ui_frame.saturating_sub(request.initial_ui_frame),
             );
             log::warn!(
-                "screenshot: pane_id={:?} output={} timed out: {error}",
+                "screenshot: pane_id={:?} timed out: {error}",
                 request.pane_id,
-                request.output_path
             );
             crate::rpc::write_json_response(
                 &request.response_file,
@@ -244,6 +247,30 @@ impl PlexiApp {
     }
 }
 
+/// Report observations at the deadline, without asserting a cause for the timeout.
+fn screenshot_timeout_error(
+    minimized: Option<bool>,
+    occluded: Option<bool>,
+    focused: Option<bool>,
+    ui_frames: u64,
+) -> String {
+    fn state(value: Option<bool>) -> &'static str {
+        match value {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "unknown",
+        }
+    }
+    format!(
+        "screenshot readback did not complete within {}s: no screenshot frame was received; \
+         viewport at timeout: minimized={}, occluded={}, focused={}; UI frames during request={ui_frames}",
+        SCREENSHOT_DEADLINE.as_secs(),
+        state(minimized),
+        state(occluded),
+        state(focused),
+    )
+}
+
 /// Crop a captured frame to `region` (logical points; `None` = full frame).
 /// The capture is in physical pixels, so the rect scales by
 /// `pixels_per_point` and clamps to the frame bounds.
@@ -274,7 +301,22 @@ fn crop_color_image(
 
 #[cfg(test)]
 mod tests {
-    use super::crop_color_image;
+    use super::{crop_color_image, screenshot_timeout_error};
+
+    #[test]
+    fn timeout_reports_observed_viewport_and_ui_frames_without_assuming_cause() {
+        let error = screenshot_timeout_error(Some(false), Some(true), Some(false), 0);
+        assert!(error.contains("minimized=false"));
+        assert!(error.contains("occluded=true"));
+        assert!(error.contains("focused=false"));
+        assert!(error.contains("UI frames during request=0"));
+
+        let unknown = screenshot_timeout_error(None, None, None, 12);
+        assert!(unknown.contains("minimized=unknown"));
+        assert!(unknown.contains("occluded=unknown"));
+        assert!(unknown.contains("focused=unknown"));
+        assert!(unknown.contains("UI frames during request=12"));
+    }
 
     #[test]
     fn crop_scales_by_pixels_per_point_and_clamps_to_frame() {
