@@ -54,6 +54,7 @@ pub mod code {
     pub const CANCELLED: &str = "cancelled";
     pub const NONZERO_EXIT: &str = "nonzero_exit";
     pub const BAD_OUTPUT: &str = "bad_output";
+    pub const EXECUTABLE_NOT_SELF_CONTAINED: &str = "executable_not_self_contained";
 }
 
 /// What the host, never the guest, knows about the asking pane.
@@ -455,6 +456,14 @@ impl CliOpService {
             executable: &admitted.identity.path,
             executable_sha256: &admitted.identity.sha256,
             authority: &admitted.decl.authority,
+            changed_since_approval: env.monitor.list_entries().iter().any(|entry| {
+                entry.kind == "allow"
+                    && entry.actor_id == who.app_id
+                    && entry.tool == tool
+                    && entry.resource_id.as_deref().is_some_and(|id| {
+                        id != resource && id.starts_with(&format!("{operation_id}#"))
+                    })
+            }),
         }
         .text();
         let admission = env.monitor.admit_cli_operation(
@@ -717,6 +726,9 @@ pub struct Disclosure<'a> {
     pub executable: &'a Path,
     pub executable_sha256: &'a str,
     pub authority: &'a crate::app::cli_operation::AuthorityDecl,
+    /// This operation was approved before and something it was approved against
+    /// (program, app package or definition) is different now.
+    pub changed_since_approval: bool,
 }
 
 impl Disclosure<'_> {
@@ -730,11 +742,17 @@ impl Disclosure<'_> {
                 items.join(", ")
             }
         };
+        let changed = if self.changed_since_approval {
+            "CHANGED SINCE YOU APPROVED THIS: the program, the app package or the operation definition is different. "
+        } else {
+            ""
+        };
         format!(
-            "App \"{app}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
+            "{changed}App \"{app}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
              Program: {exe} (sha256 {sha}). It declares: read {read}; write {write}; network {net}. \
              This runs a native program with your user account's full authority. Plexi does not confine it, \
              and the declaration above is not enforced.",
+            changed = changed,
             app = self.app_id,
             op = self.operation_id,
             mode = match self.mode {
@@ -770,6 +788,16 @@ fn finish(
                 failure(request_id, operation_id, code::BAD_OUTPUT, message),
             ),
         },
+        Completion::Exited(_) | Completion::Signaled(_) if relocation_failure(&outcome.stderr) => (
+            "not_self_contained",
+            failure(
+                request_id,
+                operation_id,
+                code::EXECUTABLE_NOT_SELF_CONTAINED,
+                "the program loads libraries relative to its own location (@executable_path, @loader_path or @rpath). \
+                 Operations run a verified private copy, so only self-contained programs are supported",
+            ),
+        ),
         Completion::Exited(status) => {
             let tail: String = outcome.stderr.chars().take(STDERR_IN_ERROR).collect();
             let mut reply = failure(
@@ -827,6 +855,15 @@ fn finish(
         log::error!("cli_ops: request={request_id} outcome audit failed: {error}");
     }
     reply
+}
+
+/// dyld's failure to find a library named relative to the program's own
+/// location, which a copy in the private directory cannot satisfy.
+fn relocation_failure(stderr: &str) -> bool {
+    stderr.contains("Library not loaded")
+        && ["@executable_path", "@loader_path", "@rpath"]
+            .iter()
+            .any(|marker| stderr.contains(marker))
 }
 
 fn parse_output(decl: &CliOperationDecl, stdout: &[u8]) -> Result<Value, String> {

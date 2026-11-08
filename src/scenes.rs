@@ -2991,6 +2991,7 @@ impl HeadlessBackend {
                     executable: std::path::Path::new("/Users/demo/.cargo/bin/stint"),
                     executable_sha256: "9f2c41ab07e35d1c8a6e",
                     authority: &authority,
+                    changed_since_approval: false,
                 }
                 .text();
                 let admitted = monitor.admit_cli_operation(crate::broker::gate::AdmitRequest {

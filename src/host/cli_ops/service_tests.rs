@@ -155,6 +155,17 @@ max_bytes = 4096
 mode = "read"
 
 [[cli_operation]]
+id = "fixture.dyld"
+executable = "fixturecli"
+argv = ["fake-dyld"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 4096
+[cli_operation.authority]
+mode = "read"
+
+[[cli_operation]]
 id = "fixture.script"
 executable = "scriptcli"
 argv = ["echo"]
@@ -517,6 +528,25 @@ fn an_unanswered_approval_times_out_without_launching() {
 }
 
 // ---- Done-When 2: zero-launch negatives ----
+
+#[test]
+fn a_first_ask_does_not_claim_a_change() {
+    let mut rig = Rig::new();
+    assert!(rig
+        .submit("f", "fixture.echo", json!({"word": "x"}))
+        .is_empty());
+    assert!(!rig.pending()[0].input_summary.contains("CHANGED"));
+}
+
+#[test]
+fn a_program_that_needs_its_own_directory_fails_with_a_readable_typed_error() {
+    let mut rig = Rig::new();
+    assert!(rig.submit("d", "fixture.dyld", json!({})).is_empty());
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(code_of(&reply), "executable_not_self_contained", "{reply}");
+    assert!(reply["error"].as_str().unwrap().contains("self-contained"));
+}
 
 #[test]
 fn denial_launches_nothing() {

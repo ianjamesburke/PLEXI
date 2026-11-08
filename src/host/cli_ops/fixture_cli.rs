@@ -69,6 +69,10 @@ fn main() {
                 std::env::current_dir().unwrap_or_default()
             );
         }
+        "fake-dyld" => {
+            eprintln!("dyld[1]: Library not loaded: @rpath/libfixture.dylib");
+            std::process::exit(1);
+        }
         "text" => println!("plain text output"),
         _ => {
             eprintln!("unknown mode {mode:?}");

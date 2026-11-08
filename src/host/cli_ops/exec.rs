@@ -217,19 +217,60 @@ pub fn open_and_identify(path: &Path) -> Result<OpenedExecutable, ExecError> {
     })
 }
 
-/// The private copy that is actually launched.
+/// The private copy that is actually launched. Copies are cached by content
+/// digest (`<base>/<program name>/<sha256>/program`), built once and reused; the
+/// copy of a superseded digest of the same program name is removed when a new
+/// digest is sealed.
 pub struct SealedExecutable {
-    /// Removes the private directory, and the sealed copy in it, on drop.
-    _dir: tempfile::TempDir,
     path: PathBuf,
     sha256: String,
     dev: u64,
     ino: u64,
 }
 
+fn private_dir(path: &Path) -> Result<(), ExecError> {
+    std::fs::create_dir_all(path).map_err(|e| io("create_dir", path, e))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| io("chmod", path, e))
+}
+
+/// Hash the file behind `file` from the start.
+fn hash_fd(file: &mut File, path: &Path) -> Result<String, ExecError> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| io("read", path, e))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
 impl SealedExecutable {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// A cached copy at `path`, only if its inode is a 0500 file owned by this
+    /// user whose bytes hash to `sha256`.
+    fn open_cached(path: &Path, sha256: &str) -> Option<Self> {
+        let mut file = open_nofollow(path).ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file()
+            || meta.mode() & 0o7777 != 0o500
+            // SAFETY: plain syscall without arguments.
+            || meta.uid() != unsafe { libc::geteuid() }
+        {
+            return None;
+        }
+        (hash_fd(&mut file, path).ok()? == sha256).then(|| Self {
+            path: path.to_path_buf(),
+            sha256: sha256.to_string(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+        })
     }
 
     /// Reopen the sealed file and require the same inode, ownership, mode and
@@ -240,19 +281,11 @@ impl SealedExecutable {
         if meta.dev() != self.dev || meta.ino() != self.ino {
             return Err(refused(&self.path, "sealed copy was replaced"));
         }
+        // SAFETY: plain syscall without arguments.
         if meta.mode() & 0o7777 != 0o500 || meta.uid() != unsafe { libc::geteuid() } {
             return Err(refused(&self.path, "sealed copy mode or owner changed"));
         }
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = file.read(&mut buf).map_err(|e| io("read", &self.path, e))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        let found = hex(&hasher.finalize());
+        let found = hash_fd(&mut file, &self.path)?;
         if found != self.sha256 {
             return Err(ExecError::ContentMismatch {
                 path: self.path.clone(),
@@ -265,10 +298,13 @@ impl SealedExecutable {
 }
 
 impl OpenedExecutable {
-    /// Copy the bytes behind this descriptor into a fresh private directory
-    /// under `base`, requiring them to hash to `approved_sha256`. Hashing the
-    /// bytes written, not the bytes first read, closes the window in which the
-    /// original could change between the identity check and the copy.
+    /// Make the bytes behind this descriptor available as a private copy under
+    /// `base`, requiring them to hash to `approved_sha256`. A verified cached
+    /// copy is reused. Otherwise the bytes are streamed from the descriptor
+    /// into a temporary file while hashing what is written (not what was first
+    /// read, which closes the window in which the original could change between
+    /// the identity check and the copy) and linked into place only if the
+    /// digest matches.
     pub fn seal(
         mut self,
         base: &Path,
@@ -281,70 +317,106 @@ impl OpenedExecutable {
                 found: self.identity.sha256.clone(),
             });
         }
-        std::fs::create_dir_all(base).map_err(|e| io("create_dir", base, e))?;
-        let dir = tempfile::Builder::new()
-            .prefix("cliop-")
-            .tempdir_in(base)
-            .map_err(|e| io("create_dir", base, e))?;
-        let path = dir.path().join("program");
+        let name = self
+            .identity
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| {
+                !n.is_empty()
+                    && n.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            })
+            .unwrap_or("program")
+            .to_string();
+        let name_dir = base.join(&name);
+        let dir = name_dir.join(approved_sha256);
+        let final_path = dir.join("program");
+        private_dir(base)?;
+        private_dir(&name_dir)?;
+        private_dir(&dir)?;
+        // A digest of this program that is no longer approved loses its copy.
+        if let Ok(entries) = std::fs::read_dir(&name_dir) {
+            for entry in entries.flatten() {
+                if entry.file_name() != approved_sha256 {
+                    if let Err(error) = std::fs::remove_dir_all(entry.path()) {
+                        log::warn!(
+                            "cli_ops: could not remove superseded copy {}: {error}",
+                            entry.path().display()
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(hit) = SealedExecutable::open_cached(&final_path, approved_sha256) {
+            log::info!("cli_ops: reusing sealed copy {}", final_path.display());
+            return Ok(hit);
+        }
+        let tmp = dir.join(format!("program.tmp-{}", uuid::Uuid::new_v4().simple()));
         let mut out = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o700)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|e| io("create", &path, e))?;
+            .open(&tmp)
+            .map_err(|e| io("create", &tmp, e))?;
         self.file
             .seek(SeekFrom::Start(0))
             .map_err(|e| io("seek", &self.identity.path, e))?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; 64 * 1024];
         let mut copied = 0u64;
-        loop {
-            let n = self
-                .file
-                .read(&mut buf)
-                .map_err(|e| io("read", &self.identity.path, e))?;
-            if n == 0 {
-                break;
+        let built = (|| {
+            loop {
+                let n = self
+                    .file
+                    .read(&mut buf)
+                    .map_err(|e| io("read", &self.identity.path, e))?;
+                if n == 0 {
+                    break;
+                }
+                copied += n as u64;
+                if copied > MAX_EXECUTABLE_BYTES {
+                    return Err(refused(
+                        &self.identity.path,
+                        "grew past the size limit while copying",
+                    ));
+                }
+                hasher.update(&buf[..n]);
+                out.write_all(&buf[..n]).map_err(|e| io("write", &tmp, e))?;
             }
-            copied += n as u64;
-            if copied > MAX_EXECUTABLE_BYTES {
-                return Err(refused(
-                    &self.identity.path,
-                    "grew past the size limit while copying",
-                ));
+            out.sync_all().map_err(|e| io("sync", &tmp, e))?;
+            let found = hex(&hasher.finalize_reset());
+            if found != approved_sha256 {
+                return Err(ExecError::ContentMismatch {
+                    path: self.identity.path.clone(),
+                    approved: approved_sha256.to_string(),
+                    found,
+                });
             }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n])
-                .map_err(|e| io("write", &path, e))?;
-        }
-        out.sync_all().map_err(|e| io("sync", &path, e))?;
-        let found = hex(&hasher.finalize());
-        if found != approved_sha256 {
-            return Err(ExecError::ContentMismatch {
-                path: self.identity.path.clone(),
-                approved: approved_sha256.to_string(),
-                found,
-            });
-        }
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))
-            .map_err(|e| io("chmod", &path, e))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o500))
+                .map_err(|e| io("chmod", &tmp, e))
+        })();
         drop(out);
-        let meta = std::fs::symlink_metadata(&path).map_err(|e| io("stat", &path, e))?;
+        let linked = built.and_then(|()| {
+            // A cached copy that failed verification is replaced, not trusted.
+            let _ = std::fs::remove_file(&final_path);
+            std::fs::hard_link(&tmp, &final_path).map_err(|e| io("link", &final_path, e))
+        });
+        let _ = std::fs::remove_file(&tmp);
+        linked?;
         log::info!(
             "cli_ops: sealed {} ({} bytes, sha256 {}) -> {}",
             self.identity.path.display(),
             copied,
-            &found[..12],
-            path.display()
+            &approved_sha256[..12],
+            final_path.display()
         );
-        Ok(SealedExecutable {
-            _dir: dir,
-            path,
-            sha256: found,
-            dev: meta.dev(),
-            ino: meta.ino(),
+        SealedExecutable::open_cached(&final_path, approved_sha256).ok_or_else(|| {
+            refused(
+                &final_path,
+                "sealed copy could not be verified after creation",
+            )
         })
     }
 }

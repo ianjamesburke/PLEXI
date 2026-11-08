@@ -308,3 +308,61 @@ fn closing_the_app_kills_a_running_operation_and_its_children() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn a_physical_key_in_the_attention_overlay_approves_once_and_the_fixture_runs() {
+    let mut e2e = E2e::new(true);
+    let pane = e2e.launch(ECHO_PLAN);
+    let id = e2e.wait_for_approval(pane, false);
+    assert!(e2e.launches().is_empty());
+    e2e.h.app.sync_attention_queue();
+    assert!(
+        e2e.h.app.open_decision_overlay_for_ask(&id),
+        "the operation approval is in the attention queue"
+    );
+    // Option 1 is "Allow once"; the digit travels the production key path.
+    e2e.h.press_key(egui::Key::Num1, egui::Modifiers::NONE);
+    e2e.until(pane, false, "the result", |_, t| {
+        t.as_deref().is_some_and(|t| t.starts_with("cliop:ok:r1:"))
+    });
+    assert_eq!(e2e.launches().len(), 1);
+    assert!(
+        E2e::pending().is_empty(),
+        "the decision closed the approval request"
+    );
+}
+
+#[test]
+fn revocation_of_a_remembered_operation_survives_a_restart() {
+    let mut e2e = E2e::new(true);
+    let pane = e2e.launch(ECHO_PLAN);
+    let id = e2e.wait_for_approval(pane, false);
+    E2e::monitor()
+        .approve_pending(&id, ApprovalChoice::Always)
+        .unwrap();
+    e2e.until(pane, true, "the result", |_, t| {
+        t.as_deref().is_some_and(|t| t.starts_with("cliop:ok:r1:"))
+    });
+    let grant = E2e::monitor()
+        .list_entries()
+        .into_iter()
+        .find(|row| row.tool == "cli.op.read" && row.kind == "allow")
+        .expect("the remembered grant is in the Permissions inventory");
+    assert!(E2e::monitor().revoke_grant_id(&grant.id));
+    // Restart: the process cache is dropped and the sealed store reloaded.
+    let monitor = PermissionMonitor::reload_for_test(&crate::config::config_dir());
+    assert!(
+        monitor
+            .list_entries()
+            .iter()
+            .all(|row| !(row.tool == "cli.op.read" && row.kind == "allow")),
+        "a revoked grant must not come back after restart"
+    );
+    let pane = e2e.launch(r#"[{"id":"r2","op":"fixture.echo","values":{"word":"again"}}]"#);
+    e2e.wait_for_approval(pane, false);
+    assert_eq!(
+        e2e.launches().len(),
+        1,
+        "revoked consent launched nothing new"
+    );
+}

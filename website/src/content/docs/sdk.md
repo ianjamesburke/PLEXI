@@ -531,7 +531,8 @@ output, bounded by the operation's declared limit: parsed JSON for a
 ``error_code`` is one of ``invalid_request``, ``disabled``,
 ``capability_missing``, ``busy``, ``unknown_operation``,
 ``package_invalid``, ``invalid_argument``, ``flag_like_argument``,
-``executable_missing``, ``executable_mismatch``, ``denied``,
+``executable_missing``, ``executable_mismatch``,
+``executable_not_self_contained``, ``denied``,
 ``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
 ``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
 ``error`` is a human-readable message and ``exit_code`` is set for

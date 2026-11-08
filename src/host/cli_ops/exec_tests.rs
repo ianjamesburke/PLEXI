@@ -90,18 +90,15 @@ fn sha(path: &Path) -> String {
 }
 
 #[test]
-fn echo_round_trip_records_one_launch_and_cleans_the_sealed_copy() {
+fn echo_round_trip_records_one_launch() {
     let rig = Rig::new("a");
     let sealed = rig.sealed();
-    let sealed_path = sealed.path().to_path_buf();
     let op = spawn_supervised(rig.spec(sealed, &["echo", "hello"], limits()), wake()).unwrap();
     let outcome = wait(&op);
     assert_eq!(outcome.completion, Completion::Exited(0), "{outcome:?}");
     let stdout = String::from_utf8(outcome.stdout).unwrap();
     assert!(stdout.contains(r#""argv":["hello"]"#), "{stdout}");
     assert_eq!(fixture::launches(&rig.workspace).len(), 1);
-    drop(op);
-    assert!(!sealed_path.exists(), "sealed copy must be removed");
 }
 
 #[test]
@@ -179,11 +176,9 @@ fn cancel_kills_the_program() {
 }
 
 #[test]
-fn dropping_a_running_operation_kills_its_process_tree_and_removes_the_copy() {
+fn dropping_a_running_operation_kills_its_process_tree() {
     let rig = Rig::new("a");
-    let sealed = rig.sealed();
-    let sealed_path = sealed.path().to_path_buf();
-    let op = spawn_supervised(rig.spec(sealed, &["spawn-child"], limits()), wake()).unwrap();
+    let op = spawn_supervised(rig.spec(rig.sealed(), &["spawn-child"], limits()), wake()).unwrap();
     let pid_file = rig.workspace.join(".child-pid");
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
     while !pid_file.exists() {
@@ -194,7 +189,6 @@ fn dropping_a_running_operation_kills_its_process_tree_and_removes_the_copy() {
     assert!(pid_alive(pid));
     drop(op);
     assert!(wait_gone(pid), "grandchild {pid} survived app close");
-    assert!(!sealed_path.exists());
 }
 
 #[test]
@@ -360,4 +354,66 @@ fn default_search_dirs_are_fixed_system_locations() {
     let dirs = default_search_dirs();
     assert!(dirs.contains(&PathBuf::from("/usr/bin")));
     assert!(dirs.iter().all(|d| d.is_absolute()));
+}
+
+fn cached_copies(base: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if let Ok(names) = std::fs::read_dir(base) {
+        for name in names.flatten() {
+            if let Ok(digests) = std::fs::read_dir(name.path()) {
+                found.extend(digests.flatten().map(|d| d.path()));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_verified_copy_is_built_once_and_reused() {
+    let rig = Rig::new("a");
+    let first = rig.sealed();
+    let second = rig.sealed();
+    assert_eq!(first.path(), second.path(), "same digest, same cached copy");
+    assert_eq!(cached_copies(&rig.base).len(), 1);
+    let op = spawn_supervised(rig.spec(second, &["version"], limits()), wake()).unwrap();
+    assert_eq!(wait(&op).completion, Completion::Exited(0));
+}
+
+#[test]
+fn replacement_after_the_identity_check_cannot_change_what_runs_on_a_cache_hit() {
+    let rig = Rig::new("a");
+    drop(rig.sealed()); // warm the cache
+    let opened = open_and_identify(&rig.bin).unwrap();
+    let approved = opened.identity.sha256.clone();
+    fixture::install("b", &rig.bin);
+    let sealed = opened.seal(&rig.base, &approved).unwrap();
+    let op = spawn_supervised(rig.spec(sealed, &["version"], limits()), wake()).unwrap();
+    let stdout = String::from_utf8(wait(&op).stdout).unwrap();
+    assert!(stdout.contains(r#""version":"a""#), "{stdout}");
+}
+
+#[test]
+fn a_corrupted_cached_copy_is_rebuilt_not_trusted() {
+    let rig = Rig::new("a");
+    let first = rig.sealed();
+    let path = first.path().to_path_buf();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(&path, b"not the program").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let rebuilt = rig.sealed();
+    rebuilt.verify().unwrap();
+    let op = spawn_supervised(rig.spec(rebuilt, &["version"], limits()), wake()).unwrap();
+    assert_eq!(wait(&op).completion, Completion::Exited(0));
+    assert!(fixture::launches(&rig.workspace).len() == 1);
+}
+
+#[test]
+fn a_superseded_digest_loses_its_copy() {
+    let rig = Rig::new("a");
+    drop(rig.sealed());
+    fixture::install("b", &rig.bin);
+    drop(rig.sealed());
+    let copies = cached_copies(&rig.base);
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert!(copies[0].ends_with(sha(&rig.bin)));
 }
