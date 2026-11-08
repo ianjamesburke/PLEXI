@@ -1226,35 +1226,44 @@ fn app_install_with_pin_inner(
 
     let dest = crate::app::registry::apps_dir().join(&app_id);
 
-    // Remove existing install (idempotent overwrite).
-    if dest.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&dest) {
-            eprintln!(
-                "error: could not remove existing install at {}: {e}",
-                dest.display()
-            );
-            return 1;
-        }
-    }
-
-    if let Err(e) = copy_dir_all(&src, &dest) {
+    // Stage the complete tree outside the apps directory, mark it complete, then
+    // swap it in. An interruption leaves the previous install or the new one,
+    // never a missing or half-copied app (stint 1175). Grants bind package
+    // content, so a changed tree asks for approval again by itself.
+    let staging_root = crate::app::install_swap::staging_root();
+    crate::app::install_swap::clear_stale_staging(&staging_root, &app_id);
+    let staging = crate::app::install_swap::new_staging_dir(&staging_root, &app_id);
+    if let Err(e) = copy_dir_all(&src, &staging) {
         eprintln!(
-            "error: could not copy {} to {}: {e}",
+            "error: could not stage {} at {}: {e}",
             src.display(),
-            dest.display()
+            staging.display()
         );
+        let _ = std::fs::remove_dir_all(&staging);
         return 1;
     }
-
     // Write version tracking files (best-effort — never fail the install).
-    write_installed_version(&dest, app_version);
+    write_installed_version(&staging, app_version);
     if let Some(pin) = pin {
         if pin != app_version {
             eprintln!(
                 "warning: manifest version is {app_version} but pinning to {pin} as requested"
             );
         }
-        write_pinned_version(&dest, pin);
+        write_pinned_version(&staging, pin);
+    }
+    if let Err(e) = crate::app::install_swap::mark_complete(&staging) {
+        eprintln!("error: could not mark the staged install complete: {e}");
+        let _ = std::fs::remove_dir_all(&staging);
+        return 1;
+    }
+    if let Err(e) = crate::app::install_swap::replace_dir(&staging, &dest) {
+        eprintln!(
+            "error: could not install {app_id} at {}: {e}",
+            dest.display()
+        );
+        let _ = std::fs::remove_dir_all(&staging);
+        return 1;
     }
     if let Some(report) = validated_report.as_ref() {
         remember_wasm_install_review(report, &gate_decision.selected_wasm_optional);

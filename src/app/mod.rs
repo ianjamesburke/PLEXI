@@ -22,6 +22,7 @@ pub(crate) mod focus_journal;
 pub mod host_mcp;
 pub mod host_version;
 pub mod http;
+pub(crate) mod install_swap;
 pub mod image_viewer_app;
 pub(crate) mod input_owner;
 pub(crate) mod input_router;

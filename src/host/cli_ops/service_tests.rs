@@ -178,6 +178,7 @@ struct Rig {
     who: PaneIdentity,
     enabled: bool,
     approval_timeout: Duration,
+    _profile_guard: Option<crate::config::TestProfileDirGuard>,
 }
 
 fn wake() -> Wake {
@@ -216,7 +217,30 @@ impl Rig {
             who,
             enabled: true,
             approval_timeout: Duration::from_secs(60),
+            _profile_guard: None,
         }
+    }
+
+    /// A rig whose app was put in place by the real installer, so it lives in
+    /// the registry's apps directory with an install-complete marker.
+    fn installed() -> Self {
+        let mut rig = Self::new();
+        rig._profile_guard = Some(crate::config::set_test_profile_dir(
+            rig.profile.path().to_path_buf(),
+        ));
+        rig.install_from(&rig.app_dir.clone());
+        rig.app_dir = crate::app::registry::apps_dir().join("ops-app");
+        rig.who.app_dir = rig.app_dir.clone();
+        rig
+    }
+
+    fn install_from(&self, source: &std::path::Path) -> i32 {
+        crate::cli::app::app_install_with_pin(
+            &source.to_string_lossy(),
+            None,
+            crate::cli::app::InstallConfirm::PreApproved,
+            true,
+        )
     }
 
     fn search(&self) -> Vec<PathBuf> {
@@ -953,4 +977,96 @@ fn consent_is_not_confinement() {
     rig.decide(ApprovalChoice::Once);
     let reply = rig.replies(1).remove(0);
     assert_eq!(reply["data"]["content"], "outside the workspace", "{reply}");
+}
+
+// ---- Installer lifecycle: replacement and interruption fail closed ----
+
+#[test]
+fn an_installed_package_runs_and_a_missing_install_marker_fails_closed() {
+    let mut rig = Rig::installed();
+    assert!(rig
+        .app_dir
+        .join(crate::app::package::INSTALL_COMPLETE_MARKER)
+        .is_file());
+    assert_eq!(rig.run_once_pair()["ok"], true);
+    let launched = rig.launches().len();
+    // An interrupted or pre-marker install has no completion marker.
+    std::fs::remove_file(
+        rig.app_dir
+            .join(crate::app::package::INSTALL_COMPLETE_MARKER),
+    )
+    .unwrap();
+    let reply = rig.submit("m", "fixture.echo", json!({"word": "x"}));
+    assert_eq!(code_of(&reply[0]), "package_invalid", "{}", reply[0]);
+    assert!(reply[0]["error"].as_str().unwrap().contains("reinstall"));
+    assert!(rig.pending().is_empty());
+    assert_eq!(rig.launches().len(), launched);
+}
+
+#[test]
+fn an_updated_package_asks_again_and_restored_content_matches_the_old_grant() {
+    let mut rig = Rig::installed();
+    rig.remember(ApprovalChoice::Always);
+    let launched = rig.launches().len();
+
+    // A new version arrives through the installer with changed content.
+    let v2 = rig.root.path().join("v2");
+    std::fs::create_dir_all(&v2).unwrap();
+    std::fs::write(v2.join("manifest.toml"), MANIFEST).unwrap();
+    std::fs::write(v2.join("main.py"), "# entry\nprint('v2')\n").unwrap();
+    assert_eq!(rig.install_from(&v2), 0);
+    assert!(rig
+        .submit("u", "fixture.echo", json!({"word": "x"}))
+        .is_empty());
+    assert_eq!(rig.pending().len(), 1, "an updated package must ask again");
+    assert_eq!(
+        rig.launches().len(),
+        launched,
+        "the update launched nothing unasked"
+    );
+
+    // Reinstalling the original bytes restores the identity the grant bound.
+    let v1 = rig.root.path().join("v1");
+    std::fs::create_dir_all(&v1).unwrap();
+    std::fs::write(v1.join("manifest.toml"), MANIFEST).unwrap();
+    std::fs::write(v1.join("main.py"), "# entry\n").unwrap();
+    assert_eq!(rig.install_from(&v1), 0);
+    rig.service = CliOpService::default();
+    assert_eq!(rig.run_ok("again", "ok")["ok"], true);
+}
+
+#[test]
+fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut rig = Rig::installed();
+    rig.remember(ApprovalChoice::Always);
+    let before = crate::app::package::content_digest(&rig.app_dir).unwrap();
+
+    let broken = rig.root.path().join("broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("manifest.toml"), MANIFEST).unwrap();
+    std::fs::write(broken.join("main.py"), "# entry\nprint('new')\n").unwrap();
+    let unreadable = broken.join("asset.bin");
+    std::fs::write(&unreadable, "x").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let code = rig.install_from(&broken);
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(code, 1, "a copy that fails part way must fail the install");
+
+    assert_eq!(
+        crate::app::package::content_digest(&rig.app_dir).unwrap(),
+        before,
+        "the previous install is untouched"
+    );
+    assert!(rig
+        .app_dir
+        .join(crate::app::package::INSTALL_COMPLETE_MARKER)
+        .is_file());
+    let staging_root = crate::app::install_swap::staging_root();
+    let leftovers = std::fs::read_dir(&staging_root)
+        .map(|d| d.flatten().count())
+        .unwrap_or(0);
+    assert_eq!(leftovers, 0, "no half-copied tree may remain");
+    // The previous install still serves its remembered grant.
+    assert_eq!(rig.run_ok("still", "ok")["ok"], true);
 }
