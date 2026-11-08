@@ -73,6 +73,27 @@ fn main() {
             eprintln!("dyld[1]: Library not loaded: @rpath/libfixture.dylib");
             std::process::exit(1);
         }
+        "fail-json" => {
+            println!("{{\"error\":\"priority_conflict\",\"actual_priority\":\"p2\"}}");
+            eprintln!("conflict");
+            std::process::exit(1);
+        }
+        "fail-text" => {
+            println!("this is not json");
+            eprintln!("boom");
+            std::process::exit(2);
+        }
+        "fail-spray" => {
+            let chunk = vec![b'x'; 8192];
+            let mut out = std::io::stdout().lock();
+            for _ in 0..600 {
+                if out.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+            drop(out);
+            std::process::exit(1);
+        }
         "text" => println!("plain text output"),
         _ => {
             eprintln!("unknown mode {mode:?}");

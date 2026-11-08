@@ -166,6 +166,50 @@ max_bytes = 4096
 mode = "read"
 
 [[cli_operation]]
+id = "fixture.failjson"
+executable = "fixturecli"
+argv = ["fail-json"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 2048
+[cli_operation.authority]
+mode = "read"
+
+[[cli_operation]]
+id = "fixture.failtext"
+executable = "fixturecli"
+argv = ["fail-text"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 2048
+[cli_operation.authority]
+mode = "read"
+
+[[cli_operation]]
+id = "fixture.failspray"
+executable = "fixturecli"
+argv = ["fail-spray"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "json"
+max_bytes = 2048
+[cli_operation.authority]
+mode = "read"
+
+[[cli_operation]]
+id = "fixture.failplain"
+executable = "fixturecli"
+argv = ["fail-text"]
+timeout_ms = 10000
+[cli_operation.output]
+format = "text"
+max_bytes = 2048
+[cli_operation.authority]
+mode = "read"
+
+[[cli_operation]]
 id = "fixture.script"
 executable = "scriptcli"
 argv = ["echo"]
@@ -546,6 +590,53 @@ fn a_program_that_needs_its_own_directory_fails_with_a_readable_typed_error() {
     let reply = rig.replies(1).remove(0);
     assert_eq!(code_of(&reply), "executable_not_self_contained", "{reply}");
     assert!(reply["error"].as_str().unwrap().contains("self-contained"));
+}
+
+#[test]
+fn nonzero_exit_carries_structured_stdout_and_a_bounded_stderr_tail() {
+    let mut rig = Rig::new();
+    assert!(rig.submit("f", "fixture.failjson", json!({})).is_empty());
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(code_of(&reply), "nonzero_exit", "{reply}");
+    assert_eq!(reply["exit_code"], 1);
+    assert_eq!(reply["data_available"], true);
+    assert_eq!(reply["data"]["error"], "priority_conflict");
+    assert_eq!(reply["data"]["actual_priority"], "p2");
+    assert_eq!(reply["stderr"], "conflict");
+}
+
+#[test]
+fn nonzero_exit_never_surfaces_unparseable_stdout_as_data() {
+    let mut rig = Rig::new();
+    assert!(rig.submit("f", "fixture.failtext", json!({})).is_empty());
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(code_of(&reply), "nonzero_exit");
+    assert_eq!(reply["data_available"], false);
+    assert!(reply.get("data").is_none(), "{reply}");
+    assert_eq!(reply["stderr"], "boom");
+}
+
+#[test]
+fn nonzero_exit_text_operations_return_stdout_as_text() {
+    let mut rig = Rig::new();
+    assert!(rig.submit("f", "fixture.failplain", json!({})).is_empty());
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(code_of(&reply), "nonzero_exit");
+    assert_eq!(reply["data_available"], true);
+    assert_eq!(reply["data"], "this is not json\n");
+}
+
+#[test]
+fn nonzero_exit_with_oversized_stdout_is_rejected_by_the_success_path_rule() {
+    let mut rig = Rig::new();
+    assert!(rig.submit("f", "fixture.failspray", json!({})).is_empty());
+    rig.decide(ApprovalChoice::Once);
+    let reply = rig.replies(1).remove(0);
+    assert_eq!(code_of(&reply), "output_too_large", "{reply}");
+    assert!(reply.get("data").is_none());
 }
 
 #[test]

@@ -175,6 +175,8 @@ class V3AppRuntime:
                 error_code=ev.get("error_code"),
                 error=ev.get("error"),
                 exit_code=ev.get("exit_code"),
+                stderr=ev.get("stderr"),
+                data_available=ev.get("data_available"),
             ))
         elif t == "mcp_message":
             self._handle_mcp_message(ev)

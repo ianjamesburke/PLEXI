@@ -110,3 +110,19 @@ def test_cli_operation_rejects_non_dict_values_before_emitting(tmp_path):
         assert _find_events(events, "cli_operation") == []
     finally:
         proc.kill()
+
+
+def test_nonzero_exit_failure_carries_structured_data_and_stderr(tmp_path):
+    proc = _spawn_v3_app(_app(tmp_path, ""))
+    try:
+        _init_app(proc, capabilities=["cli.operations"])
+        _send_event(proc, {
+            "type": "cli_operation_result", "request_id": "a", "operation_id": "x",
+            "ok": False, "error_code": "nonzero_exit", "error": "exited with status 1: conflict",
+            "exit_code": 1, "stderr": "conflict", "data_available": True,
+            "data": {"error": "priority_conflict"},
+        })
+        titles = [e["title"] for e in _find_events(_collect_until(proc, "schedule_render"), "set_title")]
+        assert titles == ["fail a nonzero_exit 1"]
+    finally:
+        proc.kill()

@@ -807,6 +807,17 @@ fn finish(
                 format!("exited with status {status}: {}", tail.trim()),
             );
             reply["exit_code"] = json!(status);
+            reply["stderr"] = json!(tail.trim());
+            // Real CLIs report structured errors on stdout. It is held to the
+            // same bound (enforced while reading) and the same format check as
+            // a success; text that does not parse is never surfaced as data.
+            match parse_output(&running.decl, &outcome.stdout) {
+                Ok(data) if !outcome.stdout.is_empty() => {
+                    reply["data"] = data;
+                    reply["data_available"] = json!(true);
+                }
+                _ => reply["data_available"] = json!(false),
+            }
             ("nonzero_exit", reply)
         }
         Completion::Signaled(signal) => (

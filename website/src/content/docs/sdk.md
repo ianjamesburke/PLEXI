@@ -521,7 +521,7 @@ answered; the app must fail them rather than wait.
 ### `CliOperationResult`
 
 ```python
-CliOperationResult(request_id: str, operation_id: str, ok: bool, data: Any = None, error_code: Optional[str] = None, error: Optional[str] = None, exit_code: Optional[int] = None)
+CliOperationResult(request_id: str, operation_id: str, ok: bool, data: Any = None, error_code: Optional[str] = None, error: Optional[str] = None, exit_code: Optional[int] = None, stderr: Optional[str] = None, data_available: Optional[bool] = None)
 ```
 
 Host reply to :class:`effects.CliOperation`, correlated by
@@ -535,8 +535,11 @@ output, bounded by the operation's declared limit: parsed JSON for a
 ``executable_not_self_contained``, ``denied``,
 ``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
 ``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
-``error`` is a human-readable message and ``exit_code`` is set for
-``nonzero_exit``. A failure other than a nonzero exit, timeout or
+``error`` is a human-readable message. For ``nonzero_exit``, ``exit_code`` is
+set, ``stderr`` holds a bounded tail, and ``data`` holds the program's stdout
+when it passes the same bound and format check as a success (parsed JSON for
+a ``json`` operation, a string for ``text``); ``data_available`` says whether
+it did, and unparseable output is never put in ``data``. A failure other than a nonzero exit, timeout or
 cancellation means the program did not run.
 
 ### `AiStreamChunk`
