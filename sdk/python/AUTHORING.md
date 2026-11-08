@@ -269,6 +269,27 @@ subscribers can use either runtime. Subscriptions last until unsubscribe or
 the subscriber pane closes. The host permission broker may ask the user before
 allowing a cross-app subscription.
 
+## Focus and Visibility
+
+The host tells each Python app about its own pane through four events,
+delivered to `update()` in transition order, once per change:
+
+| Event | Sent when |
+|---|---|
+| `PaneShown` | the pane became visible: its context is active, the host window is not minimized or occluded, no other pane is zoomed over it, and the tree atlas is closed |
+| `FocusGained` | the pane became the focused pane of the active context while the host window is visible and OS-focused |
+| `FocusLost` | the pane stopped being focused (focus moved, the context changed, the window lost OS focus or was hidden) |
+| `PaneHidden` | the pane stopped being visible |
+
+A focused pane is always visible, so `PaneShown` precedes `FocusGained` and
+`FocusLost` precedes `PaneHidden`. A new app starts unshown and unfocused, so a
+pane opened in view receives `PaneShown` then `FocusGained` right after `init`.
+Modal overlays (command palette, approvals) do not count as focus changes.
+Refresh on `FocusGained`; do not poll while hidden. Delivery continues while
+the host window is hidden. `FocusChanged` is a separate host-level time-tracking
+event, not a substitute. Test handlers with `AppHarness.set_focus(bool)` and
+`AppHarness.set_visible(bool)`.
+
 ## UI Components
 
 Import from `plexi_sdk.ui`. Read `sdk.md` (UI Components section) for the full
