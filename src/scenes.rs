@@ -405,6 +405,9 @@ pub enum Step {
     },
     /// Seed a pane-send approval whose caller has stopped waiting (headless).
     SeedPaneSendTimeout { seed_pane_send_timeout: bool },
+    /// Seed a typed CLI operation approval with the production disclosure text
+    /// (headless).
+    SeedCliOperationApproval { seed_cli_operation_approval: bool },
     SeedFailedAgent { seed_failed_agent: bool },
     /// Switch to the context at this router index.
     SwitchContext { switch_context: usize },
@@ -940,15 +943,15 @@ pub struct HeadlessBackend {
     /// `-WxH` appended to every `shot` stem when the scene declares a `sizes`
     /// matrix, so the passes write distinct files. `None` for a single size.
     shot_suffix: Option<String>,
-    seeded_pane_send: Option<(PathBuf, String)>,
+    seeded_approval: Option<(PathBuf, String)>,
 }
 
 impl Drop for HeadlessBackend {
     fn drop(&mut self) {
-        if let Some((profile, id)) = self.seeded_pane_send.take() {
+        if let Some((profile, id)) = self.seeded_approval.take() {
             let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
             if let Err(error) = monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny) {
-                log::warn!("scene: failed to clear seeded pane.send approval: {error}");
+                log::warn!("scene: failed to clear seeded approval: {error}");
             }
         }
     }
@@ -1112,7 +1115,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             out_dir: out_dir.to_path_buf(),
             no_shots,
             shot_suffix: suffix,
-            seeded_pane_send: None,
+            seeded_approval: None,
         });
 
         for step in &scene.steps {
@@ -1992,6 +1995,10 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "seed_pane_send_timeout is headless-only",
             )),
+            Step::SeedCliOperationApproval { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "seed_cli_operation_approval is headless-only",
+            )),
         }
     }
 
@@ -2491,6 +2498,7 @@ fn step_label(step: &Step) -> String {
         }
         Step::SeedFailedAgent { seed_failed_agent } => format!("seed_failed_agent {seed_failed_agent}"),
         Step::SeedPaneSendTimeout { seed_pane_send_timeout } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
+        Step::SeedCliOperationApproval { seed_cli_operation_approval } => format!("seed_cli_operation_approval {seed_cli_operation_approval}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
@@ -2956,10 +2964,52 @@ impl HeadlessBackend {
                 };
                 monitor.detach_pane_send_waiter(&pending_request_id)
                     .map_err(|error| SceneError::new("seed_failed", error))?;
-                self.seeded_pane_send = Some((profile, pending_request_id));
+                self.seeded_approval = Some((profile, pending_request_id));
                 self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
                 self.h.run_steps(2);
                 Ok(Some(StepDetail::Message { message: "seeded timed-out pane send".to_string() }))
+            }
+            Step::SeedCliOperationApproval { seed_cli_operation_approval } => {
+                if !seed_cli_operation_approval {
+                    return Err(SceneError::new("seed_failed", "seed_cli_operation_approval must be true"));
+                }
+                let context_id = self.h.with_app(|app| app.windows[app.active_window].context_id);
+                let profile = crate::config::config_dir();
+                let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
+                let authority = crate::app::cli_operation::AuthorityDecl {
+                    mode: crate::app::cli_operation::OperationMode::Mutate,
+                    fs_read: vec!["workspace".into()],
+                    fs_write: vec!["workspace/.stint".into()],
+                    net_hosts: Vec::new(),
+                };
+                let workspace = std::path::Path::new("/Users/demo/projects/plexi");
+                let disclosure = crate::host::cli_ops::service::Disclosure {
+                    app_id: "stint-board",
+                    operation_id: "task.set_priority",
+                    mode: authority.mode,
+                    workspace,
+                    executable: std::path::Path::new("/Users/demo/.cargo/bin/stint"),
+                    executable_sha256: "9f2c41ab07e35d1c8a6e",
+                    authority: &authority,
+                }
+                .text();
+                let admitted = monitor.admit_cli_operation(crate::broker::gate::AdmitRequest {
+                    call_id: "scene-cli-operation",
+                    tool: "cli.op.mutate",
+                    input_json: r#"{"cli_operation_id":"task.set_priority","binding":"task.set_priority#scene","values":{"priority":"p1","task":"1175"}}"#,
+                    actor_type: crate::broker::ActorType::App,
+                    actor_id: "stint-board",
+                    actor_scope: crate::broker::ActorScope::User,
+                    trust_origin: "host", workspace_root: &profile, package_id: "scene-package",
+                    instance_id: 0, context_id, target_type: crate::broker::TargetType::CliOperation,
+                }, &disclosure);
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
+                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                };
+                self.seeded_approval = Some((profile, pending_request_id));
+                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.run_steps(2);
+                Ok(Some(StepDetail::Message { message: "seeded cli operation approval".to_string() }))
             }
             Step::SwitchContext { switch_context } => {
                 let idx = *switch_context;

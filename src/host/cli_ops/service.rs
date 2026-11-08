@@ -447,7 +447,16 @@ impl CliOpService {
         })
         .to_string();
         let call_id = format!("cliop_{request_id}_{}", uuid::Uuid::new_v4().simple());
-        let disclosure = disclosure_text(who, &admitted, mode);
+        let disclosure = Disclosure {
+            app_id: &who.app_id,
+            operation_id: &admitted.decl.id,
+            mode,
+            workspace: &admitted.workspace,
+            executable: &admitted.identity.path,
+            executable_sha256: &admitted.identity.sha256,
+            authority: &admitted.decl.authority,
+        }
+        .text();
         let admission = env.monitor.admit_cli_operation(
             AdmitRequest {
                 call_id: &call_id,
@@ -698,35 +707,48 @@ fn binding_digest(
     hex(&Sha256::digest(canonical.to_string().as_bytes()))
 }
 
-/// The text the person sees. The app id is a claim by the package, not proof of
-/// what the program does, and the native program is not confined.
-fn disclosure_text(who: &PaneIdentity, admitted: &Admitted, mode: OperationMode) -> String {
-    let authority = &admitted.decl.authority;
-    let scopes = |items: &[String]| {
-        if items.is_empty() {
-            "none".to_string()
-        } else {
-            items.join(", ")
-        }
-    };
-    format!(
-        "App \"{app}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
-         Program: {exe} (sha256 {sha}). It declares: read {read}; write {write}; network {net}. \
-         This runs a native program with your user account's full authority. Plexi does not confine it, \
-         and the declaration above is not enforced.",
-        app = who.app_id,
-        op = admitted.decl.id,
-        mode = match mode {
-            OperationMode::Read => "read",
-            OperationMode::Mutate => "changes data",
-        },
-        ws = admitted.workspace.display(),
-        exe = admitted.identity.path.display(),
-        sha = &admitted.identity.sha256[..12],
-        read = scopes(&authority.fs_read),
-        write = scopes(&authority.fs_write),
-        net = scopes(&authority.net_hosts),
-    )
+/// What the approval surface shows. Built once, from host-verified facts, so
+/// the seeded scene and the live prompt cannot drift apart.
+pub struct Disclosure<'a> {
+    pub app_id: &'a str,
+    pub operation_id: &'a str,
+    pub mode: OperationMode,
+    pub workspace: &'a Path,
+    pub executable: &'a Path,
+    pub executable_sha256: &'a str,
+    pub authority: &'a crate::app::cli_operation::AuthorityDecl,
+}
+
+impl Disclosure<'_> {
+    /// The app id is a claim by the package, not proof of what the program
+    /// does, and the native program is not confined by anything declared here.
+    pub fn text(&self) -> String {
+        let scopes = |items: &[String]| {
+            if items.is_empty() {
+                "none".to_string()
+            } else {
+                items.join(", ")
+            }
+        };
+        format!(
+            "App \"{app}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
+             Program: {exe} (sha256 {sha}). It declares: read {read}; write {write}; network {net}. \
+             This runs a native program with your user account's full authority. Plexi does not confine it, \
+             and the declaration above is not enforced.",
+            app = self.app_id,
+            op = self.operation_id,
+            mode = match self.mode {
+                OperationMode::Read => "read",
+                OperationMode::Mutate => "changes data",
+            },
+            ws = self.workspace.display(),
+            exe = self.executable.display(),
+            sha = &self.executable_sha256[..self.executable_sha256.len().min(12)],
+            read = scopes(&self.authority.fs_read),
+            write = scopes(&self.authority.fs_write),
+            net = scopes(&self.authority.net_hosts),
+        )
+    }
 }
 
 /// Turn a finished process into the guest's reply and the audit outcome.
