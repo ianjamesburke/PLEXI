@@ -85,9 +85,10 @@ pub struct Colors {
     pub state_needs_you: Color32,
     pub state_interrupted: Color32,
     pub state_error: Color32,
-    // Motorways / Zoom / Attention Queue tokens (Tokyo Night palette)
+    // Motorways / Zoom / Attention Queue tokens
     pub zoom_needs: Color32,
     pub zoom_failed: Color32,
+    pub zoom_notice: Color32,
     pub depth_tints: [Color32; 5],
     pub shadow_flat: Color32,
     pub scrim_decision: Color32,
@@ -156,6 +157,18 @@ impl Colors {
         result
     }
 
+    /// Legible status-badge text over the tinted pane header.
+    pub fn status_badge_color(&self, color: Color32) -> Color32 {
+        let header = self.pane_header_bg();
+        (0..=32)
+            .map(|step| lerp_color(color, self.text_primary, step as f32 / 32.0))
+            .find(|candidate| {
+                let fill = lerp_color(header, *candidate, 36.0 / 255.0);
+                contrast(luminance(*candidate), luminance(fill)) >= 4.5
+            })
+            .unwrap_or(self.text_primary)
+    }
+
     /// Background for terminal pane name bars: `terminal_bg` darkened ~12%.
     /// Matches the zoom overlay, where the same bar is painted at 0.88
     /// opacity over the dark scrim — keeps the header tone identical in
@@ -177,8 +190,31 @@ impl Colors {
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         let bg_hover = parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x20, 0x23, 0x32));
         let states = state_palette(cfg);
-        let zoom_needs = Color32::from_rgb(0xe0, 0xaf, 0x68);
-        let zoom_failed = Color32::from_rgb(0xf7, 0x76, 0x8e);
+        let warning = parse_hex_or(&cfg.yellow, Color32::from_rgb(0xe0, 0xaf, 0x68));
+        let danger = parse_hex_or(&cfg.red, Color32::from_rgb(0xf7, 0x76, 0x8e));
+        let primary = parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xc0, 0xca, 0xf5));
+        let backgrounds = [
+            parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+            bg_hover,
+            parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x29, 0x2e, 0x42)),
+            parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x1a, 0x1b, 0x26)),
+            parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x16, 0x16, 0x1e)),
+        ];
+        let readable = |color| {
+            (0..=32)
+                .map(|step| lerp_color(color, primary, step as f32 / 32.0))
+                .find(|candidate| {
+                    backgrounds
+                        .iter()
+                        .all(|bg| contrast(luminance(*candidate), luminance(*bg)) >= 4.5)
+                })
+                .unwrap_or(primary)
+        };
+        let zoom_needs = readable(warning);
+        let zoom_failed = readable(danger);
+        let accent = parse_hex_or(&cfg.accent, Color32::from_rgb(0x7a, 0xa2, 0xf7));
+        let tint = |c: Color32, alpha| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha);
+        let shadow = parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x0c, 0x0e, 0x14));
         Self {
             state_working: parse_hex_or(
                 &cfg.state_working
@@ -217,11 +253,12 @@ impl Colors {
             text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x56, 0x5f, 0x89)),
             accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x7a, 0xa2, 0xf7)),
             border: parse_hex_or(&cfg.border, Color32::from_rgb(0x3b, 0x42, 0x61)),
-            danger: parse_hex_or(&cfg.red, zoom_failed),
+            danger,
             success: parse_hex_or(&cfg.green, Color32::from_rgb(0x9e, 0xce, 0x6a)),
-            warning: parse_hex_or(&cfg.yellow, zoom_needs),
+            warning,
             zoom_needs,
             zoom_failed,
+            zoom_notice: readable(accent),
             depth_tints: [
                 Color32::from_rgb(0x1a, 0x1b, 0x26),
                 Color32::from_rgb(0x20, 0x24, 0x36),
@@ -230,13 +267,13 @@ impl Colors {
                 Color32::from_rgb(0x39, 0x4b, 0x70),
             ],
             shadow_flat: Color32::from_rgb(0x0c, 0x0e, 0x14),
-            scrim_decision: Color32::from_rgba_unmultiplied(12, 14, 20, 204),
-            scrim_queue: Color32::from_rgba_unmultiplied(12, 14, 20, 140),
-            needs_fill: Color32::from_rgba_unmultiplied(224, 175, 104, 31),
-            needs_badge_fill: Color32::from_rgba_unmultiplied(224, 175, 104, 36),
-            failed_fill: Color32::from_rgba_unmultiplied(247, 118, 142, 26),
-            focus_fill: Color32::from_rgba_unmultiplied(122, 162, 247, 36),
-            focus_glow: Color32::from_rgba_unmultiplied(122, 162, 247, 38),
+            scrim_decision: tint(shadow, 204),
+            scrim_queue: tint(shadow, 140),
+            needs_fill: tint(zoom_needs, 31),
+            needs_badge_fill: tint(zoom_needs, 36),
+            failed_fill: tint(zoom_failed, 26),
+            focus_fill: tint(accent, 36),
+            focus_glow: tint(accent, 38),
             pip_dim: cfg.pip_dim.unwrap_or(0.72),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xc0, 0xca, 0xf5]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x1a, 0x1b, 0x26]),
@@ -1774,6 +1811,71 @@ mod plexi_family_tests {
     fn plexi_family_meets_contrast_targets() {
         let all: Vec<String> = PLEXI_PRESETS.iter().flat_map(|n| failures(n)).collect();
         assert!(all.is_empty(), "contrast failures:\n{}", all.join("\n"));
+    }
+
+    #[test]
+    fn attention_chrome_contrast_on_plexi_themes() {
+        let mut failures = Vec::new();
+        for name in PLEXI_PRESETS {
+            let colors = Colors::from_config(&preset_colors(name).unwrap());
+            for (label, fg) in [
+                ("asks", colors.zoom_needs),
+                ("failed", colors.zoom_failed),
+                ("notice", colors.zoom_notice),
+            ] {
+                for (surface, bg) in [
+                    ("toolbar", colors.bg_toolbar),
+                    ("hover", colors.bg_hover),
+                    ("active", colors.bg_active),
+                ] {
+                    let ratio = contrast(luminance(fg), luminance(bg));
+                    if ratio < 4.5 {
+                        failures.push(format!("{name} {label} on {surface}: {ratio:.2}"));
+                    }
+                }
+            }
+            let header = colors.pane_header_bg();
+            for (label, fg, alpha, target) in [
+                ("outside workspace", colors.zoom_needs, 28.0 / 255.0, 4.5),
+                ("needs badge", colors.zoom_needs, 36.0 / 255.0, 3.0),
+                ("failed badge", colors.zoom_failed, 26.0 / 255.0, 3.0),
+            ] {
+                let bg = lerp_color(header, fg, alpha);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                if ratio < target {
+                    failures.push(format!("{name} {label} on header: {ratio:.2}"));
+                }
+            }
+            for (label, state, is_error) in [
+                (
+                    "needs status",
+                    Some(crate::protocol::AgentState::NeedsYou),
+                    false,
+                ),
+                (
+                    "failed status",
+                    Some(crate::protocol::AgentState::Failed),
+                    false,
+                ),
+                ("error status", None, true),
+            ] {
+                let fg = colors.status_badge_color(
+                    crate::ui::activity::escalation_color(state.as_ref(), is_error, &colors)
+                        .unwrap(),
+                );
+                let bg = lerp_color(header, fg, 36.0 / 255.0);
+                let ratio = contrast(luminance(fg), luminance(bg));
+                if ratio < 3.0 {
+                    failures.push(format!("{name} {label} on header: {ratio:.2}"));
+                }
+            }
+            let provenance = colors.text_secondary(header);
+            let ratio = contrast(luminance(provenance), luminance(header));
+            if ratio < 3.0 {
+                failures.push(format!("{name} provenance on header: {ratio:.2}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]

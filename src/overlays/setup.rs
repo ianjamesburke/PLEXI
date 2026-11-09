@@ -98,9 +98,8 @@ impl PlexiApp {
                             let s1 = 5.0 * scale;
                             let s2 = 17.0 * scale;
                             let rx = crate::ui::style::radius_frac(scale, 1.5);
-                            let outline =
-                                Stroke::new(0.9 * scale, egui::Color32::from_rgb(0xe4, 0xe4, 0xe7));
-                            let purple = egui::Color32::from_rgb(0x3b, 0x07, 0x64);
+                            let outline = Stroke::new(0.9 * scale, colors.text_primary);
+                            let purple = colors.accent;
                             for (dx, dy, filled) in [
                                 (s1, s1, false),
                                 (s2, s1, false),
