@@ -879,13 +879,12 @@ impl<'a> TerminalView<'a> {
                     )
                     && state.cursor_visible
                 {
-                    // Inverted cursor glyph: the cell background drawn over
-                    // the cursor block.
-                    glyph_color(
+                    cursor_glyph_color(
                         &self.theme,
                         flags,
                         indexed.c,
                         bg,
+                        global_bg,
                         self.theme.get_color(content.cursor.fg),
                     )
                     .unwrap_or(bg)
@@ -2018,6 +2017,21 @@ fn glyph_color(
     ))
 }
 
+/// Glyph color under an inverted block cursor: the cell background drawn over
+/// the cursor block. A selected cell's background is a translucent tint, so it
+/// is composited over the global background first; the floor then measures the
+/// opaque color that is painted, against the cursor block behind it.
+fn cursor_glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    cell_bg: Color32,
+    global_bg: Color32,
+    cursor: Color32,
+) -> Option<Color32> {
+    glyph_color(theme, flags, c, over(cell_bg, global_bg), cursor)
+}
+
 /// Composite `top` over an opaque `base`.
 fn over(top: Color32, base: Color32) -> Color32 {
     let inv = 255 - u16::from(top.a());
@@ -2176,6 +2190,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn inverted_cursor_glyph_on_a_selected_cell_is_opaque_and_meets_the_floor()
+    {
+        let theme = themed(3.0);
+        let global_bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let selection = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let cursor = Color32::from_rgb(0xc8, 0xc8, 0xd8);
+        let out = cursor_glyph_color(
+            &theme,
+            cell::Flags::empty(),
+            'a',
+            selection,
+            global_bg,
+            cursor,
+        )
+        .unwrap();
+        assert_eq!(out.a(), 255, "glyph must be an opaque color");
+        assert!(
+            contrast::contrast_ratio(out, cursor) >= 3.0,
+            "{out:?} on cursor {cursor:?}: ratio {}",
+            contrast::contrast_ratio(out, cursor)
+        );
     }
 
     #[test]
