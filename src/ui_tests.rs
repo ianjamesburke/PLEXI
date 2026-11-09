@@ -9864,6 +9864,46 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn screenshot_attention_mailbox_theme_states() {
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            for state in ["asks", "failed", "notice"] {
+                let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(
+                        &app.ctx,
+                        &app.colors,
+                        !crate::ui::theme::is_light_preset(theme),
+                    );
+                    if state == "asks" {
+                        let pid = app.host.alloc_pane_id();
+                        app.enqueue_ask(
+                            "ask-shot", pid, "permission: Allow cargo test", 1_000, Vec::new(),
+                        );
+                    } else {
+                        app.record_child_agent_result(None, crate::workspace::QueuedChildResult {
+                            child_pane_id: 1041,
+                            child_agent: "builder".to_string(),
+                            status: if state == "failed" { "failed" } else { "completed" }.to_string(),
+                            summary: Some("Review build results".to_string()),
+                            result_json: "{}".to_string(),
+                            finished_at_epoch_secs: 1000,
+                        });
+                        app.sync_attention_queue();
+                    }
+                });
+                h.run_steps(4);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{state}"))).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn screenshot_attention_mailbox_empty_asks_results_narrow_and_scaled() {
         // 1. Empty state
         {

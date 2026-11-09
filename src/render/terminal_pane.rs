@@ -381,6 +381,7 @@ fn render_name_bar_and_tabs(
     let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
         .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
+    let escalation_col = escalation_col.map(|color| colors.status_badge_color(color));
     let escalation_lbl = crate::ui::activity::escalation_label(agent_state, is_error);
     let has_escalation = is_error
         || matches!(
@@ -435,7 +436,7 @@ fn render_name_bar_and_tabs(
             None
         };
         let waiting_badge_x = if let Some(lbl) = waiting_results_badge {
-            let col = colors.accent;
+            let col = colors.status_badge_color(colors.accent);
             let galley =
                 ui.painter()
                     .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
@@ -602,7 +603,7 @@ fn render_name_bar_and_tabs(
             right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
         }
         if let Some(lbl) = waiting_results_badge {
-            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.accent);
+            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.status_badge_color(colors.accent));
         }
         if let Some(lbl) = spawned_by_badge {
             right_edge = paint_provenance(ui, bar_rect, right_edge, lbl, colors, *pane_id);
@@ -709,7 +710,7 @@ fn paint_provenance(
         ui.painter(),
         rect,
         crate::ui::provenance::provenance_kind(badge),
-        colors.text_secondary(colors.bg_toolbar),
+        colors.text_secondary(colors.pane_header_bg()),
     );
     ui.ctx()
         .data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane_id)), rect));
@@ -772,7 +773,7 @@ fn paint_outside_workspace_badge(
     right_edge: f32,
     colors: &Colors,
 ) -> egui::Rect {
-    let fg = colors.warning;
+    let fg = colors.zoom_needs;
     let galley = painter.layout_no_wrap(
         OUTSIDE_WORKSPACE_BADGE_LABEL.to_string(),
         crate::ui::badge::badge_font(),

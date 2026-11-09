@@ -167,8 +167,8 @@ pub(crate) fn choice_button(
     let (bg, fg, hint_color) = if focused {
         (
             colors.accent,
-            Color32::BLACK,
-            Color32::from_black_alpha(140),
+            colors.text_on(colors.accent),
+            colors.text_on(colors.accent),
         )
     } else {
         (colors.bg_hover, colors.text_primary, colors.text_dim)

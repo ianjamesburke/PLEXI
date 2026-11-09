@@ -71,7 +71,7 @@ impl PlexiApp {
                         self.colors.zoom_failed
                     }
                     crate::app::attention_queue::AttentionMailboxVisualState::ResultOrNotice => {
-                        self.colors.accent
+                        self.colors.zoom_notice
                     }
                 };
 
