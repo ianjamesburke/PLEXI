@@ -12,9 +12,7 @@
 use crate::ui::style;
 use crate::ui::text::ELLIPSIS;
 use crate::ui::theme::{self, Colors};
-use egui::{
-    Align2, Color32, Context, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2,
-};
+use egui::{Align2, Color32, Context, FontFamily, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -189,7 +187,7 @@ impl CardState {
 
     pub(crate) fn fill(self, colors: &Colors, base: Color32) -> Color32 {
         match self {
-            CardState::NeedsYou => colors.needs_fill,
+            CardState::NeedsYou => base.blend(colors.needs_fill),
             CardState::Working => base.lerp_to_gamma(colors.accent, 0.24),
             _ => base,
         }
@@ -310,7 +308,11 @@ pub(crate) fn layout_card(
     let badge_font = theme::font_medium(style::TEXT_CAPTION);
     let badge_w = badge_text(spec)
         .map(|t| {
-            let glyph = if spec.badge.is_none() { RUN_GLYPH_W } else { 0.0 };
+            let glyph = if spec.badge.is_none() {
+                RUN_GLYPH_W
+            } else {
+                0.0
+            };
             measure_fn(ctx, badge_font)(&t) + 12.0 + glyph
         })
         .unwrap_or(0.0);
@@ -355,6 +357,50 @@ pub(crate) fn layout_card(
     }
 }
 
+// Resolve the foreground against the opaque card fill, preserving the supplied
+// color where possible and moving it toward the better contrasting extreme.
+fn readable_card_color(color: Color32, fill: Color32, minimum: f32) -> Color32 {
+    let color = fill.blend(color);
+    let fill_luminance = theme::luminance(fill);
+    let ratio = |fg| theme::contrast(theme::luminance(fg), fill_luminance);
+    if ratio(color) >= minimum {
+        return color;
+    }
+    let target = if ratio(Color32::WHITE) >= ratio(Color32::BLACK) {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    (1..=32)
+        .map(|step| color.lerp_to_gamma(target, step as f32 / 32.0))
+        .find(|candidate| ratio(*candidate) >= minimum)
+        .unwrap_or(target)
+}
+
+fn card_text_colors(
+    state: CardState,
+    colors: &Colors,
+    fill: Color32,
+    badge: Color32,
+) -> (Color32, Color32, Color32, Color32) {
+    let title = if state == CardState::Idle {
+        colors.text_dim.gamma_multiply(0.75)
+    } else {
+        colors.text_primary
+    };
+    let detail = if state == CardState::Idle {
+        colors.text_dim.gamma_multiply(0.7)
+    } else {
+        colors.text_dim
+    };
+    (
+        readable_card_color(title, fill, 4.5),
+        readable_card_color(colors.text_dim, fill, 4.5),
+        readable_card_color(detail, fill, 4.5),
+        readable_card_color(badge, fill, 3.0),
+    )
+}
+
 /// Paint a card block into `rect` (whose width the layout was built for).
 /// Returns the rect the title row occupies on the right for hit-testing a badge.
 pub(crate) fn paint_card(
@@ -369,6 +415,10 @@ pub(crate) fn paint_card(
     let form = layout.form;
     let m = form.metrics();
     let state_color = spec.state.color(colors);
+    let fill = spec.state.fill(colors, base_fill);
+    let badge_color = spec.badge.as_ref().map(|(_, c)| *c).unwrap_or(state_color);
+    let (title_color, subtitle_color, detail_color, badge_color) =
+        card_text_colors(spec.state, colors, fill, badge_color);
     let radius = match form {
         CardForm::Bar => style::RADIUS_BAR,
         _ => style::RADIUS_MOTORWAYS,
@@ -387,7 +437,7 @@ pub(crate) fn paint_card(
             colors.shadow_flat,
         );
     }
-    painter.rect_filled(rect, radius, spec.state.fill(colors, base_fill));
+    painter.rect_filled(rect, radius, fill);
     painter.rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
 
     // Everything below is clipped to the box: no glyph can escape it.
@@ -402,7 +452,9 @@ pub(crate) fn paint_card(
     );
     paint_state_icon(&p, icon_c, spec.state, colors, time);
     if spec.state.animated() {
-        painter.ctx().request_repaint_after(Duration::from_millis(50));
+        painter
+            .ctx()
+            .request_repaint_after(Duration::from_millis(50));
     }
 
     let text_x = rect.min.x + m.pad_x + ICON_W;
@@ -413,11 +465,7 @@ pub(crate) fn paint_card(
             Align2::LEFT_TOP,
             line,
             m.title_font.clone(),
-            if spec.state == CardState::Idle {
-                colors.text_dim.gamma_multiply(0.75)
-            } else {
-                colors.text_primary
-            },
+            title_color,
         );
         y += title_h;
     }
@@ -430,18 +478,20 @@ pub(crate) fn paint_card(
         if form == CardForm::Bar {
             // Path sits on the title row after the (last) title line.
             let last = layout.title.last().map(String::as_str).unwrap_or("");
-            let title_end =
-                measure_fn(painter.ctx(), m.title_font.clone())(last) + 8.0;
+            let title_end = measure_fn(painter.ctx(), m.title_font.clone())(last) + 8.0;
             let avail = inner_w - layout.badge_w - title_end;
             if let Some(line) =
                 wrap_with_ellipsis(&layout.subtitle, avail, Some(1), &measure).first()
             {
                 p.text(
-                    Pos2::new(text_x + title_end, y - title_h + (title_h - row_h(&sub_font)) * 0.5 + 1.0),
+                    Pos2::new(
+                        text_x + title_end,
+                        y - title_h + (title_h - row_h(&sub_font)) * 0.5 + 1.0,
+                    ),
                     Align2::LEFT_TOP,
                     line,
                     sub_font.clone(),
-                    colors.text_dim,
+                    subtitle_color,
                 );
             }
         } else {
@@ -454,7 +504,7 @@ pub(crate) fn paint_card(
                     Align2::LEFT_TOP,
                     line,
                     sub_font.clone(),
-                    colors.text_dim,
+                    subtitle_color,
                 );
             }
             y += row_h(&sub_font);
@@ -463,11 +513,7 @@ pub(crate) fn paint_card(
 
     if !layout.detail.is_empty() {
         y += SECTION_GAP;
-        let color = if spec.state == CardState::Idle {
-            colors.text_dim.gamma_multiply(0.7)
-        } else {
-            colors.text_dim
-        };
+        let color = detail_color;
         for line in &layout.detail {
             // Never draw a partial line: it must fit above the bottom padding.
             if y + row_h(&m.detail_font) > rect.max.y - m.pad_y * 0.5 {
@@ -489,7 +535,7 @@ pub(crate) fn paint_card(
         Vec2::new(layout.badge_w, title_h),
     );
     if let Some(text) = badge_text(spec) {
-        let color = spec.badge.as_ref().map(|(_, c)| *c).unwrap_or(state_color);
+        let color = badge_color;
         let cy = rect.min.y + m.pad_y + title_h * 0.5;
         let galley = p.text(
             Pos2::new(rect.max.x - m.pad_x, cy),
@@ -521,7 +567,11 @@ fn paint_state_icon(p: &Painter, c: Pos2, state: CardState, colors: &Colors, tim
     let pulse = ((time * std::f64::consts::TAU / 1.4).sin() as f32 * 0.5 + 0.5).clamp(0.0, 1.0);
     match state {
         CardState::Working => {
-            p.circle_filled(c, 3.0 + 3.0 * pulse, col.gamma_multiply(0.35 * (1.0 - pulse)));
+            p.circle_filled(
+                c,
+                3.0 + 3.0 * pulse,
+                col.gamma_multiply(0.35 * (1.0 - pulse)),
+            );
             p.circle_filled(c, 3.5, col);
         }
         CardState::NeedsYou => {
@@ -549,7 +599,12 @@ fn paint_state_icon(p: &Painter, c: Pos2, state: CardState, colors: &Colors, tim
             if on {
                 p.rect_filled(r, crate::ui::style::radius_fit(r), col);
             } else {
-                p.rect_stroke(r, crate::ui::style::radius_fit(r), Stroke::new(1.0_f32, col), egui::StrokeKind::Inside);
+                p.rect_stroke(
+                    r,
+                    crate::ui::style::radius_fit(r),
+                    Stroke::new(1.0_f32, col),
+                    egui::StrokeKind::Inside,
+                );
             }
         }
         CardState::Done => {
@@ -577,15 +632,36 @@ mod tests {
         let mut failures = Vec::new();
         for name in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
             let colors = Colors::from_config(&theme::preset_colors(name).unwrap());
-            for state in [CardState::NeedsYou, CardState::Failed, CardState::Done, CardState::Idle] {
-                let fill = colors.terminal_bg.blend(state.fill(&colors, colors.tile_bg));
+            for state in [
+                CardState::NeedsYou,
+                CardState::Failed,
+                CardState::Done,
+                CardState::Idle,
+            ] {
+                let fill = colors
+                    .terminal_bg
+                    .blend(state.fill(&colors, colors.tile_bg));
                 for selected in [false, true] {
-                    let title = if state == CardState::Idle { colors.text_dim.gamma_multiply(0.75) } else { colors.text_primary };
-                    let detail = if state == CardState::Idle { colors.text_dim.gamma_multiply(0.7) } else { colors.text_dim };
-                    let badge = if state == CardState::NeedsYou { colors.zoom_needs } else { colors.text_dim };
-                    for (role, fg, target) in [("title", title, 4.5), ("subtitle", colors.text_dim, 4.5), ("detail", detail, 4.5), ("badge", badge, 3.0)] {
-                        let ratio = theme::contrast(theme::luminance(fill.blend(fg)), theme::luminance(fill));
-                        if ratio < target { failures.push(format!("{name} {state:?} selected={selected} {role}: {ratio:.2} < {target}")); }
+                    let badge = if state == CardState::NeedsYou {
+                        colors.zoom_needs
+                    } else {
+                        colors.text_dim
+                    };
+                    let (title, subtitle, detail, badge) =
+                        card_text_colors(state, &colors, fill, badge);
+                    for (role, fg, target) in [
+                        ("title", title, 4.5),
+                        ("subtitle", subtitle, 4.5),
+                        ("detail", detail, 4.5),
+                        ("badge", badge, 3.0),
+                    ] {
+                        let ratio = theme::contrast(
+                            theme::luminance(fill.blend(fg)),
+                            theme::luminance(fill),
+                        );
+                        if ratio < target {
+                            failures.push(format!("{name} {state:?} selected={selected} {role}: {ratio:.2} < {target}"));
+                        }
                     }
                 }
             }
@@ -600,7 +676,10 @@ mod tests {
 
     #[test]
     fn fits_on_one_line() {
-        assert_eq!(wrap_with_ellipsis("hello world", 200.0, Some(2), &m), ["hello world"]);
+        assert_eq!(
+            wrap_with_ellipsis("hello world", 200.0, Some(2), &m),
+            ["hello world"]
+        );
     }
 
     #[test]
@@ -661,7 +740,10 @@ mod tests {
     fn one_glyph_wide_box_never_overflows() {
         let out = wrap_with_ellipsis("abc", 10.0, Some(2), &m);
         assert!(out.iter().all(|l| m(l) <= 10.0));
-        assert_eq!(out.last().map(String::as_str), Some(ELLIPSIS.to_string().as_str()));
+        assert_eq!(
+            out.last().map(String::as_str),
+            Some(ELLIPSIS.to_string().as_str())
+        );
     }
 
     #[test]
