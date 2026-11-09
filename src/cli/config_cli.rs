@@ -758,6 +758,19 @@ fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
         log::info!("config_set: key={key} value_chars={}", raw_value.chars().count());
     }
 
+    let edited = doc.to_string();
+    for diag in crate::config::validate_text(&edited, path) {
+        if let crate::config::ConfigDiagnostic::InvalidValue { key, error, .. } = &diag {
+            if pairs
+                .iter()
+                .any(|p| p.split_once('=').is_some_and(|(k, _)| k == key))
+            {
+                eprintln!("error: {key}: {error}");
+                return 1;
+            }
+        }
+    }
+
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!(
@@ -767,7 +780,7 @@ fn config_set_at_path(pairs: &[String], path: &std::path::Path) -> i32 {
             return 1;
         }
     }
-    if let Err(e) = std::fs::write(path, doc.to_string()) {
+    if let Err(e) = std::fs::write(path, edited) {
         eprintln!("error: could not write {}: {e}", path.display());
         return 1;
     }
@@ -906,6 +919,54 @@ mod tests {
         .unwrap();
         assert_eq!(value["fast"], serde_json::json!({"provider": "global", "model": "global/fast", "thinking": "high"}));
         assert_eq!(value["slow"], serde_json::json!({"provider": "openrouter", "model": "workspace/slow", "thinking": "minimal"}));
+    }
+
+    #[test]
+    fn config_set_refuses_an_unknown_theme_preset_and_accepts_every_known_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "config_version = 1\n[theme]\npreset = \"dracula\"\n",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            config_set_at_path(&["theme.preset=plexi-bogus".to_string()], &path),
+            1,
+            "an unknown preset must be refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "refused set must not write"
+        );
+        for name in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            assert_eq!(
+                config_set_at_path(&[format!("theme.preset={name}")], &path),
+                0,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_check_flags_an_unknown_theme_preset() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let cfg = crate::config::config_path();
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cfg,
+            "config_version = 1\n[theme]\npreset = \"plexi-bogus\"\n",
+        )
+        .unwrap();
+        let (report, code) = config_check_report(ConfigScope::Global, None).unwrap();
+        assert_eq!(code, 1, "{report}");
+        assert!(
+            report.contains("theme.preset") && report.contains("plexi-dusk"),
+            "{report}"
+        );
     }
 
     #[test]

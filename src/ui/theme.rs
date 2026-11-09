@@ -352,7 +352,8 @@ pub const DEFAULT_PRESET: &str = "plexi-dusk";
 /// Resolve the effective `[theme]` for a loaded config: the named preset
 /// (`[theme] preset`, else legacy top-level `theme_preset`, else
 /// [`DEFAULT_PRESET`]) with the user's `[theme]` overrides on top. An
-/// unknown preset name logs a warning and leaves only the user's overrides.
+/// unknown preset name (already-invalid file; `config check` and `config set`
+/// reject it) logs a warning and falls back to [`DEFAULT_PRESET`].
 pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::config::ThemeConfig {
     let user_theme = config.theme.clone().unwrap_or_default();
     let preset_name = user_theme
@@ -360,16 +361,12 @@ pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::confi
         .as_deref()
         .or(config.theme_preset.as_deref())
         .unwrap_or(DEFAULT_PRESET);
-    match preset_colors(preset_name) {
-        Some(preset) => {
-            log::info!("Applying theme preset: {}", preset_name.trim());
-            apply_preset(&preset, &user_theme)
-        }
-        None => {
-            log::warn!("Unknown theme preset: {preset_name}");
-            user_theme
-        }
-    }
+    let preset = preset_colors(preset_name).unwrap_or_else(|| {
+        log::warn!("Unknown theme preset {preset_name:?}; using {DEFAULT_PRESET}");
+        preset_colors(DEFAULT_PRESET).expect("DEFAULT_PRESET names a built-in preset")
+    });
+    log::info!("Applying theme preset: {}", preset_name.trim());
+    apply_preset(&preset, &user_theme)
 }
 
 /// Resolve the active `Colors` from a loaded config. Shared by the GUI and
@@ -433,11 +430,6 @@ pub fn is_light_preset(name: &str) -> bool {
 }
 
 /// Returns the list of available preset names.
-///
-/// Test-only: the WCAG contrast tests sweep every preset. Production code
-/// reaches presets by name through [`preset_colors`], so a non-test build has
-/// no caller and `-D warnings` rejects one.
-#[cfg(test)]
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
@@ -1804,6 +1796,16 @@ mod plexi_family_tests {
             );
             assert_eq!(canonical_preset_name(name), Some(name));
         }
+    }
+
+    #[test]
+    fn unknown_legacy_preset_falls_back_to_the_default_preset() {
+        let config = crate::config::PlexiConfig {
+            theme_preset: Some("plexi-bogus".into()),
+            ..Default::default()
+        };
+        let expected = Colors::from_config(&preset_colors(DEFAULT_PRESET).unwrap());
+        assert!(colors_from_config(&config) == expected);
     }
 
     #[test]

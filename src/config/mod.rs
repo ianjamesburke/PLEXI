@@ -278,6 +278,12 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "close_context",
 ];
 
+/// Diagnostics for config text about to be written to `path`. Lets `config set`
+/// refuse a value the loader would reject.
+pub(crate) fn validate_text(data: &str, path: &Path) -> Vec<ConfigDiagnostic> {
+    parse_config_lenient(data, path).1
+}
+
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
     let path_str = path.display().to_string();
 
@@ -1365,9 +1371,24 @@ fn state_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
     Ok(value)
 }
 
+fn theme_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = Option::<String>::deserialize(d)?;
+    if value
+        .as_deref()
+        .is_some_and(|v| crate::ui::theme::preset_colors(v).is_none())
+    {
+        return Err(serde::de::Error::custom(format!(
+            "unknown theme preset; valid presets: {}",
+            crate::ui::theme::preset_names().join(", ")
+        )));
+    }
+    Ok(value)
+}
+
 #[derive(Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
+    #[serde(default, deserialize_with = "theme_preset")]
     pub preset: Option<String>,
     /// Agent states: default, okabe-ito, high-contrast, mono. Default: okabe-ito.
     #[serde(default, deserialize_with = "state_preset")]
