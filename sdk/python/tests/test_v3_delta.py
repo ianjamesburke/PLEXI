@@ -22,7 +22,7 @@ from plexi_sdk._v3_delta import (
     node_patch,
 )
 from plexi_sdk._adapter import _encode_uitree
-from plexi_sdk.ui import Column, Keyed, Text
+from plexi_sdk.ui import Column, EmptyState, Keyed, Text
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SDK_PATH = str(REPO_ROOT / "sdk" / "python")
@@ -434,6 +434,16 @@ class TestWireFraming:
 
 
 class TestReconstruction:
+    def test_loading_to_empty_state_remaps_card_child(self):
+        runtime = self._keyed_runtime()
+        loading = _encode_uitree(Column([Text("Heading"), Text("Loading"), Text("Footer")]))
+        runtime._last_tree = runtime._stabilize_tree_ids(loading)
+        empty = _encode_uitree(Column([Text("Heading"), EmptyState("No tasks")]))
+        tree = runtime._stabilize_tree_ids(empty)
+        card = next(node for node in tree["nodes"] if node["data"]["type"] == "Card")
+        child = next(node for node in tree["nodes"] if node["key"] == card["key"] + "/child")
+        assert card["data"]["child"] == child["id"]
+
     @staticmethod
     def _keyed_tree(rows: list[str]) -> dict:
         return _encode_uitree(Column([Keyed(Text(row), key=row) for row in rows]))
