@@ -16441,6 +16441,28 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
 }
 
 #[test]
+fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("note.md");
+    std::fs::write(&path, b"original\nbytes\n").unwrap();
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "note".into(), preview: "original".into(), search_text: "note".into(),
+        path: path.clone(), tier_label: None,
+    }];
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(1);
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    assert!(!path.exists(), "delete must immediately move the note to trash");
+    assert!(h.app.notes_picker_entries.is_empty());
+    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+    assert_eq!(h.app.notes_picker_entries[0].path, path);
+}
+
+#[test]
 fn notes_picker_confirmed_cut_closes_and_restores_pane_input_owner() {
     use crate::app::input_owner::{InputOwner, OverlaySurface};
     let mut h = HostHarness::new();
