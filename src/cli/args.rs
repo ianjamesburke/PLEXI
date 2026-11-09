@@ -236,7 +236,7 @@ pub fn resolve_target_from_candidates(
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("PLEXI_VERSION_TEXT"),
-    after_help = "Get started: plexi ai onboard | Docs: https://plexiapp.com/docs",
+    after_help = "Get started: plexi host start | Docs: https://plexiapp.com/docs",
     styles = plexi_styles(),
 )]
 pub struct Cli {
@@ -427,9 +427,9 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
-    /// Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
+    /// Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
     ///
-    /// An agent is a directory containing `AGENT.md` (persona / system prompt) and
+    /// With `agent_mesh` on, an agent is a directory containing `AGENT.md` (persona / system prompt) and
     /// `settings.toml` (`[agent]` metadata + a `[harness]` table naming the CLI the agent runs on).
     ///
     /// Two tiers exist, and workspace definitions shadow global ones with the same name:
@@ -439,7 +439,7 @@ pub enum Commands {
     /// The agent model — harness vs agent, identity vs authority, lifetimes — is documented in
     /// `src/agent/AGENTS.md`.
     ///
-    /// End-to-end agent workflow:
+    /// End-to-end agent workflow (needs `agent_mesh`):
     ///   plexi agent create researcher --cli pi --model openrouter/~z-ai/glm-flash-latest \
     ///     --persona "You are a researcher." \
     ///     --result-schema '{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}}'

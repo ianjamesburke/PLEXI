@@ -1,0 +1,73 @@
+# Public CLI allowlist: every command path visible with all experiments off.
+#
+# `NAME` allows exactly that path. `NAME *` allows the path and everything
+# below it. Paths owned by an experiment (ReleaseFeature::owned_paths) are
+# hidden when it is off and never appear here. The coverage test is
+# `every_visible_command_is_v1_or_owned_by_an_experiment` in v1_surface.rs.
+
+# --- Approved v1 surface: docs/2026-09-20-cli-v1-inventory.md "Current v1 tags"
+run *
+workspace *
+secret
+secret delete
+secret get
+secret list
+secret set
+agent
+agent report
+agent status
+agent hook *
+context *
+pane *
+host *
+notify *
+note *
+config *
+completions
+demo
+update
+uninstall
+app
+app action
+app check
+app freeze
+app info
+app init
+app inspect
+app install
+app list
+app open
+app package
+app prune
+app render
+app state *
+app test
+app uninstall
+app update
+app validate
+registry
+registry watch
+doctor
+ai
+ai doctor
+events
+events declare
+events emit
+events list
+events subscribe
+
+# --- Public although the inventory does not tag them v1. Each is called by
+# Plexi itself or by the shipped skill, so gating it would break that caller.
+# The V1 sweep (stint 1182) decides whether each is core, a core plugin or gone.
+experiments *      # every experiment refusal tells the user to run `plexi experiments enable`
+skill *            # `skill install` writes the embedded skill; the skill's first workflow
+cli *              # `cli setup` installs the launcher; `doctor` tells users to run it
+needs-you *        # permission and question flow; the phone web client shells out to it
+permissions *      # permission monitor management; used by the introspection surface and e2e flows
+lease *            # documented in the skill under "Inspect the host and manage capacity"
+debug *            # documented in the skill; `debug session show` feeds `skill draft`
+app call           # skill "Inspect apps and request human decisions" and the pi-plexi package
+app tools          # same callers as `app call`
+app trust          # the scene runner pre-approves raw WASM apps with it
+agent done         # the worker contract injected into every spawned session, GUI and palette included
+agent ask          # same worker contract as `agent done`

@@ -29,6 +29,7 @@ pub enum ReleaseFeature {
     McpClient,
     CliOperations,
     Routines,
+    AgentMesh,
 }
 
 impl ReleaseFeature {
@@ -51,6 +52,7 @@ impl ReleaseFeature {
         Self::McpClient,
         Self::CliOperations,
         Self::Routines,
+        Self::AgentMesh,
     ];
 
     /// The `[experiments]` config key and the name used by `plexi experiments`.
@@ -74,6 +76,7 @@ impl ReleaseFeature {
             Self::McpClient => "mcp_client",
             Self::CliOperations => "cli_operations",
             Self::Routines => "routines",
+            Self::AgentMesh => "agent_mesh",
         }
     }
 
@@ -101,6 +104,7 @@ impl ReleaseFeature {
             Self::McpClient => "MCP client: host MCP config and `app open --mcp`",
             Self::CliOperations => "Approved typed CLI operations for sandboxed apps",
             Self::Routines => "Scheduled commands (`routine`)",
+            Self::AgentMesh => "Agent roles, spawning, teams and fleet control (`agent` beyond status hooks and worker completion)",
         }
     }
 
@@ -108,7 +112,7 @@ impl ReleaseFeature {
     /// takes effect after `plexi host restart`. Pure CLI gates re-read the
     /// config on every invocation.
     pub fn requires_restart(self) -> bool {
-        !matches!(self, Self::AiSetup | Self::Ledger)
+        !matches!(self, Self::AiSetup | Self::Ledger | Self::AgentMesh)
     }
 
     /// The clap paths this experiment owns. Empty for runtime-only surfaces
@@ -137,6 +141,24 @@ impl ReleaseFeature {
             ],
             Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["app", "open"], "mcp")],
             Self::Routines => &[Sub(&["routine"])],
+            Self::AgentMesh => &[
+                Sub(&["agent", "call"]),
+                Sub(&["agent", "create"]),
+                Sub(&["agent", "flags"]),
+                Sub(&["agent", "fleet"]),
+                Sub(&["agent", "handoff"]),
+                Sub(&["agent", "history"]),
+                Sub(&["agent", "list"]),
+                Sub(&["agent", "message"]),
+                Sub(&["agent", "next"]),
+                Sub(&["agent", "reopen"]),
+                Sub(&["agent", "result"]),
+                Sub(&["agent", "show"]),
+                Sub(&["agent", "spawn"]),
+                Sub(&["agent", "start"]),
+                Sub(&["agent", "team"]),
+                Sub(&["agent", "wait"]),
+            ],
             Self::CliOperations | Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
                 &[]
             }

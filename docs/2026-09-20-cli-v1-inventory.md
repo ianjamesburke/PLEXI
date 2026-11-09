@@ -1,7 +1,7 @@
 # CLI v1 Tree-Shake Inventory
 
 **Status:** active
-**Evidence date:** 2026-09-20; reconciled to `origin/alpha` on 2026-09-22
+**Evidence date:** 2026-09-20; reconciled to `origin/alpha` on 2026-09-22 and 2026-11-09
 
 ## Current v1 tags (G-13 reconciliation)
 
@@ -15,6 +15,8 @@ same clap command tree and is checked by `just check-cli-docs`.
 |---|---|---|
 | `run`, `workspace`, `secret` | v1 | Workspace and secret basics. |
 | `agent report`, `agent status`, `agent hook` | v1 | Status hooks only; this does not promote the Assistant or agent mesh. |
+| `agent done`, `agent ask` | v1 (worker completion) | The worker contract injected into every spawned agent session, including GUI and palette spawns, tells the harness to run them. Gating them would strand those sessions. |
+| every other `agent` subcommand (`list`, `show`, `create`, `start`, `spawn`, `call`, `message`, `handoff`, `wait`, `result`, `next`, `flags`, `fleet`, `history`, `reopen`, `team`) | beta | `ReleaseFeature::AgentMesh` (`agent_mesh`); hidden from help and refused until the experiment is on. |
 | `context`, `pane`, `host`, `notify`, `note`, `notes`, `config`, `completions`, `demo`, `update`, `uninstall` | v1 | Terminal-host control and observation surface. `demo` refuses on platforms without a supported keymap. |
 | `app` local-runtime commands | v1 | Local/remote/pack install, list/info/prune/freeze, open, uninstall, render, check/validate/inspect, state, init/test/package, action/update, plus `--cli`, `--mcp`, `cli:`, and `mcp:` wrappers. |
 | `registry watch`, `descriptor probe`, `doctor`, `ai` diagnostics/setup | v1 | App-runtime and local CLI support surfaces; they are not the hosted Assistant product. |
@@ -23,7 +25,17 @@ same clap command tree and is checked by `just check-cli-docs`.
 | `app publish`, `app browse`, `app search`, and bare marketplace-ID `app install` | beta | `ReleaseFeature::Marketplace`; local paths, remotes, and packs remain v1. |
 | `account` and every account subcommand | beta | `ReleaseFeature::Marketplace`. |
 | `events mcp-config` | beta | `ReleaseFeature::McpClient`; stable never emits an MCP endpoint or token. |
+| `experiments`, `skill`, `cli`, `needs-you`, `permissions`, `lease`, `debug`, `app call`, `app tools`, `app trust` | public, untagged | Added after the 2026-09-22 reconciliation. Each is called by Plexi itself or by the shipped skill, so it stays public until the V1 sweep (stint 1182) decides core, core plugin or removal. Reasons are recorded per entry in `src/cli/v1_surface.txt`. |
 | `pane set-title`, `update apps` | removed | Former deceptive compatibility aliases; not part of the current command tree. |
+
+The table is enforced. `src/cli/v1_surface.txt` is the machine-readable
+allowlist of every command path visible with all experiments off, and the
+`every_visible_command_is_v1_or_owned_by_an_experiment` test in
+`src/cli/v1_surface.rs` fails when a visible path is neither listed there nor
+owned by an experiment in `ReleaseFeature::owned_paths`. A new public command
+must therefore be tagged v1 here and in the allowlist, or gated. The table
+lists `notes` as a v1 command, but no such command exists in the clap tree; the
+`note` entry is the real one.
 
 There are no current `dead` entries: the five historical dead/deceptive
 entries were either repaired or removed. This table deliberately keeps local

@@ -13,7 +13,7 @@ Workspace:
   run           Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
   workspace     Set up a .plexi/ workspace in your project folder
   secret        Store and retrieve secrets (API keys, passwords, tokens)
-  agent         Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
+  agent         Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
   context       Manage the active context (the folder and project scope tied to the current pane)
 
 Apps:
@@ -45,4 +45,4 @@ System:
   update        Update this channel's managed package, or restore its previous generation
   uninstall     Remove this channel's recorded package and launchers
 
-Get started: plexi ai onboard | Docs: https://plexiapp.com/docs
+Get started: plexi host start | Docs: https://plexiapp.com/docs

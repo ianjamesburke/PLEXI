@@ -520,11 +520,7 @@ mod tests {
         let agent = visible_subs(cmd.find_subcommand("agent").unwrap());
         assert_eq!(
             agent,
-            [
-                "team", "next", "fleet", "create", "flags", "list", "show", "call", "message", "handoff",
-                "start", "spawn", "done", "result", "wait", "ask", "report", "status", "history",
-                "reopen", "hook"
-            ],
+            ["done", "ask", "report", "status", "hook"],
             "{agent:?}"
         );
         let app = visible_subs(cmd.find_subcommand("app").unwrap());
@@ -641,6 +637,19 @@ mod tests {
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
+            (&["plexi", "agent", "list"], ReleaseFeature::AgentMesh),
+            (
+                &["plexi", "agent", "spawn", "x", "--task", "y"],
+                ReleaseFeature::AgentMesh,
+            ),
+            (
+                &["plexi", "agent", "fleet", "dismiss", "1"],
+                ReleaseFeature::AgentMesh,
+            ),
+            (
+                &["plexi", "agent", "team", "show", "x"],
+                ReleaseFeature::AgentMesh,
+            ),
         ];
         for (args, feature) in cases {
             assert_eq!(blocked(args, &[]), Some(*feature), "{args:?}");
@@ -653,6 +662,9 @@ mod tests {
         for args in [
             &["plexi", "agent", "report", "--state", "idle"][..],
             &["plexi", "agent", "status"],
+            &["plexi", "agent", "done", "--result", "{}"],
+            &["plexi", "agent", "ask", "q"],
+            &["plexi", "agent", "hook", "install"],
             &["plexi", "ai", "doctor"],
             &["plexi", "app", "open", "--cli", "htop"],
             &["plexi", "secret", "set", "A"],
