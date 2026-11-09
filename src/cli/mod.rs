@@ -610,6 +610,8 @@ mod pane_caller;
 mod queued_spawn;
 #[cfg(test)]
 mod skill_surface;
+#[cfg(test)]
+mod v1_surface;
 pub mod experiments;
 pub mod skill_install;
 pub mod trace;

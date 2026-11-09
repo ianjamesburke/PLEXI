@@ -27,6 +27,7 @@ generated lists and forms; Copy copies the displayed result.
 
 ## Coordinate workers
 
+<!-- experiment: agent_mesh -->
 Reuse an existing registry role when it fits. Inspect its settings before
 spawning. Spawn returns a pane id immediately; collect its result separately.
 
@@ -45,6 +46,8 @@ Inspect errors on exit 1. A timeout does not call for a replacement worker.
 
 `settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `app call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
 
+<!-- /experiment -->
+
 For an interactive agent without a registry role, use the host-confirmed
 launch and submit sequence:
 
@@ -58,6 +61,7 @@ prompt left its input line. Avoid sleeps, capture polling, and manual Enter.
 `pane state` reports both claimed and observed state; an idle agent has not
 necessarily completed its task. Use `--stale-after` to detect a stale claim.
 
+<!-- experiment: agent_mesh -->
 Print-mode workers ask their parent, wait for a mailbox reply in bounded
 slices, and finish with a validated result:
 
@@ -86,6 +90,8 @@ the current directory instead.
 plexi agent team show consult-experts
 plexi agent team run consult-experts --question "Which option is safest?"
 ```
+
+<!-- /experiment -->
 
 ## Inspect apps and request human decisions
 

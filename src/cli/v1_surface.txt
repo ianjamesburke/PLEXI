@@ -1,0 +1,196 @@
+# Public CLI allowlist: every command path visible with all experiments off.
+#
+# One explicit path per line, so a new child of any command is reported as drift.
+# Paths owned by an experiment (ReleaseFeature::owned_paths) are hidden when it is
+# off and never appear here. The test is
+# `every_visible_command_is_v1_or_owned_by_an_experiment` in v1_surface.rs.
+# Regenerate this list from the clap tree only when the inventory approves a path.
+
+# --- Approved v1 surface: docs/2026-09-20-cli-v1-inventory.md "Current v1 tags"
+agent
+agent hook
+agent hook install
+agent hook uninstall
+agent report
+agent status
+ai
+ai doctor
+app
+app action
+app check
+app freeze
+app info
+app init
+app inspect
+app install
+app list
+app open
+app package
+app prune
+app render
+app state
+app state get
+app state set
+app test
+app uninstall
+app update
+app validate
+completions
+config
+config check
+config edit
+config get
+config list
+config reload
+config reset
+config set
+context
+context close
+context current
+context describe
+context list
+context new
+context open
+context park
+context push
+context rename
+context set-root
+context sub
+context unpark
+context zoom
+context zoom-out
+demo
+doctor
+events
+events declare
+events emit
+events list
+events subscribe
+host
+host key
+host log
+host restart
+host screenshot
+host start
+host status
+host stop
+host workspace-rollback
+note
+note add
+note list
+note open
+note rm
+note show
+notify
+notify dismiss
+pane
+pane capture
+pane click
+pane close
+pane command
+pane drag
+pane drop
+pane events
+pane focus
+pane heartbeat
+pane hide
+pane info
+pane key
+pane layout
+pane list
+pane message
+pane message recv
+pane message send
+pane name
+pane new
+pane result
+pane result read
+pane result wait
+pane reveal
+pane self
+pane send
+pane slot
+pane slot delete
+pane slot list
+pane slot read
+pane slot wait
+pane slot write
+pane state
+pane status
+pane swap
+pane tree
+pane wait
+pane zoom
+registry
+registry watch
+run
+secret
+secret delete
+secret get
+secret list
+secret set
+uninstall
+update
+workspace
+workspace clean
+workspace init
+
+# --- Public although the inventory does not tag them v1. Each is called by Plexi
+# itself or by the shipped skill, so gating it would break that caller. The V1 sweep
+# (stint 1182) decides whether each is core, a core plugin or gone.
+# experiments: every experiment refusal tells the user to run `plexi experiments enable`
+experiments
+experiments disable
+experiments enable
+experiments list
+# skill: `skill install` writes the embedded skill, the skill's first workflow
+skill
+skill draft
+skill install
+# cli: `cli setup` installs the launcher; `doctor` tells users to run it
+cli
+cli setup
+# needs-you: permission and question flow; the phone web client shells out to it
+needs-you
+needs-you answer
+needs-you ask
+needs-you complete
+needs-you list
+needs-you reconcile
+needs-you resolve
+needs-you show
+# permissions: permission monitor management; used by the introspection surface and e2e flows
+permissions
+permissions allow
+permissions list
+permissions reset
+permissions revoke
+# lease: documented in the skill under "Inspect the host and manage capacity"
+lease
+lease acquire
+lease release
+# debug: documented in the skill; `debug session show` feeds `skill draft`
+debug
+debug session
+debug session list
+debug session show
+# app call: skill "Inspect apps and request human decisions" and the pi-plexi package
+app call
+# app tools: same callers as `app call`
+app tools
+# app trust: the scene runner pre-approves raw WASM apps with it
+app trust
+# agent done: worker contract injected into every spawned session, GUI and palette included
+agent done
+# agent ask: same worker contract as `agent done`
+agent ask
+# agent list: read-only discovery: scripts/v1-acceptance.sh V1-01 and the pi-plexi orient step run it on a default config
+agent list
+# agent show: pi-plexi role tools in GUI-spawned role panes run `agent show <role> --json`
+agent show
+# agent call: pi-plexi role tools in GUI-spawned role panes; GUI and palette spawns are not experiment gated
+agent call
+# agent message: same callers as `agent call`
+agent message
+# agent handoff: same callers as `agent call`
+agent handoff

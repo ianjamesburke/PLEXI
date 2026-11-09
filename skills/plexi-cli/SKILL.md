@@ -38,6 +38,7 @@ generated lists and forms; Copy copies the displayed result.
 
 ## Coordinate workers
 
+<!-- experiment: agent_mesh -->
 Reuse an existing registry role when it fits. Inspect its settings before
 spawning. Spawn returns a pane id immediately; collect its result separately.
 
@@ -56,6 +57,8 @@ Inspect errors on exit 1. A timeout does not call for a replacement worker.
 
 `settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `app call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
 
+<!-- /experiment -->
+
 For an interactive agent without a registry role, use the host-confirmed
 launch and submit sequence:
 
@@ -69,6 +72,7 @@ prompt left its input line. Avoid sleeps, capture polling, and manual Enter.
 `pane state` reports both claimed and observed state; an idle agent has not
 necessarily completed its task. Use `--stale-after` to detect a stale claim.
 
+<!-- experiment: agent_mesh -->
 Print-mode workers ask their parent, wait for a mailbox reply in bounded
 slices, and finish with a validated result:
 
@@ -97,6 +101,8 @@ the current directory instead.
 plexi agent team show consult-experts
 plexi agent team run consult-experts --question "Which option is safest?"
 ```
+
+<!-- /experiment -->
 
 ## Inspect apps and request human decisions
 
@@ -395,30 +401,58 @@ pane count (`--json` is supported).
 <!-- experiment: routines -->
 - `plexi routine disable`: Disable a routine without deleting it (sets `enabled = false`; it never fires until re-enabled)
 <!-- /experiment -->
-- `plexi agent`: Create, inspect, and spawn agent definitions (`AGENT.md` + `settings.toml`).
+- `plexi agent`: Report agent status and completion, and install status hooks
+<!-- experiment: agent_mesh -->
 - `plexi agent team`: Inspect or run a stored team of independent ranking agents.
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent team show`: Show the resolved v0 team, including roles, harnesses, options and grants
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent team run`: Run independent team members in one task and wait for RESULT.md
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent next`: Focus the next live agent needing attention (needs-you, blocked, done-unseen)
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent fleet`: Show tasks and their workers, ordered by attention, with blocking reasons
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent fleet dismiss`: Dismiss a failed, stalled, or completed agent run from the fleet view while keeping it in `agent history`
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent create`: Create a new agent definition (`AGENT.md` + `settings.toml`) in the workspace or global tier.
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent flags`: Show supported custom harness flags and safety rules for an agent or adapter
+<!-- /experiment -->
 - `plexi agent list`: List active agents from both workspace and global tiers
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
 - `plexi agent message`: Reply through a child agent's structured mailbox
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
+<!-- experiment: agent_mesh -->
 - `plexi agent start`: Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent spawn`: Spawn an agent from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
+<!-- /experiment -->
 - `plexi agent done`: Validate a worker's structured result against its schema, write completion slots, and exit cleanly
+<!-- experiment: agent_mesh -->
 - `plexi agent result`: Read a completed agent's persisted result (`RESULT.md` or `result.json` with `--json`)
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent wait`: Wait for one or more child agent panes to finish via `plexi agent done` and pull their results
+<!-- /experiment -->
 - `plexi agent ask`: Escalate a blocking question to the parent master agent (Tier 1 `Blocked` state)
 - `plexi agent report`: Report agent state for this pane to the host
 - `plexi agent status`: Show current agent state for all panes
+<!-- experiment: agent_mesh -->
 - `plexi agent history`: Show closed agent runs and sessions from `~/.plexi-<channel>/agent_history.jsonl`
+<!-- /experiment -->
+<!-- experiment: agent_mesh -->
 - `plexi agent reopen`: Reopen a closed agent run or session from `agent_history.jsonl` in its saved working directory
+<!-- /experiment -->
 - `plexi agent hook`: Install or uninstall agent hook integrations
 - `plexi agent hook install`: Install PLEXI agent-state hook integrations
 - `plexi agent hook uninstall`: Remove PLEXI agent-state hook integrations
