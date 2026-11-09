@@ -2034,10 +2034,13 @@ fn over(top: Color32, base: Color32) -> Color32 {
 fn cell_colors(theme: &TerminalTheme, cell: &cell::Cell) -> (Color32, Color32) {
     let mut fg = theme.get_color(cell.fg);
     let mut bg = theme.get_color(cell.bg);
+    // Faint is baked into an opaque color (70% fg over the cell background) so
+    // the color that is measured for contrast is exactly the color painted;
+    // an alpha-dimmed glyph would be composited after the floor was applied.
     // DIM_BOLD is the union of DIM and BOLD, not an independent flag.
     // Intersecting it treats ordinary bold text as faint.
     if cell.flags.contains(cell::Flags::DIM) {
-        fg = fg.linear_multiply(0.7);
+        fg = over(fg.linear_multiply(0.7), bg);
     }
     if cell.flags.contains(cell::Flags::INVERSE) {
         std::mem::swap(&mut fg, &mut bg);
@@ -2078,7 +2081,11 @@ mod tests {
                 flags,
                 ..Default::default()
             };
-            let expected = theme.get_color(cell.fg).linear_multiply(0.7);
+            let expected = over(
+                theme.get_color(cell.fg).linear_multiply(0.7),
+                theme.get_color(cell.bg),
+            );
+            assert_eq!(expected.a(), 255);
             assert_eq!(cell_colors(&theme, &cell).0, expected);
             cell.flags.insert(cell::Flags::INVERSE);
             assert_eq!(cell_colors(&theme, &cell).1, expected);
@@ -2132,17 +2139,43 @@ mod tests {
     }
 
     #[test]
-    fn faint_text_is_dimmed_then_held_to_the_floor() {
-        let theme = themed(3.0);
-        let bg = theme.get_color(Color::Named(NamedColor::Background));
-        let cell = cell::Cell {
-            flags: cell::Flags::DIM,
-            fg: Color::Named(NamedColor::Black),
-            ..Default::default()
-        };
-        let (fg, cell_bg) = cell_colors(&theme, &cell);
-        let out = glyph_color(&theme, cell.flags, 'a', fg, cell_bg).unwrap();
-        assert!(contrast::contrast_ratio(out, bg) >= 3.0);
+    fn painted_faint_text_meets_the_floor_on_light_and_dark_backgrounds() {
+        use crate::theme::ColorPalette;
+        for background in ["#f4ecdf", "#ffffff", "#d7d6e4", "#1a1b26"] {
+            let theme = TerminalTheme::new(Box::new(ColorPalette {
+                background: background.into(),
+                ..ColorPalette::default()
+            }))
+            .with_minimum_contrast(3.0);
+            for (r, g, b) in [(153, 153, 153), (177, 185, 249), (200, 200, 200)]
+            {
+                for flags in [cell::Flags::DIM, cell::Flags::DIM_BOLD] {
+                    let cell =
+                        cell::Cell {
+                            flags,
+                            fg: Color::Spec(
+                                alacritty_terminal::vte::ansi::Rgb { r, g, b },
+                            ),
+                            ..Default::default()
+                        };
+                    let (fg, cell_bg) = cell_colors(&theme, &cell);
+                    let out = glyph_color(&theme, cell.flags, 'a', fg, cell_bg)
+                        .unwrap();
+                    // What the GPU paints: the glyph color composited over the cell.
+                    let painted = over(out, cell_bg);
+                    assert_eq!(
+                        out.a(),
+                        255,
+                        "faint glyph must be an opaque color"
+                    );
+                    assert!(
+                        contrast::contrast_ratio(painted, cell_bg) >= 3.0,
+                        "({r},{g},{b}) faint on {background}: painted {painted:?} ratio {}",
+                        contrast::contrast_ratio(painted, cell_bg)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
