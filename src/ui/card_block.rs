@@ -578,13 +578,13 @@ mod tests {
         for name in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
             let colors = Colors::from_config(&theme::preset_colors(name).unwrap());
             for state in [CardState::NeedsYou, CardState::Failed, CardState::Done, CardState::Idle] {
-                let fill = state.fill(&colors, colors.tile_bg);
+                let fill = colors.terminal_bg.blend(state.fill(&colors, colors.tile_bg));
                 for selected in [false, true] {
                     let title = if state == CardState::Idle { colors.text_dim.gamma_multiply(0.75) } else { colors.text_primary };
                     let detail = if state == CardState::Idle { colors.text_dim.gamma_multiply(0.7) } else { colors.text_dim };
                     let badge = if state == CardState::NeedsYou { colors.zoom_needs } else { colors.text_dim };
                     for (role, fg, target) in [("title", title, 4.5), ("subtitle", colors.text_dim, 4.5), ("detail", detail, 4.5), ("badge", badge, 3.0)] {
-                        let ratio = theme::contrast(theme::luminance(fg), theme::luminance(fill));
+                        let ratio = theme::contrast(theme::luminance(fill.blend(fg)), theme::luminance(fill));
                         if ratio < target { failures.push(format!("{name} {state:?} selected={selected} {role}: {ratio:.2} < {target}")); }
                     }
                 }
