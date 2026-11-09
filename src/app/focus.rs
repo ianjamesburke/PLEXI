@@ -429,6 +429,79 @@ impl PlexiApp {
         crate::app::focus_journal::write_checkpoint(&self.focus_journal_path, &entry);
     }
 
+    /// Per-pane presence a Python guest should currently believe: visible when
+    /// its window is the active one, the host window is not hidden, the tree
+    /// atlas is closed, the tile is on screen (active tabs, not hidden) and no
+    /// other tile is zoomed over it; focused when it is also the active
+    /// context's focused pane and the OS window has focus. Modal overlays do
+    /// not change focus here.
+    fn python_pane_presence(
+        &self,
+        window_index: usize,
+        pane_id: u64,
+        window_hidden: bool,
+        os_focused: bool,
+        active_focused: Option<u64>,
+    ) -> crate::host::wasm_python::PanePresence {
+        let hidden = crate::host::wasm_python::PanePresence::default();
+        let window = &self.windows[window_index];
+        let Some(tile) = window.tree.tiles.find_pane(&pane_id) else {
+            return hidden;
+        };
+        let on_screen = window_index == self.active_window
+            && !window_hidden
+            && self.zoom.level == crate::app::zoom::ZoomLevel::Columns
+            && window
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| !pane.is_hidden())
+            && window.tree.active_tiles().contains(&tile)
+            && window.zoomed_pane.is_none_or(|zoomed| zoomed == tile);
+        crate::host::wasm_python::PanePresence {
+            visible: on_screen,
+            focused: on_screen && os_focused && active_focused == Some(pane_id),
+        }
+    }
+
+    /// Deliver focus and visibility transitions to every Python app pane.
+    /// Called from `App::logic` so it also runs while the window is occluded.
+    pub(super) fn sync_python_pane_presence(&mut self, ctx: &egui::Context) {
+        let window_hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
+        let os_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        let active_focused = self.active_focused_pane_id();
+        let mut targets = Vec::new();
+        for (window_index, window) in self.windows.iter().enumerate() {
+            for (&pane_id, pane) in &window.panes {
+                if matches!(
+                    pane.as_app().map(|app| &app.runtime),
+                    Some(crate::host::pane::AppRuntime::Python(_))
+                ) {
+                    targets.push((
+                        window_index,
+                        pane_id,
+                        self.python_pane_presence(
+                            window_index,
+                            pane_id,
+                            window_hidden,
+                            os_focused,
+                            active_focused,
+                        ),
+                    ));
+                }
+            }
+        }
+        for (window_index, pane_id, presence) in targets {
+            if let Some(crate::host::pane::AppRuntime::Python(python)) = self.windows[window_index]
+                .panes
+                .get_mut(&pane_id)
+                .and_then(|pane| pane.as_app_mut())
+                .map(|app| &mut app.runtime)
+            {
+                python.sync_presence(pane_id, presence);
+            }
+        }
+    }
+
     pub(crate) fn current_focus_target(&self) -> Option<(u64, egui_tiles::TileId)> {
         self.windows
             .get(self.active_window)

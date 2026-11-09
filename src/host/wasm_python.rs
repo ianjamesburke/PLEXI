@@ -1149,7 +1149,16 @@ impl HeadlessPythonSession {
     }
 }
 
+/// What the host last told a Python guest about its own pane. A new guest
+/// starts unshown and unfocused, so a pane opened in view is told both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PanePresence {
+    pub visible: bool,
+    pub focused: bool,
+}
+
 pub struct LivePythonPane {
+    presence: PanePresence,
     config: PythonLaunchConfig,
     runtime: WasmPythonRuntime,
     app_id: String,
@@ -2533,6 +2542,7 @@ impl LivePythonPane {
             }
         });
         Ok(Self {
+            presence: PanePresence::default(),
             runtime,
             config,
             app_id,
@@ -4013,6 +4023,48 @@ impl LivePythonPane {
         }
     }
 
+    /// Tell the guest how its pane's visibility and focus changed since the
+    /// last call. Events go out in transition order (`pane_shown`,
+    /// `focus_gained`, `focus_lost`, `pane_hidden`) so a focused pane always
+    /// loses focus before it is hidden. Held back until the guest has been sent
+    /// `init`; the baseline stays unshown/unfocused until then, so the first
+    /// delivery reports the full current state. Runs from `App::logic`.
+    pub(crate) fn sync_presence(&mut self, pane_id: u64, target: PanePresence) {
+        if !self.initialized || self.error.is_some() || self.runtime.is_finished() {
+            return;
+        }
+        let from = self.presence;
+        let target = PanePresence {
+            visible: target.visible,
+            focused: target.visible && target.focused,
+        };
+        let mut wire: Vec<&'static str> = Vec::new();
+        if !from.visible && target.visible {
+            wire.push("pane_shown");
+        }
+        if !from.focused && target.focused {
+            wire.push("focus_gained");
+        }
+        if from.focused && !target.focused {
+            wire.push("focus_lost");
+        }
+        if from.visible && !target.visible {
+            wire.push("pane_hidden");
+        }
+        for kind in wire {
+            if let Err(error) = self.runtime.send(&json!({ "type": kind })) {
+                log::error!(
+                    "app::{}: pane {pane_id} {kind} send failed: {error}",
+                    self.app_id
+                );
+                self.error = Some(error.to_string());
+                return;
+            }
+            log::info!("app::{}: pane {pane_id} delivered {kind}", self.app_id);
+        }
+        self.presence = target;
+    }
+
     /// Every declared scope's state file, resolved against the *current*
     /// context root. The watcher registration in `pane_ops::create` re-syncs
     /// against this each drain pass, so `plexi context set-root` follows.
@@ -4601,6 +4653,7 @@ impl LivePythonPane {
         self.tree_seq += 1;
         self.pending_trees.clear();
         self.initialized = false;
+        self.presence = PanePresence::default();
         self.ready = false;
         self.frame_scheduler.reset(std::time::Instant::now());
         self.error = None;
@@ -5672,8 +5725,6 @@ pub fn encode_input_event(event: &InputEvent) -> Result<Value, WasmPythonError> 
         InputEvent::Resize(size) => {
             json!({ "type": "Resize", "width": size.width, "height": size.height })
         }
-        InputEvent::FocusGained => json!({ "type": "FocusGained" }),
-        InputEvent::FocusLost => json!({ "type": "FocusLost" }),
         InputEvent::TimerFired(id) => json!({ "type": "TimerFired", "id": id }),
         InputEvent::HttpResponse(response) => json!({
             "type": "HttpResponse",

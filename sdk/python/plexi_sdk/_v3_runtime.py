@@ -277,6 +277,14 @@ class V3AppRuntime:
             self._handle_ui_action(ev)
         elif t == "focus_changed":
             self._handle_focus_changed(ev)
+        elif t == "focus_gained":
+            self._dispatch(events.FocusGained())
+        elif t == "focus_lost":
+            self._dispatch(events.FocusLost())
+        elif t == "pane_shown":
+            self._dispatch(events.PaneShown())
+        elif t == "pane_hidden":
+            self._dispatch(events.PaneHidden())
         elif t == "capability_granted":
             self._dispatch(events.CapabilityGranted(name=ev.get("name", "")))
         elif t == "capability_denied":

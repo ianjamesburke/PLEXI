@@ -318,11 +318,19 @@ class Resize:
 
 @dataclass
 class FocusGained:
-    pass                # → input-event::focus-gained
+    pass                # wire "focus_gained" (CPython runtime only; no WIT mapping)
 
 @dataclass
 class FocusLost:
-    pass                # → input-event::focus-lost
+    pass                # wire "focus_lost"
+
+@dataclass
+class PaneShown:
+    pass                # wire "pane_shown"
+
+@dataclass
+class PaneHidden:
+    pass                # wire "pane_hidden"
 
 @dataclass
 class TimerFired:

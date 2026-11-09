@@ -16634,3 +16634,173 @@ fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
         "navigating back to row 0 must keep selection visible at the top"
     );
 }
+
+// -- Stint 1180: per-pane focus and visibility events for Python apps -------
+
+/// Write a CPython-in-WASM app that appends every focus/visibility event it
+/// receives to its title (`log:shown,gained,...`), so the host-side title is a
+/// complete, ordered record of what the guest was told.
+fn write_presence_probe(dir: &std::path::Path, app_id: &str) {
+    std::fs::write(
+        dir.join("manifest.toml"),
+        format!(
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"{app_id}\"\n\
+             type = \"app\"\n\
+             name = \"Presence Probe\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"stint 1180 HostHarness fixture\"\n"
+        ),
+    )
+    .expect("write manifest.toml");
+    std::fs::write(
+        dir.join("main.py"),
+        "from plexi_sdk.effects import SetTitle\n\
+         from plexi_sdk.events import FocusGained, FocusLost, PaneHidden, PaneShown\n\
+         from plexi_sdk.ui import Column\n\n\
+         NAMES = {FocusGained: 'gained', FocusLost: 'lost', PaneShown: 'shown', PaneHidden: 'hidden'}\n\
+         LOG = []\n\n\
+         def init(size, args):\n\
+         \x20   return [SetTitle('log:')]\n\n\
+         def update(event):\n\
+         \x20   name = NAMES.get(type(event))\n\
+         \x20   if name is None:\n\
+         \x20       return []\n\
+         \x20   LOG.append(name)\n\
+         \x20   return [SetTitle('log:' + ','.join(LOG))]\n\n\
+         def view():\n\
+         \x20   return Column([])\n",
+    )
+    .expect("write main.py");
+}
+
+fn presence_log(h: &HostHarness, pane_id: PaneId) -> Option<String> {
+    h.app
+        .windows
+        .iter()
+        .find_map(|window| window.panes.get(&pane_id))
+        .and_then(Pane::as_app)
+        .and_then(|pane| match &pane.runtime {
+            AppRuntime::Python(p) => p.display_name().strip_prefix("log:").map(str::to_string),
+            _ => None,
+        })
+}
+
+/// Pump frames (visible, or logic-only when `hidden`) until the pane's event
+/// log equals `expected`, then keep pumping to prove nothing else arrives.
+fn expect_presence_log(h: &mut HostHarness, pane_id: PaneId, expected: &str, hidden: bool) {
+    let pump = |h: &mut HostHarness| {
+        if hidden {
+            h.hidden_frame();
+        } else {
+            h.run_frames(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let start = std::time::Instant::now();
+    while presence_log(h, pane_id).as_deref() != Some(expected) {
+        pump(h);
+        assert!(
+            start.elapsed()
+                < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
+            "pane {pane_id} event log never reached {expected:?} (last: {:?})",
+            presence_log(h, pane_id)
+        );
+    }
+    for _ in 0..10 {
+        pump(h);
+    }
+    assert_eq!(
+        presence_log(h, pane_id).as_deref(),
+        Some(expected),
+        "pane {pane_id} received an extra event after reaching {expected:?}"
+    );
+}
+
+/// A live Python app pane is told, in order and exactly once per transition,
+/// when it is shown, hidden, focused and unfocused, across pane focus moves,
+/// a hidden (logic-only) window, a context switch and pane zoom. A second app
+/// pane acts as the unrelated control and only ever sees its own transitions.
+#[test]
+fn python_app_pane_receives_focus_and_visibility_events_in_order() {
+    let dir_a = tempfile::tempdir().expect("app a dir");
+    let dir_b = tempfile::tempdir().expect("app b dir");
+    write_presence_probe(dir_a.path(), "presence-probe-a");
+    write_presence_probe(dir_b.path(), "presence-probe-b");
+    let mut h = HostHarness::new();
+
+    h.app
+        .launch_app_by_path_with_layout(&dir_a.path().to_string_lossy(), None, None, &[])
+        .expect("launch probe a");
+    let pane_a = *h.state().open_panes.last().expect("pane a appears");
+    expect_presence_log(&mut h, pane_a, "shown,gained", false);
+
+    // B opens and takes focus: A loses it, B starts from scratch.
+    let before = h.state().open_panes;
+    h.app
+        .launch_app_by_path_with_layout(&dir_b.path().to_string_lossy(), None, None, &[])
+        .expect("launch probe b");
+    let pane_b = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("pane b appears");
+    expect_presence_log(&mut h, pane_b, "shown,gained", false);
+    expect_presence_log(&mut h, pane_a, "shown,gained,lost", false);
+
+    // Focus moves back to A: B only loses focus, it stays visible.
+    h.focus_pane(pane_a);
+    expect_presence_log(&mut h, pane_a, "shown,gained,lost,gained", false);
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost", false);
+
+    // Fully hidden host window (logic-only passes, `App::ui` never runs): the
+    // focused pane loses focus before it is hidden, the other is just hidden.
+    h.run_hidden_frames(2);
+    expect_presence_log(&mut h, pane_a, "shown,gained,lost,gained,lost,hidden", true);
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden", true);
+
+    // Window returns: both are shown, only the focused pane regains focus.
+    expect_presence_log(&mut h, pane_a, "shown,gained,lost,gained,lost,hidden,shown,gained", false);
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown", false);
+
+    // Context switch away and back.
+    let tmp = tempfile::tempdir().expect("secondary context root");
+    push_secondary_context(&mut h, 1180_001, tmp.path());
+    h.app.switch_workspace(1);
+    expect_presence_log(
+        &mut h,
+        pane_a,
+        "shown,gained,lost,gained,lost,hidden,shown,gained,lost,hidden",
+        false,
+    );
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden", false);
+    h.app.switch_workspace(0);
+    expect_presence_log(
+        &mut h,
+        pane_a,
+        "shown,gained,lost,gained,lost,hidden,shown,gained,lost,hidden,shown,gained",
+        false,
+    );
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden,shown", false);
+
+    // Zoom A: B is covered and hidden, A is untouched.
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile a");
+    h.app.windows[0].zoom_to(tile_a);
+    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden,shown,hidden", false);
+    expect_presence_log(
+        &mut h,
+        pane_a,
+        "shown,gained,lost,gained,lost,hidden,shown,gained,lost,hidden,shown,gained",
+        false,
+    );
+    h.app.windows[0].clear_zoom();
+    expect_presence_log(
+        &mut h,
+        pane_b,
+        "shown,gained,lost,hidden,shown,hidden,shown,hidden,shown",
+        false,
+    );
+}
