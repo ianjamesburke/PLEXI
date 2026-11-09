@@ -426,12 +426,8 @@ pane count (`--json` is supported).
 <!-- experiment: agent_mesh -->
 - `plexi agent flags`: Show supported custom harness flags and safety rules for an agent or adapter
 <!-- /experiment -->
-<!-- experiment: agent_mesh -->
 - `plexi agent list`: List active agents from both workspace and global tiers
-<!-- /experiment -->
-<!-- experiment: agent_mesh -->
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
-<!-- /experiment -->
 <!-- experiment: agent_mesh -->
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
 <!-- /experiment -->

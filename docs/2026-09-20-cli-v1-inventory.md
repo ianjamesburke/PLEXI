@@ -16,7 +16,8 @@ same clap command tree and is checked by `just check-cli-docs`.
 | `run`, `workspace`, `secret` | v1 | Workspace and secret basics. |
 | `agent report`, `agent status`, `agent hook` | v1 | Status hooks only; this does not promote the Assistant or agent mesh. |
 | `agent done`, `agent ask` | v1 (worker completion) | The worker contract injected into every spawned agent session, including GUI and palette spawns, tells the harness to run them. Gating them would strand those sessions. |
-| every other `agent` subcommand (`list`, `show`, `create`, `start`, `spawn`, `call`, `message`, `handoff`, `wait`, `result`, `next`, `flags`, `fleet`, `history`, `reopen`, `team`) | beta | `ReleaseFeature::AgentMesh` (`agent_mesh`); hidden from help and refused until the experiment is on. |
+| `agent list`, `agent show` | v1 (read-only discovery) | `scripts/v1-acceptance.sh` V1-01 and the pi-plexi package (`agent list --json` orient step, `agent show <role> --json`) call them on a default config. |
+| every other `agent` subcommand (`create`, `start`, `spawn`, `call`, `message`, `handoff`, `wait`, `result`, `next`, `flags`, `fleet`, `history`, `reopen`, `team`) | beta | `ReleaseFeature::AgentMesh` (`agent_mesh`); hidden from help and refused until the experiment is on. |
 | `context`, `pane`, `host`, `notify`, `note`, `notes`, `config`, `completions`, `demo`, `update`, `uninstall` | v1 | Terminal-host control and observation surface. `demo` refuses on platforms without a supported keymap. |
 | `app` local-runtime commands | v1 | Local/remote/pack install, list/info/prune/freeze, open, uninstall, render, check/validate/inspect, state, init/test/package, action/update, plus `--cli`, `--mcp`, `cli:`, and `mcp:` wrappers. |
 | `registry watch`, `descriptor probe`, `doctor`, `ai` diagnostics/setup | v1 | App-runtime and local CLI support surfaces; they are not the hosted Assistant product. |

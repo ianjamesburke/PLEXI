@@ -520,7 +520,7 @@ mod tests {
         let agent = visible_subs(cmd.find_subcommand("agent").unwrap());
         assert_eq!(
             agent,
-            ["done", "ask", "report", "status", "hook"],
+            ["list", "show", "done", "ask", "report", "status", "hook"],
             "{agent:?}"
         );
         let app = visible_subs(cmd.find_subcommand("app").unwrap());
@@ -637,7 +637,7 @@ mod tests {
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
-            (&["plexi", "agent", "list"], ReleaseFeature::AgentMesh),
+            (&["plexi", "agent", "start", "x"], ReleaseFeature::AgentMesh),
             (
                 &["plexi", "agent", "spawn", "x", "--task", "y"],
                 ReleaseFeature::AgentMesh,
@@ -662,6 +662,8 @@ mod tests {
         for args in [
             &["plexi", "agent", "report", "--state", "idle"][..],
             &["plexi", "agent", "status"],
+            &["plexi", "agent", "list", "--json"],
+            &["plexi", "agent", "show", "x"],
             &["plexi", "agent", "done", "--result", "{}"],
             &["plexi", "agent", "ask", "q"],
             &["plexi", "agent", "hook", "install"],

@@ -69,5 +69,7 @@ debug *            # documented in the skill; `debug session show` feeds `skill 
 app call           # skill "Inspect apps and request human decisions" and the pi-plexi package
 app tools          # same callers as `app call`
 app trust          # the scene runner pre-approves raw WASM apps with it
+agent list         # read-only discovery: scripts/v1-acceptance.sh V1-01 and the pi-plexi orient step run it on a default config
+agent show         # read-only discovery: the pi-plexi extension runs `agent show <role> --json`
 agent done         # the worker contract injected into every spawned session, GUI and palette included
 agent ask          # same worker contract as `agent done`
