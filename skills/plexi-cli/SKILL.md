@@ -428,15 +428,9 @@ pane count (`--json` is supported).
 <!-- /experiment -->
 - `plexi agent list`: List active agents from both workspace and global tiers
 - `plexi agent show`: Show the resolved definition for `<name>`, its directory path, and its exact `spawn` command
-<!-- experiment: agent_mesh -->
 - `plexi agent call`: Call an agent role and return its validated completion or blocking question as JSON
-<!-- /experiment -->
-<!-- experiment: agent_mesh -->
 - `plexi agent message`: Reply through a child agent's structured mailbox
-<!-- /experiment -->
-<!-- experiment: agent_mesh -->
 - `plexi agent handoff`: Transfer the current task to a permitted successor role
-<!-- /experiment -->
 <!-- experiment: agent_mesh -->
 - `plexi agent start`: Start an interactive agent session in a new pane from the agent registry (`<workspace>/.plexi/agents/<name>/` or global)
 <!-- /experiment -->

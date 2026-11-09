@@ -1,9 +1,15 @@
 //! Coverage rule for the public CLI surface.
 //!
-//! Every command path visible with all experiments off must be listed in
-//! `v1_surface.txt` (the approved v1 inventory made machine readable) or it is
-//! drift. A path owned by an experiment is hidden when the experiment is off,
-//! so it never needs an entry. See `docs/2026-09-20-cli-v1-inventory.md`.
+//! Every command path visible with all experiments off must be listed, one
+//! explicit path per line, in `v1_surface.txt` (the approved v1 inventory made
+//! machine readable) or it is drift. A path owned by an experiment is hidden
+//! when the experiment is off, so it never needs an entry. There are no
+//! wildcards: a new child of any command trips the test. See
+//! `docs/2026-09-20-cli-v1-inventory.md`.
+//!
+//! Limits: this covers subcommand paths only. Hidden commands (for example
+//! `descriptor` and the `_complete-*` helpers) and experiment-owned `Arg` gates
+//! (`secret set --folder`, `app open --mcp`) are not checked here.
 
 use super::args::Cli;
 use crate::release::{GatePath, ReleaseFeature};
@@ -12,35 +18,22 @@ use std::collections::BTreeSet;
 
 const ALLOWLIST: &str = include_str!("v1_surface.txt");
 
-/// A parsed allowlist: exact paths and `path *` subtrees.
-struct Allowlist {
-    exact: BTreeSet<String>,
-    subtrees: BTreeSet<String>,
-}
+/// A parsed allowlist of exact command paths.
+struct Allowlist(BTreeSet<String>);
 
 impl Allowlist {
     fn parse(text: &str) -> Self {
-        let mut exact = BTreeSet::new();
-        let mut subtrees = BTreeSet::new();
-        for line in text.lines() {
-            let entry = line.split('#').next().unwrap_or("").trim();
-            if entry.is_empty() {
-                continue;
-            }
-            match entry.strip_suffix(" *") {
-                Some(path) => subtrees.insert(path.to_string()),
-                None => exact.insert(entry.to_string()),
-            };
-        }
-        Self { exact, subtrees }
+        Self(
+            text.lines()
+                .map(|line| line.split('#').next().unwrap_or("").trim())
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
     }
 
     fn allows(&self, path: &str) -> bool {
-        self.exact.contains(path)
-            || self
-                .subtrees
-                .iter()
-                .any(|root| path == root || path.starts_with(&format!("{root} ")))
+        self.0.contains(path)
     }
 }
 
@@ -90,9 +83,8 @@ fn every_allowlist_entry_is_a_visible_default_command() {
     let list = Allowlist::parse(ALLOWLIST);
     let visible = visible(|_| false);
     let stale: Vec<_> = list
-        .exact
+        .0
         .iter()
-        .chain(&list.subtrees)
         .filter(|entry| !visible.contains(*entry))
         .collect();
     assert!(

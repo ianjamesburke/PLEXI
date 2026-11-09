@@ -142,13 +142,10 @@ impl ReleaseFeature {
             Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["app", "open"], "mcp")],
             Self::Routines => &[Sub(&["routine"])],
             Self::AgentMesh => &[
-                Sub(&["agent", "call"]),
                 Sub(&["agent", "create"]),
                 Sub(&["agent", "flags"]),
                 Sub(&["agent", "fleet"]),
-                Sub(&["agent", "handoff"]),
                 Sub(&["agent", "history"]),
-                Sub(&["agent", "message"]),
                 Sub(&["agent", "next"]),
                 Sub(&["agent", "reopen"]),
                 Sub(&["agent", "result"]),
