@@ -451,7 +451,10 @@ impl PlexiApp {
         let on_screen = window_index == self.active_window
             && !window_hidden
             && self.zoom.level == crate::app::zoom::ZoomLevel::Columns
-            && window.panes.get(&pane_id).is_some_and(|pane| !pane.is_hidden())
+            && window
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| !pane.is_hidden())
             && window.tree.active_tiles().contains(&tile)
             && window.zoomed_pane.is_none_or(|zoomed| zoomed == tile);
         crate::host::wasm_python::PanePresence {
