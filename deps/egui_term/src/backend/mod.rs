@@ -1,3 +1,4 @@
+mod paste;
 pub mod settings;
 pub mod tap;
 
@@ -70,6 +71,9 @@ fn terminal_config() -> term::Config {
 #[derive(Debug, Clone)]
 pub enum BackendCommand {
     Write(Vec<u8>),
+    /// Clipboard paste. Encoded against the live terminal mode (bracketed
+    /// paste, mode 2004) and written to the PTY as one contiguous frame.
+    Paste(String),
     Scroll(i32),
     ScrollToTop,
     ScrollToBottom,
@@ -457,6 +461,17 @@ impl TerminalBackend {
         match cmd {
             BackendCommand::Write(input) => {
                 self.write(input);
+                term.scroll_display(Scroll::Bottom);
+            },
+            BackendCommand::Paste(text) => {
+                let bracketed = term.mode().contains(TermMode::BRACKETED_PASTE);
+                let frame = paste::encode_paste(&text, bracketed);
+                log::info!(
+                    "terminal paste: bracketed={bracketed} input_bytes={} written_bytes={}",
+                    text.len(),
+                    frame.len()
+                );
+                self.write(frame);
                 term.scroll_display(Scroll::Bottom);
             },
             BackendCommand::Scroll(delta) => {
@@ -2219,3 +2234,189 @@ mod tests {
     }
 }
 
+/// Stint 1184: real-PTY paste framing. The child puts the tty in raw mode,
+/// optionally enables bracketed paste (`CSI ? 2004 h`), and logs every
+/// `read(2)` as a hex line so framing is judged from what the program saw.
+#[cfg(all(test, unix))]
+mod paste_pty_tests {
+    use super::settings::BackendSettings;
+    use super::{BackendCommand, TerminalBackend};
+    use alacritty_terminal::term::TermMode;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    const CHILD: &str = r#"
+import os, sys, tty, time, select
+out, mode = sys.argv[1], sys.argv[2]
+tty.setraw(0)
+if mode == "on":
+    sys.stdout.write("\x1b[?2004h"); sys.stdout.flush()
+open(out + ".ready", "w").close()
+log = open(out + ".reads", "w")
+last = time.time()
+while time.time() - last < 1.2:
+    r, _, _ = select.select([0], [], [], 0.2)
+    if r:
+        b = os.read(0, 65536)
+        log.write(b.hex() + "\n"); log.flush()
+        last = time.time()
+log.close()
+open(out + ".done", "w").close()
+"#;
+
+    fn wait_for(
+        deadline_secs: u64,
+        what: &str,
+        mut ready: impl FnMut() -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    struct Outcome {
+        reads: Vec<Vec<u8>>,
+        tap: Vec<u8>,
+    }
+
+    impl Outcome {
+        fn stream(&self) -> Vec<u8> {
+            self.reads.concat()
+        }
+    }
+
+    /// Spawn the child, paste `text` once, return what the child read and
+    /// what the input tap recorded.
+    fn paste_through_pty(tag: &str, bracketed: bool, text: &str) -> Outcome {
+        let dir: PathBuf = std::env::temp_dir()
+            .join(format!("egui_term_paste_{}_{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("run").to_string_lossy().to_string();
+        let ctx = egui::Context::default();
+        let (tx, _rx) = mpsc::channel();
+        let settings = BackendSettings {
+            shell: "/usr/bin/python3".to_string(),
+            args: vec![
+                "-c".into(),
+                CHILD.into(),
+                out.clone(),
+                if bracketed { "on" } else { "off" }.into(),
+            ],
+            ..Default::default()
+        };
+        let mut backend =
+            TerminalBackend::new(1, ctx, tx, settings).expect("spawn backend");
+        wait_for(10, "child ready", || {
+            Path::new(&format!("{out}.ready")).exists()
+        });
+        if bracketed {
+            // The host's own terminal model must have parsed `?2004h`.
+            wait_for(10, "TermMode::BRACKETED_PASTE", || {
+                backend
+                    .term
+                    .lock()
+                    .mode()
+                    .contains(TermMode::BRACKETED_PASTE)
+            });
+        } else {
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(!backend
+                .term
+                .lock()
+                .mode()
+                .contains(TermMode::BRACKETED_PASTE));
+        }
+        backend.enable_input_tap();
+        backend.process_command(BackendCommand::Paste(text.to_string()));
+        let tap = backend.take_input_tap();
+        wait_for(15, "child done", || {
+            Path::new(&format!("{out}.done")).exists()
+        });
+        let reads = std::fs::read_to_string(format!("{out}.reads"))
+            .expect("reads log")
+            .lines()
+            .map(unhex)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        Outcome { reads, tap }
+    }
+
+    fn sample(n: usize) -> String {
+        (0..n)
+            .map(|i| {
+                if i % 40 == 39 {
+                    '\n'
+                } else {
+                    (b'a' + (i % 26) as u8) as char
+                }
+            })
+            .collect()
+    }
+
+    const OPEN: &[u8] = b"\x1b[200~";
+    const CLOSE: &[u8] = b"\x1b[201~";
+
+    #[test]
+    fn bracketed_paste_frames_payload_at_every_size() {
+        for n in [100usize, 1000, 4000, 16000, 64000] {
+            let text = sample(n);
+            let o = paste_through_pty(&format!("sz{n}"), true, &text);
+            assert!(
+                o.reads.first().is_some_and(|r| r.starts_with(OPEN)),
+                "size {n}: first read must start with ESC[200~, got {:?}",
+                o.reads.first().map(|r| &r[..r.len().min(12)])
+            );
+            let stream = o.stream();
+            assert!(
+                stream.ends_with(CLOSE),
+                "size {n}: stream must end with ESC[201~"
+            );
+            let body = &stream[OPEN.len()..stream.len() - CLOSE.len()];
+            assert_eq!(
+                body,
+                text.as_bytes(),
+                "size {n}: payload must be byte-identical"
+            );
+            assert_eq!(
+                o.tap, stream,
+                "size {n}: input tap must record the framed bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn bracketed_paste_strips_esc_and_etx_so_payload_cannot_close_frame() {
+        let text = "before\x1b[201~echo pwned\n\x03after\x1b";
+        let o = paste_through_pty("inject", true, text);
+        let stream = o.stream();
+        assert!(stream.starts_with(OPEN));
+        assert!(stream.ends_with(CLOSE));
+        let body = &stream[OPEN.len()..stream.len() - CLOSE.len()];
+        assert_eq!(body, b"before[201~echo pwned\nafter");
+        assert!(
+            !body.contains(&0x1b) && !body.contains(&0x03),
+            "payload must contain no ESC or ETX"
+        );
+        let closes =
+            stream.windows(CLOSE.len()).filter(|w| *w == CLOSE).count();
+        assert_eq!(closes, 1, "exactly one end marker, at the very end");
+    }
+
+    #[test]
+    fn plain_mode_paste_converts_newlines_to_cr_without_markers() {
+        let text = "one\ntwo\r\nthree\x1b\x03\nfour";
+        let o = paste_through_pty("plain", false, text);
+        assert_eq!(o.stream(), b"one\rtwo\rthree\rfour");
+        assert_eq!(o.tap, o.stream());
+    }
+}

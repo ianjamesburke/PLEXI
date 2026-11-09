@@ -4803,6 +4803,119 @@ mod tests {
         assert_eq!(spill, 0, "inverted clock glyph spilled into the next cell");
     }
 
+    /// Stint 1184: `egui::Event::Paste` into a pane whose program enabled
+    /// bracketed paste (mode 2004) must reach the program as one framed paste,
+    /// not raw bytes. 16 KB spans many 1022-byte PTY reads, the regime where
+    /// unframed pastes were lost.
+    #[test]
+    #[ignore = "requires-pty"]
+    #[cfg(target_os = "macos")]
+    fn terminal_paste_is_bracketed_when_program_enabled_2004() {
+        const CHILD: &str = r#"
+import os, sys, tty, time, select
+out = sys.argv[1]
+tty.setraw(0)
+sys.stdout.write("\x1b[?2004hPASTE_READY\r\n"); sys.stdout.flush()
+log = open(out, "wb")
+last = time.time()
+while time.time() - last < 1.5:
+    r, _, _ = select.select([0], [], [], 0.2)
+    if r:
+        log.write(os.read(0, 65536)); log.flush()
+        last = time.time()
+log.close()
+open(out + ".done", "w").close()
+"#;
+        let dir = std::env::temp_dir().join(format!("plexi_paste_2004_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let out = dir.join("reads.bin");
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        h.step();
+        let id = add_focused_pane(&mut h);
+        let out_arg = out.to_string_lossy().to_string();
+        h.with_app_mut(|app| {
+            let terminal = crate::host::pane::TerminalPane::new(
+                id,
+                app.ctx.clone(),
+                app.pty_event_tx.clone(),
+                egui_term::BackendSettings {
+                    shell: "/usr/bin/python3".into(),
+                    args: vec!["-c".into(), CHILD.into(), out_arg],
+                    working_directory: Some(std::env::temp_dir()),
+                    ..Default::default()
+                },
+                18.0,
+            )
+            .expect("start paste fixture");
+            terminal.backend.enable_input_tap();
+            app.windows[app.active_window]
+                .panes
+                .insert(id, Pane::Terminal(Box::new(terminal)));
+        });
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(2);
+            let ready = h.with_app_mut(|app| {
+                app.windows[app.active_window]
+                    .panes
+                    .get_mut(&id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap()
+                    .backend
+                    .capture_lines(50)
+                    .iter()
+                    .any(|line| line.contains("PASTE_READY"))
+            });
+            if ready {
+                break;
+            }
+            assert!(Instant::now() < deadline, "paste fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text: String = (0..16_000)
+            .map(|i| {
+                if i % 40 == 39 {
+                    '\n'
+                } else {
+                    (b'a' + (i % 26) as u8) as char
+                }
+            })
+            .collect();
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::Paste(text.clone()));
+        h.step();
+        let tap = h.with_app_mut(|app| {
+            app.windows[app.active_window]
+                .panes
+                .get_mut(&id)
+                .unwrap()
+                .as_terminal_mut()
+                .unwrap()
+                .backend
+                .take_input_tap()
+        });
+        let mut expected = b"\x1b[200~".to_vec();
+        expected.extend_from_slice(text.as_bytes());
+        expected.extend_from_slice(b"\x1b[201~");
+        assert_eq!(tap, expected, "input tap must record one framed paste");
+        let done = out.with_extension("bin.done");
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(15));
+        while !done.exists() {
+            h.run_steps(2);
+            assert!(Instant::now() < deadline, "paste fixture never finished");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let received = std::fs::read(&out).expect("fixture read log");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            received, expected,
+            "program must receive the framed paste intact"
+        );
+    }
+
     /// Exercise egui input ownership and the real terminal widget/PTY writer.
     /// Scene keys cannot express separate press, repeat and release events.
     #[test]
