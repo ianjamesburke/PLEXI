@@ -6550,6 +6550,57 @@ open(out + ".done", "w").close()
     /// browser, a terminal printing every ANSI color plus dim text, and agent
     /// panes in several states. Review evidence for the theme family (stint 1186).
     #[test]
+    fn screenshot_notes_delete_toast_themes() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        let root = h.workspace_root().to_path_buf();
+        let removed = root.join("meeting.md");
+        let kept = root.join("plans.md");
+        std::fs::write(&removed, "Meeting notes\nReview the release checklist.").unwrap();
+        std::fs::write(&kept, "Plans\nFinish the review.").unwrap();
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.notes_picker_entries = vec![
+                crate::notes::NotePickerEntry {
+                    path: removed.clone(),
+                    title: "Meeting notes".into(),
+                    preview: "Review the release checklist.".into(),
+                    search_text: "meeting".into(),
+                    tier_label: None,
+                },
+                crate::notes::NotePickerEntry {
+                    path: kept.clone(),
+                    title: "Plans".into(),
+                    preview: "Finish the review.".into(),
+                    search_text: "plans".into(),
+                    tier_label: None,
+                },
+            ];
+            app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+            assert!(app.notes_picker_delete_entry(0));
+            // Keep this explicit fixture while the unrelated background index settles.
+            app.notes_picker_shown_paths.clear();
+        });
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(
+                    &app.ctx,
+                    &app.colors,
+                    !crate::ui::theme::is_light_preset(theme),
+                );
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn screenshot_plexi_theme_family() {
         use crate::protocol::AgentState;
         let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);

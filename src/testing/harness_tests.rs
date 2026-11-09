@@ -16312,14 +16312,11 @@ mod tiled_navigation_frame_tests {
 fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
     use crate::app::input_owner::{InputOwner, OverlaySurface};
     use crate::app::FocusKind;
-    use crate::overlays::notes_picker::PendingDelete;
 
-    for (query, pending_cut, key) in [
-        ("", None, egui::Key::O),
-        ("search", None, egui::Key::O),
-        ("search", Some(false), egui::Key::O),
-        ("search", Some(true), egui::Key::O),
-        ("search", Some(true), egui::Key::F8),
+    for (query, key) in [
+        ("", egui::Key::O),
+        ("search", egui::Key::O),
+        ("search", egui::Key::F8),
     ] {
         let mut h = HostHarness::new();
         h.app.key_bindings.open_notes_picker = (egui::Modifiers::COMMAND, key);
@@ -16352,17 +16349,12 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
             ..Default::default()
         });
         h.app.notes_picker_query = query.into();
-        h.app.notes_picker_pending_delete = pending_cut.map(|cut| PendingDelete {
-            path: path.clone(),
-            cut,
-        });
         h.press_key(key, egui::Modifiers::COMMAND);
         assert!(
             !h.app.focus_stack.contains(&FocusKind::NotesPicker),
-            "second shortcut must close picker for query={query:?}, pending={pending_cut:?}"
+            "second shortcut must close picker for query={query:?}"
         );
         assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
-        assert!(h.app.notes_picker_pending_delete.is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "original note");
         assert!(h.app.claimed_host_key_releases.contains(&key));
         h.frame(egui::RawInput {
@@ -16462,80 +16454,226 @@ fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
     assert_eq!(h.app.notes_picker_entries[0].path, path);
 }
 
+fn notes_delete_fixture(h: &mut HostHarness, dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("note.md");
+    std::fs::write(&path, b"original\nbytes\n").unwrap();
+    h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+        title: "note".into(),
+        preview: "original".into(),
+        search_text: "note".into(),
+        path: path.clone(),
+        tier_label: None,
+    }];
+    h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+    h.run_frames(2);
+    path
+}
+
 #[test]
-fn notes_picker_confirmed_cut_closes_and_restores_pane_input_owner() {
-    use crate::app::input_owner::{InputOwner, OverlaySurface};
+fn notes_picker_cut_copies_then_trashes_and_undo_restores() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
     h.focus_pane(pane);
-    h.run_frames(1);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert_eq!(
+        h.app.notes_picker_last_copied.as_deref(),
+        Some("original\nbytes\n")
+    );
+    assert!(!path.exists());
+    assert!(h.app.notes_picker_entries.is_empty());
+    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+}
 
-    let ctx = h.app.ctx.clone();
-
-    let note_path = std::env::temp_dir().join(format!(
-        "plexi-harness-cut-note-{}.md",
-        std::process::id()
-    ));
-    std::fs::write(&note_path, "cut harness note text").expect("seed note");
+#[test]
+fn notes_picker_dirty_editor_refuses_delete_and_cut() {
+    let mut h = HostHarness::new();
+    let dir = tempfile::tempdir().unwrap();
+    let pane = open_gate_note(&mut h, dir.path(), "saved note");
+    h.text_editor_mut(pane).test_set_unsaved("unsaved draft");
+    let path = dir.path().join("gate-note.md");
     h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
-        title: "cut note".to_string(),
-        preview: "cut harness note text".to_string(),
-        search_text: "cut note".to_string(),
-        path: note_path.clone(),
+        title: "gate note".into(),
+        preview: "saved note".into(),
+        search_text: "gate".into(),
+        path: path.clone(),
         tier_label: None,
     }];
-    h.app.notes_picker_selected = 0;
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
-    h.run_frames(1);
+    h.run_frames(2);
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    assert!(path.exists());
+    assert!(h.app.windows[0].panes.contains_key(&pane));
+    assert!(h
+        .app
+        .notes_picker_status
+        .as_deref()
+        .unwrap()
+        .contains("unsaved edits"));
+    h.press_key(egui::Key::X, egui::Modifiers::COMMAND);
+    assert!(path.exists());
+    assert!(h.app.notes_picker_last_copied.is_none());
+    assert!(h
+        .app
+        .notes_picker_status
+        .as_deref()
+        .unwrap()
+        .contains("unsaved edits"));
+}
 
-    // Press Cmd+X
-    let mut input = egui::RawInput::default();
-    input.events.push(egui::Event::Key {
-        key: egui::Key::X,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::COMMAND,
+#[test]
+fn notes_picker_trash_failure_preserves_note_and_shows_error() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    let mut fake = crate::overlays::notes_picker::FakeNotesTrash::new();
+    fake.fail = true;
+    h.app.notes_trash = Box::new(fake);
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+    assert_eq!(h.app.notes_picker_entries[0].path, path);
+    assert!(h
+        .app
+        .notes_picker_status
+        .as_deref()
+        .unwrap()
+        .contains("injected trash failure"));
+}
+
+#[test]
+fn notes_picker_undo_never_overwrites_a_replacement_file() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    std::fs::write(&path, b"replacement").unwrap();
+    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+    assert!(h.app.notes_picker_undo.is_some());
+    assert!(h
+        .app
+        .notes_picker_status
+        .as_deref()
+        .unwrap()
+        .contains("undo"));
+    std::fs::remove_file(&path).unwrap();
+    h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+}
+
+#[test]
+fn notes_picker_undo_in_another_context_does_not_insert_foreign_row() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let first = tempfile::tempdir().unwrap();
+    h.app.set_context_root(first.path().to_path_buf(), None);
+    let path = notes_delete_fixture(&mut h, first.path());
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    let second = tempfile::tempdir().unwrap();
+    h.app.set_context_root(second.path().to_path_buf(), None);
+    h.app.notes_picker_entries.clear();
+    h.app.notes_picker_undo_delete();
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+    assert!(h.app.notes_picker_entries.iter().all(|entry| entry.path != path));
+}
+
+#[test]
+fn notes_picker_toast_undo_restores_original_bytes_and_position() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    let other = dir.path().join("other.md");
+    std::fs::write(&other, b"other").unwrap();
+    h.app.notes_picker_entries.insert(
+        0,
+        crate::notes::NotePickerEntry {
+            title: "other".into(),
+            preview: "other".into(),
+            search_text: "other".into(),
+            path: other.clone(),
+            tier_label: None,
+        },
+    );
+    h.app.notes_picker_selected = 1;
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    h.app.notes_picker_shown_paths.clear();
+    h.run_frames(2);
+    let rect: egui::Rect = h
+        .ctx
+        .data(|data| data.get_temp(egui::Id::new("notes_delete_undo_rect")))
+        .expect("toast undo rect");
+    let pos = rect.center();
+    for pressed in [true, false] {
+        h.frame(egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
+    assert_eq!(h.app.notes_picker_entries[0].path, other);
+    assert_eq!(h.app.notes_picker_entries[1].path, path);
+}
+
+#[test]
+fn notes_picker_delete_close_then_plain_v_does_not_paste() {
+    let mut h = HostHarness::new();
+    let term = h.add_focused_terminal();
+    let dir = tempfile::tempdir().unwrap();
+    let path = notes_delete_fixture(&mut h, dir.path());
+    h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
+    assert!(!path.exists());
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(h
+        .app
+        .claimed_host_key_releases
+        .contains(&egui::Key::Backspace));
+    h.frame(egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        ..Default::default()
     });
-    h.frame(input);
-
-    assert!(
-        h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
-        "picker must stay open awaiting confirm"
-    );
-    assert_eq!(
-        h.app.input_owner(&ctx),
-        InputOwner::Overlay(OverlaySurface::Layer(crate::app::FocusKind::NotesPicker))
-    );
-    assert!(
-        h.last_platform_output
-            .commands
-            .contains(&egui::OutputCommand::CopyText("cut harness note text".to_string())),
-        "clipboard command receives text at cut time"
-    );
-    assert!(note_path.exists());
-
-    // Press Enter to confirm
-    let mut input = egui::RawInput::default();
-    input.events.push(egui::Event::Key {
-        key: egui::Key::Enter,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers: egui::Modifiers::NONE,
+    assert!(!h
+        .app
+        .claimed_host_key_releases
+        .contains(&egui::Key::Backspace));
+    h.run_frames(2);
+    h.terminal_backend(term).enable_input_tap();
+    h.frame(egui::RawInput {
+        events: vec![
+            egui::Event::Key {
+                key: egui::Key::V,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("v".into()),
+        ],
+        ..Default::default()
     });
-    h.frame(input);
-
-    assert!(
-        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
-        "picker must close after confirmed cut"
-    );
-    assert_eq!(
-        h.app.input_owner(&ctx),
-        InputOwner::Pane(pane),
-        "focus must return to originating pane"
-    );
-    assert!(!note_path.exists(), "note must be removed from disk");
+    assert_eq!(h.terminal_backend(term).take_input_tap(), b"v");
 }
 
 #[test]
