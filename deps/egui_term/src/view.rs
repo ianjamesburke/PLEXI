@@ -21,6 +21,7 @@ use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
 use crate::bindings::{BindingAction, BindingsLayout, InputKind};
+use crate::contrast;
 use crate::font::TerminalFont;
 use crate::graphics;
 use crate::theme::TerminalTheme;
@@ -764,6 +765,18 @@ impl<'a> TerminalView<'a> {
                 bg = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
             }
 
+            // Final glyph color: hidden text is never drawn, and everything
+            // else is lifted to the minimum contrast against what is actually
+            // painted behind it (selection blended over the global background).
+            let glyph = glyph_color(
+                &self.theme,
+                flags,
+                indexed.c,
+                fg,
+                over(bg, global_bg),
+            );
+            let fg = glyph.unwrap_or(fg);
+
             if global_bg != bg {
                 shapes.push(Shape::Rect(RectShape::filled(
                     cell_rect,
@@ -856,7 +869,7 @@ impl<'a> TerminalView<'a> {
             }
 
             // Draw text content
-            if indexed.c != ' ' && indexed.c != '\t' {
+            if indexed.c != ' ' && indexed.c != '\t' && glyph.is_some() {
                 let glyph_fg = if content.grid.cursor.point == indexed.point
                     && self.has_focus
                     && content.cursor_visible
@@ -866,7 +879,15 @@ impl<'a> TerminalView<'a> {
                     )
                     && state.cursor_visible
                 {
-                    bg
+                    cursor_glyph_color(
+                        &self.theme,
+                        flags,
+                        indexed.c,
+                        bg,
+                        global_bg,
+                        self.theme.get_color(content.cursor.fg),
+                    )
+                    .unwrap_or(bg)
                 } else {
                     fg
                 };
@@ -1971,13 +1992,69 @@ fn grid_size(size: Vec2, padding: Vec2) -> Vec2 {
     )
 }
 
+/// Final color for a cell's glyph, or `None` when it must not be drawn.
+/// Hidden (SGR 8) text is skipped outright, so no color adjustment can make it
+/// visible. Faint (SGR 2) text is dimmed in `cell_colors` and then held to the
+/// same floor as everything else: faint is a weight cue, not permission to be
+/// unreadable. Emoji and image glyphs are exempt.
+fn glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    fg: Color32,
+    bg: Color32,
+) -> Option<Color32> {
+    if flags.contains(cell::Flags::HIDDEN) {
+        return None;
+    }
+    if contrast::is_exempt_glyph(c) {
+        return Some(fg);
+    }
+    Some(contrast::ensure_min_contrast(
+        fg,
+        bg,
+        theme.minimum_contrast(),
+    ))
+}
+
+/// Glyph color under an inverted block cursor: the cell background drawn over
+/// the cursor block. A selected cell's background is a translucent tint, so it
+/// is composited over the global background first; the floor then measures the
+/// opaque color that is painted, against the cursor block behind it.
+fn cursor_glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    cell_bg: Color32,
+    global_bg: Color32,
+    cursor: Color32,
+) -> Option<Color32> {
+    glyph_color(theme, flags, c, over(cell_bg, global_bg), cursor)
+}
+
+/// Composite `top` over an opaque `base`.
+fn over(top: Color32, base: Color32) -> Color32 {
+    let inv = 255 - u16::from(top.a());
+    let mix = |t: u8, b: u8| {
+        (u16::from(t) + (u16::from(b) * inv + 127) / 255).min(255) as u8
+    };
+    Color32::from_rgb(
+        mix(top.r(), base.r()),
+        mix(top.g(), base.g()),
+        mix(top.b(), base.b()),
+    )
+}
+
 fn cell_colors(theme: &TerminalTheme, cell: &cell::Cell) -> (Color32, Color32) {
     let mut fg = theme.get_color(cell.fg);
     let mut bg = theme.get_color(cell.bg);
+    // Faint is baked into an opaque color (70% fg over the cell background) so
+    // the color that is measured for contrast is exactly the color painted;
+    // an alpha-dimmed glyph would be composited after the floor was applied.
     // DIM_BOLD is the union of DIM and BOLD, not an independent flag.
     // Intersecting it treats ordinary bold text as faint.
     if cell.flags.contains(cell::Flags::DIM) {
-        fg = fg.linear_multiply(0.7);
+        fg = over(fg.linear_multiply(0.7), bg);
     }
     if cell.flags.contains(cell::Flags::INVERSE) {
         std::mem::swap(&mut fg, &mut bg);
@@ -2018,11 +2095,137 @@ mod tests {
                 flags,
                 ..Default::default()
             };
-            let expected = theme.get_color(cell.fg).linear_multiply(0.7);
+            let expected = over(
+                theme.get_color(cell.fg).linear_multiply(0.7),
+                theme.get_color(cell.bg),
+            );
+            assert_eq!(expected.a(), 255);
             assert_eq!(cell_colors(&theme, &cell).0, expected);
             cell.flags.insert(cell::Flags::INVERSE);
             assert_eq!(cell_colors(&theme, &cell).1, expected);
         }
+    }
+
+    fn themed(minimum: f32) -> TerminalTheme {
+        TerminalTheme::default().with_minimum_contrast(minimum)
+    }
+
+    #[test]
+    fn glyph_color_lifts_low_contrast_text_and_one_turns_it_off() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let lifted =
+            glyph_color(&themed(3.0), cell::Flags::empty(), 'a', fg, bg)
+                .unwrap();
+        assert!(contrast::contrast_ratio(lifted, bg) >= 3.0);
+        assert_eq!(
+            glyph_color(&themed(1.0), cell::Flags::empty(), 'a', fg, bg),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn hidden_text_is_never_drawn_at_any_minimum() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        for minimum in [1.0, 3.0, 21.0] {
+            assert_eq!(
+                glyph_color(&themed(minimum), cell::Flags::HIDDEN, 'a', fg, bg),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_keep_their_color() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        assert_eq!(
+            glyph_color(
+                &themed(3.0),
+                cell::Flags::empty(),
+                '\u{1F600}',
+                fg,
+                bg
+            ),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn painted_faint_text_meets_the_floor_on_light_and_dark_backgrounds() {
+        use crate::theme::ColorPalette;
+        for background in ["#f4ecdf", "#ffffff", "#d7d6e4", "#1a1b26"] {
+            let theme = TerminalTheme::new(Box::new(ColorPalette {
+                background: background.into(),
+                ..ColorPalette::default()
+            }))
+            .with_minimum_contrast(3.0);
+            for (r, g, b) in [(153, 153, 153), (177, 185, 249), (200, 200, 200)]
+            {
+                for flags in [cell::Flags::DIM, cell::Flags::DIM_BOLD] {
+                    let cell =
+                        cell::Cell {
+                            flags,
+                            fg: Color::Spec(
+                                alacritty_terminal::vte::ansi::Rgb { r, g, b },
+                            ),
+                            ..Default::default()
+                        };
+                    let (fg, cell_bg) = cell_colors(&theme, &cell);
+                    let out = glyph_color(&theme, cell.flags, 'a', fg, cell_bg)
+                        .unwrap();
+                    // What the GPU paints: the glyph color composited over the cell.
+                    let painted = over(out, cell_bg);
+                    assert_eq!(
+                        out.a(),
+                        255,
+                        "faint glyph must be an opaque color"
+                    );
+                    assert!(
+                        contrast::contrast_ratio(painted, cell_bg) >= 3.0,
+                        "({r},{g},{b}) faint on {background}: painted {painted:?} ratio {}",
+                        contrast::contrast_ratio(painted, cell_bg)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inverted_cursor_glyph_on_a_selected_cell_is_opaque_and_meets_the_floor()
+    {
+        let theme = themed(3.0);
+        let global_bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let selection = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let cursor = Color32::from_rgb(0xc8, 0xc8, 0xd8);
+        let out = cursor_glyph_color(
+            &theme,
+            cell::Flags::empty(),
+            'a',
+            selection,
+            global_bg,
+            cursor,
+        )
+        .unwrap();
+        assert_eq!(out.a(), 255, "glyph must be an opaque color");
+        assert!(
+            contrast::contrast_ratio(out, cursor) >= 3.0,
+            "{out:?} on cursor {cursor:?}: ratio {}",
+            contrast::contrast_ratio(out, cursor)
+        );
+    }
+
+    #[test]
+    fn over_composites_translucent_selection_onto_the_base() {
+        let base = Color32::from_rgb(200, 200, 200);
+        assert_eq!(over(base, Color32::BLACK), base);
+        let sel = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let blended = over(sel, base);
+        assert!(
+            blended.b() > blended.r(),
+            "selection tint must show: {blended:?}"
+        );
     }
 
     #[test]

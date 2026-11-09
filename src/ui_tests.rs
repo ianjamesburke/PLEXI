@@ -2094,6 +2094,54 @@ mod tests {
         }
     }
 
+    // Terminal minimum contrast (stint 1188): dark-theme 24-bit colors printed
+    // by a program, shown on Dawn and Day (stint 1186) with
+    // the default minimum and with the adjustment off.
+    #[test]
+    fn screenshot_terminal_minimum_contrast() {
+        const FIXTURE: &str = "printf '\\033[38;2;153;153;153mgrey 153 comment text, dark-theme dim\\033[0m\\n'; \
+printf '\\033[38;2;119;119;119mgrey 119 secondary text\\033[0m\\n'; \
+printf '\\033[38;2;177;185;249minline_code() pale blue\\033[0m\\n'; \
+printf '\\033[38;2;230;219;116mpale yellow string\\033[0m  \\033[38;2;166;226;46mlime green keyword\\033[0m\\n'; \
+printf '\\033[38;2;255;121;198mpink function\\033[0m  \\033[38;2;139;233;253mcyan type\\033[0m\\n'; \
+printf '\\033[2m\\033[38;2;200;200;200mfaint SGR2 grey\\033[0m  \\033[2m\\033[38;2;177;185;249mfaint pale blue\\033[0m  \\033[7mreverse video\\033[0m\\n'; \
+printf 'hidden:[\\033[8msecret\\033[0m] must show blank\\n'; \
+printf 'ANSI: \\033[31mred\\033[32m green\\033[33m yellow\\033[34m blue\\033[35m magenta\\033[36m cyan\\033[0m\\n'; \
+printf 'FIXTURE-DONE\\n'; sleep 300";
+        for (name, theme_toml) in [("dawn", "preset = \"plexi-dawn\"\n"), ("day", "preset = \"plexi-day\"\n")] {
+            for (label, terminal_toml) in [("default", ""), ("off", "[terminal]\nminimum_contrast = 1.0\n")] {
+                let mut h = PlexiUiHarness::new_sized_ppp(900.0, 520.0, 1.0);
+                h.step();
+                std::fs::write(
+                    crate::config::config_path(),
+                    format!("pane_gap = 0.0\n{terminal_toml}[theme]\n{theme_toml}"),
+                )
+                .unwrap();
+                h.with_app_mut(|app| app.reload_config());
+                let expected = if label == "off" { 1.0 } else { 3.0 };
+                h.with_app(|app| assert_eq!(app.theme.minimum_contrast(), expected, "reload must apply the setting live"));
+                let pane = h.with_app_mut(|app| {
+                    app.spawn_agent_worker_pane("fixture", "pi", FIXTURE, "Contrast", None, false, None, None, None, None, false, None).unwrap().0
+                });
+                let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(20));
+                loop {
+                    h.run_steps(2);
+                    let ready = h.with_app_mut(|app| {
+                        let (win, _) = app.find_pane_in_any_window(pane).unwrap();
+                        app.windows[win].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap()
+                            .backend.capture_lines(40).iter().any(|l| l.contains("FIXTURE-DONE"))
+                    });
+                    if ready { break; }
+                    assert!(Instant::now() < deadline, "contrast fixture timed out");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                h.focus_pane(pane).unwrap();
+                h.run_steps(3);
+                h.save_screenshot(&evidence_png!(&format!("_{name}_{label}"))).unwrap();
+            }
+        }
+    }
+
     // Agent lineage and pinned-parent input ownership cannot be seeded by scenes.
     #[test]
     fn screenshot_child_lineage_and_focus_outline() {
@@ -6471,7 +6519,7 @@ open(out + ".done", "w").close()
                     let mut cfg = crate::ui::theme::preset_colors(theme).unwrap();
                     cfg.state_preset = Some((*preset).into());
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                    app.theme = crate::ui::theme::terminal_theme(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                     app.config.attention = Some(AttentionConfig { style: Some(AttentionStyle::Subtle), ..Default::default() });
                     crate::ui::theme::setup_style(&app.ctx, &app.colors, theme == "plexi-night");
                 });
@@ -6489,7 +6537,7 @@ open(out + ".done", "w").close()
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors("plexi-night").unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                 app.config.attention = Some(AttentionConfig { style:Some(style),intensity:Some(intensity),..Default::default() });
                 crate::ui::theme::setup_style(&app.ctx,&app.colors,true);
             });
@@ -6536,7 +6584,7 @@ open(out + ".done", "w").close()
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                 crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
             });
             h.run_steps(5);
@@ -6842,7 +6890,7 @@ open(out + ".done", "w").close()
             let cfg = crate::ui::theme::preset_colors("catppuccin-latte")
                 .expect("catppuccin latte preset must exist");
             app.colors = crate::ui::theme::Colors::from_config(&cfg);
-            app.theme = crate::ui::theme::terminal_theme(&cfg);
+            app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
             crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
             app.show_command_palette = true;
             app.sync_command_palette_focus();

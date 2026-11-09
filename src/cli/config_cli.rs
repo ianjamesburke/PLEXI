@@ -150,6 +150,12 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
         "float",
         "Opacity for unfocused panes when ghost enabled (0–1, default 0.75)",
     ),
+    // terminal.*
+    (
+        "terminal.minimum_contrast",
+        "float",
+        "Minimum text contrast ratio 1.0–21.0; lifts low-contrast app colors, 1.0 = off (default 3.0)",
+    ),
     // log.*
     ("log.level", "string", "Log level: error, warn, info, debug"),
     (
@@ -844,6 +850,26 @@ fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_set_rejects_out_of_range_terminal_minimum_contrast() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for bad in ["0.5", "22", "-3"] {
+            assert_eq!(
+                config_set_at_path(&[format!("terminal.minimum_contrast={bad}")], &path),
+                1,
+                "{bad} must be rejected"
+            );
+            assert!(!path.exists(), "nothing may be written for {bad}");
+        }
+        assert_eq!(
+            config_set_at_path(&["terminal.minimum_contrast=1.0".to_string()], &path),
+            0
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("minimum_contrast = 1"), "{text}");
+    }
 
     #[test]
     fn config_set_marketplace_urls_keeps_default_config_parseable() {

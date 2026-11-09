@@ -109,6 +109,14 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
 | `ghost` | bool | — | — |
 | `ghost_opacity` | float | 0.75 | Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.75. Setting this implies ghost = true unless `ghost = false` is explicit. |
 
+### Terminal (`[terminal]`)
+
+`minimum_contrast` keeps text readable on every theme. Each text cell's foreground is checked against its background and, when the WCAG contrast ratio is below the minimum, moved toward black or white by the smallest amount that reaches it. Hidden text stays hidden, and emoji and images are untouched. Applies live on config reload.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `minimum_contrast` | float | 3.0 | Minimum WCAG contrast ratio between each text cell's foreground and its background, 1.0 to 21.0. Colors programs choose for themselves are moved toward black or white until they reach it. 1.0 turns the adjustment off. Default 3.0. Applies live on config reload. |
+
 ### Log (`[log]`)
 
 `level` accepts `error`, `warn`, `info`, or `debug`. Applies live on config save — no restart required.
@@ -335,6 +343,12 @@ preset = "plexi-dusk"
 crt           = false
 ghost         = true
 ghost_opacity = 0.75
+
+[terminal]
+# Lowest allowed contrast ratio (1.0-21.0) between text and its cell background.
+# Colors a program picks for itself are moved toward black or white until they
+# reach it. 1.0 turns it off. 3.0 is the WCAG floor for readable text.
+minimum_contrast = 3.0
 
 [notifications]
 # enabled = true

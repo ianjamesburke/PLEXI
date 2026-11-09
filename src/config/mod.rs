@@ -112,6 +112,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "theme",
     "attention",
     "effects",
+    "terminal",
     "log",
     "notifications",
     "ai",
@@ -192,6 +193,7 @@ const KNOWN_THEME: &[&str] = &[
     "bright_white",
     "bright_foreground",
 ];
+const KNOWN_TERMINAL: &[&str] = &["minimum_contrast"];
 const KNOWN_EFFECTS: &[&str] = &["crt", "ghost", "ghost_opacity"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_CLOUD: &[&str] = &["retain_local_history"];
@@ -524,6 +526,9 @@ fn key_diagnostics(table: &toml::Table, path: &Path, path_str: &str) -> Vec<Conf
     }
     if let Some(toml::Value::Table(t)) = table.get("effects") {
         check_unknown_keys(t, "effects", KNOWN_EFFECTS, &path_str, &mut diags);
+    }
+    if let Some(toml::Value::Table(t)) = table.get("terminal") {
+        check_unknown_keys(t, "terminal", KNOWN_TERMINAL, &path_str, &mut diags);
     }
     if let Some(toml::Value::Table(t)) = table.get("log") {
         check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
@@ -936,6 +941,7 @@ pub struct PlexiConfig {
     pub theme: Option<ThemeConfig>,
     pub attention: Option<AttentionConfig>,
     pub effects: Option<EffectsConfig>,
+    pub terminal: Option<TerminalConfig>,
     pub log: Option<LogConfig>,
     pub notifications: Option<NotificationsConfig>,
     pub ai: Option<AiConfig>,
@@ -1301,6 +1307,52 @@ pub struct EffectsConfig {
     /// Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.75.
     /// Setting this implies ghost = true unless `ghost = false` is explicit.
     pub ghost_opacity: Option<f32>,
+}
+
+/// Default minimum glyph/background contrast ratio. 3.0 is the WCAG floor for
+/// large text, which Ghostty's `minimum-contrast` documents as the floor for
+/// readable terminal text.
+pub const DEFAULT_TERMINAL_MINIMUM_CONTRAST: f32 = 3.0;
+
+#[derive(Deserialize, Default, Clone)]
+pub struct TerminalConfig {
+    /// Minimum WCAG contrast ratio between each text cell's foreground and its
+    /// background, 1.0 to 21.0. Colors programs choose for themselves are moved
+    /// toward black or white until they reach it. 1.0 turns the adjustment off.
+    /// Default 3.0. Applies live on config reload.
+    #[serde(default, deserialize_with = "terminal_minimum_contrast")]
+    pub minimum_contrast: Option<f32>,
+}
+
+fn terminal_minimum_contrast<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<f32>, D::Error> {
+    let value = Option::<f32>::deserialize(d)?;
+    let (lo, hi) = (egui_term::MIN_CONTRAST_OFF, egui_term::MIN_CONTRAST_MAX);
+    if value.is_some_and(|v| !v.is_finite() || !(lo..=hi).contains(&v)) {
+        return Err(serde::de::Error::custom(format!(
+            "terminal.minimum_contrast must be between {lo} and {hi}"
+        )));
+    }
+    Ok(value)
+}
+
+impl TerminalConfig {
+    fn overlay(&mut self, other: Self) {
+        if other.minimum_contrast.is_some() {
+            self.minimum_contrast = other.minimum_contrast;
+        }
+    }
+}
+
+impl PlexiConfig {
+    /// Resolved terminal minimum contrast ratio (1.0 means off).
+    pub fn terminal_minimum_contrast(&self) -> f32 {
+        self.terminal
+            .as_ref()
+            .and_then(|t| t.minimum_contrast)
+            .unwrap_or(DEFAULT_TERMINAL_MINIMUM_CONTRAST)
+    }
 }
 
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2414,6 +2466,11 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.effects = Some(incoming),
             _ => {}
         }
+        match (self.terminal.as_mut(), other.terminal) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.terminal = Some(incoming),
+            _ => {}
+        }
         match (self.log.as_mut(), other.log) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.log = Some(incoming),
@@ -3109,6 +3166,43 @@ mod tests {
         let diags = validate_from_path(&path);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].to_string().contains("unknown key `beta`"));
+    }
+
+    #[test]
+    fn terminal_minimum_contrast_defaults_to_three_and_overlays() {
+        let mut cfg = PlexiConfig::default();
+        assert_eq!(cfg.terminal_minimum_contrast(), 3.0);
+        cfg.overlay(toml::from_str("[terminal]\nminimum_contrast = 4.5\n").unwrap());
+        assert_eq!(cfg.terminal_minimum_contrast(), 4.5);
+        cfg.overlay(toml::from_str("[terminal]\nminimum_contrast = 1.0\n").unwrap());
+        assert_eq!(cfg.terminal_minimum_contrast(), 1.0);
+    }
+
+    #[test]
+    fn terminal_minimum_contrast_out_of_range_is_reported_and_ignored() {
+        for bad in ["0.5", "21.5", "-1.0", "nan", "\"high\""] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, format!("[terminal]\nminimum_contrast = {bad}\n")).unwrap();
+            let diags = validate_from_path(&path);
+            assert!(
+                diags.iter().any(|d| matches!(d, ConfigDiagnostic::InvalidValue { key, .. } if key == "terminal.minimum_contrast")),
+                "{bad}: expected InvalidValue, got {diags:?}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for ok in ["1.0", "3.0", "21.0"] {
+            fs::write(&path, format!("[terminal]\nminimum_contrast = {ok}\n")).unwrap();
+            assert!(validate_from_path(&path).is_empty(), "{ok} must validate");
+        }
+        fs::write(&path, "[terminal]\nminimum_contrast = 0.5\n").unwrap();
+        let (cfg, _) = parse_config_lenient(&fs::read_to_string(&path).unwrap(), &path);
+        assert_eq!(
+            cfg.terminal_minimum_contrast(),
+            3.0,
+            "bad value falls back to the default"
+        );
     }
 
     #[test]

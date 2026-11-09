@@ -1192,7 +1192,9 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     ctx.set_style_of(egui::Theme::Light, style);
 }
 
-pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
+/// Terminal palette from the theme config. `minimum_contrast` is the resolved
+/// `terminal.minimum_contrast` (1.0 = off).
+pub fn terminal_theme(cfg: &ThemeConfig, minimum_contrast: f32) -> TerminalTheme {
     let fg = cfg.foreground.as_deref().unwrap_or("#e8e6ed");
     let bg = cfg.background.as_deref().unwrap_or("#292a44");
     TerminalTheme::new(Box::new(ColorPalette {
@@ -1225,6 +1227,7 @@ pub fn terminal_theme(cfg: &ThemeConfig) -> TerminalTheme {
         dim_cyan: cfg.cyan.as_deref().unwrap_or("#56d3c2").into(),
         dim_white: cfg.white.as_deref().unwrap_or("#e4e3e9").into(),
     }))
+    .with_minimum_contrast(minimum_contrast)
 }
 
 pub fn terminal_dynamic_colors(colors: &Colors) -> HashMap<usize, [u8; 3]> {

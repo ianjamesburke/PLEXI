@@ -286,6 +286,12 @@ crt           = false
 ghost         = true
 ghost_opacity = 0.75
 
+[terminal]
+# Lowest allowed contrast ratio (1.0-21.0) between text and its cell background.
+# Colors a program picks for itself are moved toward black or white until they
+# reach it. 1.0 turns it off. 3.0 is the WCAG floor for readable text.
+minimum_contrast = 3.0
+
 [notifications]
 # enabled = true
 # focus_mode = false
