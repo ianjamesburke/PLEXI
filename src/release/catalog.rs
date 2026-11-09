@@ -27,6 +27,7 @@ pub enum ReleaseFeature {
     MediaIo,
     Accessibility,
     McpClient,
+    CliOperations,
     Routines,
 }
 
@@ -48,6 +49,7 @@ impl ReleaseFeature {
         Self::MediaIo,
         Self::Accessibility,
         Self::McpClient,
+        Self::CliOperations,
         Self::Routines,
     ];
 
@@ -70,6 +72,7 @@ impl ReleaseFeature {
             Self::MediaIo => "media_io",
             Self::Accessibility => "accessibility",
             Self::McpClient => "mcp_client",
+            Self::CliOperations => "cli_operations",
             Self::Routines => "routines",
         }
     }
@@ -96,6 +99,7 @@ impl ReleaseFeature {
             Self::MediaIo => "Audio and video player panes",
             Self::Accessibility => "AccessKit accessibility tree",
             Self::McpClient => "MCP client: host MCP config and `app open --mcp`",
+            Self::CliOperations => "Approved typed CLI operations for sandboxed apps",
             Self::Routines => "Scheduled commands (`routine`)",
         }
     }
@@ -133,7 +137,7 @@ impl ReleaseFeature {
             ],
             Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["app", "open"], "mcp")],
             Self::Routines => &[Sub(&["routine"])],
-            Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
+            Self::CliOperations | Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
                 &[]
             }
         }

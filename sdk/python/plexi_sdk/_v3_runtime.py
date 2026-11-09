@@ -166,6 +166,18 @@ class V3AppRuntime:
                 server_id=ev.get("server_id", ""),
                 error=ev.get("error"),
             ))
+        elif t == "cli_operation_result":
+            self._dispatch(events.CliOperationResult(
+                request_id=ev.get("request_id", ""),
+                operation_id=ev.get("operation_id", ""),
+                ok=bool(ev.get("ok", False)),
+                data=ev.get("data"),
+                error_code=ev.get("error_code"),
+                error=ev.get("error"),
+                exit_code=ev.get("exit_code"),
+                stderr=ev.get("stderr"),
+                data_available=ev.get("data_available"),
+            ))
         elif t == "mcp_message":
             self._handle_mcp_message(ev)
         elif t == "mcp_closed":
@@ -831,6 +843,20 @@ class V3AppRuntime:
                 })
             elif isinstance(effect, effects.McpDisconnect):
                 _emit({"type": "mcp_disconnect", "server_id": effect.server_id})
+            elif isinstance(effect, effects.CliOperation):
+                if not isinstance(effect.values, dict):
+                    raise TypeError(
+                        "CliOperation.values must be a dict of typed slot values, got "
+                        f"{type(effect.values).__name__}"
+                    )
+                _emit({
+                    "type": "cli_operation",
+                    "request_id": effect.request_id,
+                    "operation_id": effect.operation_id,
+                    "values": effect.values,
+                })
+            elif isinstance(effect, effects.CliOperationCancel):
+                _emit({"type": "cli_operation_cancel", "request_id": effect.request_id})
             elif isinstance(effect, effects.FileRead):
                 _emit({"type": "file_read", "path": effect.path})
             elif isinstance(effect, effects.OpenFilePicker):

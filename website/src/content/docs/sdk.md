@@ -188,6 +188,37 @@ McpDisconnect(server_id: str)
 Close a connection and kill the server process. Answered by
 :class:`events.McpClosed`.
 
+### `CliOperation`
+
+```python
+CliOperation(request_id: str, operation_id: str, values: dict = dict())
+```
+
+Request one typed command-line operation the app package declares in
+``[[cli_operation]]`` (requires the ``cli.operations`` capability and the
+``cli_operations`` experiment).
+
+The app names an ``operation_id`` and supplies typed ``values`` for the
+slots that operation declares. It never supplies an executable, argument
+list, environment, working directory or shell text: the host rejects a
+request that carries anything else. The person approves each operation in
+the host's approval surface, which states that the program runs with their
+account's full authority and is not confined.
+
+Answered by :class:`events.CliOperationResult` carrying the same
+``request_id``. The request may wait for a decision, so it can be
+outstanding for a while; use :class:`CliOperationCancel` to withdraw it.
+
+### `CliOperationCancel`
+
+```python
+CliOperationCancel(request_id: str)
+```
+
+Withdraw an outstanding :class:`CliOperation`. A request still waiting
+for approval fails with ``cancelled`` and never runs; a running program is
+killed and answered with ``cancelled``. Unknown ids are ignored.
+
 ### `AiMessage`
 
 ```python
@@ -486,6 +517,30 @@ McpClosed(server_id: str, reason: str)
 A connection ended — the server exited, a send failed, or the app
 disconnected. Every in-flight request against that server will never be
 answered; the app must fail them rather than wait.
+
+### `CliOperationResult`
+
+```python
+CliOperationResult(request_id: str, operation_id: str, ok: bool, data: Any = None, error_code: Optional[str] = None, error: Optional[str] = None, exit_code: Optional[int] = None, stderr: Optional[str] = None, data_available: Optional[bool] = None)
+```
+
+Host reply to :class:`effects.CliOperation`, correlated by
+``request_id``. On success ``ok`` is true and ``data`` holds the program's
+output, bounded by the operation's declared limit: parsed JSON for a
+``json`` operation, a string for ``text``. On failure ``ok`` is false and
+``error_code`` is one of ``invalid_request``, ``disabled``,
+``capability_missing``, ``busy``, ``unknown_operation``,
+``package_invalid``, ``invalid_argument``, ``flag_like_argument``,
+``executable_missing``, ``executable_mismatch``,
+``executable_not_self_contained``, ``denied``,
+``approval_timeout``, ``audit_failed``, ``launch_failed``, ``timeout``,
+``output_too_large``, ``cancelled``, ``nonzero_exit`` or ``bad_output``;
+``error`` is a human-readable message. For ``nonzero_exit``, ``exit_code`` is
+set, ``stderr`` holds a bounded tail, and ``data`` holds the program's stdout
+when it passes the same bound and format check as a success (parsed JSON for
+a ``json`` operation, a string for ``text``); ``data_available`` says whether
+it did, and unparseable output is never put in ``data``. A failure other than a nonzero exit, timeout or
+cancellation means the program did not run.
 
 ### `AiStreamChunk`
 

@@ -210,6 +210,18 @@ fn pane_send_ask_options() -> Vec<QueueOption> {
     options
 }
 
+/// Choices for a typed CLI operation. The remembered choice is bound to the
+/// operation, workspace, package and program, and says how long it lasts.
+fn cli_operation_ask_options() -> Vec<QueueOption> {
+    let mut options = default_ask_options();
+    options[0].label = "Allow once".to_string();
+    options[1].label = format!(
+        "Remember this operation in this workspace for {} days",
+        crate::broker::gate::ALWAYS_TTL_SECS / (24 * 60 * 60)
+    );
+    options
+}
+
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct AttentionQueueState {
@@ -632,7 +644,14 @@ impl PlexiApp {
             let (context_id, pane_id, pane_name, context_path) =
                 self.resolve_queue_item_origin(explicit_pane, explicit_ctx);
             let created_ms = 500_000 + p_idx as u64;
-            let cmd_text = if pending.input_summary.is_empty() || pending.input_summary == "{}" {
+            let is_cli_operation = pending
+                .tool
+                .starts_with(crate::broker::gate::CLI_OPERATION_TOOL_PREFIX);
+            let cmd_text = if is_cli_operation {
+                // The summary is already a full sentence naming app, workspace,
+                // program and ambient authority; a tool-name prefix adds nothing.
+                pending.input_summary.clone()
+            } else if pending.input_summary.is_empty() || pending.input_summary == "{}" {
                 pending.tool.clone()
             } else {
                 format!("{} — {}", pending.tool, pending.input_summary)
@@ -650,12 +669,16 @@ impl PlexiApp {
                 }) {
                     format!("{} stopped waiting. Approve, then retry {}.",
                         self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                } else if is_cli_operation {
+                    format!("{} wants to run a program on this computer", self.approval_actor_label(&pending.actor_id))
                 } else {
                     format!("{} wants to use {}", self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
                 },
                 command_text: cmd_text,
                 options: if pending.tool == "pane.send" {
                     pane_send_ask_options()
+                } else if is_cli_operation {
+                    cli_operation_ask_options()
                 } else {
                     default_ask_options()
                 },

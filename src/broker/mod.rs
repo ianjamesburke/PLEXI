@@ -51,6 +51,11 @@ pub enum TargetType {
     Package,
     ModelPointer,
     UndoCheckpoint,
+    /// One typed one-shot CLI operation of an app package (stint 1175). The
+    /// grant binds package content, workspace, operation definition, mode,
+    /// resolved executable and executable content through `package_id` and
+    /// `resource_id`, never through pane or context ids.
+    CliOperation,
 }
 
 /// The broker's answer.
@@ -409,9 +414,13 @@ impl GrantRecord {
         if self.actor_scope != req.actor_scope || self.trust_origin != req.trust_origin {
             return false;
         }
+        // A CLI operation grant is bound to package content and the operation
+        // binding, not to the pane that asked: a remembered grant must survive a
+        // restart that reassigns pane and context ids.
+        let pane_bound = self.target_type != TargetType::CliOperation;
         if self.package_id != req.package_id
-            || self.instance_id != req.instance_id
-            || self.context_id != req.context_id
+            || (pane_bound
+                && (self.instance_id != req.instance_id || self.context_id != req.context_id))
         {
             return false;
         }
@@ -1276,6 +1285,9 @@ fn retire_legacy_permissions(config_dir: &Path) {
         ),
     }
 }
+
+#[cfg(test)]
+mod cli_operation_tests;
 
 #[cfg(test)]
 mod tests {

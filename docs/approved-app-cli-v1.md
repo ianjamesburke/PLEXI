@@ -84,3 +84,33 @@ The package installer validates and stages a `.plexipkg` then delegates to the d
 ## Human checkpoint
 
 Before V1 acceptance, present Ian with one independently validated installed candidate and a clean-profile walkthrough. Start with a fresh Plexi install without the board. From the stint repository, discover and run the documented installation guidance, install the app and matching CLI, open the board, approve using the keyboard, change a priority, and observe the change through the CLI. Then make an agent-side change and observe the board refresh. Show denial, revocation and conflict handling, and report exact candidate identity and remaining limits. Stop for Ian’s explicit acceptance; an automated tester cannot substitute for it. This checkpoint does not waive earlier security tests or independent installed verification.
+
+## Chosen path
+
+A new `cli_operation` effect on the CPython-WASM bridge, serviced by the pane
+that owns the app (`LivePythonPane`) and admitted by `PermissionMonitor`. It
+does not use the descriptor renderer or MCP. MCP remains a distinct protocol:
+a long-lived configured server has a different lifecycle and ambient authority,
+and nothing here promises convergence without a separate threat review. Reused
+from `src/host/mcp_client.rs`: bounded channels, own-process-group spawn and
+group SIGKILL teardown, wake callback.
+
+- **Definition.** `[[cli_operation]]` in the package manifest, validated by
+  `src/app/cli_operation.rs` without launching anything. `definition_hash`
+  covers the whole declaration.
+- **Binding.** `package_id` is the package content digest; `resource_id` is
+  `<operation>#<sha256 of package, canonical workspace, definition hash, mode,
+  executable path and executable content>`; the target is `cli.op.read` or
+  `cli.op.mutate`. One-shot consent is an exact grant spent at admission.
+  Remembered consent (`Session`, or `Always` for its TTL, persisted sealed)
+  ignores argument bytes but never the binding, so it is not arbitrary argv
+  authority.
+- **Launch.** Executable identity and the sealed private copy are specified in
+  `src/host/cli_ops/exec.rs`. Scripts, setuid and group- or world-writable
+  programs are refused. The native program is not confined.
+- **Install.** Updates stage outside `apps/`, write a completion marker last and
+  swap in place; operation admission refuses a registry install without the
+  marker. Changed bytes are a new package digest and ask again.
+- **Gate.** The `cli_operations` experiment, independent of `mcp_client`, plus
+  the `cli.operations` manifest capability, which only permits asking.
+

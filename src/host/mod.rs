@@ -22,6 +22,7 @@ pub mod flight_recorder;
 pub mod event_subscriptions;
 pub mod hot_reload;
 pub mod keys;
+pub mod cli_ops;
 pub mod mcp_client;
 pub mod launch_failed;
 pub mod model;

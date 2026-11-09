@@ -1273,6 +1273,12 @@ pub struct LivePythonPane {
     /// Per-pane typed-pipe registry (stint 0742) tracking directed JSON pipes
     /// opened by or targeting this Python runtime.
     pipes: crate::host::typed_pipes::TypedPipeRegistry,
+    /// Approved one-shot CLI operations this pane requested (stint 1175).
+    /// Dropped with the pane, which kills every running program.
+    cli_ops: crate::host::cli_ops::service::CliOpService,
+    /// Host-established `(pane_id, context_id)` from `set_pipe_owner`. Used only
+    /// to route approval prompts; no grant binds to it.
+    pane_owner: Option<(u64, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2580,12 +2586,21 @@ impl LivePythonPane {
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ),
+            cli_ops: crate::host::cli_ops::service::CliOpService::default(),
+            pane_owner: None,
         })
     }
 
     /// Stamp the owning pane's host-established scope onto this instance's
     /// typed-pipe registry (stint 0742).
     pub fn set_pipe_owner(&mut self, owner: crate::host::scope::Scope) {
+        if let crate::host::scope::Scope::Pane {
+            pane_id,
+            context_id,
+        } = &owner
+        {
+            self.pane_owner = Some((*pane_id, *context_id));
+        }
         self.pipes.set_owner(owner);
     }
 
@@ -2948,6 +2963,7 @@ impl LivePythonPane {
     }
 
     fn drain_runtime(&mut self) {
+        self.poll_cli_operations();
         while let Ok((request_id, response)) = self.http_rx.try_recv() {
             self.send_to_runtime(&json!({
                 "type": "http_response", "request_id": request_id,
@@ -3198,6 +3214,8 @@ impl LivePythonPane {
             Some("mcp_connect") => self.handle_mcp_connect(&message),
             Some("mcp_send") => self.handle_mcp_send(&message),
             Some("mcp_disconnect") => self.handle_mcp_disconnect(&message),
+            Some("cli_operation") => self.handle_cli_operation(&message),
+            Some("cli_operation_cancel") => self.handle_cli_operation_cancel(&message),
             Some("capability_request") => self.handle_capability_request(&message),
             Some("log") => {
                 let level = guest_log_level(message.get("level").and_then(Value::as_str));
@@ -3800,6 +3818,98 @@ impl LivePythonPane {
         }
     }
 
+    fn cli_identity(&self) -> crate::host::cli_ops::service::PaneIdentity {
+        let (pane_id, context_id) = self.pane_owner.unwrap_or((0, 0));
+        crate::host::cli_ops::service::PaneIdentity {
+            app_id: self.app_id.clone(),
+            app_dir: self.config.app_dir.clone(),
+            workspace_root: self.config.workspace_root.clone(),
+            pane_id,
+            context_id,
+            has_capability: self
+                .has_capability(crate::app::permissions::Capability::CliOperations.as_str()),
+        }
+    }
+
+    fn cli_wake(&self) -> crate::host::cli_ops::exec::Wake {
+        let repaint = Arc::clone(&self.repaint);
+        Arc::new(move || {
+            if let Some((context, viewport)) =
+                repaint.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+            {
+                context.request_repaint_after_for(std::time::Duration::from_nanos(1), *viewport);
+            }
+        })
+    }
+
+    /// Run `f` with the host-owned service environment. The caller supplies
+    /// nothing: executables, directories, limits and the monitor are the host's.
+    fn with_cli_service<R>(
+        &mut self,
+        f: impl FnOnce(
+            &mut crate::host::cli_ops::service::CliOpService,
+            &crate::host::cli_ops::service::PaneIdentity,
+            &crate::host::cli_ops::service::Env<'_>,
+        ) -> R,
+    ) -> R {
+        let who = self.cli_identity();
+        let monitor =
+            crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
+        let search_dirs = crate::host::cli_ops::search_dirs();
+        let seal_base = crate::host::cli_ops::seal_base();
+        let wake = self.cli_wake();
+        let enabled =
+            crate::release::feature_enabled(crate::release::ReleaseFeature::CliOperations);
+        let message = if enabled {
+            String::new()
+        } else {
+            crate::release::feature_unavailable_message(
+                crate::release::ReleaseFeature::CliOperations,
+            )
+        };
+        let env = crate::host::cli_ops::service::Env {
+            monitor: &monitor,
+            search_dirs: &search_dirs,
+            seal_base: &seal_base,
+            wake: &wake,
+            enabled,
+            experiment_message: &message,
+            approval_timeout: crate::host::cli_ops::service::APPROVAL_TIMEOUT,
+        };
+        f(&mut self.cli_ops, &who, &env)
+    }
+
+    fn handle_cli_operation(&mut self, message: &Value) {
+        let replies = self.with_cli_service(|service, who, env| service.submit(who, env, message));
+        for reply in replies {
+            self.send_to_runtime(&reply);
+        }
+    }
+
+    fn handle_cli_operation_cancel(&mut self, message: &Value) {
+        let request_id = message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let replies = self.with_cli_service(|service, _, _| service.cancel(&request_id));
+        for reply in replies {
+            self.send_to_runtime(&reply);
+        }
+    }
+
+    /// Advance parked and running operations. Runs from `drain_runtime`, so it
+    /// is serviced from `App::logic` and `background_tick` alike.
+    fn poll_cli_operations(&mut self) {
+        if !self.cli_ops.has_work() {
+            return;
+        }
+        let replies = self.with_cli_service(|service, who, env| service.poll(who, env));
+        for reply in replies {
+            self.send_to_runtime(&reply);
+        }
+    }
+
     fn handle_capability_request(&mut self, message: &Value) {
         let capability = message
             .get("capability")
@@ -4384,6 +4494,7 @@ impl LivePythonPane {
     /// before the deadline, with nothing left to wake it when the timer is due.
     pub fn needs_background_tick(&self) -> bool {
         self.decoder.has_queued_output()
+            || self.cli_ops.has_work()
             || !self.pending_commands.is_empty()
             || (self.error.is_none()
                 && !self.runtime.is_finished()
@@ -4476,6 +4587,9 @@ impl LivePythonPane {
         );
         let old_runtime = std::mem::replace(&mut self.runtime, runtime);
         drop(old_runtime);
+        // The restarted guest knows none of these request ids: kill what is
+        // running and forget what is waiting for approval.
+        self.cli_ops = crate::host::cli_ops::service::CliOpService::default();
         if let Some(held) = &mut self.mcp_held {
             // The held line survives hot reload, but its arming identity was
             // owned by the stdin just closed by `old_runtime`'s drop. The old

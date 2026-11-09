@@ -482,6 +482,59 @@ wholesale before `update()` runs — deleted keys vanish, never a merge — and
 values are kept and persists to that scope are blocked until the file is
 fixed).
 
+## Approved CLI Operations
+
+An app can run a known command-line program on the person's computer, but only
+through operations its package declares and the person approves. This is the
+`cli_operations` experiment (`plexi experiments enable cli_operations`) and
+needs the `cli.operations` capability. It is not a shell: the app names an
+operation and supplies typed values, nothing else.
+
+Declare each operation in `manifest.toml`:
+
+```toml
+[[cli_operation]]
+id = "task.set_priority"
+executable = "stint"                     # bare name or absolute path, never app-chosen
+argv = ["set", "--priority={priority}", "--", "{task}"]
+timeout_ms = 5000
+[cli_operation.output]
+format = "json"                          # or "text"
+max_bytes = 65536
+[cli_operation.authority]                # what the program is meant to reach
+mode = "mutate"                          # "read" or "mutate"; separate approvals
+fs_write = ["workspace"]
+[cli_operation.slots.priority]
+type = "enum"
+values = ["p0", "p1", "p2", "p3", "p4"]
+[cli_operation.slots.task]
+type = "string"
+max_len = 64
+```
+
+Each `argv` element is a literal, a whole-element `{slot}`, or an option-joined
+`--name={slot}`. A slot in a bare position (before any `--`) can never render a
+leading `-`; put free text after a `--` element or join it to its option.
+`plexi app check` and install reject a definition whose mapping the host cannot
+guarantee. Slot types are `string` (`max_len`), `int` (`min`, `max`), `enum`
+(`values`) and `bool`.
+
+Request one with `CliOperation(request_id, operation_id, values)` and read the
+answer in `events.CliOperationResult`, matched on `request_id`. A request can wait
+for the person's decision, so keep it outstanding; `CliOperationCancel` withdraws
+it. Failures are typed (`events.CliOperationResult.error_code`): only
+`nonzero_exit`, `timeout`, `output_too_large` and `cancelled` mean the program
+may have run.
+
+The host picks the program, working directory (the workspace) and a minimal
+fixed environment. Every call is checked against an approval bound to your
+package's exact content, the workspace, the operation definition, and the
+program's path and bytes: change any of them and the person is asked again. The
+approval says the program runs with their full account authority and is not
+confined; `authority` is a declaration for review, not a sandbox. The program
+must be a self-contained native executable. Scripts are refused because their
+interpreter would be unbound.
+
 ## Dev / Test Loop
 
 Test-first. Define done by the test, not the code.

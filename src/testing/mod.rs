@@ -940,6 +940,9 @@ mod daw_gate;
 mod flow_tests;
 #[cfg(test)]
 mod harness_tests;
+
+#[cfg(test)]
+mod cli_operation_tests;
 #[cfg(test)]
 mod agent_security_tests;
 #[cfg(test)]

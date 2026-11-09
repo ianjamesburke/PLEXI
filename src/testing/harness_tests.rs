@@ -172,7 +172,7 @@ fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str
 /// Push a second context + window (no PTY dependency) and return its window
 /// index. Mirrors the pattern in `app::tests::context_tests`, duplicated here
 /// since that helper is module-private.
-fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path::Path) -> usize {
+pub(super) fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path::Path) -> usize {
     let win_id = h.app.next_window_id;
     h.app.next_window_id += 1;
     h.app.windows.push(crate::host::context::Window {

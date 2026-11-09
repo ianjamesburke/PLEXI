@@ -1,0 +1,22 @@
+# Approval for a typed CLI operation: the queue bar and the decision overlay
+# must name the app, workspace, program and the program's ambient authority,
+# and must not offer a bare "always". Seeded with the production disclosure.
+sizes = [[520.0, 700.0], [1280.0, 800.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+
+[[steps]]
+seed_cli_operation_approval = true
+
+[[steps]]
+assert_label = { target = "host", label = "Attention Queue" }
+
+[[steps]]
+shot = "attention-cli-operation-queue.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+shot = "attention-cli-operation-decision.png"
