@@ -2104,7 +2104,7 @@ printf '\\033[38;2;119;119;119mgrey 119 secondary text\\033[0m\\n'; \
 printf '\\033[38;2;177;185;249minline_code() pale blue\\033[0m\\n'; \
 printf '\\033[38;2;230;219;116mpale yellow string\\033[0m  \\033[38;2;166;226;46mlime green keyword\\033[0m\\n'; \
 printf '\\033[38;2;255;121;198mpink function\\033[0m  \\033[38;2;139;233;253mcyan type\\033[0m\\n'; \
-printf '\\033[2m\\033[38;2;200;200;200mfaint SGR2 text\\033[0m  \\033[7mreverse video\\033[0m\\n'; \
+printf '\\033[2m\\033[38;2;200;200;200mfaint SGR2 grey\\033[0m  \\033[2m\\033[38;2;177;185;249mfaint pale blue\\033[0m  \\033[7mreverse video\\033[0m\\n'; \
 printf 'hidden:[\\033[8msecret\\033[0m] must show blank\\n'; \
 printf 'ANSI: \\033[31mred\\033[32m green\\033[33m yellow\\033[34m blue\\033[35m magenta\\033[36m cyan\\033[0m\\n'; \
 printf 'FIXTURE-DONE\\n'; sleep 300";
