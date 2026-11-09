@@ -3831,6 +3831,7 @@ impl eframe::App for PlexiApp {
         crate::platform::logging::time_drain("service_python_pane_runtimes", || {
             self.service_python_pane_runtimes(ctx)
         });
+        self.sync_python_pane_presence(ctx);
 
         // Host agent runtime (Phase C): consume queued event deliveries and
         // finished agent turns. Cheap no-op when nothing is pending. While a

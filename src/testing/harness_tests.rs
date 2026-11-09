@@ -16738,11 +16738,16 @@ fn python_app_pane_receives_focus_and_visibility_events_in_order() {
     expect_presence_log(&mut h, pane_a, "shown,gained", false);
 
     // B opens and takes focus: A loses it, B starts from scratch.
+    let before = h.state().open_panes;
     h.app
         .launch_app_by_path_with_layout(&dir_b.path().to_string_lossy(), None, None, &[])
         .expect("launch probe b");
-    let pane_b = *h.state().open_panes.last().expect("pane b appears");
-    assert_ne!(pane_a, pane_b);
+    let pane_b = h
+        .state()
+        .open_panes
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("pane b appears");
     expect_presence_log(&mut h, pane_b, "shown,gained", false);
     expect_presence_log(&mut h, pane_a, "shown,gained,lost", false);
 
