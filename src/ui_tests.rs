@@ -6498,6 +6498,52 @@ open(out + ".done", "w").close()
         }
     }
 
+    /// The same populated scene rendered in each Plexi theme: sidebar, file
+    /// browser, a terminal printing every ANSI color plus dim text, and agent
+    /// panes in several states. Review evidence for the theme family (stint 1186).
+    #[test]
+    fn screenshot_plexi_theme_family() {
+        use crate::protocol::AgentState;
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
+        let root = h.workspace_root().to_path_buf();
+        let swatches = "printf '\\033[1mPlexi theme family\\033[0m\\n\\033[31mred\\033[0m \\033[32mgreen\\033[0m \\033[33myellow\\033[0m \\033[34mblue\\033[0m \\033[35mmagenta\\033[0m \\033[36mcyan\\033[0m \\033[37mwhite\\033[0m \\033[90mbright black\\033[0m\\nplain text on the terminal surface\\n'; sleep 300";
+        let mut ids = vec![add_focused_pane(&mut h)];
+        for (name, state, script) in [
+            ("Shell: colors", AgentState::Idle, swatches),
+            ("Working: compiling", AgentState::Working, "printf 'Agent workspace\\nReviewing changes and running tests.\\n'; sleep 300"),
+            ("Needs you: review", AgentState::NeedsYou, "printf 'Waiting for approval\\n'; sleep 300"),
+        ] {
+            let id = add_focused_pane(&mut h);
+            ids.push(id);
+            h.with_app_mut(|app| {
+                let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), script.into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                term.name = Some(name.into());
+                term.agent_role = Some(name.into());
+                if name != "Shell: colors" {
+                    term.agent = Some(crate::protocol::PaneAgentState { pane_id:id, state, agent:"codex".into(), detail:None, session_id:None });
+                }
+                app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                app.sidebar_visible = true;
+            });
+        }
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tiles = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+            win.tree.root = Some(win.tree.tiles.insert_grid_tile(tiles));
+        });
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+            });
+            h.run_steps(5);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}"))).unwrap();
+        }
+    }
+
     #[test]
     fn screenshot_agents_pane_states_and_keys() {
         use crate::protocol::AgentState;

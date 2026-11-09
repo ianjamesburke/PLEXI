@@ -53,7 +53,7 @@ A key with a wrong value type, a retired key, or an unknown key never discards t
 
 Pick a preset and optionally override individual colors. Individual color fields override preset values when both are set.
 
-Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-day`.
+Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-night`, `tokyo-day`, `gruvbox-dark`, `gruvbox-light`, `nord`, `solarized-dark`, `solarized-light`, `matrix`, `bios`, `plexi-night`, `plexi-dusk`, `plexi-dawn`, `plexi-day`.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -322,8 +322,8 @@ state_preset = "okabe-ito" # default | okabe-ito | high-contrast | mono
 # state_needs_you = "#d55e00"
 # state_interrupted = "#009e73"
 # state_error = "#f0e442"
-preset = "tokyo-night"
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-day
+preset = "plexi-dusk"
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"
 # bg_darkest   = "#11111b"
