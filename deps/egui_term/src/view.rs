@@ -1187,23 +1187,24 @@ fn process_keyboard_event(
         egui::Event::Text(text) => {
             process_text_event(&text, modifiers, backend, bindings_layout)
         },
+        // The backend encodes against the live bracketed-paste mode.
         egui::Event::Paste(text) => InputAction::BackendCall(
             // Windows Terminal convention: Ctrl+V always pastes (not a literal ^V).
             #[cfg(target_os = "windows")]
-            BackendCommand::Write(text.as_bytes().to_vec()),
+            BackendCommand::Paste(text),
             #[cfg(all(
                 not(target_os = "windows"),
                 not(any(target_os = "ios", target_os = "macos"))
             ))]
             if modifiers.contains(Modifiers::COMMAND | Modifiers::SHIFT) {
-                BackendCommand::Write(text.as_bytes().to_vec())
+                BackendCommand::Paste(text)
             } else {
                 // Hotfix - Send ^V when there's not selection on view.
                 BackendCommand::Write([0x16].to_vec())
             },
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             {
-                BackendCommand::Write(text.as_bytes().to_vec())
+                BackendCommand::Paste(text)
             },
         ),
         egui::Event::Copy => {
