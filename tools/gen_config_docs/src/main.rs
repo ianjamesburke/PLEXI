@@ -295,6 +295,7 @@ A key with a wrong value type, a retired key, or an unknown key never discards t
     const SKIP_TOPLEVEL: &[&str] = &[
         "theme",
         "effects",
+        "terminal",
         "log",
         "notifications",
         "ai",
@@ -333,6 +334,18 @@ Available presets: `catppuccin-mocha`, `catppuccin-latte`, `dracula`, `tokyo-nig
     // ── Effects ──────────────────────────────────────────────────────────────
     println!("### Effects (`[effects]`)\n");
     if let Some(s) = structs.get("EffectsConfig") {
+        emit_table(&s.fields);
+    }
+
+    // ── Terminal ─────────────────────────────────────────────────────────────
+    print!(
+        r#"### Terminal (`[terminal]`)
+
+`minimum_contrast` keeps text readable on every theme. Each text cell's foreground is checked against its background and, when the WCAG contrast ratio is below the minimum, moved toward black or white by the smallest amount that reaches it. Hidden text stays hidden, and emoji and images are untouched. Applies live on config reload.
+
+"#
+    );
+    if let Some(s) = structs.get("TerminalConfig") {
         emit_table(&s.fields);
     }
 

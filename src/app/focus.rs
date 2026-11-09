@@ -1011,7 +1011,11 @@ impl PlexiApp {
         }
 
         // Terminal theme
-        self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
+        let minimum_contrast = fresh.terminal_minimum_contrast();
+        if (minimum_contrast - self.theme.minimum_contrast()).abs() > f32::EPSILON {
+            log::info!("terminal: minimum_contrast={minimum_contrast} (config reload)");
+        }
+        self.theme = crate::ui::theme::terminal_theme(&theme_cfg, minimum_contrast);
 
         // Font size
         if let Some(size) = fresh.font_size {
