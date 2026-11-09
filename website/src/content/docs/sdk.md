@@ -388,11 +388,36 @@ Resize(width: float, height: float)
 FocusGained()
 ```
 
+This pane is now the focused pane of the active context and the host
+window is visible and OS-focused. Delivered after :class:`PaneShown`.
+
 ### `FocusLost`
 
 ```python
 FocusLost()
 ```
+
+This pane stopped being the focused pane (another pane or context took
+focus, or the host window lost OS focus or was hidden). Delivered before
+:class:`PaneHidden`.
+
+### `PaneShown`
+
+```python
+PaneShown()
+```
+
+This pane became visible: its context is active, the host window is not
+minimized or occluded, and no other pane is zoomed over it.
+
+### `PaneHidden`
+
+```python
+PaneHidden()
+```
+
+This pane stopped being visible. A pane that was focused always receives
+:class:`FocusLost` first.
 
 ### `FocusChanged`
 
