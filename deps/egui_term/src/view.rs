@@ -21,6 +21,7 @@ use crate::backend::TerminalBackend;
 use crate::backend::{LinkAction, MouseButton, SelectionType};
 use crate::bindings::Binding;
 use crate::bindings::{BindingAction, BindingsLayout, InputKind};
+use crate::contrast;
 use crate::font::TerminalFont;
 use crate::graphics;
 use crate::theme::TerminalTheme;
@@ -764,6 +765,18 @@ impl<'a> TerminalView<'a> {
                 bg = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
             }
 
+            // Final glyph color: hidden text is never drawn, and everything
+            // else is lifted to the minimum contrast against what is actually
+            // painted behind it (selection blended over the global background).
+            let glyph = glyph_color(
+                &self.theme,
+                flags,
+                indexed.c,
+                fg,
+                over(bg, global_bg),
+            );
+            let fg = glyph.unwrap_or(fg);
+
             if global_bg != bg {
                 shapes.push(Shape::Rect(RectShape::filled(
                     cell_rect,
@@ -856,7 +869,7 @@ impl<'a> TerminalView<'a> {
             }
 
             // Draw text content
-            if indexed.c != ' ' && indexed.c != '\t' {
+            if indexed.c != ' ' && indexed.c != '\t' && glyph.is_some() {
                 let glyph_fg = if content.grid.cursor.point == indexed.point
                     && self.has_focus
                     && content.cursor_visible
@@ -866,7 +879,16 @@ impl<'a> TerminalView<'a> {
                     )
                     && state.cursor_visible
                 {
-                    bg
+                    // Inverted cursor glyph: the cell background drawn over
+                    // the cursor block.
+                    glyph_color(
+                        &self.theme,
+                        flags,
+                        indexed.c,
+                        bg,
+                        self.theme.get_color(content.cursor.fg),
+                    )
+                    .unwrap_or(bg)
                 } else {
                     fg
                 };
@@ -1971,6 +1993,44 @@ fn grid_size(size: Vec2, padding: Vec2) -> Vec2 {
     )
 }
 
+/// Final color for a cell's glyph, or `None` when it must not be drawn.
+/// Hidden (SGR 8) text is skipped outright, so no color adjustment can make it
+/// visible. Faint (SGR 2) text is dimmed in `cell_colors` and then held to the
+/// same floor as everything else: faint is a weight cue, not permission to be
+/// unreadable. Emoji and image glyphs are exempt.
+fn glyph_color(
+    theme: &TerminalTheme,
+    flags: cell::Flags,
+    c: char,
+    fg: Color32,
+    bg: Color32,
+) -> Option<Color32> {
+    if flags.contains(cell::Flags::HIDDEN) {
+        return None;
+    }
+    if contrast::is_exempt_glyph(c) {
+        return Some(fg);
+    }
+    Some(contrast::ensure_min_contrast(
+        fg,
+        bg,
+        theme.minimum_contrast(),
+    ))
+}
+
+/// Composite `top` over an opaque `base`.
+fn over(top: Color32, base: Color32) -> Color32 {
+    let inv = 255 - u16::from(top.a());
+    let mix = |t: u8, b: u8| {
+        (u16::from(t) + (u16::from(b) * inv + 127) / 255).min(255) as u8
+    };
+    Color32::from_rgb(
+        mix(top.r(), base.r()),
+        mix(top.g(), base.g()),
+        mix(top.b(), base.b()),
+    )
+}
+
 fn cell_colors(theme: &TerminalTheme, cell: &cell::Cell) -> (Color32, Color32) {
     let mut fg = theme.get_color(cell.fg);
     let mut bg = theme.get_color(cell.bg);
@@ -2023,6 +2083,78 @@ mod tests {
             cell.flags.insert(cell::Flags::INVERSE);
             assert_eq!(cell_colors(&theme, &cell).1, expected);
         }
+    }
+
+    fn themed(minimum: f32) -> TerminalTheme {
+        TerminalTheme::default().with_minimum_contrast(minimum)
+    }
+
+    #[test]
+    fn glyph_color_lifts_low_contrast_text_and_one_turns_it_off() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        let lifted =
+            glyph_color(&themed(3.0), cell::Flags::empty(), 'a', fg, bg)
+                .unwrap();
+        assert!(contrast::contrast_ratio(lifted, bg) >= 3.0);
+        assert_eq!(
+            glyph_color(&themed(1.0), cell::Flags::empty(), 'a', fg, bg),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn hidden_text_is_never_drawn_at_any_minimum() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        for minimum in [1.0, 3.0, 21.0] {
+            assert_eq!(
+                glyph_color(&themed(minimum), cell::Flags::HIDDEN, 'a', fg, bg),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_keep_their_color() {
+        let fg = Color32::from_rgb(153, 153, 153);
+        let bg = Color32::from_rgb(0xf4, 0xec, 0xdf);
+        assert_eq!(
+            glyph_color(
+                &themed(3.0),
+                cell::Flags::empty(),
+                '\u{1F600}',
+                fg,
+                bg
+            ),
+            Some(fg)
+        );
+    }
+
+    #[test]
+    fn faint_text_is_dimmed_then_held_to_the_floor() {
+        let theme = themed(3.0);
+        let bg = theme.get_color(Color::Named(NamedColor::Background));
+        let cell = cell::Cell {
+            flags: cell::Flags::DIM,
+            fg: Color::Named(NamedColor::Black),
+            ..Default::default()
+        };
+        let (fg, cell_bg) = cell_colors(&theme, &cell);
+        let out = glyph_color(&theme, cell.flags, 'a', fg, cell_bg).unwrap();
+        assert!(contrast::contrast_ratio(out, bg) >= 3.0);
+    }
+
+    #[test]
+    fn over_composites_translucent_selection_onto_the_base() {
+        let base = Color32::from_rgb(200, 200, 200);
+        assert_eq!(over(base, Color32::BLACK), base);
+        let sel = Color32::from_rgba_unmultiplied(70, 130, 210, 90);
+        let blended = over(sel, base);
+        assert!(
+            blended.b() > blended.r(),
+            "selection tint must show: {blended:?}"
+        );
     }
 
     #[test]

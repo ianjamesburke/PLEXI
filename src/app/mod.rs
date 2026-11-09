@@ -1570,6 +1570,10 @@ impl PlexiApp {
         let notifications_sound = config.notifications.as_ref().and_then(|n| n.cue_sound());
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
+        log::info!(
+            "terminal: minimum_contrast={}",
+            config.terminal_minimum_contrast()
+        );
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = theme::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -1683,7 +1687,7 @@ impl PlexiApp {
                 let mut app = Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
-                    theme: theme::terminal_theme(&theme_cfg),
+                    theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
                     colors,
                     default_font_size,
                     ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
@@ -1935,7 +1939,7 @@ impl PlexiApp {
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
-            theme: theme::terminal_theme(&theme_cfg),
+            theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
             colors,
             default_font_size,
             ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
@@ -2902,7 +2906,7 @@ impl PlexiApp {
             pty_event_tx: tx,
             last_notify_poll: std::time::Instant::now(),
             scheduler: crate::host::scheduler::Scheduler::new(),
-            theme: theme::terminal_theme(&theme_cfg),
+            theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
             colors,
             default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
             ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
