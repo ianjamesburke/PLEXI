@@ -7,6 +7,7 @@ separately against `_v3_delta.apply_delta` / `TreeReconstructor`.
 """
 
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -17,9 +18,11 @@ import pytest
 
 from plexi_sdk._v3_delta import (
     DeltaApplyError,
+    CONTAINER_FIELDS,
     TreeReconstructor,
     apply_delta,
     node_patch,
+    validate_tree,
 )
 from plexi_sdk._adapter import _encode_uitree
 from plexi_sdk.ui import Column, EmptyState, Keyed, Text
@@ -434,6 +437,34 @@ class TestWireFraming:
 
 
 class TestReconstruction:
+    @pytest.mark.parametrize("kind", ["Card", "Padding"])
+    def test_missing_single_child_is_rejected(self, kind):
+        tree = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": kind, "child": 9}},
+        ]}
+        with pytest.raises(DeltaApplyError, match="missing child"):
+            validate_tree(tree)
+
+    def test_container_table_covers_host_decoder(self):
+        source = (REPO_ROOT / "src/host/wasm_python.rs").read_text()
+        validator = source.split("fn validate_python_ui_tree(", 1)[1].split("\n}\n", 1)[0]
+        variants = set(re.findall(r"UiNodeData::(\w+)\(", validator))
+        decoder = source.split("fn decode_node_data(", 1)[1].split("\nfn canvas_commands(", 1)[0]
+        arms = re.split(r'(?m)^        (?="[^"]+"\s*\|?[^\n]*=>)', decoder)
+        covered = set()
+        decoded_variants = set()
+        for arm in arms:
+            if "=>" not in arm:
+                continue
+            pattern, body = arm.split("=>", 1)
+            matched = variants.intersection(re.findall(r"UiNodeData::(\w+)\(", body))
+            if matched:
+                decoded_variants.update(matched)
+                for alias in re.findall(r'"([^"]+)"', pattern):
+                    covered.add(alias.lower())
+        assert variants and decoded_variants == variants
+        assert covered <= CONTAINER_FIELDS.keys()
+
     def test_loading_to_empty_state_remaps_card_child(self):
         runtime = self._keyed_runtime()
         loading = _encode_uitree(Column([Text("Heading"), Text("Loading"), Text("Footer")]))
@@ -443,6 +474,24 @@ class TestReconstruction:
         card = next(node for node in tree["nodes"] if node["data"]["type"] == "Card")
         child = next(node for node in tree["nodes"] if node["key"] == card["key"] + "/child")
         assert card["data"]["child"] == child["id"]
+
+    @pytest.mark.parametrize("kind", ["Card", "Padding"])
+    def test_single_child_remaps_even_when_stale_id_still_exists(self, kind):
+        runtime = self._keyed_runtime()
+        runtime._last_tree = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": "Column", "children": []}},
+            {"id": 2, "key": "0/other", "data": {"type": "Text"}},
+        ]}
+        encoded = {"root": 0, "nodes": [
+            {"id": 0, "key": "0", "data": {"type": kind, "child": 2}},
+            {"id": 1, "key": "0/other", "data": {"type": "Text"}},
+            {"id": 2, "key": "0/child", "data": {"type": "Text"}},
+        ]}
+        tree = runtime._stabilize_tree_ids(encoded)
+        root = tree["nodes"][0]
+        assert root["data"]["child"] == tree["nodes"][2]["id"]
+        assert root["data"]["child"] != tree["nodes"][1]["id"]
+        validate_tree(tree)
 
     @staticmethod
     def _keyed_tree(rows: list[str]) -> dict:

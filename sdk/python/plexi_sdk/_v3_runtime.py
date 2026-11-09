@@ -22,7 +22,7 @@ from pathlib import Path
 import plexi_sdk as sdk
 from plexi_sdk import _v3_state, effects, events
 from plexi_sdk._keys import normalize_key as _normalize_key
-from plexi_sdk._v3_delta import node_patch as _node_patch
+from plexi_sdk._v3_delta import CONTAINER_FIELDS, child_refs, node_patch as _node_patch
 from plexi_sdk._v3_state import _COMPONENT_STATE_NAMESPACE, StateSnapshot
 
 
@@ -540,12 +540,11 @@ class V3AppRuntime:
         self._next_tree_node_id = next_id
         def remap_data(data: dict) -> dict:
             data = dict(data)
-            if data.get("type") in ("Column", "Row", "DataTable"):
-                data["children"] = [mapping[item] for item in data.get("children", [])]
-            elif data.get("type") == "ListView":
-                data["items"] = [mapping[item] for item in data.get("items", [])]
-            elif data.get("type") in ("Scroll", "Pinned"):
-                data["child"] = mapping[data["child"]]
+            spec = CONTAINER_FIELDS.get(data.get("type", "").lower())
+            if spec is not None:
+                field, many = spec
+                data[field] = ([mapping[item] for item in child_refs(data)] if many
+                               else mapping[data[field]])
             return data
         return {"root": mapping[encoded["root"]], "nodes": [
             {**node, "id": mapping[node["id"]], "data": remap_data(node["data"])}
@@ -564,13 +563,11 @@ class V3AppRuntime:
         saw_structure = bool(old_keys ^ new_keys)
         for node_id in old_by_id.keys() & new_by_id.keys():
             old, new = old_by_id[node_id], new_by_id[node_id]
-            field = {"Column": "children", "Row": "children", "DataTable": "children",
-                     "ListView": "items"}.get(new["data"].get("type"))
-            if field is None or old["data"].get(field, []) == new["data"].get(field, []):
+            if child_refs(old["data"]) == child_refs(new["data"]):
                 continue
             saw_structure = True
             parent_key = new["key"] + "/@"
-            for child_id in [*old["data"].get(field, []), *new["data"].get(field, [])]:
+            for child_id in [*child_refs(old["data"]), *child_refs(new["data"])]:
                 child = old_by_id.get(child_id) or new_by_id.get(child_id)
                 if child is None or not child["key"].startswith(parent_key):
                     return False
