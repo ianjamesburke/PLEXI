@@ -3462,6 +3462,17 @@ mod per_key_load_tests {
     }
 
     #[test]
+    fn config_template_preset_is_the_default_preset() {
+        let (cfg, diagnostics) = load(CONFIG_TEMPLATE);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            cfg.theme.and_then(|t| t.preset).as_deref(),
+            Some(crate::ui::theme::DEFAULT_PRESET),
+            "scripts/default-config.toml [theme] preset must equal theme::DEFAULT_PRESET"
+        );
+    }
+
+    #[test]
     fn clean_config_loads_every_value_without_diagnostics() {
         let (cfg, diagnostics) = load(
             "config_version = 1\nfont_size = 15.0\nconfirm_quit = false\n\

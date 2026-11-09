@@ -987,7 +987,7 @@ impl PlexiApp {
         }
 
         // Theme
-        let theme_cfg = Self::resolve_theme_config(&fresh);
+        let theme_cfg = crate::ui::theme::resolve_theme_config(&fresh);
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors;

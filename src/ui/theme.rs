@@ -344,23 +344,38 @@ fn state_palette(cfg: &ThemeConfig) -> [Color32; 6] {
     })
 }
 
-/// Resolve the active `Colors` from a loaded config: merges the user's
-/// `[theme]` overrides over the named preset (or pure user config if no
-/// preset). Shared by the GUI and the headless `app render` path.
-pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
+/// The preset a fresh profile starts in and the base used when a config names
+/// none. Every default decision (built-in fallback, `config.toml` template,
+/// `config reset`) derives from this one constant; a test pins the template.
+pub const DEFAULT_PRESET: &str = "plexi-dusk";
+
+/// Resolve the effective `[theme]` for a loaded config: the named preset
+/// (`[theme] preset`, else legacy top-level `theme_preset`, else
+/// [`DEFAULT_PRESET`]) with the user's `[theme]` overrides on top. An
+/// unknown preset name logs a warning and leaves only the user's overrides.
+pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::config::ThemeConfig {
     let user_theme = config.theme.clone().unwrap_or_default();
     let preset_name = user_theme
         .preset
         .as_deref()
-        .or(config.theme_preset.as_deref());
-    let cfg = match preset_name {
-        Some(preset_name) => match preset_colors(preset_name) {
-            Some(preset) => apply_preset(&preset, &user_theme),
-            None => user_theme,
-        },
-        None => user_theme,
-    };
-    Colors::from_config(&cfg)
+        .or(config.theme_preset.as_deref())
+        .unwrap_or(DEFAULT_PRESET);
+    match preset_colors(preset_name) {
+        Some(preset) => {
+            log::info!("Applying theme preset: {}", preset_name.trim());
+            apply_preset(&preset, &user_theme)
+        }
+        None => {
+            log::warn!("Unknown theme preset: {preset_name}");
+            user_theme
+        }
+    }
+}
+
+/// Resolve the active `Colors` from a loaded config. Shared by the GUI and
+/// the headless `app render` path.
+pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
+    Colors::from_config(&resolve_theme_config(config))
 }
 
 fn hex_to_bytes(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
@@ -397,6 +412,8 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
         "matrix" => Some("matrix"),
         "bios" | "retro" | "retro-bios" => Some("bios"),
         "plexi-night" | "plexinight" => Some("plexi-night"),
+        "plexi-dusk" | "plexidusk" => Some("plexi-dusk"),
+        "plexi-dawn" | "plexidawn" => Some("plexi-dawn"),
         "plexi-day" | "plexiday" => Some("plexi-day"),
         _ => None,
     }
@@ -410,6 +427,7 @@ pub fn is_light_preset(name: &str) -> bool {
             | Some("solarized-light")
             | Some("gruvbox-light")
             | Some("tokyo-day")
+            | Some("plexi-dawn")
             | Some("plexi-day")
     )
 }
@@ -435,6 +453,8 @@ pub fn preset_names() -> &'static [&'static str] {
         "matrix",
         "bios",
         "plexi-night",
+        "plexi-dusk",
+        "plexi-dawn",
         "plexi-day",
     ]
 }
@@ -879,20 +899,20 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
         "plexi-night" => Some(ThemeConfig {
             preset: None,
 
-            bg_darkest: s("#060609"),
+            bg_darkest: s("#000000"),
             bg_sidebar: s("#0c0c14"),
             bg_toolbar: s("#0c0c14"),
-            terminal_bg: s("#0e0e18"),
-            bg_hover: s("#151520"),
-            bg_sidebar_hover: s("#1a1a28"),
-            bg_active: s("#1e1e30"),
+            terminal_bg: s("#0f0f1a"),
+            bg_hover: s("#202030"),
+            bg_sidebar_hover: s("#242436"),
+            bg_active: s("#33334f"),
             text_primary: s("#e8e8f0"),
-            text_dim: s("#6060a0"),
-            text_section: s("#404070"),
+            text_dim: s("#9a9af5"),
+            text_section: s("#7777cc"),
             accent: s("#7c3aed"),
-            border: s("#1e1e30"),
+            border: s("#33334f"),
             foreground: s("#e8e8f0"),
-            background: s("#0e0e18"),
+            background: s("#0f0f1a"),
             black: s("#1a1a28"),
             red: s("#ef4444"),
             green: s("#4ade80"),
@@ -901,7 +921,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             magenta: s("#a855f7"),
             cyan: s("#22d3ee"),
             white: s("#c8c8e0"),
-            bright_black: s("#3a3a5c"),
+            bright_black: s("#7a7abd"),
             bright_red: s("#f87171"),
             bright_green: s("#86efac"),
             bright_yellow: s("#fde047"),
@@ -912,6 +932,78 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#f0f0f8"),
             ..ThemeConfig::default()
         }),
+        "plexi-dusk" => Some(ThemeConfig {
+            preset: None,
+
+            bg_darkest: s("#1a1b30"),
+            bg_sidebar: s("#22233c"),
+            bg_toolbar: s("#22233c"),
+            terminal_bg: s("#292a44"),
+            bg_hover: s("#30314e"),
+            bg_sidebar_hover: s("#37385a"),
+            bg_active: s("#44446c"),
+            text_primary: s("#e8e8f0"),
+            text_dim: s("#afafff"),
+            text_section: s("#8a8aef"),
+            accent: s("#9568f6"),
+            border: s("#44446c"),
+            foreground: s("#e8e8f0"),
+            background: s("#292a44"),
+            black: s("#1a1b30"),
+            red: s("#f26b6b"),
+            green: s("#4ade80"),
+            yellow: s("#facc15"),
+            blue: s("#60a5fa"),
+            magenta: s("#bb82f8"),
+            cyan: s("#22d3ee"),
+            white: s("#c8c8e0"),
+            bright_black: s("#8b8bdc"),
+            bright_red: s("#fa8585"),
+            bright_green: s("#86efac"),
+            bright_yellow: s("#fde047"),
+            bright_blue: s("#93c5fd"),
+            bright_magenta: s("#d0a0ff"),
+            bright_cyan: s("#67e8f9"),
+            bright_white: s("#f0f0f8"),
+            bright_foreground: s("#f0f0f8"),
+            ..ThemeConfig::default()
+        }),
+        "plexi-dawn" => Some(ThemeConfig {
+            preset: None,
+
+            bg_darkest: s("#c3c3da"),
+            bg_sidebar: s("#dcdcea"),
+            bg_toolbar: s("#dcdcea"),
+            terminal_bg: s("#e3e3f0"),
+            bg_hover: s("#c7c7de"),
+            bg_sidebar_hover: s("#c4c4dc"),
+            bg_active: s("#b0b0d0"),
+            text_primary: s("#1c1c3a"),
+            text_dim: s("#3a3a82"),
+            text_section: s("#4e4e96"),
+            accent: s("#6d28d9"),
+            border: s("#9a9abe"),
+            foreground: s("#1c1c3a"),
+            background: s("#e3e3f0"),
+            black: s("#2a2a48"),
+            red: s("#b91c1c"),
+            green: s("#166534"),
+            yellow: s("#8a5a00"),
+            blue: s("#1d4ed8"),
+            magenta: s("#7e22ce"),
+            cyan: s("#0b5f78"),
+            white: s("#484868"),
+            bright_black: s("#4a4a7a"),
+            bright_red: s("#dc2626"),
+            bright_green: s("#16a34a"),
+            bright_yellow: s("#a16207"),
+            bright_blue: s("#2563eb"),
+            bright_magenta: s("#9333ea"),
+            bright_cyan: s("#0891b2"),
+            bright_white: s("#e3e3f0"),
+            bright_foreground: s("#0a0a1a"),
+            ..ThemeConfig::default()
+        }),
         "plexi-day" => Some(ThemeConfig {
             preset: None,
 
@@ -919,24 +1011,24 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bg_sidebar: s("#ededf5"),
             bg_toolbar: s("#ededf5"),
             terminal_bg: s("#f5f5fb"),
-            bg_hover: s("#e2e2ef"),
-            bg_sidebar_hover: s("#d5d5e8"),
-            bg_active: s("#c8c8e0"),
+            bg_hover: s("#d8d8ea"),
+            bg_sidebar_hover: s("#d0d0e6"),
+            bg_active: s("#bcbcd8"),
             text_primary: s("#1a1a2e"),
-            text_dim: s("#6060a0"),
-            text_section: s("#8080b0"),
+            text_dim: s("#46468a"),
+            text_section: s("#585894"),
             accent: s("#7c3aed"),
-            border: s("#c8c8e0"),
+            border: s("#b8b8d4"),
             foreground: s("#1a1a2e"),
             background: s("#f5f5fb"),
             black: s("#2a2a40"),
-            red: s("#dc2626"),
-            green: s("#16a34a"),
-            yellow: s("#ca8a04"),
+            red: s("#c81e1e"),
+            green: s("#15803d"),
+            yellow: s("#92600a"),
             blue: s("#2563eb"),
             magenta: s("#7c3aed"),
-            cyan: s("#0891b2"),
-            white: s("#d8d8e8"),
+            cyan: s("#0b6f8a"),
+            white: s("#4a4a68"),
             bright_black: s("#5a5a80"),
             bright_red: s("#ef4444"),
             bright_green: s("#22c55e"),
@@ -1421,6 +1513,7 @@ mod tests {
             "solarized-light",
             "gruvbox-light",
             "tokyo-day",
+            "plexi-dawn",
             "plexi-day",
         ] {
             assert!(preset_colors(name).is_some(), "missing light preset {name}");
@@ -1543,7 +1636,7 @@ mod state_palette_tests {
     }
     #[test]
     fn state_presets_contrast_and_cvd() {
-        for theme in ["plexi-night", "plexi-day"] {
+        for theme in PLEXI_PRESETS {
             for preset in STATE_PRESETS {
                 let mut cfg = preset_colors(theme).unwrap();
                 cfg.state_preset = Some((*preset).into());
@@ -1603,5 +1696,124 @@ mod state_palette_tests {
     #[test]
     fn luminance_uses_srgb_once() {
         assert!((luminance(Color32::from_rgb(128, 128, 128)) - 0.21586).abs() < 0.001);
+    }
+}
+
+/// The Plexi theme family, dark first. `is_light_preset` must agree with the
+/// light/dark column.
+#[cfg(test)]
+const PLEXI_PRESETS: [&str; 4] = ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"];
+
+#[cfg(test)]
+mod plexi_family_tests {
+    use super::*;
+
+    fn tok(name: &str, field: &str, v: &Option<String>) -> Color32 {
+        let hex = v
+            .as_deref()
+            .unwrap_or_else(|| panic!("{name}: {field} unset"));
+        let [r, g, b] = hex_to_bytes(Some(hex), [0, 0, 0]);
+        Color32::from_rgb(r, g, b)
+    }
+
+    /// Every contrast pair the family must satisfy. Targets: text 4.5:1
+    /// (WCAG 1.4.3), accent 3:1 (1.4.11), structural edges 1.5:1 (`border`,
+    /// `bg_active`), hover fills 1.2:1 against the sidebar they sit on, and the
+    /// gap background `bg_darkest` 1.1:1 against the terminal surface. Hover
+    /// and gap fills carry no information alone, so they sit below the edge
+    /// target; Night stays near-black, which caps its gap ratio.
+    fn failures(name: &str) -> Vec<String> {
+        let cfg = preset_colors(name).unwrap_or_else(|| panic!("missing preset {name}"));
+        let t = |f: &str, v: &Option<String>| tok(name, f, v);
+        let c = |f: &str, v: &Option<String>| (f.to_string(), t(f, v));
+        let fills = [
+            c("terminal_bg", &cfg.terminal_bg),
+            c("bg_sidebar", &cfg.bg_sidebar),
+            c("bg_hover", &cfg.bg_hover),
+            c("bg_sidebar_hover", &cfg.bg_sidebar_hover),
+            c("bg_active", &cfg.bg_active),
+        ];
+        let mut pairs: Vec<(String, Color32, String, Color32, f32)> = Vec::new();
+        let mut add = |fg: (String, Color32), bg: &(String, Color32), need: f32| {
+            pairs.push((fg.0, fg.1, bg.0.clone(), bg.1, need));
+        };
+        for bg in &fills {
+            add(c("text_primary", &cfg.text_primary), bg, 4.5);
+            add(c("text_dim", &cfg.text_dim), bg, 4.5);
+        }
+        for bg in &fills[..2] {
+            add(c("text_section", &cfg.text_section), bg, 4.5);
+            add(c("accent", &cfg.accent), bg, 3.0);
+        }
+        let term = &fills[0];
+        for (f, v) in [
+            ("bright_black", &cfg.bright_black),
+            ("white", &cfg.white),
+            ("red", &cfg.red),
+            ("green", &cfg.green),
+            ("yellow", &cfg.yellow),
+            ("blue", &cfg.blue),
+            ("magenta", &cfg.magenta),
+            ("cyan", &cfg.cyan),
+        ] {
+            add(c(f, v), term, 4.5);
+        }
+        let side = &fills[1];
+        add(c("border", &cfg.border), term, 1.5);
+        add(c("border", &cfg.border), side, 1.5);
+        add(c("bg_active", &cfg.bg_active), term, 1.5);
+        add(c("bg_active", &cfg.bg_active), side, 1.5);
+        add(c("bg_hover", &cfg.bg_hover), side, 1.2);
+        add(c("bg_sidebar_hover", &cfg.bg_sidebar_hover), side, 1.2);
+        add(c("bg_darkest", &cfg.bg_darkest), term, 1.1);
+        pairs
+            .into_iter()
+            .filter_map(|(fg, fc, bg, bc, need)| {
+                let ratio = contrast(luminance(fc), luminance(bc));
+                (ratio < need).then(|| format!("{name}: {fg} on {bg} = {ratio:.2}, need {need}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plexi_family_meets_contrast_targets() {
+        let all: Vec<String> = PLEXI_PRESETS.iter().flat_map(|n| failures(n)).collect();
+        assert!(all.is_empty(), "contrast failures:\n{}", all.join("\n"));
+    }
+
+    #[test]
+    fn plexi_family_light_dark_classification() {
+        for (name, light) in [
+            ("plexi-night", false),
+            ("plexi-dusk", false),
+            ("plexi-dawn", true),
+            ("plexi-day", true),
+        ] {
+            assert_eq!(is_light_preset(name), light, "{name}");
+            let bg = Colors::from_config(&preset_colors(name).unwrap()).terminal_bg;
+            assert_eq!(luminance(bg) > 0.4, light, "{name} terminal_bg luminance");
+        }
+    }
+
+    #[test]
+    fn plexi_family_names_are_registered() {
+        for name in PLEXI_PRESETS {
+            assert!(
+                preset_names().contains(&name),
+                "{name} missing from preset_names"
+            );
+            assert_eq!(canonical_preset_name(name), Some(name));
+        }
+    }
+
+    #[test]
+    fn default_preset_is_plexi_dusk() {
+        assert_eq!(DEFAULT_PRESET, "plexi-dusk");
+        let expected = Colors::from_config(&preset_colors("plexi-dusk").unwrap());
+        let fallback = colors_from_config(&crate::config::PlexiConfig::default());
+        assert!(
+            fallback == expected,
+            "config naming no preset must resolve to the default preset"
+        );
     }
 }

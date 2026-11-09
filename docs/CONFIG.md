@@ -48,7 +48,7 @@ terminal_bg  = "#292a44"
 text_primary = "#cdd6f4"
 ```
 
-Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light.
+Available presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day. A fresh profile starts in `plexi-dusk` (dark, the default); `plexi-night` is the near-black dark theme, and `plexi-dawn` and `plexi-day` are the light themes. All four share the Plexi violet accent, tuned per background to keep at least 3:1 contrast.
 
 Known color keys: bg_darkest, bg_sidebar, bg_toolbar, terminal_bg, bg_hover, bg_sidebar_hover, bg_active, text_primary, text_dim, text_section, accent, border, foreground, background, black, red, green, yellow, blue, magenta, cyan, white, bright_black, bright_red, bright_green, bright_yellow, bright_blue, bright_magenta, bright_cyan, bright_white, bright_foreground.
 
@@ -272,8 +272,8 @@ confirm_context_close = true
 osc_pane_title = true
 
 [theme]
-preset = "catppuccin-mocha"
-# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light
+preset = "plexi-dusk"
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, tokyo-day, gruvbox-dark, gruvbox-light, nord, solarized-dark, solarized-light, matrix, bios, plexi-night, plexi-dusk, plexi-dawn, plexi-day
 # Uncomment to override individual colors:
 # accent       = "#89b4fa"
 # bg_darkest   = "#11111b"

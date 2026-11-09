@@ -1571,7 +1571,7 @@ impl PlexiApp {
         let focus_history_depth = config.focus_history_depth.unwrap_or(100);
         log::info!("config: focus_history_depth={focus_history_depth}");
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
-        let theme_cfg = Self::resolve_theme_config(&config);
+        let theme_cfg = theme::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         let dark_mode = !theme::is_light_preset(
             config
@@ -2850,7 +2850,7 @@ impl PlexiApp {
             config.keybindings.as_ref(),
             config.keys.as_ref(),
         );
-        let theme_cfg = Self::resolve_theme_config(&config);
+        let theme_cfg = theme::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         configure_egui_ctx(&ctx, &colors);
         let ui_wake: std::sync::Arc<dyn ui_mailbox::UiWake> =
@@ -3196,24 +3196,6 @@ impl PlexiApp {
             self.windows[win_idx].tree.root = Some(tile_id);
         }
         (tile_id, pane_id)
-    }
-
-    fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
-        let user_theme = config.theme.clone().unwrap_or_default();
-        // Prefer [theme] preset; fall back to legacy top-level theme_preset so
-        // existing configs survive the migration without silently losing their theme.
-        let preset_name = user_theme
-            .preset
-            .as_deref()
-            .or(config.theme_preset.as_deref());
-        if let Some(preset_name) = preset_name {
-            if let Some(preset) = theme::preset_colors(preset_name) {
-                log::info!("Applying theme preset: {}", preset_name.trim());
-                return theme::apply_preset(&preset, &user_theme);
-            }
-            log::warn!("Unknown theme preset: {preset_name}");
-        }
-        user_theme
     }
 
     pub(crate) fn make_backend_settings(
