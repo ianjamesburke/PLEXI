@@ -202,109 +202,352 @@ pub struct HarnessOptionSpec {
 }
 
 pub static CLAUDE_SUPPORTED_OPTIONS: &[HarnessOptionSpec] = &[
-    HarnessOptionSpec { name: "--verbose", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "-v", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "--effort", kind: OptionArgKind::Value, description: "Reasoning effort level" },
-    HarnessOptionSpec { name: "--thinking", kind: OptionArgKind::Flag, description: "Enable extended thinking" },
-    HarnessOptionSpec { name: "--max-thinking-tokens", kind: OptionArgKind::Value, description: "Maximum thinking tokens" },
-    HarnessOptionSpec { name: "--budget", kind: OptionArgKind::Value, description: "Cost budget limit" },
-    HarnessOptionSpec { name: "--permission-mode", kind: OptionArgKind::Value, description: "Permission prompt mode" },
-    HarnessOptionSpec { name: "--theme", kind: OptionArgKind::Value, description: "UI theme" },
-    HarnessOptionSpec { name: "--timeout", kind: OptionArgKind::Value, description: "Execution timeout in seconds" },
-    HarnessOptionSpec { name: "--fallback-model", kind: OptionArgKind::Value, description: "Fallback model identifier" },
-    HarnessOptionSpec { name: "--mcp-config", kind: OptionArgKind::Value, description: "Path to MCP configuration file" },
-    HarnessOptionSpec { name: "--header", kind: OptionArgKind::Value, description: "Custom HTTP header" },
-    HarnessOptionSpec { name: "--model", kind: OptionArgKind::Value, description: "Model identifier override" },
+    HarnessOptionSpec {
+        name: "--verbose",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "-v",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "--effort",
+        kind: OptionArgKind::Value,
+        description: "Reasoning effort level",
+    },
+    HarnessOptionSpec {
+        name: "--thinking",
+        kind: OptionArgKind::Flag,
+        description: "Enable extended thinking",
+    },
+    HarnessOptionSpec {
+        name: "--max-thinking-tokens",
+        kind: OptionArgKind::Value,
+        description: "Maximum thinking tokens",
+    },
+    HarnessOptionSpec {
+        name: "--budget",
+        kind: OptionArgKind::Value,
+        description: "Cost budget limit",
+    },
+    HarnessOptionSpec {
+        name: "--permission-mode",
+        kind: OptionArgKind::Value,
+        description: "Permission prompt mode",
+    },
+    HarnessOptionSpec {
+        name: "--theme",
+        kind: OptionArgKind::Value,
+        description: "UI theme",
+    },
+    HarnessOptionSpec {
+        name: "--timeout",
+        kind: OptionArgKind::Value,
+        description: "Execution timeout in seconds",
+    },
+    HarnessOptionSpec {
+        name: "--fallback-model",
+        kind: OptionArgKind::Value,
+        description: "Fallback model identifier",
+    },
+    HarnessOptionSpec {
+        name: "--mcp-config",
+        kind: OptionArgKind::Value,
+        description: "Path to MCP configuration file",
+    },
+    HarnessOptionSpec {
+        name: "--header",
+        kind: OptionArgKind::Value,
+        description: "Custom HTTP header",
+    },
+    HarnessOptionSpec {
+        name: "--model",
+        kind: OptionArgKind::Value,
+        description: "Model identifier override",
+    },
 ];
 
 pub static CLAUDE_RESERVED_OPTIONS: &[&str] = &[
-    "-p", "--print", "exec", "--prompt", "--resume", "--settings", "--append-system-prompt", "--system-prompt",
+    "-p",
+    "--print",
+    "exec",
+    "--prompt",
+    "--resume",
+    "--settings",
+    "--append-system-prompt",
+    "--system-prompt",
 ];
 
 pub static CLAUDE_SECURITY_OVERRIDES: &[&str] = &[
-    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--skip-permissions",
-    "--no-sandbox", "--disable-sandbox", "--dangerously-bypass", "--bypass-all", "--full-auto",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions",
+    "--skip-permissions",
+    "--no-sandbox",
+    "--disable-sandbox",
+    "--dangerously-bypass",
+    "--bypass-all",
+    "--full-auto",
 ];
 
 pub static PI_SUPPORTED_OPTIONS: &[HarnessOptionSpec] = &[
-    HarnessOptionSpec { name: "--verbose", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "-v", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "--debug", kind: OptionArgKind::Flag, description: "Enable debug logging" },
-    HarnessOptionSpec { name: "--thinking", kind: OptionArgKind::Flag, description: "Enable model thinking" },
-    HarnessOptionSpec { name: "--temperature", kind: OptionArgKind::Value, description: "Sampling temperature" },
-    HarnessOptionSpec { name: "--max-tokens", kind: OptionArgKind::Value, description: "Maximum completion tokens" },
-    HarnessOptionSpec { name: "--top-p", kind: OptionArgKind::Value, description: "Nucleus sampling top-p" },
-    HarnessOptionSpec { name: "--tools", kind: OptionArgKind::Value, description: "Allowed tool list" },
-    HarnessOptionSpec { name: "--theme", kind: OptionArgKind::Value, description: "UI theme" },
-    HarnessOptionSpec { name: "--profile", kind: OptionArgKind::Value, description: "Profile directory or name" },
-    HarnessOptionSpec { name: "-e", kind: OptionArgKind::Value, description: "Extension path" },
-    HarnessOptionSpec { name: "--extension", kind: OptionArgKind::Value, description: "Extension path" },
-    HarnessOptionSpec { name: "--model", kind: OptionArgKind::Value, description: "Model identifier override" },
+    HarnessOptionSpec {
+        name: "--verbose",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "-v",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "--debug",
+        kind: OptionArgKind::Flag,
+        description: "Enable debug logging",
+    },
+    HarnessOptionSpec {
+        name: "--thinking",
+        kind: OptionArgKind::Flag,
+        description: "Enable model thinking",
+    },
+    HarnessOptionSpec {
+        name: "--temperature",
+        kind: OptionArgKind::Value,
+        description: "Sampling temperature",
+    },
+    HarnessOptionSpec {
+        name: "--max-tokens",
+        kind: OptionArgKind::Value,
+        description: "Maximum completion tokens",
+    },
+    HarnessOptionSpec {
+        name: "--top-p",
+        kind: OptionArgKind::Value,
+        description: "Nucleus sampling top-p",
+    },
+    HarnessOptionSpec {
+        name: "--tools",
+        kind: OptionArgKind::Value,
+        description: "Allowed tool list",
+    },
+    HarnessOptionSpec {
+        name: "--theme",
+        kind: OptionArgKind::Value,
+        description: "UI theme",
+    },
+    HarnessOptionSpec {
+        name: "--profile",
+        kind: OptionArgKind::Value,
+        description: "Profile directory or name",
+    },
+    HarnessOptionSpec {
+        name: "-e",
+        kind: OptionArgKind::Value,
+        description: "Extension path",
+    },
+    HarnessOptionSpec {
+        name: "--extension",
+        kind: OptionArgKind::Value,
+        description: "Extension path",
+    },
+    HarnessOptionSpec {
+        name: "--model",
+        kind: OptionArgKind::Value,
+        description: "Model identifier override",
+    },
 ];
 
 pub static PI_RESERVED_OPTIONS: &[&str] = &[
-    "-p", "--print", "exec", "--prompt", "--session", "--append-system-prompt", "--no-extensions", "--no-mcp",
+    "-p",
+    "--print",
+    "exec",
+    "--prompt",
+    "--session",
+    "--append-system-prompt",
+    "--no-extensions",
+    "--no-mcp",
 ];
 
 pub static PI_SECURITY_OVERRIDES: &[&str] = &[
-    "--dangerously-skip-permissions", "--no-sandbox", "--disable-sandbox", "--dangerously-bypass", "--bypass-all", "--full-auto",
+    "--dangerously-skip-permissions",
+    "--no-sandbox",
+    "--disable-sandbox",
+    "--dangerously-bypass",
+    "--bypass-all",
+    "--full-auto",
 ];
 
 pub static CODEX_SUPPORTED_OPTIONS: &[HarnessOptionSpec] = &[
-    HarnessOptionSpec { name: "--verbose", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "-v", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "--debug", kind: OptionArgKind::Flag, description: "Enable debug mode" },
-    HarnessOptionSpec { name: "--search", kind: OptionArgKind::Flag, description: "Enable web search" },
-    HarnessOptionSpec { name: "--web-search", kind: OptionArgKind::Flag, description: "Enable web search" },
-    HarnessOptionSpec { name: "--temperature", kind: OptionArgKind::Value, description: "Sampling temperature" },
-    HarnessOptionSpec { name: "--max-tokens", kind: OptionArgKind::Value, description: "Maximum completion tokens" },
-    HarnessOptionSpec { name: "--top-p", kind: OptionArgKind::Value, description: "Nucleus sampling top-p" },
-    HarnessOptionSpec { name: "--color", kind: OptionArgKind::Value, description: "Color formatting mode" },
-    HarnessOptionSpec { name: "-c", kind: OptionArgKind::Value, description: "Configuration key=value" },
-    HarnessOptionSpec { name: "--config", kind: OptionArgKind::Value, description: "Configuration key=value" },
-    HarnessOptionSpec { name: "--model", kind: OptionArgKind::Value, description: "Model identifier override" },
+    HarnessOptionSpec {
+        name: "--verbose",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "-v",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "--debug",
+        kind: OptionArgKind::Flag,
+        description: "Enable debug mode",
+    },
+    HarnessOptionSpec {
+        name: "--search",
+        kind: OptionArgKind::Flag,
+        description: "Enable web search",
+    },
+    HarnessOptionSpec {
+        name: "--web-search",
+        kind: OptionArgKind::Flag,
+        description: "Enable web search",
+    },
+    HarnessOptionSpec {
+        name: "--temperature",
+        kind: OptionArgKind::Value,
+        description: "Sampling temperature",
+    },
+    HarnessOptionSpec {
+        name: "--max-tokens",
+        kind: OptionArgKind::Value,
+        description: "Maximum completion tokens",
+    },
+    HarnessOptionSpec {
+        name: "--top-p",
+        kind: OptionArgKind::Value,
+        description: "Nucleus sampling top-p",
+    },
+    HarnessOptionSpec {
+        name: "--color",
+        kind: OptionArgKind::Value,
+        description: "Color formatting mode",
+    },
+    HarnessOptionSpec {
+        name: "-c",
+        kind: OptionArgKind::Value,
+        description: "Configuration key=value",
+    },
+    HarnessOptionSpec {
+        name: "--config",
+        kind: OptionArgKind::Value,
+        description: "Configuration key=value",
+    },
+    HarnessOptionSpec {
+        name: "--model",
+        kind: OptionArgKind::Value,
+        description: "Model identifier override",
+    },
 ];
 
-pub static CODEX_RESERVED_OPTIONS: &[&str] = &[
-    "-p", "--prompt", "exec", "resume",
-];
+pub static CODEX_RESERVED_OPTIONS: &[&str] = &["-p", "--prompt", "exec", "resume"];
 
 pub static CODEX_SECURITY_OVERRIDES: &[&str] = &[
-    "--sandbox", "--no-sandbox", "--disable-sandbox", "--dangerously-bypass", "--bypass-all", "--full-auto",
+    "--sandbox",
+    "--no-sandbox",
+    "--disable-sandbox",
+    "--dangerously-bypass",
+    "--bypass-all",
+    "--full-auto",
 ];
 
 pub static AGY_SUPPORTED_OPTIONS: &[HarnessOptionSpec] = &[
-    HarnessOptionSpec { name: "--verbose", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "-v", kind: OptionArgKind::Flag, description: "Enable verbose output" },
-    HarnessOptionSpec { name: "--debug", kind: OptionArgKind::Flag, description: "Enable debug mode" },
-    HarnessOptionSpec { name: "--thinking", kind: OptionArgKind::Flag, description: "Enable model thinking" },
-    HarnessOptionSpec { name: "--temperature", kind: OptionArgKind::Value, description: "Sampling temperature" },
-    HarnessOptionSpec { name: "--max-tokens", kind: OptionArgKind::Value, description: "Maximum completion tokens" },
-    HarnessOptionSpec { name: "--mode", kind: OptionArgKind::Value, description: "Operational mode" },
-    HarnessOptionSpec { name: "--theme", kind: OptionArgKind::Value, description: "UI theme" },
-    HarnessOptionSpec { name: "--model", kind: OptionArgKind::Value, description: "Model identifier override" },
+    HarnessOptionSpec {
+        name: "--verbose",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "-v",
+        kind: OptionArgKind::Flag,
+        description: "Enable verbose output",
+    },
+    HarnessOptionSpec {
+        name: "--debug",
+        kind: OptionArgKind::Flag,
+        description: "Enable debug mode",
+    },
+    HarnessOptionSpec {
+        name: "--thinking",
+        kind: OptionArgKind::Flag,
+        description: "Enable model thinking",
+    },
+    HarnessOptionSpec {
+        name: "--temperature",
+        kind: OptionArgKind::Value,
+        description: "Sampling temperature",
+    },
+    HarnessOptionSpec {
+        name: "--max-tokens",
+        kind: OptionArgKind::Value,
+        description: "Maximum completion tokens",
+    },
+    HarnessOptionSpec {
+        name: "--mode",
+        kind: OptionArgKind::Value,
+        description: "Operational mode",
+    },
+    HarnessOptionSpec {
+        name: "--theme",
+        kind: OptionArgKind::Value,
+        description: "UI theme",
+    },
+    HarnessOptionSpec {
+        name: "--model",
+        kind: OptionArgKind::Value,
+        description: "Model identifier override",
+    },
 ];
 
-pub static AGY_RESERVED_OPTIONS: &[&str] = &[
-    "-p", "--prompt", "exec", "--resume", "--prompt-interactive",
-];
+pub static AGY_RESERVED_OPTIONS: &[&str] =
+    &["-p", "--prompt", "exec", "--resume", "--prompt-interactive"];
 
 pub static AGY_SECURITY_OVERRIDES: &[&str] = &[
-    "--dangerously-skip-permissions", "--no-sandbox", "--disable-sandbox", "--dangerously-bypass", "--bypass-all", "--full-auto", "--bypass-checks",
+    "--dangerously-skip-permissions",
+    "--no-sandbox",
+    "--disable-sandbox",
+    "--dangerously-bypass",
+    "--bypass-all",
+    "--full-auto",
+    "--bypass-checks",
 ];
 
 pub static SCRIPT_SUPPORTED_OPTIONS: &[HarnessOptionSpec] = &[
-    HarnessOptionSpec { name: "-e", kind: OptionArgKind::Flag, description: "Exit immediately on nonzero status" },
-    HarnessOptionSpec { name: "-u", kind: OptionArgKind::Flag, description: "Treat unset variables as error" },
-    HarnessOptionSpec { name: "-x", kind: OptionArgKind::Flag, description: "Print commands as executed" },
-    HarnessOptionSpec { name: "-v", kind: OptionArgKind::Flag, description: "Print shell input lines as read" },
-    HarnessOptionSpec { name: "-n", kind: OptionArgKind::Flag, description: "Read commands without executing" },
-    HarnessOptionSpec { name: "-o", kind: OptionArgKind::Value, description: "Set shell option (pipefail, errexit, nounset)" },
+    HarnessOptionSpec {
+        name: "-e",
+        kind: OptionArgKind::Flag,
+        description: "Exit immediately on nonzero status",
+    },
+    HarnessOptionSpec {
+        name: "-u",
+        kind: OptionArgKind::Flag,
+        description: "Treat unset variables as error",
+    },
+    HarnessOptionSpec {
+        name: "-x",
+        kind: OptionArgKind::Flag,
+        description: "Print commands as executed",
+    },
+    HarnessOptionSpec {
+        name: "-v",
+        kind: OptionArgKind::Flag,
+        description: "Print shell input lines as read",
+    },
+    HarnessOptionSpec {
+        name: "-n",
+        kind: OptionArgKind::Flag,
+        description: "Read commands without executing",
+    },
+    HarnessOptionSpec {
+        name: "-o",
+        kind: OptionArgKind::Value,
+        description: "Set shell option (pipefail, errexit, nounset)",
+    },
 ];
 
-pub static SCRIPT_RESERVED_OPTIONS: &[&str] = &[
-    "-c", "-i", "-s",
-];
+pub static SCRIPT_RESERVED_OPTIONS: &[&str] = &["-c", "-i", "-s"];
 
 pub static SCRIPT_SECURITY_OVERRIDES: &[&str] = &[];
 
@@ -465,11 +708,15 @@ fn validate_injection_characters(arg: &str) -> Result<(), String> {
     }
     for op in [";", "&&", "||", "|", "`", "$(", ">", "<"] {
         if arg.contains(op) {
-            return Err(format!("flag '{arg}' contains forbidden shell operator '{op}'"));
+            return Err(format!(
+                "flag '{arg}' contains forbidden shell operator '{op}'"
+            ));
         }
     }
     if arg.ends_with('&') || arg.contains(" & ") {
-        return Err(format!("flag '{arg}' contains forbidden shell operator '&'"));
+        return Err(format!(
+            "flag '{arg}' contains forbidden shell operator '&'"
+        ));
     }
     Ok(())
 }
@@ -649,11 +896,7 @@ impl HarnessAdapter {
     /// Build the CLI command to restore an agent pane on workspace startup or standby wake.
     /// Falls back to a bare harness binary launch when `session_id` is absent or when a
     /// `pi` session ID has no persisted session file on disk.
-    pub fn restore_command_with_flags(
-        &self,
-        session_id: Option<&str>,
-        flags: &[String],
-    ) -> String {
+    pub fn restore_command_with_flags(&self, session_id: Option<&str>, flags: &[String]) -> String {
         let dir = pi_sessions_dir();
         self.restore_command_with_flags_in(session_id, flags, dir.as_deref())
     }
@@ -1092,10 +1335,7 @@ pub fn build_agent_start_command(
             } else {
                 format!("# Persona\n{persona}\n\n{contract}")
             };
-            (
-                Some(dev_instructions),
-                initial_message.map(str::to_string),
-            )
+            (Some(dev_instructions), initial_message.map(str::to_string))
         }
         AgentHarness::Agy => {
             let full_prompt = match (persona.is_empty(), initial_message) {
@@ -1110,7 +1350,10 @@ pub fn build_agent_start_command(
     };
     let flags_summary = adapter.start_flags_summary_with_custom(
         harness_cfg.model.as_deref(),
-        append_prompt.as_deref().and_then(non_empty_string).is_some(),
+        append_prompt
+            .as_deref()
+            .and_then(non_empty_string)
+            .is_some(),
         effective_message.is_some(),
         &harness_cfg.extensions,
         &harness_cfg.flags,
@@ -1154,7 +1397,8 @@ pub fn resolved_session_harness_flags_in(
         return Vec::new();
     };
     let workspace_root = cwd.and_then(crate::app::registry::resolve_agent_lookup_workspace_root);
-    let Ok((definition, _)) = resolve_agent_definition_in(role, profile_dir, workspace_root.as_deref())
+    let Ok((definition, _)) =
+        resolve_agent_definition_in(role, profile_dir, workspace_root.as_deref())
     else {
         return Vec::new();
     };
@@ -1239,7 +1483,9 @@ pub fn resolve_agent_definition_in(
             if let Err(error) = crate::agent::ensure_workspace_default_agent(ws) {
                 log::error!(
                     "agent default: could not seed {}: {error}",
-                    crate::agent::workspace_agents_dir(ws).join("default").display()
+                    crate::agent::workspace_agents_dir(ws)
+                        .join("default")
+                        .display()
                 );
             }
         }
@@ -1348,9 +1594,8 @@ pub fn agent_create_in(
         }
     }
     if !opts.flags.is_empty() {
-        let primary = harness_adapter(cli_trimmed).ok_or_else(|| {
-            format!("invalid --cli '{}': unknown harness", opts.cli)
-        })?;
+        let primary = harness_adapter(cli_trimmed)
+            .ok_or_else(|| format!("invalid --cli '{}': unknown harness", opts.cli))?;
         validate_custom_harness_flags(primary, opts.flags, opts.model)?;
         if let Some(fb_str) = opts.fallback.and_then(non_empty_string) {
             if let Some(fb_adapter) = harness_adapter(fb_str) {
@@ -1585,9 +1830,9 @@ pub fn agent_list_in(
     // that is missing or legacy, so a real agent is never silently invisible.
     let mut unrecognised = crate::agent::scan_agent_dirs(&profile_dir.join("agents"));
     if let Some(root) = workspace_root {
-        unrecognised.extend(crate::agent::scan_agent_dirs(&crate::agent::workspace_agents_dir(
-            root,
-        )));
+        unrecognised.extend(crate::agent::scan_agent_dirs(
+            &crate::agent::workspace_agents_dir(root),
+        ));
     }
     // The built-in `default` is listed too: it is a launchable Pi agent, and
     // `spawn`/`start default` resolve exactly this row until the workspace has
@@ -1827,11 +2072,7 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
     let workspace_root = effective_cwd.as_deref().and_then(|cwd| {
-        resolve_agent_workspace_root_for(
-            name,
-            cwd,
-            &crate::app::registry::workspace_walk_stops(),
-        )
+        resolve_agent_workspace_root_for(name, cwd, &crate::app::registry::workspace_walk_stops())
     });
     match agent_show_in(
         name,
@@ -1851,7 +2092,12 @@ pub fn agent_show_cli(name: &str, cwd: Option<&str>, json: bool) -> i32 {
 }
 
 pub fn agent_flags_cli(target: Option<&str>, cwd: Option<&str>, json: bool) -> i32 {
-    log::info!("agent_flags:cli target={:?} cwd={:?} json={}", target, cwd, json);
+    log::info!(
+        "agent_flags:cli target={:?} cwd={:?} json={}",
+        target,
+        cwd,
+        json
+    );
     if let Some(t) = target {
         if let Some(adapter) = harness_adapter(t) {
             return display_adapter_flags(adapter, json);
@@ -2042,8 +2288,7 @@ pub fn resolve_agent_spawn_in_stopping_at(
     stops: &[PathBuf],
 ) -> Result<serde_json::Value, String> {
     let workspace_root = resolve_agent_workspace_root_for(agent_name, start_cwd, stops);
-    let (def, _) =
-        resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
+    let (def, _) = resolve_agent_definition_in(agent_name, profile_dir, workspace_root.as_deref())?;
     let Some(ref harness_cfg) = def.harness else {
         return Err(format!(
             "agent '{}' has no [harness] table in settings.toml (it is an Assistant persona and cannot be started as a CLI harness session)",
@@ -2060,7 +2305,9 @@ pub fn resolve_agent_spawn_in_stopping_at(
             crate::app::registry::resolve_agent_create_workspace_root_stopping_at(start_cwd, stops)
         })
         .unwrap_or_else(|| start_cwd.to_path_buf());
-    let task_text = task_or_message.and_then(non_empty_string).unwrap_or_default();
+    let task_text = task_or_message
+        .and_then(non_empty_string)
+        .unwrap_or_default();
     let effective_ephemeral = match ephemeral_override {
         Some(explicit) => explicit,
         None => harness_cfg.ephemeral,
@@ -2279,7 +2526,10 @@ pub fn agent_wait_cli(pane_ids: &[u64], timeout_secs: f64, json: bool) -> i32 {
             for r in results {
                 let pid = r.get("pane_id").and_then(|v| v.as_u64()).unwrap_or(0);
                 let agent = r.get("agent").and_then(|v| v.as_str()).unwrap_or("agent");
-                let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("completed");
+                let status = r
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("completed");
                 let summary = r.get("summary").and_then(|v| v.as_str()).unwrap_or("");
                 if summary.is_empty() {
                     println!("#{pid} {agent} [{status}]");
@@ -2898,7 +3148,11 @@ pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> 
     };
     Some(HookReport {
         state,
-        detail: if with_tool { hook_tool_detail(input) } else { None },
+        detail: if with_tool {
+            hook_tool_detail(input)
+        } else {
+            None
+        },
         session_id: hook_str(input, &[&["session_id"], &["sessionId"]]).map(str::to_string),
         event: event.to_string(),
     })
@@ -2956,8 +3210,7 @@ fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
         return Ok(());
     }
     let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
     let mut staged = tempfile::NamedTempFile::new_in(dir)
         .map_err(|e| format!("could not stage {}: {e}", path.display()))?;
     std::io::Write::write_all(&mut staged, content.as_bytes())
@@ -2995,16 +3248,18 @@ pub fn with_auto_state_hooks(adapter: &HarnessAdapter, command: String) -> Strin
         }
         AgentHarness::Pi => {
             let path = hooks_dir.join(PLEXI_PI_EXTENSION);
-            write_if_changed(&path, &pi_extension_script()).map(|_| {
-                vec!["-e".to_string(), shell_quote_arg(&path.to_string_lossy())]
-            })
+            write_if_changed(&path, &pi_extension_script())
+                .map(|_| vec!["-e".to_string(), shell_quote_arg(&path.to_string_lossy())])
         }
         _ => return command,
     };
     match result {
         Ok(flags) => insert_after_binary(&command, adapter.binary, &flags),
         Err(e) => {
-            log::warn!("agent_hook: auto-provision for {} failed: {e}", adapter.binary);
+            log::warn!(
+                "agent_hook: auto-provision for {} failed: {e}",
+                adapter.binary
+            );
             command
         }
     }
@@ -3550,9 +3805,14 @@ mod agent_tests {
         let report = |v: serde_json::Value| super::map_hook_payload(&v);
         let r = report(serde_json::json!({"hook_event_name": "SessionStart", "session_id": "s1"}))
             .unwrap();
-        assert_eq!((r.state, r.session_id.as_deref(), r.event.as_str()), ("idle", Some("s1"), "SessionStart"));
         assert_eq!(
-            report(serde_json::json!({"hook_event_name": "UserPromptSubmit"})).unwrap().state,
+            (r.state, r.session_id.as_deref(), r.event.as_str()),
+            ("idle", Some("s1"), "SessionStart")
+        );
+        assert_eq!(
+            report(serde_json::json!({"hook_event_name": "UserPromptSubmit"}))
+                .unwrap()
+                .state,
             "working"
         );
         let r = report(serde_json::json!({
@@ -3560,26 +3820,40 @@ mod agent_tests {
             "tool_input": {"command": "cargo test --lib"}
         }))
         .unwrap();
-        assert_eq!((r.state, r.detail.as_deref()), ("working", Some("Bash: cargo test --lib")));
+        assert_eq!(
+            (r.state, r.detail.as_deref()),
+            ("working", Some("Bash: cargo test --lib"))
+        );
         let r = report(serde_json::json!({
             "hook_event_name": "PermissionRequest", "tool_name": "Edit",
             "tool_input": {"file_path": "/repo/src/main.rs"}
         }))
         .unwrap();
-        assert_eq!((r.state, r.detail.as_deref()), ("blocked", Some("Edit: main.rs")));
+        assert_eq!(
+            (r.state, r.detail.as_deref()),
+            ("blocked", Some("Edit: main.rs"))
+        );
         // Stop, StopFailure and SessionEnd keep distinct raw provenance.
         let events: Vec<_> = ["Stop", "StopFailure", "SessionEnd"]
             .iter()
             .map(|e| report(serde_json::json!({"hook_event_name": e, "sessionId": "s2"})).unwrap())
             .collect();
-        assert!(events.iter().all(|r| r.state == "idle" && r.session_id.as_deref() == Some("s2")));
+        assert!(events
+            .iter()
+            .all(|r| r.state == "idle" && r.session_id.as_deref() == Some("s2")));
         assert_eq!(
             events.iter().map(|r| r.event.as_str()).collect::<Vec<_>>(),
             ["Stop", "StopFailure", "SessionEnd"]
         );
         // Pi event names and tool-name-only events.
-        assert_eq!(report(serde_json::json!({"hook_event_name": "agent_end"})).unwrap().state, "idle");
-        let r = report(serde_json::json!({"hook_event_name": "tool_call", "toolName": "mcp_x"})).unwrap();
+        assert_eq!(
+            report(serde_json::json!({"hook_event_name": "agent_end"}))
+                .unwrap()
+                .state,
+            "idle"
+        );
+        let r = report(serde_json::json!({"hook_event_name": "tool_call", "toolName": "mcp_x"}))
+            .unwrap();
         assert_eq!(r.detail.as_deref(), Some("mcp_x"));
         // Stateless and unknown events are ignored.
         assert!(report(serde_json::json!({"hook_event_name": "SubagentStart"})).is_none());
@@ -3617,14 +3891,24 @@ mod agent_tests {
         let shared = tempfile::tempdir().unwrap();
         let _guard = crate::config::set_test_shared_dir(shared.path().to_path_buf());
         let hooks = shared.path().join("hooks");
-        let adapter = |h| super::HARNESS_ADAPTERS.iter().find(|a| a.harness == h).unwrap();
+        let adapter = |h| {
+            super::HARNESS_ADAPTERS
+                .iter()
+                .find(|a| a.harness == h)
+                .unwrap()
+        };
 
         let claude = adapter(super::AgentHarness::Claude);
         let cmd = super::with_auto_state_hooks(claude, "claude --model x 'task'".to_string());
         let settings_path = hooks.join("plexi-claude-settings.json");
         assert!(
-            cmd.starts_with(&format!("claude --settings '{}' --model x", settings_path.display()))
-                || cmd.starts_with(&format!("claude --settings {} --model x", settings_path.display())),
+            cmd.starts_with(&format!(
+                "claude --settings '{}' --model x",
+                settings_path.display()
+            )) || cmd.starts_with(&format!(
+                "claude --settings {} --model x",
+                settings_path.display()
+            )),
             "{cmd}"
         );
         let settings: serde_json::Value =
@@ -3637,16 +3921,25 @@ mod agent_tests {
         }
 
         let pi = adapter(super::AgentHarness::Pi);
-        let cmd = super::with_auto_state_hooks(pi, "pi --no-extensions --no-mcp 'task'".to_string());
+        let cmd =
+            super::with_auto_state_hooks(pi, "pi --no-extensions --no-mcp 'task'".to_string());
         let ext = hooks.join("plexi-agent-state.ts");
-        assert!(cmd.contains("--no-extensions") && cmd.contains("-e "), "{cmd}");
+        assert!(
+            cmd.contains("--no-extensions") && cmd.contains("-e "),
+            "{cmd}"
+        );
         assert!(cmd.contains(&ext.to_string_lossy().to_string()), "{cmd}");
         assert!(cmd.starts_with("pi -e "), "{cmd}");
-        assert!(super::is_plexi_pi_extension(&fs::read_to_string(&ext).unwrap()));
+        assert!(super::is_plexi_pi_extension(
+            &fs::read_to_string(&ext).unwrap()
+        ));
 
         // Other harnesses are untouched, and provisioning is idempotent.
         let codex = adapter(super::AgentHarness::Codex);
-        assert_eq!(super::with_auto_state_hooks(codex, "codex 'x'".to_string()), "codex 'x'");
+        assert_eq!(
+            super::with_auto_state_hooks(codex, "codex 'x'".to_string()),
+            "codex 'x'"
+        );
         let again = super::with_auto_state_hooks(pi, "pi --no-extensions 'task'".to_string());
         assert!(again.starts_with("pi -e "));
     }
@@ -3972,20 +4265,14 @@ mod agent_tests {
         // 1. Unknown user extension is preserved and never overwritten or removed.
         let custom_content = "// User-authored custom extension\nexport default function() {}\n";
         fs::write(&ext_path, custom_content).unwrap();
-        assert_eq!(
-            super::install_pi_extension_at(&ext_path),
-            1
-        );
+        assert_eq!(super::install_pi_extension_at(&ext_path), 1);
         assert!(super::migrate_legacy_pi_extension_at(&ext_path).is_err());
         assert_eq!(fs::read_to_string(&ext_path).unwrap(), custom_content);
         assert!(!bak_path.exists());
 
         // 2. Legacy Plexi-generated extension is recognized, backed up to .plexi-hook.bak, and removed on migration.
         fs::remove_file(&ext_path).unwrap();
-        assert_eq!(
-            super::install_pi_extension_at(&ext_path),
-            0
-        );
+        assert_eq!(super::install_pi_extension_at(&ext_path), 0);
         let generated = fs::read_to_string(&ext_path).unwrap();
         assert!(super::is_plexi_pi_extension(&generated));
         assert!(generated.contains("__PLEXI_PI_PACKAGE_ACTIVE__"));
@@ -4008,17 +4295,36 @@ mod agent_tests {
 
     #[test]
     fn supervised_worker_reports_nonzero_and_clean_exit_without_completion() {
-        for (command, code) in [("exit 1", 1), ("true", 0), ("printf 'output\\n'; exit 7", 7)] {
+        for (command, code) in [
+            ("exit 1", 1),
+            ("true", 0),
+            ("printf 'output\\n'; exit 7", 7),
+        ] {
             let wrapped = super::supervised_worker_command(command, "printf '%s\\n'", "script");
-            let output = std::process::Command::new("/bin/sh").args(["-c", &wrapped]).output().unwrap();
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", &wrapped])
+                .output()
+                .unwrap();
             assert!(output.status.success());
             let text = String::from_utf8(output.stdout).unwrap();
             assert!(text.contains("HarnessExit"), "{text}");
-            assert!(text.contains(&format!("harness exited with code {code} without agent done")), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "harness exited with code {code} without agent done"
+                )),
+                "{text}"
+            );
             let args: Vec<_> = text.lines().collect();
             assert!(
                 args.windows(2).any(|pair| {
-                    pair == ["--state", if code == 0 { "exited_unreported" } else { "failed" }]
+                    pair == [
+                        "--state",
+                        if code == 0 {
+                            "exited_unreported"
+                        } else {
+                            "failed"
+                        },
+                    ]
                 }),
                 "{text}"
             );
@@ -4032,10 +4338,17 @@ mod agent_tests {
         let command = adapter.spawn_command("submit a ballot", None, None);
         // A shell function records the exact argv delivered in the non-git cwd.
         let probe = format!("codex() {{ printf '%s\\n' \"$@\"; }}; {command}");
-        let output = std::process::Command::new("/bin/sh").args(["-c", &probe]).current_dir(cwd.path()).output().unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &probe])
+            .current_dir(cwd.path())
+            .output()
+            .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\nsubmit a ballot\n");
-        assert_eq!(adapter.spawn_flags_summary(None, false, &[]), "--sandbox workspace-write -c sandbox_workspace_write.network_access=true");
+        assert_eq!(
+            adapter.spawn_flags_summary(None, false, &[]),
+            "--sandbox workspace-write -c sandbox_workspace_write.network_access=true"
+        );
         assert!(!command.contains("--dangerously"));
         assert!(!command.contains("writable_roots"));
         assert!(!command.contains("--add-dir"));
@@ -4377,38 +4690,81 @@ mod agent_tests {
         let profile = h.profile_dir().to_path_buf();
         for (dir, description) in [
             (profile.join("agents/worker"), "user definition"),
-            (crate::agent::workspace_agents_dir(&root).join("worker"), "workspace definition"),
+            (
+                crate::agent::workspace_agents_dir(&root).join("worker"),
+                "workspace definition",
+            ),
         ] {
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("AGENT.md"), "Worker persona").unwrap();
             fs::write(dir.join("settings.toml"), format!("[agent]\nid = \"worker\"\ndisplay_name = \"Worker\"\ndescription = \"{description}\"\n[harness]\ncli = \"script\"\n")).unwrap();
         }
-        let list: serde_json::Value = serde_json::from_str(&super::agent_list_in(&profile, Some(&root), true).unwrap()).unwrap();
-        let row = list["agents"].as_array().unwrap().iter().find(|row| row["name"] == "worker").unwrap();
+        let list: serde_json::Value =
+            serde_json::from_str(&super::agent_list_in(&profile, Some(&root), true).unwrap())
+                .unwrap();
+        let row = list["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == "worker")
+            .unwrap();
         assert_eq!(row["description"], "workspace definition");
-        let show: serde_json::Value = serde_json::from_str(&super::agent_show_in("worker", &profile, Some(&root), true).unwrap()).unwrap();
+        let show: serde_json::Value = serde_json::from_str(
+            &super::agent_show_in("worker", &profile, Some(&root), true).unwrap(),
+        )
+        .unwrap();
         assert_eq!(show["description"], "workspace definition");
-        let mut payload = super::resolve_agent_spawn_in_stopping_at("worker", &profile, &root, Some("sleep 30"), None, None, None, &[]).unwrap();
+        let mut payload = super::resolve_agent_spawn_in_stopping_at(
+            "worker",
+            &profile,
+            &root,
+            Some("sleep 30"),
+            None,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
         assert_eq!(payload["role"], "worker");
         let reply_dir = tempfile::tempdir().unwrap();
         let spawn_reply = reply_dir.path().join("spawn.json");
         payload["response_file"] = serde_json::json!(spawn_reply);
         h.inject_ipc(serde_json::from_value(payload).unwrap());
         h.hidden_frame();
-        let spawned: serde_json::Value = serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();
+        let spawned: serde_json::Value =
+            serde_json::from_slice(&fs::read(&spawn_reply).unwrap()).unwrap();
         assert_eq!(spawned["ok"], true, "{spawned}");
         let pane_id = spawned["pane_id"].as_u64().unwrap();
         let (win, _) = h.app.find_pane_in_any_window(pane_id).unwrap();
-        h.app.windows[win].panes.get_mut(&pane_id).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
-            pane_id, state: crate::protocol::AgentState::Blocked, agent: "script".into(), detail: None, session_id: None,
-        }));
+        h.app.windows[win]
+            .panes
+            .get_mut(&pane_id)
+            .unwrap()
+            .set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id,
+                state: crate::protocol::AgentState::Blocked,
+                agent: "script".into(),
+                detail: None,
+                session_id: None,
+            }));
         let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
-        assert!(fleet.tasks.iter().flat_map(|task| &task.rows).any(|row| row.pane_id == pane_id && row.role == "worker"));
+        assert!(fleet
+            .tasks
+            .iter()
+            .flat_map(|task| &task.rows)
+            .any(|row| row.pane_id == pane_id && row.role == "worker"));
         let next_reply = reply_dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(crate::protocol::HostRequest::AgentNext { response_file: next_reply.to_string_lossy().into_owned() });
-        let next: serde_json::Value = serde_json::from_slice(&fs::read(next_reply).unwrap()).unwrap();
+        h.app
+            .handle_pane_ipc_request(crate::protocol::HostRequest::AgentNext {
+                response_file: next_reply.to_string_lossy().into_owned(),
+            });
+        let next: serde_json::Value =
+            serde_json::from_slice(&fs::read(next_reply).unwrap()).unwrap();
         assert_eq!(next["pane_id"], pane_id);
-        let run = crate::agent::runs::handle_request("spawn_run", &serde_json::json!({"workspace": root, "agent": "worker"}));
+        let run = crate::agent::runs::handle_request(
+            "spawn_run",
+            &serde_json::json!({"workspace": root, "agent": "worker"}),
+        );
         assert_eq!(run["ok"], true, "{run}");
         assert_eq!(run["run"]["agent_id"], "worker");
         assert_eq!(run["run"]["grants"], serde_json::json!([]));
@@ -4517,7 +4873,10 @@ mod agent_tests {
             }
         });
         for card in arr {
-            assert!(crate::host::pane_result::validate_instance(&schema, card).is_ok(), "{card}");
+            assert!(
+                crate::host::pane_result::validate_instance(&schema, card).is_ok(),
+                "{card}"
+            );
             assert!(card["description"].is_string());
             assert!(card["skills"].is_array());
             assert!(card["capabilities"].is_object());
@@ -4551,7 +4910,11 @@ mod agent_tests {
         let _channel = crate::config::set_test_channel("alpha");
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let legacy = ws.path().join(".plexi").join("agents").join("lead-120cadfb");
+        let legacy = ws
+            .path()
+            .join(".plexi")
+            .join("agents")
+            .join("lead-120cadfb");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("head.json"), "{\"id\":\"lead-120cadfb\"}").unwrap();
         let pane = ws.path().join(".plexi").join("agents").join("writer");
@@ -4574,7 +4937,11 @@ mod agent_tests {
     /// agent array and nothing to report as unrecognised.
     fn seed_recognised_agent_workspace(profile: &std::path::Path, ws: &std::path::Path) {
         for (dir, display_name, description) in [
-            (profile.join("agents/reviewer"), "Reviewer", "Global reviewer"),
+            (
+                profile.join("agents/reviewer"),
+                "Reviewer",
+                "Global reviewer",
+            ),
             (
                 crate::agent::workspace_agents_dir(ws).join("worker"),
                 "Worker",
@@ -4632,7 +4999,11 @@ mod agent_tests {
         assert_eq!(reported.len(), 2, "{json}");
         let legacy_row = reported
             .iter()
-            .find(|row| row["path"].as_str().is_some_and(|p| p.ends_with("lead-120cadfb")))
+            .find(|row| {
+                row["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("lead-120cadfb"))
+            })
             .expect("the legacy directory is reported");
         let incomplete_row = reported
             .iter()
@@ -4676,7 +5047,9 @@ mod agent_tests {
                 profile.path(),
                 ws.path()
             ),
-            include_str!("testdata/agent_list_json_base_agents.json").replace("0.4.0", env!("CARGO_PKG_VERSION")).trim_end(),
+            include_str!("testdata/agent_list_json_base_agents.json")
+                .replace("0.4.0", env!("CARGO_PKG_VERSION"))
+                .trim_end(),
             "the agent array must be byte-identical to the base-commit output"
         );
     }
@@ -4727,18 +5100,16 @@ mod agent_tests {
         let stops = vec![fake_home.path().to_path_buf()];
 
         let payload = super::resolve_agent_start_in_stopping_at(
-            "default",
-            &profile,
-            &repo,
-            None,
-            None,
-            &stops,
+            "default", &profile, &repo, None, None, &stops,
         )
         .expect("default resolves in a fresh checkout");
         assert_eq!(payload["role"], "default");
         assert_eq!(payload["harness"], "pi");
         let cmd = payload["command"].as_str().unwrap();
-        assert!(cmd.starts_with("pi "), "unexpected default start command: {cmd}");
+        assert!(
+            cmd.starts_with("pi "),
+            "unexpected default start command: {cmd}"
+        );
         assert!(!cmd.contains(" -p"));
         assert_eq!(payload["cwd"], repo.to_string_lossy().as_ref());
 
@@ -4885,7 +5256,10 @@ mod agent_tests {
             ),
             "unexpected pi start command: {pi_cmd}"
         );
-        assert!(!pi_cmd.contains(" -p"), "interactive pi start must not pass -p: {pi_cmd}");
+        assert!(
+            !pi_cmd.contains(" -p"),
+            "interactive pi start must not pass -p: {pi_cmd}"
+        );
         assert!(pi_cmd.contains("You are a fast codebase researcher."));
         assert!(pi_cmd.contains("# Plexi worker contract"));
 
@@ -4923,7 +5297,10 @@ mod agent_tests {
             ),
             "unexpected codex start command: {codex_cmd}"
         );
-        assert!(!codex_cmd.contains(" exec "), "interactive codex start must not pass exec: {codex_cmd}");
+        assert!(
+            !codex_cmd.contains(" exec "),
+            "interactive codex start must not pass exec: {codex_cmd}"
+        );
         assert!(codex_cmd.contains("developer_instructions=# Persona\nYou are a fast codebase researcher.\n\n# Plexi worker contract"));
         assert!(codex_cmd.ends_with("'Run checks'"));
 
@@ -5121,31 +5498,19 @@ mod agent_tests {
             "Solarized Dark".to_string(),
             "--thinking".to_string(),
         ];
-        let validated = super::validate_custom_harness_flags(
-            super::AgentHarness::Pi.adapter(),
-            &flags,
-            None,
-        )
-        .expect("valid flags with spaces should pass");
+        let validated =
+            super::validate_custom_harness_flags(super::AgentHarness::Pi.adapter(), &flags, None)
+                .expect("valid flags with spaces should pass");
         assert_eq!(validated, flags);
 
         let pi_adapter = super::AgentHarness::Pi.adapter();
-        let cmd = pi_adapter.start_command_with_flags_and_extensions(
-            None,
-            None,
-            None,
-            &flags,
-            &[],
-        );
+        let cmd = pi_adapter.start_command_with_flags_and_extensions(None, None, None, &flags, &[]);
         // Literal spaces must be preserved with single quotes
         assert!(cmd.contains("'Solarized Dark'"), "cmd was: {cmd}");
         assert!(cmd.contains("--thinking"), "cmd was: {cmd}");
 
         // Test quotes inside values
-        let codex_flags = vec![
-            "-c".to_string(),
-            "setting='quoted value'".to_string(),
-        ];
+        let codex_flags = vec!["-c".to_string(), "setting='quoted value'".to_string()];
         let validated_codex = super::validate_custom_harness_flags(
             super::AgentHarness::Codex.adapter(),
             &codex_flags,
@@ -5203,7 +5568,10 @@ mod agent_tests {
     #[test]
     fn test_custom_harness_flags_reject_security_override_values() {
         for flags in [
-            vec!["--permission-mode".to_string(), "bypassPermissions".to_string()],
+            vec![
+                "--permission-mode".to_string(),
+                "bypassPermissions".to_string(),
+            ],
             vec!["--permission-mode=dontAsk".to_string()],
             vec!["--sandbox".to_string(), "danger-full-access".to_string()],
             vec!["--ask-for-approval=never".to_string()],
@@ -5217,7 +5585,8 @@ mod agent_tests {
             };
             let error = super::validate_custom_harness_flags(adapter, &flags, None).unwrap_err();
             assert!(
-                error.contains("reserved security override") || error.contains("reserved for Plexi sandbox authority"),
+                error.contains("reserved security override")
+                    || error.contains("reserved for Plexi sandbox authority"),
                 "expected authority rejection for {flags:?}, got: {error}"
             );
         }
@@ -5273,7 +5642,10 @@ mod agent_tests {
             &["--model".to_string(), "claude-3-5-sonnet".to_string()],
             None,
         );
-        assert!(ok.is_ok(), "model flag without config conflict should be ok");
+        assert!(
+            ok.is_ok(),
+            "model flag without config conflict should be ok"
+        );
     }
 
     #[test]
@@ -5285,7 +5657,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_script.contains("does not support flag '--verbose'"), "{err_script}");
+        assert!(
+            err_script.contains("does not support flag '--verbose'"),
+            "{err_script}"
+        );
 
         // Claude with -e (Pi extension flag)
         let err_claude = super::validate_custom_harness_flags(
@@ -5294,7 +5669,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_claude.contains("does not support flag '-e'"), "{err_claude}");
+        assert!(
+            err_claude.contains("does not support flag '-e'"),
+            "{err_claude}"
+        );
 
         // Pi with --effort (Codex flag)
         let err_pi = super::validate_custom_harness_flags(
@@ -5303,7 +5681,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_pi.contains("does not support flag '--effort'"), "{err_pi}");
+        assert!(
+            err_pi.contains("does not support flag '--effort'"),
+            "{err_pi}"
+        );
 
         // Codex with --theme (Pi flag)
         let err_codex = super::validate_custom_harness_flags(
@@ -5312,7 +5693,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_codex.contains("does not support flag '--theme'"), "{err_codex}");
+        assert!(
+            err_codex.contains("does not support flag '--theme'"),
+            "{err_codex}"
+        );
 
         // Agy with --effort (Claude/Codex flag)
         let err_agy = super::validate_custom_harness_flags(
@@ -5321,7 +5705,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_agy.contains("does not support flag '--effort'"), "{err_agy}");
+        assert!(
+            err_agy.contains("does not support flag '--effort'"),
+            "{err_agy}"
+        );
     }
 
     #[test]
@@ -5333,7 +5720,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_missing.contains("missing required value"), "{err_missing}");
+        assert!(
+            err_missing.contains("missing required value"),
+            "{err_missing}"
+        );
 
         // Unexpected positional argument
         let err_pos = super::validate_custom_harness_flags(
@@ -5342,7 +5732,10 @@ mod agent_tests {
             None,
         )
         .unwrap_err();
-        assert!(err_pos.contains("unexpected positional argument"), "{err_pos}");
+        assert!(
+            err_pos.contains("unexpected positional argument"),
+            "{err_pos}"
+        );
     }
 
     #[test]
@@ -5356,7 +5749,10 @@ mod agent_tests {
             &claude_flags,
             &[],
         );
-        assert!(claude_start.contains("claude --verbose"), "got: {claude_start}");
+        assert!(
+            claude_start.contains("claude --verbose"),
+            "got: {claude_start}"
+        );
 
         let claude_spawn = claude_adapter.spawn_command_with_flags_and_extensions(
             "fix bug",
@@ -5365,37 +5761,30 @@ mod agent_tests {
             &claude_flags,
             &[],
         );
-        assert!(claude_spawn.contains("claude --verbose"), "got: {claude_spawn}");
-
-        let claude_restore = claude_adapter.restore_command_with_flags(
-            Some("sess-123"),
-            &claude_flags,
+        assert!(
+            claude_spawn.contains("claude --verbose"),
+            "got: {claude_spawn}"
         );
+
+        let claude_restore =
+            claude_adapter.restore_command_with_flags(Some("sess-123"), &claude_flags);
         assert_eq!(claude_restore, "claude --verbose --resume sess-123");
 
-        let claude_resume = claude_adapter.resume_command_with_flags(
-            "sess-123",
-            &claude_flags,
-        );
+        let claude_resume = claude_adapter.resume_command_with_flags("sess-123", &claude_flags);
         assert_eq!(claude_resume, "claude --verbose --resume sess-123");
 
-        let claude_bare = claude_adapter.restore_command_with_flags(
-            None,
-            &claude_flags,
-        );
+        let claude_bare = claude_adapter.restore_command_with_flags(None, &claude_flags);
         assert_eq!(claude_bare, "claude --verbose");
 
         // Pi
         let pi_adapter = super::AgentHarness::Pi.adapter();
         let pi_flags = vec!["--verbose".to_string()];
-        let pi_start = pi_adapter.start_command_with_flags_and_extensions(
-            None,
-            None,
-            None,
-            &pi_flags,
-            &[],
+        let pi_start =
+            pi_adapter.start_command_with_flags_and_extensions(None, None, None, &pi_flags, &[]);
+        assert!(
+            pi_start.starts_with("pi ") && pi_start.contains("--verbose"),
+            "got: {pi_start}"
         );
-        assert!(pi_start.starts_with("pi ") && pi_start.contains("--verbose"), "got: {pi_start}");
 
         // Codex
         let codex_adapter = super::AgentHarness::Codex.adapter();
@@ -5407,18 +5796,16 @@ mod agent_tests {
             &codex_flags,
             &[],
         );
-        assert!(codex_start.contains("codex --verbose"), "got: {codex_start}");
+        assert!(
+            codex_start.contains("codex --verbose"),
+            "got: {codex_start}"
+        );
 
         // Agy
         let agy_adapter = super::AgentHarness::Agy.adapter();
         let agy_flags = vec!["--verbose".to_string()];
-        let agy_start = agy_adapter.start_command_with_flags_and_extensions(
-            None,
-            None,
-            None,
-            &agy_flags,
-            &[],
-        );
+        let agy_start =
+            agy_adapter.start_command_with_flags_and_extensions(None, None, None, &agy_flags, &[]);
         assert!(agy_start.contains("agy --verbose"), "got: {agy_start}");
 
         // Script
@@ -5430,7 +5817,10 @@ mod agent_tests {
             &[],
             &[],
         );
-        assert!(script_start.contains("/bin/sh -c 'echo hi'"), "got: {script_start}");
+        assert!(
+            script_start.contains("/bin/sh -c 'echo hi'"),
+            "got: {script_start}"
+        );
     }
 
     #[test]
@@ -5457,7 +5847,14 @@ mod agent_tests {
             "--header=Authorization: Bearer abc123SECRET".to_string(),
         ];
         let redacted = super::redact_harness_flags(&inline);
-        assert_eq!(redacted, vec!["--config=[REDACTED]", "-c=[REDACTED]", "--header=[REDACTED]"]);
+        assert_eq!(
+            redacted,
+            vec![
+                "--config=[REDACTED]",
+                "-c=[REDACTED]",
+                "--header=[REDACTED]"
+            ]
+        );
     }
 
     #[test]
@@ -5472,7 +5869,10 @@ mod agent_tests {
         assert_eq!(super::agent_flags_cli(None, None, true), 0);
         assert_eq!(super::agent_flags_cli(None, None, false), 0);
         // Invalid adapter returns non-zero
-        assert_ne!(super::agent_flags_cli(Some("invalid-adapter-xyz"), None, false), 0);
+        assert_ne!(
+            super::agent_flags_cli(Some("invalid-adapter-xyz"), None, false),
+            0
+        );
     }
 }
 
@@ -5560,18 +5960,16 @@ pub fn agent_fleet_cli(json: bool, filter: crate::protocol::FleetFilter) -> i32 
     0
 }
 
-pub fn agent_fleet_dismiss_cli(
-    target: Option<&str>,
-    all_failed: bool,
-    json: bool,
-) -> i32 {
+pub fn agent_fleet_dismiss_cli(target: Option<&str>, all_failed: bool, json: bool) -> i32 {
     let parsed_target = match target {
         Some(raw) => {
             let trimmed = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
             match trimmed.parse::<u64>() {
                 Ok(id) => Some(id),
                 Err(_) => {
-                    eprintln!("error: invalid pane id '{raw}' (expected a numeric id like 215 or #215)");
+                    eprintln!(
+                        "error: invalid pane id '{raw}' (expected a numeric id like 215 or #215)"
+                    );
                     return 1;
                 }
             }
@@ -5677,9 +6075,19 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         }
     };
     match &mut request {
-        crate::protocol::HostRequest::AgentCall { parent_pane_id, call_credential, .. }
-        | crate::protocol::HostRequest::AgentMessage { parent_pane_id, call_credential, .. } => {
-            *parent_pane_id = std::env::var("PLEXI_PANE_ID").ok().and_then(|s| s.parse().ok());
+        crate::protocol::HostRequest::AgentCall {
+            parent_pane_id,
+            call_credential,
+            ..
+        }
+        | crate::protocol::HostRequest::AgentMessage {
+            parent_pane_id,
+            call_credential,
+            ..
+        } => {
+            *parent_pane_id = std::env::var("PLEXI_PANE_ID")
+                .ok()
+                .and_then(|s| s.parse().ok());
             *call_credential = std::env::var("PLEXI_CALL_CREDENTIAL").ok();
         }
         _ => {
@@ -5688,11 +6096,17 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         }
     }
     if let crate::protocol::HostRequest::AgentCall { cwd, .. } = &mut request {
-        *cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
+        *cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned());
     }
-    let timeout = if matches!(request,
-        crate::protocol::HostRequest::AgentCall { asynchronous: false, handoff: false, .. }
-        | crate::protocol::HostRequest::AgentMessage { wait: true, .. }
+    let timeout = if matches!(
+        request,
+        crate::protocol::HostRequest::AgentCall {
+            asynchronous: false,
+            handoff: false,
+            ..
+        } | crate::protocol::HostRequest::AgentMessage { wait: true, .. }
     ) {
         std::time::Duration::from_secs(86405)
     } else {
@@ -5710,7 +6124,11 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         Err(code) => return code,
     };
     println!("{reply}");
-    if super::reply_error(&reply).is_some() { 1 } else { 0 }
+    if super::reply_error(&reply).is_some() {
+        1
+    } else {
+        0
+    }
 }
 
 fn is_safe_result_dir_key(key: &str) -> bool {
@@ -5834,14 +6252,12 @@ pub fn persist_agent_done_result(
     }
 
     for base in &bases {
-        std::fs::create_dir_all(base)
-            .map_err(|e| format!("create {}: {e}", base.display()))?;
+        std::fs::create_dir_all(base).map_err(|e| format!("create {}: {e}", base.display()))?;
         let _ = std::fs::write(base.join("latest.json"), &json_bytes);
         let _ = std::fs::write(base.join("RESULT.md"), &markdown);
         for key in &keys {
             let dir = base.join(key);
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| format!("create {}: {e}", dir.display()))?;
+            std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
             let md_path = dir.join("RESULT.md");
             let js_path = dir.join("result.json");
             std::fs::write(&md_path, &markdown)
@@ -6010,7 +6426,10 @@ pub fn read_persisted_agent_result_in(
             map.entry("summary".to_string())
                 .or_insert_with(|| serde_json::Value::String(summary.to_string()));
             map.insert("result".to_string(), committed.clone());
-            map.insert("markdown".to_string(), serde_json::Value::String(md.clone()));
+            map.insert(
+                "markdown".to_string(),
+                serde_json::Value::String(md.clone()),
+            );
             map.insert(
                 "result_path".to_string(),
                 serde_json::Value::String(md_path.to_string_lossy().into_owned()),

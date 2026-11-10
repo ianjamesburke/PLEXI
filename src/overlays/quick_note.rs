@@ -170,8 +170,10 @@ impl PlexiApp {
                             &dest,
                             max_width,
                         );
-                        let (rect, _) = ui
-                            .allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(max_width, height),
+                            egui::Sense::hover(),
+                        );
                         crate::editor::widget::paint_inline_image_strip(
                             &mut self.quick_note_image_cache,
                             ui.painter(),

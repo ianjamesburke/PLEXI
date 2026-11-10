@@ -1,5 +1,5 @@
-use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::app::permissions::PluginPermissions;
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::HashMap;
@@ -24,7 +24,10 @@ fn standby_session_line(
 ) -> String {
     match (
         crate::cli::AgentHarness::parse(&session.harness),
-        session.session_id.as_deref().filter(|id| !id.trim().is_empty()),
+        session
+            .session_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty()),
     ) {
         (Some(harness), Some(id))
             if cached_resume_command.is_some_and(|command| command != harness.adapter().binary) =>
@@ -224,7 +227,8 @@ impl SemanticPaneState {
                     UiNodeData::SurfaceHeader(surface_header) => (
                         "surface_header",
                         Some(surface_header.title.clone()),
-                        (!surface_header.subtitle.is_empty()).then(|| surface_header.subtitle.clone()),
+                        (!surface_header.subtitle.is_empty())
+                            .then(|| surface_header.subtitle.clone()),
                         Vec::new(),
                     ),
                     UiNodeData::FooterKeys(footer_keys) => (
@@ -596,7 +600,11 @@ impl Pane {
                     t.is_agent_pane().then(|| crate::protocol::PaneAgentState {
                         pane_id: t.id,
                         state: crate::protocol::AgentState::Idle,
-                        agent: t.agent_harness.clone().or_else(|| t.standby_session.as_ref().map(|s| s.harness.clone())).unwrap_or_default(),
+                        agent: t
+                            .agent_harness
+                            .clone()
+                            .or_else(|| t.standby_session.as_ref().map(|s| s.harness.clone()))
+                            .unwrap_or_default(),
                         detail: None,
                         session_id: t.agent_session_id.clone(),
                     })
@@ -623,7 +631,9 @@ impl Pane {
     /// An plugin's yellow health pip keeps its color without implying agent work.
     pub fn static_health_pip(&self) -> bool {
         self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
-            && !self.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
+            && !self
+                .agent()
+                .is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
     }
 
     /// Activity state for the unified activity dot. Generic terminal process
@@ -633,7 +643,9 @@ impl Pane {
             return Some(pip.as_agent_state());
         }
         if let Pane::Terminal(t) = self {
-            if t.is_agent_pane() && (t.exited || t.agent_completed || t.slots.contains_key("completed")) {
+            if t.is_agent_pane()
+                && (t.exited || t.agent_completed || t.slots.contains_key("completed"))
+            {
                 use crate::protocol::AgentState;
                 return Some(match t.effective_agent_state().0 {
                     AgentState::Working => &AgentState::Working,
@@ -698,7 +710,10 @@ impl Pane {
                     if let Some(ref mut standby) = t.standby_session {
                         standby.last_state = a.state.clone();
                         standby.last_detail = a.detail.clone();
-                        if a.session_id.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+                        if a.session_id
+                            .as_deref()
+                            .is_some_and(|s| !s.trim().is_empty())
+                        {
                             standby.session_id = a.session_id.clone();
                         }
                     }
@@ -901,7 +916,10 @@ impl TerminalPane {
         mut settings: BackendSettings,
         default_font_size: f32,
     ) -> Option<Self> {
-        settings.env.insert(super::process_cleanup::SESSION_ENV.into(), super::process_cleanup::session_marker().into());
+        settings.env.insert(
+            super::process_cleanup::SESSION_ENV.into(),
+            super::process_cleanup::session_marker().into(),
+        );
         let ephemeral = settings
             .env
             .get("PLEXI_EPHEMERAL")
@@ -1157,10 +1175,11 @@ impl TerminalPane {
     /// any previously preserved `tail_preview`.
     pub fn capture_tail_preview(&self) -> Option<String> {
         if self.is_standby() {
-            return self
-                .tail_preview
-                .clone()
-                .or_else(|| self.standby_session.as_ref().and_then(|s| s.tail_preview.clone()));
+            return self.tail_preview.clone().or_else(|| {
+                self.standby_session
+                    .as_ref()
+                    .and_then(|s| s.tail_preview.clone())
+            });
         }
         let lines: Vec<String> = self
             .backend
@@ -1189,11 +1208,19 @@ impl TerminalPane {
         (!tail.is_empty()).then_some(tail)
     }
 
-    fn update_fleet_transition(&mut self, previous: Option<&crate::protocol::AgentState>, next: Option<&crate::protocol::AgentState>) {
+    fn update_fleet_transition(
+        &mut self,
+        previous: Option<&crate::protocol::AgentState>,
+        next: Option<&crate::protocol::AgentState>,
+    ) {
         use crate::protocol::AgentState;
-        if previous == next { return; }
+        if previous == next {
+            return;
+        }
         self.fleet_since = crate::platform::clock::now_secs();
-        if next == Some(&AgentState::Completed) || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle)) {
+        if next == Some(&AgentState::Completed)
+            || (previous == Some(&AgentState::Working) && next == Some(&AgentState::Idle))
+        {
             self.fleet_done_unseen = true;
             self.fleet_seen = false;
             self.fleet_dismissed = false;
@@ -1209,29 +1236,80 @@ impl TerminalPane {
 
     pub(crate) fn set_reported_7501(&mut self, reported: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.reported_7501 = reported;
-        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
     pub(crate) fn set_observed_agent(&mut self, observed: Option<crate::protocol::PaneAgentState>) {
         let now = std::time::Instant::now();
-        let before = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let before = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.observed_agent = observed;
-        let after = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), now).map(|a| a.state.clone());
+        let after = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            now,
+        )
+        .map(|a| a.state.clone());
         self.update_fleet_transition(before.as_ref(), after.as_ref());
     }
 
     /// Completion takes precedence over a failed process exit, then the report.
     pub(crate) fn effective_agent_state(&self) -> (crate::protocol::AgentState, Option<String>) {
-        let report = select_terminal_agent(self.reported_7501.as_ref(), self.agent.as_ref(), self.agent_reported_at, self.observed_agent.as_ref(), std::time::Instant::now());
-        let state = report.map(|a| a.state.clone()).or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone())).unwrap_or(crate::protocol::AgentState::Idle);
-        let detail = report.and_then(|a| a.detail.clone()).or_else(|| self.standby_session.as_ref().and_then(|s| s.last_detail.clone()));
-        Self::resolve_agent_state(self.agent_completed || self.slots.contains_key("completed"), self.exited.then_some(self.exit_status).flatten(), state, detail)
+        let report = select_terminal_agent(
+            self.reported_7501.as_ref(),
+            self.agent.as_ref(),
+            self.agent_reported_at,
+            self.observed_agent.as_ref(),
+            std::time::Instant::now(),
+        );
+        let state = report
+            .map(|a| a.state.clone())
+            .or_else(|| self.standby_session.as_ref().map(|s| s.last_state.clone()))
+            .unwrap_or(crate::protocol::AgentState::Idle);
+        let detail = report.and_then(|a| a.detail.clone()).or_else(|| {
+            self.standby_session
+                .as_ref()
+                .and_then(|s| s.last_detail.clone())
+        });
+        Self::resolve_agent_state(
+            self.agent_completed || self.slots.contains_key("completed"),
+            self.exited.then_some(self.exit_status).flatten(),
+            state,
+            detail,
+        )
     }
 
-    fn resolve_agent_state(completed: bool, exit: Option<crate::host::pane_lifecycle::ExitStatus>, state: crate::protocol::AgentState, detail: Option<String>) -> (crate::protocol::AgentState, Option<String>) {
+    fn resolve_agent_state(
+        completed: bool,
+        exit: Option<crate::host::pane_lifecycle::ExitStatus>,
+        state: crate::protocol::AgentState,
+        detail: Option<String>,
+    ) -> (crate::protocol::AgentState, Option<String>) {
         if completed || state == crate::protocol::AgentState::Completed {
             (crate::protocol::AgentState::Completed, detail)
         } else if let Some(status) = exit.filter(|s| s.is_failure()) {
@@ -1458,20 +1536,58 @@ mod agent_source_tests {
     fn effective_agent_state_precedence_table() {
         use crate::host::pane_lifecycle::ExitStatus;
         for (completed, exit, reported, expected, detail) in [
-            (true, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Completed, "report"),
-            (false, Some(ExitStatus::Code(3)), AgentState::Completed, AgentState::Completed, "report"),
-            (false, Some(ExitStatus::Code(3)), AgentState::Working, AgentState::Failed, "exited (3)"),
-            (false, Some(ExitStatus::Code(0)), AgentState::Working, AgentState::Interrupted, "report"),
-            (false, None, AgentState::Blocked, AgentState::Blocked, "report"),
+            (
+                true,
+                Some(ExitStatus::Code(3)),
+                AgentState::Working,
+                AgentState::Completed,
+                "report",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(3)),
+                AgentState::Completed,
+                AgentState::Completed,
+                "report",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(3)),
+                AgentState::Working,
+                AgentState::Failed,
+                "exited (3)",
+            ),
+            (
+                false,
+                Some(ExitStatus::Code(0)),
+                AgentState::Working,
+                AgentState::Interrupted,
+                "report",
+            ),
+            (
+                false,
+                None,
+                AgentState::Blocked,
+                AgentState::Blocked,
+                "report",
+            ),
         ] {
-            let actual = super::TerminalPane::resolve_agent_state(completed, exit, reported, Some("report".into()));
+            let actual = super::TerminalPane::resolve_agent_state(
+                completed,
+                exit,
+                reported,
+                Some("report".into()),
+            );
             assert_eq!(actual, (expected, Some(detail.into())));
         }
     }
 
     use std::time::{Duration, Instant};
 
-    fn saved_session(harness: &str, session_id: Option<&str>) -> crate::workspace::SavedAgentSession {
+    fn saved_session(
+        harness: &str,
+        session_id: Option<&str>,
+    ) -> crate::workspace::SavedAgentSession {
         crate::workspace::SavedAgentSession {
             fleet_result: None,
             fleet_seen: false,
@@ -1549,11 +1665,12 @@ mod agent_source_tests {
         let stale_at = now - HOOK_AGENT_FRESHNESS - Duration::from_millis(1);
 
         let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now).expect("agent");
+            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&working), now)
+                .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
 
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now).expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(stale_at), Some(&idle), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
     }
 
@@ -1579,10 +1696,11 @@ mod agent_source_tests {
         let now = Instant::now();
         let hook = state(AgentState::Working);
         let observed = state(AgentState::Idle);
-        let selected =
-            select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now).expect("agent");
+        let selected = select_terminal_agent(None, Some(&hook), Some(now), Some(&observed), now)
+            .expect("agent");
         assert_eq!(selected.state, AgentState::Working);
-        let selected = select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
+        let selected =
+            select_terminal_agent(None, None, None, Some(&observed), now).expect("agent");
         assert_eq!(selected.state, AgentState::Idle);
         assert!(select_terminal_agent(None, None, None, None, now).is_none());
     }
@@ -1822,7 +1940,10 @@ impl ViewRuntime {
     }
 
     /// Returns None when this runtime does not support NotifyAction.
-    pub(crate) fn try_queue_notify_action(&mut self, event: crate::protocol::PlexiEvent) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
+    pub(crate) fn try_queue_notify_action(
+        &mut self,
+        event: crate::protocol::PlexiEvent,
+    ) -> Option<Result<(), crate::host::wasm_python::OutboundEventError>> {
         if !self.supports_notify_action() {
             return None;
         }
@@ -1833,7 +1954,8 @@ impl ViewRuntime {
     }
 
     pub(crate) fn supports_notify_action(&self) -> bool {
-        matches!(self, ViewRuntime::Python(_)) && matches!(self.lifecycle().0, "starting" | "running")
+        matches!(self, ViewRuntime::Python(_))
+            && matches!(self.lifecycle().0, "starting" | "running")
     }
 
     /// Register a directed pipe on this runtime's local pipe registry so
@@ -1898,9 +2020,9 @@ impl ViewRuntime {
             ViewRuntime::Python(app) => Some(
                 crate::plexi_ai::tool_dispatch::PluginEventSender::Python(app.tool_event_sender()),
             ),
-            ViewRuntime::Wasm(app) => Some(crate::plexi_ai::tool_dispatch::PluginEventSender::Wasm(
-                app.input_sender(repaint),
-            )),
+            ViewRuntime::Wasm(app) => Some(
+                crate::plexi_ai::tool_dispatch::PluginEventSender::Wasm(app.input_sender(repaint)),
+            ),
             ViewRuntime::Builtin(_) => None,
         }
     }

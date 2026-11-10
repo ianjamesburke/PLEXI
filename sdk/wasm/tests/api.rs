@@ -1,6 +1,6 @@
 use plexi_wasm_sdk::{
-    effects, ui, Alignment, View, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
-    UiNodeData,
+    effects, ui, Alignment, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl, UiNodeData,
+    View,
 };
 
 #[test]

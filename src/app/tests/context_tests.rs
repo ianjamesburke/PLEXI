@@ -65,7 +65,11 @@ fn deleting_context_preserves_workspace_save_and_restore() {
         context_id: child,
     });
     h.app.context_active_window.insert(child, window);
-    let index = h.app.router.position(|context| context.context_id == child).unwrap();
+    let index = h
+        .app
+        .router
+        .position(|context| context.context_id == child)
+        .unwrap();
     h.app.delete_context(index);
     h.app.save_workspace_now();
     let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
@@ -102,7 +106,9 @@ fn workspace_config_context_switch_isolated_from_parallel_fallback_activity() {
         scope.spawn(move || {
             let _fallback_guard =
                 crate::config::set_test_profile_fallback_base(writer_fallback_base);
-            start_write_rx.recv().expect("target starts concurrent write");
+            start_write_rx
+                .recv()
+                .expect("target starts concurrent write");
             let fallback_path = crate::config::config_path();
             std::fs::write(&fallback_path, "font_size = not_a_number\n")
                 .expect("write malformed fallback config");
@@ -115,8 +121,7 @@ fn workspace_config_context_switch_isolated_from_parallel_fallback_activity() {
         scope.spawn(move || {
             let _fallback_guard =
                 crate::config::set_test_profile_fallback_base(target_fallback_base);
-            let _profile_guard =
-                crate::config::set_test_profile_dir(target_profile_path);
+            let _profile_guard = crate::config::set_test_profile_dir(target_profile_path);
             start_write_tx
                 .send(())
                 .expect("ask concurrent test to write fallback config");
@@ -2567,7 +2572,10 @@ fn push_pane_to_subcontext_inserts_grandchild_after_parent_not_at_end() {
     let child1_window = h.app.active_window;
     let old_root = h.app.windows[child1_window].tree.root.unwrap();
     let (outside, _) = h.app.add_view_pane_in_window(child1_window, "outside");
-    let root = h.app.windows[child1_window].tree.tiles.insert_horizontal_tile(vec![old_root, outside]);
+    let root = h.app.windows[child1_window]
+        .tree
+        .tiles
+        .insert_horizontal_tile(vec![old_root, outside]);
     h.app.windows[child1_window].tree.root = Some(root);
 
     // Push pane_b from root's window (IPC targets pane_b explicitly) -> child2(d1).
@@ -3640,8 +3648,8 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
     // the plugin genuinely isn't installed there.
     assert_eq!(app.active_window, 0, "context A must still be active");
     let result_from_a = app.launch_view_by_id_with_layout(plugin_id, None, &[], None);
-    let err_from_a =
-        result_from_a.expect_err("the plugin is not installed in context A's root — launch must fail");
+    let err_from_a = result_from_a
+        .expect_err("the plugin is not installed in context A's root — launch must fail");
     assert!(
         !err_from_a.contains("WASM"),
         "a not-found plugin must not be misreported as a runtime problem, got {err_from_a:?}"
@@ -4177,7 +4185,10 @@ fn cmd_1_2_3_switches_numbered_contexts() {
     assert_eq!(h.app.router.active().context_id, ctx1_id);
     assert_eq!(h.app.active_focused_pane_id(), Some(p1));
     assert_eq!(h.app.visual_owner_pane(), Some(p1));
-    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p1));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p1)
+    );
     assert_eq!(h.app.router.active_idx(), 0);
     assert_sidebar_highlight(&h.app, 0);
 
@@ -4186,7 +4197,10 @@ fn cmd_1_2_3_switches_numbered_contexts() {
     assert_eq!(h.app.router.active().context_id, ctx2_id);
     assert_eq!(h.app.active_focused_pane_id(), Some(p2));
     assert_eq!(h.app.visual_owner_pane(), Some(p2));
-    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p2));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p2)
+    );
     assert_eq!(h.app.router.active_idx(), 1);
     assert_sidebar_highlight(&h.app, 1);
 
@@ -4195,7 +4209,10 @@ fn cmd_1_2_3_switches_numbered_contexts() {
     assert_eq!(h.app.router.active().context_id, ctx3_id);
     assert_eq!(h.app.active_focused_pane_id(), Some(p3));
     assert_eq!(h.app.visual_owner_pane(), Some(p3));
-    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p3));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p3)
+    );
     assert_eq!(h.app.router.active_idx(), 2);
     assert_sidebar_highlight(&h.app, 2);
 
@@ -4204,7 +4221,10 @@ fn cmd_1_2_3_switches_numbered_contexts() {
     assert_eq!(h.app.router.active().context_id, ctx1_id);
     assert_eq!(h.app.active_focused_pane_id(), Some(p1));
     assert_eq!(h.app.visual_owner_pane(), Some(p1));
-    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(p1));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(p1)
+    );
     assert_eq!(h.app.router.active_idx(), 0);
     assert_sidebar_highlight(&h.app, 0);
 
@@ -4260,7 +4280,11 @@ fn cmd_1_2_3_switches_numbered_contexts() {
     // Overlay active (e.g. TreeAtlas): Cmd+1..9 does not trigger ghost switches
     h.app.zoom.level = crate::app::zoom::ZoomLevel::TreeAtlas;
     h.press_key(egui::Key::Num2, cmd());
-    assert_eq!(h.app.router.active().context_id, ctx3_id, "no ghost context switch in TreeAtlas");
+    assert_eq!(
+        h.app.router.active().context_id,
+        ctx3_id,
+        "no ghost context switch in TreeAtlas"
+    );
 }
 
 #[test]
@@ -4271,8 +4295,7 @@ fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
     let first = h.app.router.get(0).context_id;
     let second = h.app.create_context_without_pty("ctx-2", None);
     let second_window = h.app.windows.len() - 1;
-    let (second_tile, _second_pane) =
-        h.app.add_view_pane_in_window(second_window, "ctx-2-pane");
+    let (second_tile, _second_pane) = h.app.add_view_pane_in_window(second_window, "ctx-2-pane");
     h.app.windows[second_window].navigate_to(second_tile);
     h.app.switch_workspace(0);
 
@@ -4287,7 +4310,10 @@ fn host_key_ipc_drives_numbered_context_switch_without_pane_input() {
     assert_eq!(h.app.router.active().context_id, second);
     assert_eq!(h.app.active_focused_pane_id(), Some(_second_pane));
     assert_ne!(h.app.router.active().context_id, first);
-    assert_eq!(h.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(_second_pane));
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(_second_pane)
+    );
     assert_ne!(h.app.active_focused_pane_id(), Some(pane));
     let response = std::fs::read_to_string(response_file).expect("host key response");
     assert_eq!(response, r#"{"ok":true}"#);
@@ -4310,22 +4336,44 @@ fn breadcrumb_navigation_restores_parent_chain_and_rejects_stale_source() {
     let pane = h.add_test_pane();
     h.add_test_pane();
     let root = h.app.router.active().context_id;
-    h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
-    let child = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    h.app
+        .push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let child = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
     let child_id = h.app.router.get(child).context_id;
     h.app.switch_workspace(child);
     h.add_assistant_pane_in_window(h.app.active_window);
-    h.app.push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
-    let grandchild = h.app.router.position(|c| c.parent_id == Some(child_id)).unwrap();
+    h.app
+        .push_pane_to_subcontext(Some("duplicate".into()), Some(pane));
+    let grandchild = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(child_id))
+        .unwrap();
     let source = h.app.router.get(grandchild).context_id;
     h.app.switch_workspace(grandchild);
     h.app.router.depth_stack.clear();
     h.app.router.depth_stack.push((source, u64::MAX, None));
-    let windows = h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>();
+    let windows = h
+        .app
+        .windows
+        .iter()
+        .map(|w| (w.window_id, w.context_id))
+        .collect::<Vec<_>>();
     assert!(h.app.navigate_context_ancestor(source, root));
     assert_eq!(h.app.router.active().context_id, root);
     assert!(h.app.router.depth_stack.is_empty());
-    assert_eq!(windows, h.app.windows.iter().map(|w| (w.window_id, w.context_id)).collect::<Vec<_>>());
+    assert_eq!(
+        windows,
+        h.app
+            .windows
+            .iter()
+            .map(|w| (w.window_id, w.context_id))
+            .collect::<Vec<_>>()
+    );
     assert!(!h.app.navigate_context_ancestor(source, child_id));
     assert_eq!(h.app.router.active().context_id, root);
 }
@@ -4336,15 +4384,35 @@ fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
     let pane = h.add_test_pane();
     h.add_test_pane();
     let root = h.app.router.active().context_id;
-    h.app.push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
-    let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    h.app
+        .push_pane_to_subcontext(Some("revealed child".into()), Some(pane));
+    let child_index = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
     let child = h.app.router.get(child_index).context_id;
-    let root_window = h.app.windows.iter().position(|w| w.context_id == root).unwrap();
+    let root_window = h
+        .app
+        .windows
+        .iter()
+        .position(|w| w.context_id == root)
+        .unwrap();
     let win = &mut h.app.windows[root_window];
-    let portal_id = *win.panes.iter().find(|(_,p)| p.as_portal().is_some()).unwrap().0;
-    win.panes.retain(|id,_| *id == portal_id);
+    let portal_id = *win
+        .panes
+        .iter()
+        .find(|(_, p)| p.as_portal().is_some())
+        .unwrap()
+        .0;
+    win.panes.retain(|id, _| *id == portal_id);
     win.tree.root = win.tree.tiles.find_pane(&portal_id);
-    win.panes.get_mut(&portal_id).unwrap().as_portal_mut().unwrap().reveal_after_close = true;
+    win.panes
+        .get_mut(&portal_id)
+        .unwrap()
+        .as_portal_mut()
+        .unwrap()
+        .reveal_after_close = true;
     h.app.switch_workspace(child_index);
     assert_eq!(h.app.revealed_child(root), Some(child));
     assert!(h.app.navigate_context_ancestor(child, root));
@@ -4352,7 +4420,11 @@ fn breadcrumb_can_restore_revealed_parent_without_changing_reveal_flag() {
     assert_eq!(h.app.revealed_child(root), Some(child));
     let root_index = h.app.router.position(|c| c.context_id == root).unwrap();
     h.app.switch_workspace(root_index);
-    assert_eq!(h.app.router.active().context_id, child, "ordinary navigation retains reveal behavior");
+    assert_eq!(
+        h.app.router.active().context_id,
+        child,
+        "ordinary navigation retains reveal behavior"
+    );
 }
 
 #[test]
@@ -4361,8 +4433,13 @@ fn breadcrumb_deleted_ancestor_rejects_without_focus_or_history_changes() {
     let pane = h.add_test_pane();
     h.add_test_pane();
     let root = h.app.router.active().context_id;
-    h.app.push_pane_to_subcontext(Some("child".into()), Some(pane));
-    let child_index = h.app.router.position(|c| c.parent_id == Some(root)).unwrap();
+    h.app
+        .push_pane_to_subcontext(Some("child".into()), Some(pane));
+    let child_index = h
+        .app
+        .router
+        .position(|c| c.parent_id == Some(root))
+        .unwrap();
     let child = h.app.router.get(child_index).context_id;
     h.app.switch_workspace(child_index);
     let root_index = h.app.router.position(|c| c.context_id == root).unwrap();

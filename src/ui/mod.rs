@@ -1,5 +1,4 @@
 pub mod activity;
-pub mod view_chrome;
 pub mod badge;
 pub(crate) mod bounded;
 pub mod button;
@@ -11,9 +10,9 @@ pub mod focus;
 pub(crate) mod foreground;
 pub mod hints;
 pub mod labels;
-pub(crate) mod layout_report;
 #[cfg(test)]
 mod layout_guard_tests;
+pub(crate) mod layout_report;
 pub mod list;
 pub mod markdown;
 pub mod overlay;
@@ -35,3 +34,4 @@ pub mod text_field;
 pub mod theme;
 pub mod toast;
 pub mod typography;
+pub mod view_chrome;

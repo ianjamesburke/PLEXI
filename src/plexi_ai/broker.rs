@@ -31,21 +31,35 @@ use crate::protocol::{AiMessage, AiTool, ModelTier};
 /// The two user-configurable broker targets. This deliberately has no
 /// medium tier: callers choose cheap/quick FAST or deliberate SLOW work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelMode { Fast, Slow }
+pub enum ModelMode {
+    Fast,
+    Slow,
+}
 
 impl ModelMode {
-    pub fn as_str(self) -> &'static str { match self { Self::Fast => "fast", Self::Slow => "slow" } }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Slow => "slow",
+        }
+    }
 }
 
 fn backend_tier(mode: ModelMode) -> ModelTier {
-    match mode { ModelMode::Fast => ModelTier::Low, ModelMode::Slow => ModelTier::High }
+    match mode {
+        ModelMode::Fast => ModelTier::Low,
+        ModelMode::Slow => ModelTier::High,
+    }
 }
 
 impl ModelMode {
     /// WASM SDK requests still use the legacy low/medium/high wire enum.
     /// The medium tier was retired: low and medium select FAST; high selects SLOW.
     pub fn from_wasm_tier(tier: ModelTier) -> Self {
-        match tier { ModelTier::High => Self::Slow, ModelTier::Low | ModelTier::Medium => Self::Fast }
+        match tier {
+            ModelTier::High => Self::Slow,
+            ModelTier::Low | ModelTier::Medium => Self::Fast,
+        }
     }
 }
 
@@ -199,7 +213,10 @@ impl LiveAiBroker {
     }
 
     pub fn with_model_modes(ai_config: Option<AiConfig>, model_modes: ResolvedModelModes) -> Self {
-        Self { ai_config, model_modes }
+        Self {
+            ai_config,
+            model_modes,
+        }
     }
 }
 
@@ -213,7 +230,11 @@ impl AiBroker for LiveAiBroker {
             Some(c) => c,
             None => {
                 let msg = "ai_config_missing: add [ai] and [models.fast] / [models.slow] settings to config.toml";
-                log::warn!("ai_broker[{}]: dispatch failed — {}", request.plugin_id, msg);
+                log::warn!(
+                    "ai_broker[{}]: dispatch failed — {}",
+                    request.plugin_id,
+                    msg
+                );
                 return AiBrokerResponse::err(msg);
             }
         };
@@ -227,7 +248,10 @@ impl AiBroker for LiveAiBroker {
             return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
         }
 
-        let configured = match request.model_mode { ModelMode::Fast => &self.model_modes.fast, ModelMode::Slow => &self.model_modes.slow };
+        let configured = match request.model_mode {
+            ModelMode::Fast => &self.model_modes.fast,
+            ModelMode::Slow => &self.model_modes.slow,
+        };
         let backend_name = request
             .concrete_model
             .as_ref()
@@ -254,7 +278,11 @@ fn dispatch_openrouter(
     configured: &crate::config::ResolvedModelMode,
     on_delta: &mut dyn FnMut(turn_loop::TurnDelta<'_>),
 ) -> AiBrokerResponse {
-    let model_id = request.concrete_model.as_ref().map(|route| route.model.clone()).unwrap_or_else(|| configured.model.clone());
+    let model_id = request
+        .concrete_model
+        .as_ref()
+        .map(|route| route.model.clone())
+        .unwrap_or_else(|| configured.model.clone());
     if request.reasoning_effort.is_none() {
         request.reasoning_effort = ReasoningEffort::parse(&configured.thinking).ok();
     }
@@ -263,8 +291,18 @@ fn dispatch_openrouter(
         Err(msg) => return AiBrokerResponse::err(msg),
     };
     fill_run_tags(&mut request, ai_config.client.as_deref());
-    let backend = OpenRouterBackend { api_key: api_key.clone(), model: model_id.clone() };
-    run_turn_and_respond(request, &backend, BillingModel::Metered, model_id, api_key, on_delta)
+    let backend = OpenRouterBackend {
+        api_key: api_key.clone(),
+        model: model_id.clone(),
+    };
+    run_turn_and_respond(
+        request,
+        &backend,
+        BillingModel::Metered,
+        model_id,
+        api_key,
+        on_delta,
+    )
 }
 
 /// Env var carrying the AI broker API key on disposable `pr-<N>` test channels.
@@ -632,7 +670,11 @@ fn run_turn_and_respond(
                     );
                     break;
                 }
-                log::warn!("ai_broker[{}]: turn failed error_chars={}", request.plugin_id, e.to_string().chars().count());
+                log::warn!(
+                    "ai_broker[{}]: turn failed error_chars={}",
+                    request.plugin_id,
+                    e.to_string().chars().count()
+                );
                 let message = match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
                     TurnError::StreamError(s) => format!("stream error: {s}"),
@@ -881,10 +923,7 @@ fn generation_cost_fallback(
     if cost_usd.is_some() || api_key.is_empty() {
         return None;
     }
-    generation_id
-        .as_ref()
-        .filter(|id| !id.is_empty())
-        .cloned()
+    generation_id.as_ref().filter(|id| !id.is_empty()).cloned()
 }
 
 /// Add a provider-reported count into a running total. `None` and `Some(0)`
@@ -1043,7 +1082,10 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let body: serde_json::Value = match serde_json::from_str(&body_str) {
             Ok(v) => v,
             Err(e) => {
-                log::debug!("ai_broker: generation response parse error: {e} body_bytes={}", body_str.len());
+                log::debug!(
+                    "ai_broker: generation response parse error: {e} body_bytes={}",
+                    body_str.len()
+                );
                 return None;
             }
         };
@@ -1051,7 +1093,8 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
             Some(d) if !d.is_null() => d,
             _ => {
                 log::debug!(
-                    "ai_broker: generation response missing 'data' field body_bytes={}", body_str.len()
+                    "ai_broker: generation response missing 'data' field body_bytes={}",
+                    body_str.len()
                 );
                 return None;
             }
@@ -1158,8 +1201,16 @@ mod tests {
         let broker = LiveAiBroker::with_model_modes(
             Some(AiConfig::default()),
             ResolvedModelModes {
-                fast: ResolvedModelMode { provider: "openrouter".into(), model: "test/fast".into(), thinking: "low".into() },
-                slow: ResolvedModelMode { provider: "openrouter".into(), model: "test/slow".into(), thinking: "high".into() },
+                fast: ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "test/fast".into(),
+                    thinking: "low".into(),
+                },
+                slow: ResolvedModelMode {
+                    provider: "openrouter".into(),
+                    model: "test/slow".into(),
+                    thinking: "high".into(),
+                },
             },
         );
         assert_eq!(broker.model_modes.fast.model, "test/fast");
@@ -1169,7 +1220,10 @@ mod tests {
     #[test]
     fn configured_thinking_levels_keep_their_wire_meaning() {
         assert_eq!(ReasoningEffort::parse("off").unwrap(), ReasoningEffort::Off);
-        assert_eq!(ReasoningEffort::parse("minimal").unwrap().label(), "minimal");
+        assert_eq!(
+            ReasoningEffort::parse("minimal").unwrap().label(),
+            "minimal"
+        );
         assert_eq!(ReasoningEffort::parse("xhigh").unwrap().label(), "xhigh");
     }
 
@@ -1597,10 +1651,10 @@ mod tests {
     /// correctly across both turns.
     #[test]
     fn tool_loop_builds_conversation_correctly() {
-        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
+        use crate::protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 
@@ -1744,10 +1798,10 @@ mod tests {
     /// verifies `max_tool_iterations` overrides the default cap.
     #[test]
     fn tool_loop_pauses_gracefully_after_max_iterations() {
-        use crate::protocol::AiTool;
         use crate::plexi_ai::backend::{
             AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
         };
+        use crate::protocol::AiTool;
         use std::sync::mpsc;
         use std::sync::{Arc, Mutex};
 

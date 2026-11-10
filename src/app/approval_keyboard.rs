@@ -1,6 +1,6 @@
 //! Explicit desktop keyboard ownership for the permission banner.
-use super::view_trait::KeyDisposition;
 use super::input_router::PlexiInput;
+use super::view_trait::KeyDisposition;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use std::collections::HashSet;
@@ -819,7 +819,14 @@ mod tests {
             now + ARM_DELAY,
         );
         assert!(!is_open(&monitor, &req));
-        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+        assert!(h
+            .app
+            .approval_keyboard
+            .last_error
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("unknown"));
         h.app.leave_approval();
 
         let change = file_item(&monitor, K::PermissionChange, "run-b", &[]);

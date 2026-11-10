@@ -82,7 +82,10 @@ fn key_str_to_egui_raw_input_emits_text_for_printable_chars() {
 #[test]
 fn clipboard_chord_matches_egui_winit_vocabulary() {
     let cmd = egui::Modifiers::COMMAND;
-    assert_eq!(clipboard_chord(cmd, egui::Key::X), Some(ClipboardChord::Cut));
+    assert_eq!(
+        clipboard_chord(cmd, egui::Key::X),
+        Some(ClipboardChord::Cut)
+    );
     assert_eq!(
         clipboard_chord(cmd, egui::Key::C),
         Some(ClipboardChord::Copy)
@@ -250,11 +253,10 @@ fn run_socket_connection(
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
-    let (mailbox, rx) =
-        crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
-            wake.clone(),
-            "pane_ipc",
-        );
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
+        wake.clone(),
+        "pane_ipc",
+    );
     let (subscribe_mailbox, _subscribe_rx) = crate::app::ui_mailbox::UiMailbox::<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >::channel(wake.clone(), "event_subscribe");
@@ -267,7 +269,14 @@ fn run_socket_connection(
         .shutdown(std::net::Shutdown::Write)
         .expect("close write half");
     let profile = tempfile::tempdir().unwrap();
-    handle_socket_connection(profile.path(), server, mailbox, subscribe_mailbox, publish_mailbox, None);
+    handle_socket_connection(
+        profile.path(),
+        server,
+        mailbox,
+        subscribe_mailbox,
+        publish_mailbox,
+        None,
+    );
     rx
 }
 
@@ -282,18 +291,32 @@ fn pane_send_rejects_missing_reply_stream_before_dispatch() {
     #[derive(Default)]
     struct MissingReply(Vec<u8>);
     impl std::io::Write for MissingReply {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.write(bytes) }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     impl SocketAckWriter for MissingReply {
-        fn requires_reply_stream(&self) -> bool { true }
+        fn requires_reply_stream(&self) -> bool {
+            true
+        }
     }
-    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
     let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::channel(wake, "test");
     let profile = tempfile::tempdir().unwrap();
     let mut reply = MissingReply::default();
     let request = serde_json::json!({"type":"send_to_pane", "pane_id":1, "text":"hello", "response_file":profile.path().join("response")});
-    handle_socket_line_in(profile.path(), &request.to_string(), &mailbox, None, &mut reply);
+    handle_socket_line_in(
+        profile.path(),
+        &request.to_string(),
+        &mailbox,
+        None,
+        &mut reply,
+    );
     assert!(rx.try_recv().is_err());
     let response: serde_json::Value = serde_json::from_slice(&reply.0).unwrap();
     assert_eq!(response["error_code"], "reply_connection_unavailable");
@@ -319,24 +342,48 @@ fn pane_send_human_explicit_operation_id_is_rejected_before_socket_dispatch() {
     let caller = h.add_focused_terminal();
     let target = h.add_focused_terminal();
     h.terminal_backend(target).enable_input_tap();
-    let caller_pid = h.app.windows[0].panes[&caller].as_terminal().unwrap().backend.child_pid();
+    let caller_pid = h.app.windows[0].panes[&caller]
+        .as_terminal()
+        .unwrap()
+        .backend
+        .child_pid();
     let profile = tempfile::tempdir().unwrap();
     for _ in 0..2 {
-        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
-        let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(wake.clone(), "subscribe");
-        let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(wake, "publish");
+        let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+            egui::Context::default(),
+        ));
+        let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostSubscribeRequest,
+        >::channel(wake.clone(), "subscribe");
+        let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
+            crate::host::event_subscriptions::HostPublishRequest,
+        >::channel(wake, "publish");
         let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-        client.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
         let profile_path = profile.path().to_path_buf();
         let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target, "text":"hello", "operation_id":"human-explicit", "response_file":profile.path().join("response")});
         let mailbox = h.ipc_tx.clone();
-        let worker = std::thread::spawn(move || handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(vec![std::process::id(), caller_pid])));
+        let worker = std::thread::spawn(move || {
+            handle_socket_connection(
+                &profile_path,
+                server,
+                mailbox,
+                subscribe,
+                publish,
+                Some(vec![std::process::id(), caller_pid]),
+            )
+        });
         writeln!(client, "{payload}").unwrap();
         worker.join().unwrap();
         h.hidden_frame();
         let mut reply = String::new();
         client.read_to_string(&mut reply).unwrap();
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["error_code"], "idempotency_unavailable");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["error_code"],
+            "idempotency_unavailable"
+        );
     }
     assert!(h.terminal_backend(target).take_input_tap().is_empty());
 }
@@ -354,12 +401,38 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
     std::fs::create_dir_all(&agent).unwrap();
     std::fs::write(agent.join("AGENT.md"), "Test agent").unwrap();
     std::fs::write(agent.join("settings.toml"), "[agent]\nid = \"socket-test\"\ndisplay_name = \"Socket test\"\ndefault_tier = \"medium\"\n[harness]\ncli = \"claude\"\n[permissions]\ndefault_posture = \"allow\"\nask = [\"pane.send\"]\n").unwrap();
-    let (caller, _) = h.app.spawn_agent_worker_pane("socket-test", "claude", "sleep 30", "test", None, false, None, Some(ws), None, None, true, None).unwrap();
-    let caller_pid = h.app.windows[0].panes[&caller].as_terminal().unwrap().backend.child_pid();
+    let (caller, _) = h
+        .app
+        .spawn_agent_worker_pane(
+            "socket-test",
+            "claude",
+            "sleep 30",
+            "test",
+            None,
+            false,
+            None,
+            Some(ws),
+            None,
+            None,
+            true,
+            None,
+        )
+        .unwrap();
+    let caller_pid = h.app.windows[0].panes[&caller]
+        .as_terminal()
+        .unwrap()
+        .backend
+        .child_pid();
     let mailbox = h.ipc_tx.clone();
-    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(egui::Context::default()));
-    let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostSubscribeRequest>::channel(wake.clone(), "subscribe");
-    let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<crate::host::event_subscriptions::HostPublishRequest>::channel(wake, "publish");
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(
+        egui::Context::default(),
+    ));
+    let (subscribe, _sub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostSubscribeRequest,
+    >::channel(wake.clone(), "subscribe");
+    let (publish, _pub_rx) = crate::app::ui_mailbox::UiMailbox::<
+        crate::host::event_subscriptions::HostPublishRequest,
+    >::channel(wake, "publish");
     let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
     let profile = tempfile::tempdir().unwrap();
     let profile_path = profile.path().to_path_buf();
@@ -367,45 +440,104 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
     let payload = serde_json::json!({"type":"send_to_pane", "pane_id": target,
         "text":"hello", "operation_id":"socket-liveness-test", "response_file": response});
     let worker = std::thread::spawn(move || {
-        handle_socket_connection(&profile_path, server, mailbox, subscribe, publish, Some(vec![std::process::id(), caller_pid]));
+        handle_socket_connection(
+            &profile_path,
+            server,
+            mailbox,
+            subscribe,
+            publish,
+            Some(vec![std::process::id(), caller_pid]),
+        );
     });
     writeln!(client, "{payload}").unwrap();
     worker.join().unwrap();
-    let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
+    let deadline =
+        std::time::Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(3));
     while std::time::Instant::now() < deadline {
         h.hidden_frame();
-        if !h.app.pending_send_approvals.is_empty() { break; }
+        if !h.app.pending_send_approvals.is_empty() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let pending = h.app.pending_send_approvals.first().expect("request parked").pending_request_id.clone();
+    let pending = h
+        .app
+        .pending_send_approvals
+        .first()
+        .expect("request parked")
+        .pending_request_id
+        .clone();
     let mut client = Some(client);
     // The peer process remains alive while only its socket is closed.
-    if disconnect { drop(client.take()); }
+    if disconnect {
+        drop(client.take());
+    }
     let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
-    monitor.approve_pending(&pending, if persistent { crate::broker::gate::ApprovalChoice::Always } else { crate::broker::gate::ApprovalChoice::Once }).unwrap();
+    monitor
+        .approve_pending(
+            &pending,
+            if persistent {
+                crate::broker::gate::ApprovalChoice::Always
+            } else {
+                crate::broker::gate::ApprovalChoice::Once
+            },
+        )
+        .unwrap();
     h.hidden_frame();
     if disconnect {
-        assert!(h.terminal_backend(target).take_input_tap().is_empty(), "a disconnected caller must not trigger a late write");
-        assert_eq!(monitor.get_continuation("socket-liveness-test").unwrap().state, crate::broker::gate::ContinuationState::Paused);
+        assert!(
+            h.terminal_backend(target).take_input_tap().is_empty(),
+            "a disconnected caller must not trigger a late write"
+        );
+        assert_eq!(
+            monitor
+                .get_continuation("socket-liveness-test")
+                .unwrap()
+                .state,
+            crate::broker::gate::ContinuationState::Paused
+        );
     } else {
         let mut client = client.unwrap();
         use std::os::fd::AsRawFd as _;
-        let mut poll = libc::pollfd { fd: client.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let mut poll = libc::pollfd {
+            fd: client.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
         // SAFETY: poll points to one valid pollfd.
-        assert!(unsafe { libc::poll(&mut poll, 1, 3_000) } > 0, "reply must arrive within deadline");
+        assert!(
+            unsafe { libc::poll(&mut poll, 1, 3_000) } > 0,
+            "reply must arrive within deadline"
+        );
         let mut reply = String::new();
         client.read_to_string(&mut reply).unwrap();
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"], true);
-        assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello", "one approval writes exactly once");
-        assert_eq!(monitor.get_continuation("socket-liveness-test").unwrap().state, crate::broker::gate::ContinuationState::Completed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&reply).unwrap()["ok"],
+            true
+        );
+        assert_eq!(
+            h.terminal_backend(target).take_input_tap(),
+            b"hello",
+            "one approval writes exactly once"
+        );
+        assert_eq!(
+            monitor
+                .get_continuation("socket-liveness-test")
+                .unwrap()
+                .state,
+            crate::broker::gate::ContinuationState::Completed
+        );
         if persistent {
             let dispatch = |h: &mut crate::testing::HostHarness, operation: &str, name: &str| {
                 let reply = profile.path().join(name);
-                h.inject_ipc(serde_json::from_value(serde_json::json!({
-                    "type": "send_to_pane", "pane_id": target, "text": "hello",
-                    "operation_id": operation, "response_file": reply,
-                    "peer_ancestry": [std::process::id(), caller_pid]
-                })).unwrap());
+                h.inject_ipc(
+                    serde_json::from_value(serde_json::json!({
+                        "type": "send_to_pane", "pane_id": target, "text": "hello",
+                        "operation_id": operation, "response_file": reply,
+                        "peer_ancestry": [std::process::id(), caller_pid]
+                    }))
+                    .unwrap(),
+                );
                 h.hidden_frame();
                 serde_json::from_slice::<serde_json::Value>(&std::fs::read(reply).unwrap()).unwrap()
             };
@@ -414,22 +546,52 @@ fn pane_send_socket_approval(disconnect: bool, persistent: bool) {
             assert!(h.terminal_backend(target).take_input_tap().is_empty());
 
             let fresh = dispatch(&mut h, "persistent-fresh", "fresh");
-            assert_eq!(fresh["ok"], true, "the persistent grant permits a fresh operation: {fresh}");
+            assert_eq!(
+                fresh["ok"], true,
+                "the persistent grant permits a fresh operation: {fresh}"
+            );
             assert_eq!(h.terminal_backend(target).take_input_tap(), b"hello");
             assert!(monitor.list_pending().is_empty());
 
             // Seed the durable pre-effect claim left by a crash. The boundary
             // must return unknown and never execute it under the still-live grant.
-            let text_hash = crate::broker::gate::fingerprint_args(&serde_json::json!({"text":"hello"}).to_string()).unwrap();
-            let fingerprint = crate::broker::gate::fingerprint_args(&serde_json::json!({
-                "pane_id":target, "submit":false, "paste":false,
-                "text_fingerprint":text_hash, "operation_id":"persistent-unknown"
-            }).to_string()).unwrap();
-            let context = h.app.windows.iter().find(|window| window.panes.contains_key(&caller)).unwrap().context_id;
-            assert_eq!(monitor.claim_pane_send("persistent-unknown", &format!("pane:{caller}"), context, target, &fingerprint).unwrap(), crate::broker::gate::PaneSendClaim::Claimed);
+            let text_hash = crate::broker::gate::fingerprint_args(
+                &serde_json::json!({"text":"hello"}).to_string(),
+            )
+            .unwrap();
+            let fingerprint = crate::broker::gate::fingerprint_args(
+                &serde_json::json!({
+                    "pane_id":target, "submit":false, "paste":false,
+                    "text_fingerprint":text_hash, "operation_id":"persistent-unknown"
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let context = h
+                .app
+                .windows
+                .iter()
+                .find(|window| window.panes.contains_key(&caller))
+                .unwrap()
+                .context_id;
+            assert_eq!(
+                monitor
+                    .claim_pane_send(
+                        "persistent-unknown",
+                        &format!("pane:{caller}"),
+                        context,
+                        target,
+                        &fingerprint
+                    )
+                    .unwrap(),
+                crate::broker::gate::PaneSendClaim::Claimed
+            );
             let unknown = dispatch(&mut h, "persistent-unknown", "unknown");
             assert_eq!(unknown["error_code"], "outcome_unknown", "{unknown}");
-            assert!(h.terminal_backend(target).take_input_tap().is_empty(), "unknown claimed operation must not replay");
+            assert!(
+                h.terminal_backend(target).take_input_tap().is_empty(),
+                "unknown claimed operation must not replay"
+            );
         }
     }
 }
@@ -1099,20 +1261,35 @@ fn socket_line_parse_error_does_not_wake() {
 #[test]
 fn displayed_version_is_build_info_not_profile_installed_tag() {
     let _h = crate::testing::HostHarness::new();
-    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
-    let (app, _ipc) = PlexiApp::new_for_test(egui::Context::default(), std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+    std::fs::write(
+        crate::config::config_dir().join("installed_tag"),
+        "v999.0.0",
+    )
+    .unwrap();
+    let (app, _ipc) = PlexiApp::new_for_test(
+        egui::Context::default(),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    );
     assert_eq!(app.display_version, env!("PLEXI_VERSION_TEXT"));
-    assert!(app.display_version.ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))));
+    assert!(app
+        .display_version
+        .ends_with(&format!("({})", env!("PLEXI_SHORT_COMMIT"))));
     assert!(!app.display_version.contains("999"));
 }
 
 #[test]
 fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     let mut h = crate::testing::HostHarness::new();
-    std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
+    std::fs::write(
+        crate::config::config_dir().join("installed_tag"),
+        "v999.0.0",
+    )
+    .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let reply = dir.path().join("build.json");
-    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
+    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo {
+        response_file: reply.to_string_lossy().into_owned(),
+    });
     h.hidden_frame();
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
@@ -1502,7 +1679,12 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
         match surface {
             "generic-default" => {
                 h.app
-                    .launch_view_by_id_with_layout("file_browser", Some("split_h".into()), &[], None)
+                    .launch_view_by_id_with_layout(
+                        "file_browser",
+                        Some("split_h".into()),
+                        &[],
+                        None,
+                    )
                     .unwrap();
             }
             "artifact" => h.app.dispatch_open_artifact(

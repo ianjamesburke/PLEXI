@@ -151,7 +151,9 @@ impl PlexiApp {
         if !self.quit_coordinator.is_active()
             && self.workspace_dirty
             && workspace_save_due(self.last_workspace_save, now)
-            && self.workspace_save_retry_at.is_none_or(|retry_at| now >= retry_at)
+            && self
+                .workspace_save_retry_at
+                .is_none_or(|retry_at| now >= retry_at)
         {
             if self.save_workspace_now() {
                 self.workspace_dirty = false;

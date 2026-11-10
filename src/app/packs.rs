@@ -160,7 +160,10 @@ version = "v1.2.0"
         assert_eq!(pack.schema_version, 1);
         assert_eq!(pack.plugins.len(), 1);
         assert_eq!(pack.plugins[0].id, "stand-up-reminder");
-        assert_eq!(pack.plugins[0].source, "github:plexi-plugins/stand-up-reminder");
+        assert_eq!(
+            pack.plugins[0].source,
+            "github:plexi-plugins/stand-up-reminder"
+        );
         assert_eq!(pack.plugins[0].version, "v1.2.0");
         assert!(pack.plugins[0].checksum.is_none());
     }

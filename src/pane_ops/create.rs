@@ -126,21 +126,21 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
         "agents" => Some(Box::new(crate::app::agents_view::AgentsPaneView::default())),
         "image-viewer" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::image_viewer_view::ImageViewerView::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::image_viewer_view::ImageViewerView::new(path),
+            ))
         }
         "video-player" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::video_player_view::VideoPlayerView::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::video_player_view::VideoPlayerView::new(path),
+            ))
         }
         "audio-player" => {
             let path = args.first().map(PathBuf::from)?;
-            Some(Box::new(crate::app::audio_player_view::AudioPlayerView::new(
-                path,
-            )))
+            Some(Box::new(
+                crate::app::audio_player_view::AudioPlayerView::new(path),
+            ))
         }
         "text-editor" => {
             // No explicit path → a fresh scratch note in the global tier. The
@@ -156,7 +156,9 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
                 crate::app::text_editor_view::TextEditorView::new_with_workspace(path, ws_root),
             ))
         }
-        "mcp-renderer" => Some(Box::new(crate::render::mcp_renderer_view::McpRendererView::new(args, cwd.to_path_buf()))),
+        "mcp-renderer" => Some(Box::new(
+            crate::render::mcp_renderer_view::McpRendererView::new(args, cwd.to_path_buf()),
+        )),
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
             Some(Box::new(
@@ -459,8 +461,8 @@ pub(crate) fn restore_view_pane_in_profile(
             })
         }
         crate::workspace::SavedViewLaunch::Wasm { wasm_path, args } => {
-            use crate::host::wasm_view::{StateStore, WasmView};
             use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+            use crate::host::wasm_view::{StateStore, WasmView};
 
             require_wasm_experiment()?;
             if let Some(feature) = release_feature_for_plugin_id(manifest_id) {
@@ -558,7 +560,9 @@ pub(crate) fn restore_launch_failed_pane(
     workspace_root: PathBuf,
     reason: String,
 ) -> Pane {
-    log::info!("workspace_restore: launch failed for plugin_id={plugin_id} pane_id={pane_id}: {reason}");
+    log::info!(
+        "workspace_restore: launch failed for plugin_id={plugin_id} pane_id={pane_id}: {reason}"
+    );
     Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
@@ -753,8 +757,12 @@ impl PlexiApp {
 
         if let Some(focused) = self.windows[active].focused_pane {
             let window = &self.windows[active];
-            let valid = window.find_first_pane_in(focused).and_then(|tile| window.tree.tiles.get(tile))
-                .is_some_and(|tile| matches!(tile, Tile::Pane(id) if window.panes.contains_key(id)));
+            let valid = window
+                .find_first_pane_in(focused)
+                .and_then(|tile| window.tree.tiles.get(tile))
+                .is_some_and(
+                    |tile| matches!(tile, Tile::Pane(id) if window.panes.contains_key(id)),
+                );
             if !valid {
                 log::warn!("plugin::{plugin_id}: launch skipped — stale focus target");
                 return None;
@@ -1521,16 +1529,12 @@ impl PlexiApp {
         inject_folder_secrets: bool,
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            context,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, context, agent_pane);
         if let Some(cmd) = initial_cmd {
             log::info!(
-                "create_single_pane_tree: initial_cmd_chars={} close_on_exit={close_on_exit}", cmd.chars().count()
+                "create_single_pane_tree: initial_cmd_chars={} close_on_exit={close_on_exit}",
+                cmd.chars().count()
             );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1589,13 +1593,8 @@ impl PlexiApp {
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus}"
         );
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            &context,
-            agent_pane,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, cwd, &self.colors, &context, agent_pane);
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1941,15 +1940,12 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
         let context = self.pane_context_env_for_window(target_win_idx);
         let effective_cwd_for_schema = effective_cwd.clone();
-        let (mut settings, pending_credential) = Self::make_backend_settings(
-            new_id,
-            Some(effective_cwd),
-            &self.colors,
-            &context,
-            true,
-        );
+        let (mut settings, pending_credential) =
+            Self::make_backend_settings(new_id, Some(effective_cwd), &self.colors, &context, true);
         if let Some(token) = run_token {
-            settings.env.insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
+            settings
+                .env
+                .insert("PLEXI_HOST_MCP_TOKEN".into(), token.into());
         }
         if let Some(pid) = parent_pane_id {
             settings
@@ -1975,9 +1971,16 @@ impl PlexiApp {
             .env
             .insert("PLEXI_AGENT_TASK".into(), task.to_string());
         let supervised;
-        let worker_command = if harness == "team" { cmd } else {
-            let exe = std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
-            let reporter = format!("{} --socket {}", crate::host::shell::shell_quote(&exe.to_string_lossy()), crate::host::shell::shell_quote(&crate::platform::ipc::endpoint()));
+        let worker_command = if harness == "team" {
+            cmd
+        } else {
+            let exe =
+                std::env::current_exe().map_err(|error| format!("worker executable: {error}"))?;
+            let reporter = format!(
+                "{} --socket {}",
+                crate::host::shell::shell_quote(&exe.to_string_lossy()),
+                crate::host::shell::shell_quote(&crate::platform::ipc::endpoint())
+            );
             supervised = crate::cli::agent::supervised_worker_command(cmd, &reporter, harness);
             &supervised
         };
@@ -1992,16 +1995,17 @@ impl PlexiApp {
             settings,
             self.default_font_size,
         ) else {
-            return Err(format!("failed to create terminal pane for agent role '{role}'"));
+            return Err(format!(
+                "failed to create terminal pane for agent role '{role}'"
+            ));
         };
         pane.ephemeral = ephemeral;
         pane.parent_pane_id = parent_pane_id;
         pane.spawned_by = Some(spawned_by.clone());
         pane.agent_harness = Some(harness.to_string());
         pane.agent_role = Some(role.to_string());
-        let lookup_root = crate::app::registry::resolve_agent_lookup_workspace_root(
-            &effective_cwd_for_schema,
-        );
+        let lookup_root =
+            crate::app::registry::resolve_agent_lookup_workspace_root(&effective_cwd_for_schema);
         pane.agent_permission_posture = crate::cli::agent::resolve_agent_definition_in(
             role,
             &crate::config::config_dir(),
@@ -2015,9 +2019,7 @@ impl PlexiApp {
                 .unwrap_or(child)
         })
         .map_err(|error| {
-            log::info!(
-                "agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}"
-            );
+            log::info!("agent_spawn: no posture snapshot for role={role} pane={new_id}: {error}");
             error
         })
         .ok();
@@ -2064,7 +2066,9 @@ impl PlexiApp {
                 .or_default()
                 .set_schema(schema.clone(), Some(&effective_cwd_for_schema))
             {
-                log::warn!("agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}");
+                log::warn!(
+                    "agent_spawn: result_schema set_schema fallback for pane {new_id}: {err}"
+                );
                 self.pane_results.entry(new_id).or_default().schema = Some(schema);
             }
         }
@@ -2301,7 +2305,9 @@ impl PlexiApp {
         use crate::app::registry::OnLaunchPolicy;
         let (scope, target) = match on_launch {
             OnLaunchPolicy::AlwaysNew => return None,
-            OnLaunchPolicy::FocusExisting => ("focus_existing", self.locate_view_instance(id, None)),
+            OnLaunchPolicy::FocusExisting => {
+                ("focus_existing", self.locate_view_instance(id, None))
+            }
             OnLaunchPolicy::FocusExistingInContext => (
                 "focus_existing_in_context",
                 self.locate_view_instance(id, Some(caller_context_id)),
@@ -2321,7 +2327,8 @@ impl PlexiApp {
             log::warn!(
                 "on_launch[{scope}]: '{id}' relaunch carried argc={} cwd={cwd_override:?} \
                  but the policy focused the existing instance — these are NOT delivered to it \
-                 (relaunch arg delivery to a running instance is future work)", args.len()
+                 (relaunch arg delivery to a running instance is future work)",
+                args.len()
             );
         }
         self.reveal_and_focus_instance(win_idx, slot, overlay_depth);
@@ -2491,12 +2498,20 @@ impl PlexiApp {
         let context_id = self.windows[target_win].context_id;
         let resolved_plugin = {
             let registry = self.registries.view_for_context(context_id, &self.router);
-            let installed = registry.get(id).or_else(|| registry.list().into_iter()
-                .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id)));
+            let installed = registry.get(id).or_else(|| {
+                registry
+                    .list()
+                    .into_iter()
+                    .find(|plugin| plugin.contributes.views.iter().any(|view| view.id == id))
+            });
             match installed {
                 Some(plugin) => {
                     let view = plugin.contributes.resolve_view(&plugin.manifest.id, id)?;
-                    log::info!("view_open: plugin_id={} view_id={} context_id={context_id}", plugin.manifest.id, view.id);
+                    log::info!(
+                        "view_open: plugin_id={} view_id={} context_id={context_id}",
+                        plugin.manifest.id,
+                        view.id
+                    );
                     Some(plugin.manifest.id.clone())
                 }
                 None => None,
@@ -2730,7 +2745,8 @@ impl PlexiApp {
                 .and_then(|f| self.windows[target_win].get_focused_pane_cwd(f))
                 .unwrap_or_else(|| cwd.clone())
         };
-        if let Some(dev_plugin_dir) = crate::app::registry::find_dev_pack_plugin(id, &search_start) {
+        if let Some(dev_plugin_dir) = crate::app::registry::find_dev_pack_plugin(id, &search_start)
+        {
             log::warn!(
                 "open_view_by_id: '{id}' is a dev-pack plugin ({dev_plugin_dir:?}) — not id-openable"
             );
@@ -2746,7 +2762,9 @@ impl PlexiApp {
                 log::warn!(
                     "open_view_by_id: plugin '{id}' not found in context_id={context_id}'s registry"
                 );
-                Err(format!("plugin '{id}' not found in this context's registry"))
+                Err(format!(
+                    "plugin '{id}' not found in this context's registry"
+                ))
             }
             Some(installed) => {
                 log::warn!(
@@ -2885,8 +2903,14 @@ impl PlexiApp {
             }
         };
 
-        let view = installed.contributes.resolve_view(&installed.manifest.id, &installed.manifest.id)?;
-        log::info!("view_open_path: plugin_id={} view_id={} context_id={context_id}", installed.manifest.id, view.id);
+        let view = installed
+            .contributes
+            .resolve_view(&installed.manifest.id, &installed.manifest.id)?;
+        log::info!(
+            "view_open_path: plugin_id={} view_id={} context_id={context_id}",
+            installed.manifest.id,
+            view.id
+        );
         let perms = gate_plugin_permissions(
             &installed.manifest.id,
             workspace_root_override.as_deref().unwrap_or(&plugin_dir),
@@ -2987,19 +3011,30 @@ impl PlexiApp {
         self.require_plugin("agents-dashboard")?;
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             return Err(crate::release::feature_unavailable_text(
-                    crate::release::ReleaseFeature::Assistant,
-                ));
+                crate::release::ReleaseFeature::Assistant,
+            ));
         }
         let context_id = self.windows[self.active_window].context_id;
-        if let Some((win_idx, slot, depth)) = self.locate_view_instance("agents-dashboard", Some(context_id)) {
+        if let Some((win_idx, slot, depth)) =
+            self.locate_view_instance("agents-dashboard", Some(context_id))
+        {
             self.reveal_and_focus_instance(win_idx, slot, depth);
             return Ok(slot);
         }
-        let app = Box::new(crate::app::agents_dashboard_view::AgentsDashboardView::new(workspace.to_path_buf()));
+        let app = Box::new(crate::app::agents_dashboard_view::AgentsDashboardView::new(
+            workspace.to_path_buf(),
+        ));
         let perms = crate::app::permissions::PluginPermissions::builtin();
         let predicted = self.host.next_pane_id();
         log::info!("command_view: opening pane for {}", workspace.display());
-        self.open_builtin_view_pane(app, perms, workspace.to_path_buf(), None, Some("split_h"), None);
+        self.open_builtin_view_pane(
+            app,
+            perms,
+            workspace.to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
         Ok(predicted)
     }
 
@@ -3059,9 +3094,11 @@ impl PlexiApp {
             "assistant: opening pane for workspace {} in context {caller_context_id}",
             workspace_root.display()
         );
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
-        );
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                self.config.ai.clone(),
+                self.config.resolved_model_modes(),
+            ));
         let app = Box::new(crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
@@ -3100,7 +3137,10 @@ impl PlexiApp {
             return None;
         }
         let win_idx = match context_id {
-            Some(id) => self.windows.iter().position(|window| window.context_id == id)?,
+            Some(id) => self
+                .windows
+                .iter()
+                .position(|window| window.context_id == id)?,
             None => self.active_window,
         };
         let caller_context_id = self.windows[win_idx].context_id;
@@ -3125,9 +3165,11 @@ impl PlexiApp {
             .context_root_for(caller_context_id)
             .or_else(crate::config::active_workspace_root)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> = std::sync::Arc::new(
-            crate::plexi_ai::broker::LiveAiBroker::with_model_modes(self.config.ai.clone(), self.config.resolved_model_modes()),
-        );
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
+                self.config.ai.clone(),
+                self.config.resolved_model_modes(),
+            ));
         let app = Box::new(crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
@@ -3628,8 +3670,12 @@ fn gate_plugin_permissions_in_profile(
 /// `media_io` experiment is on, every media capability is withheld before the
 /// plugin's permissions reach any dispatch path. Additive to the capability
 /// model — it only removes grants.
-fn apply_media_release_gate(plugin_id: &str, permissions: &mut crate::app::permissions::PluginPermissions) {
-    if permissions.is_builtin || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
+fn apply_media_release_gate(
+    plugin_id: &str,
+    permissions: &mut crate::app::permissions::PluginPermissions,
+) {
+    if permissions.is_builtin
+        || crate::release::feature_enabled(crate::release::ReleaseFeature::MediaIo)
     {
         return;
     }
@@ -3641,7 +3687,6 @@ fn apply_media_release_gate(plugin_id: &str, permissions: &mut crate::app::permi
         crate::release::log_feature_blocked(crate::release::ReleaseFeature::MediaIo);
     }
 }
-
 
 fn gate_wasm_sets(
     plugin_id: &str,
@@ -3668,8 +3713,11 @@ fn gate_wasm_sets_in_profile(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    crate::broker::gate::PermissionMonitor::for_profile(profile_dir)
-        .materialize_wasm_sets(plugin_id, workspace_root, declared)
+    crate::broker::gate::PermissionMonitor::for_profile(profile_dir).materialize_wasm_sets(
+        plugin_id,
+        workspace_root,
+        declared,
+    )
 }
 
 fn wasm_runtime_capabilities_from_permissions(
@@ -3808,7 +3856,8 @@ mod tests {
     fn raw_wasm_launch_uses_registered_manifest_identity_for_release_gate() {
         let _channel = crate::config::set_test_channel("main");
         // WasmViews on so the launch reaches the manifest-identity gate; DAW stays off.
-        let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
         let global_apps = tempfile::tempdir().expect("global plugins");
         let plugin_dir = global_apps.path().join("daw");
         std::fs::create_dir_all(&plugin_dir).expect("create plugin dir");

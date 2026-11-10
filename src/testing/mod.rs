@@ -54,9 +54,9 @@ mod keychain_prompt_guard {
 
 use crate::app::permissions::PluginPermissions;
 use crate::app::PlexiApp;
-use crate::protocol::HostRequest;
 use crate::config::set_test_profile_dir;
-use crate::host::pane::{ViewPane, ViewRuntime, Pane};
+use crate::host::pane::{Pane, ViewPane, ViewRuntime};
+use crate::protocol::HostRequest;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
@@ -148,10 +148,7 @@ pub(crate) fn reserve_test_context_id() -> u64 {
 /// private per-user dir there.
 #[cfg(test)]
 pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "plexi-scratch-{label}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("plexi-scratch-{label}-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -664,7 +661,8 @@ impl HostHarness {
             .ok_or_else(|| "render_png: no frame rendered yet".to_string())?;
         use egui_kittest::TestRenderer;
         let img = self.renderer.render(&self.ctx, full_output)?;
-        img.save(path.as_ref()).map_err(|e| format!("failed to save PNG: {e}"))
+        img.save(path.as_ref())
+            .map_err(|e| format!("failed to save PNG: {e}"))
     }
 
     /// Inject a `HostRequest` directly into the pane_ipc channel.
@@ -712,7 +710,12 @@ impl HostHarness {
         let before = self.state().open_panes;
         let focused = self
             .app
-            .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, Some(workspace), args)
+            .launch_view_by_path_with_layout(
+                &plugin_dir.to_string_lossy(),
+                None,
+                Some(workspace),
+                args,
+            )
             .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
         let pane_id = self
             .state()
@@ -942,9 +945,9 @@ mod flow_tests;
 mod harness_tests;
 
 #[cfg(test)]
-mod cli_operation_tests;
-#[cfg(test)]
 mod agent_security_tests;
+#[cfg(test)]
+mod cli_operation_tests;
 #[cfg(test)]
 mod permission_gate_tests;
 

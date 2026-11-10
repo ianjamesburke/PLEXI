@@ -211,7 +211,11 @@ impl View {
     fn nid(&mut self, key: &str, data: UiNodeData) -> IndexedNode {
         let id = self.node_id;
         self.node_id += 1;
-        IndexedNode { id, key: key.to_string(), data }
+        IndexedNode {
+            id,
+            key: key.to_string(),
+            data,
+        }
     }
 
     fn text(&mut self, key: &str, text: String, size: f32, bold: bool) -> IndexedNode {
@@ -254,7 +258,11 @@ impl View {
                 } else {
                     format!("STOPPED · {now}")
                 },
-                color: if playing { BadgeColor::Accent } else { BadgeColor::Neutral },
+                color: if playing {
+                    BadgeColor::Accent
+                } else {
+                    BadgeColor::Neutral
+                },
             }),
         );
         children.push(badge.id);
@@ -265,7 +273,9 @@ impl View {
             format!(
                 "{} / {} · vol {:.2} · {} Hz {} ch",
                 self.jb.position_ms(),
-                self.jb.now_playing_value()["duration_ms"].as_u64().unwrap_or(0),
+                self.jb.now_playing_value()["duration_ms"]
+                    .as_u64()
+                    .unwrap_or(0),
                 self.jb.volume(),
                 self.jb.stream_rate(),
                 self.jb.stream_channels(),
@@ -293,11 +303,19 @@ impl View {
                     model::Load::Pending => "  (loading…)".to_string(),
                     model::Load::Failed(reason) => format!("  (failed: {reason})"),
                 };
-                (format!("{marker} {}. {}{state}", i + 1, t.name), i == current)
+                (
+                    format!("{marker} {}. {}{state}", i + 1, t.name),
+                    i == current,
+                )
             })
             .collect();
         if rows.is_empty() {
-            let empty = self.text("empty", "No tracks. Press o to add audio files.".into(), 12.0, false);
+            let empty = self.text(
+                "empty",
+                "No tracks. Press o to add audio files.".into(),
+                12.0,
+                false,
+            );
             children.push(empty.id);
             nodes.push(empty);
         } else {
@@ -323,11 +341,19 @@ impl View {
 
         let root = self.nid(
             "root",
-            UiNodeData::Column(ColumnNode { children, gap: 6.0, align: Alignment::Start, grow: true }),
+            UiNodeData::Column(ColumnNode {
+                children,
+                gap: 6.0,
+                align: Alignment::Start,
+                grow: true,
+            }),
         );
         let root_id = root.id;
         nodes.push(root);
-        UiTree { root: root_id, nodes }
+        UiTree {
+            root: root_id,
+            nodes,
+        }
     }
 }
 
@@ -376,8 +402,14 @@ impl Guest for Component {
 
         vec![
             Effect::SetTitle("Jukebox".to_string()),
-            Effect::DeclareTools(DeclareToolsEffect { tools: View::tool_decls() }),
-            Effect::SetTimer(TimerEffect { id: TIMER_REFRESH, delay_ms: 200, repeat: true }),
+            Effect::DeclareTools(DeclareToolsEffect {
+                tools: View::tool_decls(),
+            }),
+            Effect::SetTimer(TimerEffect {
+                id: TIMER_REFRESH,
+                delay_ms: 200,
+                repeat: true,
+            }),
         ]
     }
 
@@ -388,7 +420,9 @@ impl Guest for Component {
             InputEvent::TimerFired(TIMER_REFRESH) => {
                 // Repaint so the playhead advances in the view; no state change.
             }
-            InputEvent::Key(KeyEvent { key, pressed: true, .. }) => {
+            InputEvent::Key(KeyEvent {
+                key, pressed: true, ..
+            }) => {
                 // Two-second nudge for seeks, in frames at the stream rate.
                 let seek_step = a.jb.stream_rate() as u64 * 2;
                 let transport_changed = match key.as_str() {

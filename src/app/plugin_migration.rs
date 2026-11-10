@@ -5,11 +5,17 @@ use std::path::Path;
 const MIGRATION: &str = "migration-plugin-v2";
 
 pub(crate) fn migrate(root: &Path) -> Result<(), String> {
-    if !root.exists() { return Ok(()); }
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true)
+    if !root.exists() {
+        return Ok(());
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
         .open(root.join("migration-plugin-v2.lock"))
         .map_err(|error| format!("open plugin migration lock at {}: {error}", root.display()))?;
-    lock.lock().map_err(|error| format!("lock plugin migration at {}: {error}", root.display()))?;
+    lock.lock()
+        .map_err(|error| format!("lock plugin migration at {}: {error}", root.display()))?;
     migrate_pack(root).map_err(|error| {
         let message = format!("plugin pack migration v2 at {}: {error}", root.display());
         log::error!("{message}");
@@ -34,7 +40,9 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     let run = || -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&journal)?;
         if old.exists() && new.exists() {
-            return Err("both apps/ and plugins/ exist; resolve the collision before migration".into());
+            return Err(
+                "both apps/ and plugins/ exist; resolve the collision before migration".into(),
+            );
         }
         if old.exists() {
             if backup.exists() {
@@ -44,21 +52,44 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
                 std::fs::remove_dir_all(&staged)?;
             }
             let output = std::process::Command::new("uv")
-                .args(["run", "--offline", "--no-project", "--python", "3.12", "python", "-I", "-c"])
+                .args([
+                    "run",
+                    "--offline",
+                    "--no-project",
+                    "--python",
+                    "3.12",
+                    "python",
+                    "-I",
+                    "-c",
+                ])
                 .arg(include_str!("plugin_source_migration.py"))
-                .arg(&old).arg(&staged)
-                .stdin(std::process::Stdio::null()).output()?;
+                .arg(&old)
+                .arg(&staged)
+                .stdin(std::process::Stdio::null())
+                .output()?;
             if !output.status.success() {
-                return Err(format!("Python source migration failed: {}", String::from_utf8_lossy(&output.stderr)).into());
+                return Err(format!(
+                    "Python source migration failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
             }
             for entry in std::fs::read_dir(&staged)? {
                 let entry = entry?;
                 if entry.file_type()?.is_symlink() {
-                    return Err(format!("cannot migrate symlinked package {}; migrate its source explicitly", entry.path().display()).into());
+                    return Err(format!(
+                        "cannot migrate symlinked package {}; migrate its source explicitly",
+                        entry.path().display()
+                    )
+                    .into());
                 }
                 let path = entry.path().join("manifest.toml");
-                if path.is_symlink() { return Err("cannot migrate a symlinked manifest".into()); }
-                if !path.is_file() { continue; }
+                if path.is_symlink() {
+                    return Err("cannot migrate a symlinked manifest".into());
+                }
+                if !path.is_file() {
+                    continue;
+                }
                 let raw = std::fs::read_to_string(&path)?;
                 let rewritten = migrate_manifest(&raw)?;
                 // Validate the destination before moving any original directory.
@@ -82,28 +113,46 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
         log::error!("{message}");
         message
     })?;
-    log::info!("plugin_migration: schema=2 root={} backup={}", root.display(), backup.display());
+    log::info!(
+        "plugin_migration: schema=2 root={} backup={}",
+        root.display(),
+        backup.display()
+    );
     Ok(())
 }
 
 fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let old = root.join("apps.toml");
-    if !old.is_file() { return Ok(()); }
+    if !old.is_file() {
+        return Ok(());
+    }
     let new = root.join("plugins.toml");
-    if new.exists() { return Err("both apps.toml and plugins.toml exist; resolve the collision before migration".into()); }
+    if new.exists() {
+        return Err(
+            "both apps.toml and plugins.toml exist; resolve the collision before migration".into(),
+        );
+    }
     let mut value: toml::Value = toml::from_str(&std::fs::read_to_string(&old)?)?;
     let table = value.as_table_mut().ok_or("pack must be a table")?;
-    if table.get("schema_version").and_then(toml::Value::as_integer) != Some(1) {
+    if table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        != Some(1)
+    {
         return Err("only schema_version 1 workspace packs can migrate".into());
     }
     table.insert("schema_version".into(), toml::Value::Integer(2));
-    if let Some(entries) = table.remove("app") { table.insert("plugin".into(), entries); }
+    if let Some(entries) = table.remove("app") {
+        table.insert("plugin".into(), entries);
+    }
     let content = toml::to_string_pretty(&value)?;
     let _: super::packs::Pack = toml::from_str(&content)?;
     let journal = root.join(MIGRATION);
     std::fs::create_dir_all(&journal)?;
     let backup = journal.join("apps.toml");
-    if backup.exists() { return Err("pack migration backup already exists; refusing to overwrite it".into()); }
+    if backup.exists() {
+        return Err("pack migration backup already exists; refusing to overwrite it".into());
+    }
     let staged = journal.join("plugins.toml");
     std::fs::write(&staged, content)?;
     // Publish first, then archive the input. A crash leaves an explicit collision,
@@ -116,24 +165,42 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
     let mut value: toml::Value = toml::from_str(raw)?;
-    if value.get("schema_version").and_then(toml::Value::as_integer) == Some(2) {
+    if value
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        == Some(2)
+    {
         return Ok(raw.to_owned());
     }
-    if value.get("schema_version").and_then(toml::Value::as_integer) != Some(1) {
+    if value
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        != Some(1)
+    {
         return Err("only installed schema_version 1 manifests can migrate to [plugin]".into());
     }
     let table = value.as_table_mut().ok_or("manifest must be a table")?;
-    let mut plugin = table.remove("app").ok_or("legacy manifest is missing [app]")?;
+    let mut plugin = table
+        .remove("app")
+        .ok_or("legacy manifest is missing [app]")?;
     let identity = plugin.as_table_mut().ok_or("[app] must be a table")?;
-    let id = identity.get("id").and_then(toml::Value::as_str).ok_or("missing legacy app id")?.to_owned();
+    let id = identity
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .ok_or("missing legacy app id")?
+        .to_owned();
     let kind = identity.remove("type").ok_or("missing legacy app type")?;
     let kind = match kind.as_str() {
-        Some("app") => "python", Some("wasm") => "wasm",
+        Some("app") => "python",
+        Some("wasm") => "wasm",
         _ => return Err("unsupported legacy app type".into()),
     };
     let entry = identity.remove("entry").ok_or("missing legacy app entry")?;
-    let runtime = table.entry("runtime").or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut().ok_or("runtime must be a table")?;
+    let runtime = table
+        .entry("runtime")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or("runtime must be a table")?;
     runtime.insert("kind".into(), toml::Value::String(kind.into()));
     runtime.insert("entry".into(), entry);
     table.insert("plugin".into(), plugin);
@@ -142,7 +209,10 @@ fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
     view.insert("id".into(), toml::Value::String(format!("{id}.main")));
     view.insert("default".into(), toml::Value::Boolean(true));
     let mut contributes = toml::Table::new();
-    contributes.insert("views".into(), toml::Value::Array(vec![toml::Value::Table(view)]));
+    contributes.insert(
+        "views".into(),
+        toml::Value::Array(vec![toml::Value::Table(view)]),
+    );
     table.insert("contributes".into(), toml::Value::Table(contributes));
     Ok(toml::to_string_pretty(&value)?)
 }
@@ -174,7 +244,10 @@ mod tests {
         migrate(root.path()).unwrap();
         let pack = super::super::packs::Pack::from_path(&root.path().join("plugins.toml")).unwrap();
         assert_eq!(pack.plugins[0].version, "v0.4.4");
-        assert_eq!(std::fs::read_to_string(root.path().join(MIGRATION).join("apps.toml")).unwrap(), original);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(MIGRATION).join("apps.toml")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -182,7 +255,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("apps")).unwrap();
         std::fs::create_dir(root.path().join("plugins")).unwrap();
-        assert!(migrate(root.path()).unwrap_err().contains("both apps/ and plugins/"));
+        assert!(migrate(root.path())
+            .unwrap_err()
+            .contains("both apps/ and plugins/"));
         assert!(root.path().join("apps").is_dir());
         assert!(root.path().join("plugins").is_dir());
         assert!(!root.path().join(MIGRATION).join("complete").exists());

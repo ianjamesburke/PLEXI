@@ -60,20 +60,14 @@ pub fn root_or_best_agent_state(
     Some(PaneAgentState {
         pane_id,
         state: agent_state(record.state),
-        agent: store
-            .effective_app(id)
-            .unwrap_or(DEFAULT_APP)
-            .to_owned(),
+        agent: store.effective_app(id).unwrap_or(DEFAULT_APP).to_owned(),
         detail: detail(record),
         session_id: None,
     })
 }
 
 /// Lock-and-map convenience for the host tick.
-pub fn reported_agent_state(
-    pane_id: u64,
-    store: &SharedProgramStatus,
-) -> Option<PaneAgentState> {
+pub fn reported_agent_state(pane_id: u64, store: &SharedProgramStatus) -> Option<PaneAgentState> {
     let guard = store.lock().unwrap_or_else(|e| e.into_inner());
     root_or_best_agent_state(&guard, pane_id)
 }

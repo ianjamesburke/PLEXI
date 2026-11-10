@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::host::pane::{ViewRuntime, Pane};
+use crate::host::pane::{Pane, ViewRuntime};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
@@ -203,25 +203,32 @@ fn live_context_count(contexts: Option<&serde_json::Value>, panes: &[serde_json:
 }
 
 fn live_context_pane_count(panes: &serde_json::Value, target: PaneId) -> Result<usize, SceneError> {
-    let entries = panes.as_array().ok_or_else(|| {
-        SceneError::new("live_json_invalid", "pane list did not return an array")
-    })?;
+    let entries = panes
+        .as_array()
+        .ok_or_else(|| SceneError::new("live_json_invalid", "pane list did not return an array"))?;
     if entries.iter().any(|pane| {
         pane.get("id").and_then(serde_json::Value::as_u64).is_none()
-            || pane.get("context_id").and_then(serde_json::Value::as_u64).is_none()
+            || pane
+                .get("context_id")
+                .and_then(serde_json::Value::as_u64)
+                .is_none()
     }) {
         return Err(SceneError::new(
             "live_json_invalid",
             "pane list contains a pane without an id or owning context",
         ));
     }
-    let context_id = entries.iter()
+    let context_id = entries
+        .iter()
         .find(|pane| pane.get("id").and_then(serde_json::Value::as_u64) == Some(target))
         .and_then(|pane| pane.get("context_id").and_then(serde_json::Value::as_u64))
         .ok_or_else(|| SceneError::new("missing_target", "target pane has no live context"))?;
-    Ok(entries.iter().filter(|pane| {
-        pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
-    }).count())
+    Ok(entries
+        .iter()
+        .filter(|pane| {
+            pane.get("context_id").and_then(serde_json::Value::as_u64) == Some(context_id)
+        })
+        .count())
 }
 
 fn live_seed_to_clear(
@@ -237,7 +244,10 @@ fn live_seed_to_clear(
         ));
     }
     let Some(entries) = panes.as_array() else {
-        return Err(SceneError::new("live_json_invalid", "pane list did not return an array"));
+        return Err(SceneError::new(
+            "live_json_invalid",
+            "pane list did not return an array",
+        ));
     };
     if entries.len() != 1
         || entries[0].get("type").and_then(serde_json::Value::as_str) != Some("terminal")
@@ -247,20 +257,24 @@ fn live_seed_to_clear(
             "clear_seed requires exactly one initial terminal pane",
         ));
     }
-    entries[0].get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
-        SceneError::new("live_json_invalid", "initial terminal has no pane id")
-    })
+    entries[0]
+        .get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| SceneError::new("live_json_invalid", "initial terminal has no pane id"))
 }
 
 fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError> {
-    let entries = panes.as_array().ok_or_else(|| {
-        SceneError::new("live_json_invalid", "pane list did not return an array")
-    })?;
-    let mut focused = entries.iter().filter(|pane| {
-        pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true)
-    });
+    let entries = panes
+        .as_array()
+        .ok_or_else(|| SceneError::new("live_json_invalid", "pane list did not return an array"))?;
+    let mut focused = entries
+        .iter()
+        .filter(|pane| pane.get("focused").and_then(serde_json::Value::as_bool) == Some(true));
     let pane = focused.next().ok_or_else(|| {
-        SceneError::new("missing_target", "push_to_subcontext requires a focused pane")
+        SceneError::new(
+            "missing_target",
+            "push_to_subcontext requires a focused pane",
+        )
     })?;
     if focused.next().is_some() {
         return Err(SceneError::new(
@@ -268,9 +282,9 @@ fn live_focused_pane_id(panes: &serde_json::Value) -> Result<PaneId, SceneError>
             "pane list reported more than one focused pane",
         ));
     }
-    pane.get("id").and_then(serde_json::Value::as_u64).ok_or_else(|| {
-        SceneError::new("live_json_invalid", "focused pane has no pane id")
-    })
+    pane.get("id")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| SceneError::new("live_json_invalid", "focused pane has no pane id"))
 }
 
 fn live_builtin_cwd(open: &OpenSpec) -> Option<PathBuf> {
@@ -386,61 +400,107 @@ fn default_true() -> bool {
 #[serde(untagged)]
 pub enum Step {
     /// Start empty: close only a runner-owned live host's sole seed terminal.
-    ClearSeed { clear_seed: bool },
+    ClearSeed {
+        clear_seed: bool,
+    },
     /// Open one process, WASM, or builtin plugin and bind its pane id to a handle.
-    Open { open: OpenSpec },
+    Open {
+        open: OpenSpec,
+    },
     /// Insert text through egui's normal text-input event path. Printable
     /// characters only: the editor drops control-character `Event::Text`
     /// echoes, so multi-line content must arrive as `paste`.
-    Text { text: TextSpec },
+    Text {
+        text: TextSpec,
+    },
     /// Deliver text through egui's paste event path — the production route
     /// for multi-line content (`pane send --paste` on the live backend).
-    Paste { paste: TextSpec },
+    Paste {
+        paste: TextSpec,
+    },
     /// Press a key combo against a pane handle or the whole host.
-    Key { key: KeySpec },
+    Key {
+        key: KeySpec,
+    },
     /// Deliver a local file or image URL through the production pane drop path.
-    DropFile { drop_file: DropFileSpec },
+    DropFile {
+        drop_file: DropFileSpec,
+    },
     /// Drag the pointer across a pane through the production input path:
     /// press, N moves, release — one frame each (stint 0510).
-    Drag { drag: DragSpec },
+    Drag {
+        drag: DragSpec,
+    },
     /// Focus an opened pane through the production pane-navigation path.
-    Focus { focus: String },
+    Focus {
+        focus: String,
+    },
     /// Close an opened pane through the production pane-close path.
-    Close { close: String },
+    Close {
+        close: String,
+    },
     /// Toggle the host sidebar.
-    Sidebar { sidebar: bool },
+    Sidebar {
+        sidebar: bool,
+    },
     /// Seed one message notification through the real host modal render path.
     /// Headless-only: live scenes must create notifications through a plugin.
     SeedNotification {
         seed_notification: NotificationSeedSpec,
     },
     /// Seed a pane-send approval whose caller has stopped waiting (headless).
-    SeedPaneSendTimeout { seed_pane_send_timeout: bool },
+    SeedPaneSendTimeout {
+        seed_pane_send_timeout: bool,
+    },
     /// Seed a typed CLI operation approval with the production disclosure text
     /// (headless).
-    SeedCliOperationApproval { seed_cli_operation_approval: bool },
-    SeedFailedAgent { seed_failed_agent: bool },
+    SeedCliOperationApproval {
+        seed_cli_operation_approval: bool,
+    },
+    SeedFailedAgent {
+        seed_failed_agent: bool,
+    },
     /// Switch to the context at this router index.
-    SwitchContext { switch_context: usize },
+    SwitchContext {
+        switch_context: usize,
+    },
     /// Push the focused pane into a new subcontext with this name.
-    PushToSubcontext { push_to_subcontext: String },
+    PushToSubcontext {
+        push_to_subcontext: String,
+    },
     /// Block until a process plugin handle commits its first real frame.
-    WaitViewFrame { wait_view_frame: WaitSpec },
+    WaitViewFrame {
+        wait_view_frame: WaitSpec,
+    },
     /// Advance N harness frames.
-    RunSteps { run_steps: usize },
+    RunSteps {
+        run_steps: usize,
+    },
     /// Structured assertions — every present key must match.
-    Assert { assert: AssertSpec },
+    Assert {
+        assert: AssertSpec,
+    },
     /// Eventual semantic assertion, optionally after normal input delivery.
-    Expect { expect: ExpectSpec },
+    Expect {
+        expect: ExpectSpec,
+    },
     /// Assert that the headless host accessibility tree contains an exact label.
-    AssertLabel { assert_label: AssertLabelSpec },
+    AssertLabel {
+        assert_label: AssertLabelSpec,
+    },
     /// Save a headless screenshot to `<out_dir>/<name>`.
-    Shot { shot: String },
+    Shot {
+        shot: String,
+    },
     /// Chess approval through the production assistant turn, plus a human
     /// move through `KeyPane` when `phase` is `human`.
-    ChessApproval { chess_approval: ChessApprovalSpec },
+    ChessApproval {
+        chess_approval: ChessApprovalSpec,
+    },
     /// Seed or complete a deterministic conjoined agent family.
-    AgentChildren { agent_children: String },
+    AgentChildren {
+        agent_children: String,
+    },
 }
 
 /// One phase of the chess approval scene. `pending` queues a scripted
@@ -964,7 +1024,9 @@ impl Drop for HeadlessBackend {
     fn drop(&mut self) {
         if let Some((profile, id)) = self.seeded_approval.take() {
             let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
-            if let Err(error) = monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny) {
+            if let Err(error) =
+                monitor.approve_pending(&id, crate::broker::gate::ApprovalChoice::Deny)
+            {
                 log::warn!("scene: failed to clear seeded approval: {error}");
             }
         }
@@ -1093,20 +1155,49 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         Ok(sizes) => sizes,
         Err(e) => return failed_report(scene_name, e),
     };
-    let scales = if scene.scales.is_empty() { vec![1.0] } else { scene.scales.clone() };
-    let themes = if scene.themes.is_empty() { vec!["plexi-dusk".to_string()] } else { scene.themes.clone() };
-    let motions = if scene.reduced_motion.is_empty() { vec![false] } else { scene.reduced_motion.clone() };
-    if scales.iter().any(|s| !s.is_finite() || !(0.6..=2.0).contains(s))
-        || themes.iter().any(|t| crate::ui::theme::preset_colors(t).is_none())
-        || size_matrix.iter().flatten().any(|s| !s.is_finite() || *s <= 0.0)
+    let scales = if scene.scales.is_empty() {
+        vec![1.0]
+    } else {
+        scene.scales.clone()
+    };
+    let themes = if scene.themes.is_empty() {
+        vec!["plexi-dusk".to_string()]
+    } else {
+        scene.themes.clone()
+    };
+    let motions = if scene.reduced_motion.is_empty() {
+        vec![false]
+    } else {
+        scene.reduced_motion.clone()
+    };
+    if scales
+        .iter()
+        .any(|s| !s.is_finite() || !(0.6..=2.0).contains(s))
+        || themes
+            .iter()
+            .any(|t| crate::ui::theme::preset_colors(t).is_none())
+        || size_matrix
+            .iter()
+            .flatten()
+            .any(|s| !s.is_finite() || *s <= 0.0)
     {
-        return failed_report(scene_name, SceneError::new("scene_parse", "invalid layout matrix dimensions"));
+        return failed_report(
+            scene_name,
+            SceneError::new("scene_parse", "invalid layout matrix dimensions"),
+        );
     }
-    let styled = !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty();
+    let styled =
+        !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty();
     let mut cases = Vec::new();
-    for size in &size_matrix { for scale in &scales { for theme in &themes { for motion in &motions {
-        cases.push((*size, *scale, theme.clone(), *motion));
-    }}}}
+    for size in &size_matrix {
+        for scale in &scales {
+            for theme in &themes {
+                for motion in &motions {
+                    cases.push((*size, *scale, theme.clone(), *motion));
+                }
+            }
+        }
+    }
     let is_matrix = cases.len() > 1 || styled;
 
     std::fs::create_dir_all(out_dir).ok();
@@ -1130,7 +1221,16 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     let mut index = 0usize;
     let mut runner = None;
     for (size, scale, theme, reduced_motion) in &cases {
-        let suffix = is_matrix.then(|| if styled { format!("-{}x{}-s{scale}-{theme}-motion{}", size[0] as i64, size[1] as i64, !reduced_motion) } else { format!("-{}x{}", size[0] as i64, size[1] as i64) });
+        let suffix = is_matrix.then(|| {
+            if styled {
+                format!(
+                    "-{}x{}-s{scale}-{theme}-motion{}",
+                    size[0] as i64, size[1] as i64, !reduced_motion
+                )
+            } else {
+                format!("-{}x{}", size[0] as i64, size[1] as i64)
+            }
+        });
         let size_label = suffix
             .as_ref()
             .map(|suffix| format!("[{suffix}] "))
@@ -1148,9 +1248,14 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                app.ctx.global_style_mut(|s| s.animation_time = if *reduced_motion { 0.0 } else { 0.15 });
+                app.ctx.global_style_mut(|s| {
+                    s.animation_time = if *reduced_motion { 0.0 } else { 0.15 }
+                });
             });
         }
         h.step();
@@ -1192,13 +1297,30 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                         if let Some(table) = replay.as_table_mut() {
                             table.remove("sizes");
                             table.insert("size".into(), toml::Value::try_from(size).expect("size"));
-                            table.insert("scales".into(), toml::Value::try_from(vec![scale]).expect("scale"));
-                            table.insert("themes".into(), toml::Value::try_from(vec![theme]).expect("theme"));
-                            table.insert("reduced_motion".into(), toml::Value::try_from(vec![reduced_motion]).expect("motion"));
-                            if let Some(steps) = table.get_mut("steps").and_then(toml::Value::as_array_mut) { steps.truncate((index - 1) % scene.steps.len() + 1); }
+                            table.insert(
+                                "scales".into(),
+                                toml::Value::try_from(vec![scale]).expect("scale"),
+                            );
+                            table.insert(
+                                "themes".into(),
+                                toml::Value::try_from(vec![theme]).expect("theme"),
+                            );
+                            table.insert(
+                                "reduced_motion".into(),
+                                toml::Value::try_from(vec![reduced_motion]).expect("motion"),
+                            );
+                            if let Some(steps) =
+                                table.get_mut("steps").and_then(toml::Value::as_array_mut)
+                            {
+                                steps.truncate((index - 1) % scene.steps.len() + 1);
+                            }
                         }
                         if let Ok(replay) = toml::to_string_pretty(&replay) {
-                            if let Err(error) = std::fs::write(Path::new(&bundle).join("replay.toml"), replay) { log::warn!("scene replay: {error}"); }
+                            if let Err(error) =
+                                std::fs::write(Path::new(&bundle).join("replay.toml"), replay)
+                            {
+                                log::warn!("scene replay: {error}");
+                            }
                         }
                     }
                     steps.push(StepResult {
@@ -1293,9 +1415,16 @@ fn write_failure_bundle(
     let dir = out_dir.join(format!("{scene}.failure-{step}"));
     let _ = std::fs::create_dir_all(&dir);
     let screenshot = if let Some(runner) = headless.as_mut() {
-        let reports = runner.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+        let reports = runner
+            .h
+            .with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
         let value: Vec<_> = reports.iter().map(|r| r.json()).collect();
-        if let Err(error) = std::fs::write(dir.join("layout.json"), serde_json::to_vec_pretty(&value).unwrap_or_default()) { log::warn!("scene layout report: {error}"); }
+        if let Err(error) = std::fs::write(
+            dir.join("layout.json"),
+            serde_json::to_vec_pretty(&value).unwrap_or_default(),
+        ) {
+            log::warn!("scene layout report: {error}");
+        }
         let path = dir.join("screenshot.png");
         runner
             .h
@@ -1687,7 +1816,10 @@ impl LiveBackend {
         match step {
             Step::ClearSeed { clear_seed } => {
                 if !clear_seed {
-                    return Err(SceneError::new("invalid_seed_clear", "clear_seed must be true"));
+                    return Err(SceneError::new(
+                        "invalid_seed_clear",
+                        "clear_seed must be true",
+                    ));
                 }
                 if !self.owned_host || self.attached_host || !self.handles.by_name.is_empty() {
                     return Err(SceneError::new(
@@ -1705,11 +1837,16 @@ impl LiveBackend {
                 self.command(&["pane".into(), "close".into(), pane_id.to_string()], true)?;
                 poll_live_until(Duration::from_secs(5), LIVE_POLL_INTERVAL, |_| {
                     Ok(self.json(&["pane", "list"]).ok().and_then(|panes| {
-                        panes.as_array().filter(|panes| panes.is_empty()).map(|_| ())
+                        panes
+                            .as_array()
+                            .filter(|panes| panes.is_empty())
+                            .map(|_| ())
                     }))
                 })?;
                 log::info!("scene_live: cleared runner-owned seed pane={pane_id}");
-                Ok(Some(StepDetail::Message { message: format!("cleared seed pane {pane_id}") }))
+                Ok(Some(StepDetail::Message {
+                    message: format!("cleared seed pane {pane_id}"),
+                }))
             }
             Step::Open { open } => {
                 self.handles.ensure_available(open.handle())?;
@@ -1949,7 +2086,8 @@ impl LiveBackend {
                             "label_not_found",
                             format!(
                                 "assert_label: {:?} not found in live pane {}",
-                                assert_label.expected_label(), pane_id
+                                assert_label.expected_label(),
+                                pane_id
                             ),
                         )
                     } else {
@@ -2044,7 +2182,8 @@ impl LiveBackend {
                 "seed_notification is headless-only; live scenes must notify through a plugin",
             )),
             Step::SeedFailedAgent { .. } => Err(SceneError::new(
-                "unsupported_live_verb", "seed_failed_agent is headless-only",
+                "unsupported_live_verb",
+                "seed_failed_agent is headless-only",
             )),
             Step::SeedPaneSendTimeout { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
@@ -2101,7 +2240,10 @@ impl LiveBackend {
 
     fn check(&self, spec: &AssertSpec) -> Result<(), SceneError> {
         if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
-            return Err(SceneError::new("unsupported_live_verb", "layout reports are not exposed by live host IPC"));
+            return Err(SceneError::new(
+                "unsupported_live_verb",
+                "layout reports are not exposed by live host IPC",
+            ));
         }
         if spec.sidebar.is_some() {
             return Err(SceneError::new(
@@ -2122,12 +2264,17 @@ impl LiveBackend {
         }
         if let Some(expected) = spec.context_pane_count {
             let target = spec.target.as_deref().ok_or_else(|| {
-                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert context_pane_count requires target",
+                )
             })?;
             let pane_id = self.handles.resolve(target)?;
             let actual = live_context_pane_count(&self.json(&["pane", "list"])?, pane_id)?;
             if actual != expected {
-                failures.push(format!("context_pane_count: expected {expected}, got {actual}"));
+                failures.push(format!(
+                    "context_pane_count: expected {expected}, got {actual}"
+                ));
             }
         }
         if let Some(expected) = spec
@@ -2213,7 +2360,9 @@ impl LiveBackend {
             }
             if let Some(needle) = &spec.tree_contains {
                 if !state.to_string().contains(needle) {
-                    failures.push(format!("tree_contains: {needle:?} not found in plugin tree"));
+                    failures.push(format!(
+                        "tree_contains: {needle:?} not found in plugin tree"
+                    ));
                 }
             }
             geometry_failures(spec, &state, &mut failures);
@@ -2560,9 +2709,15 @@ fn step_label(step: &Step) -> String {
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
-        Step::SeedFailedAgent { seed_failed_agent } => format!("seed_failed_agent {seed_failed_agent}"),
-        Step::SeedPaneSendTimeout { seed_pane_send_timeout } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
-        Step::SeedCliOperationApproval { seed_cli_operation_approval } => format!("seed_cli_operation_approval {seed_cli_operation_approval}"),
+        Step::SeedFailedAgent { seed_failed_agent } => {
+            format!("seed_failed_agent {seed_failed_agent}")
+        }
+        Step::SeedPaneSendTimeout {
+            seed_pane_send_timeout,
+        } => format!("seed_pane_send_timeout {seed_pane_send_timeout}"),
+        Step::SeedCliOperationApproval {
+            seed_cli_operation_approval,
+        } => format!("seed_cli_operation_approval {seed_cli_operation_approval}"),
         Step::SwitchContext { switch_context } => format!("switch_context {switch_context}"),
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
@@ -2579,7 +2734,8 @@ fn step_label(step: &Step) -> String {
         Step::AssertLabel { assert_label } => {
             format!(
                 "assert_label {} {:?}",
-                assert_label.target, assert_label.expected_label()
+                assert_label.target,
+                assert_label.expected_label()
             )
         }
         Step::Shot { shot } => format!("shot {shot}"),
@@ -2666,7 +2822,10 @@ impl HeadlessBackend {
         match step {
             Step::ClearSeed { clear_seed } => {
                 let pane_count = self.h.with_app(|app| {
-                    app.windows.iter().map(|window| window.panes.len()).sum::<usize>()
+                    app.windows
+                        .iter()
+                        .map(|window| window.panes.len())
+                        .sum::<usize>()
                 });
                 if !clear_seed || pane_count != 0 || !self.handles.by_name.is_empty() {
                     return Err(SceneError::new(
@@ -2674,7 +2833,9 @@ impl HeadlessBackend {
                         "headless clear_seed requires a fresh empty scene",
                     ));
                 }
-                Ok(Some(StepDetail::Message { message: "headless host already empty".into() }))
+                Ok(Some(StepDetail::Message {
+                    message: "headless host already empty".into(),
+                }))
             }
             Step::Open { open } => {
                 let handle = open.handle();
@@ -2949,7 +3110,11 @@ impl HeadlessBackend {
                 let focused_source = seed_notification.focused_source;
                 let id = self.h.with_app_mut(|app| {
                     let id = format!("__scene_notification_{}", app.pending_notifications.len());
-                    let sender_pane_id = if focused_source { app.active_focused_pane_id().unwrap_or(0) } else { 0 };
+                    let sender_pane_id = if focused_source {
+                        app.active_focused_pane_id().unwrap_or(0)
+                    } else {
+                        0
+                    };
                     app.pending_notifications
                         .push(crate::app::PendingNotification {
                             notify_id: id.clone(),
@@ -2970,7 +3135,8 @@ impl HeadlessBackend {
                             timeout_secs: None,
                             on_dismiss: None,
                             enqueued_at: std::time::Instant::now(),
-                            tombstoned: false, delivery_unknown: false,
+                            tombstoned: false,
+                            delivery_unknown: false,
                             deliver_after: None,
                             origin_in_view: false,
                         });
@@ -2988,56 +3154,111 @@ impl HeadlessBackend {
             }
             Step::SeedFailedAgent { seed_failed_agent } => {
                 if !seed_failed_agent {
-                    return Err(SceneError::new("seed_failed", "seed_failed_agent must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_failed_agent must be true",
+                    ));
                 }
                 let seeded = self.h.with_app_mut(|app| {
-                    let Some(pane_id) = app.active_focused_pane_id() else { return false; };
-                    let Some(pane) = app.windows.iter_mut().find_map(|w| w.panes.get_mut(&pane_id)) else { return false; };
+                    let Some(pane_id) = app.active_focused_pane_id() else {
+                        return false;
+                    };
+                    let Some(pane) = app
+                        .windows
+                        .iter_mut()
+                        .find_map(|w| w.panes.get_mut(&pane_id))
+                    else {
+                        return false;
+                    };
                     if !pane.set_agent(Some(crate::protocol::PaneAgentState {
-                        pane_id, state: crate::protocol::AgentState::Failed,
-                        agent: "scene-agent".into(), detail: Some("Scene agent failed".into()), session_id: None,
-                    })) { return false; }
+                        pane_id,
+                        state: crate::protocol::AgentState::Failed,
+                        agent: "scene-agent".into(),
+                        detail: Some("Scene agent failed".into()),
+                        session_id: None,
+                    })) {
+                        return false;
+                    }
                     app.sync_attention_queue();
                     app.attention_queue.open = true;
-                    app.attention_queue.items.iter().any(|bar| bar.id == format!("agent-failed-{pane_id}"))
+                    app.attention_queue
+                        .items
+                        .iter()
+                        .any(|bar| bar.id == format!("agent-failed-{pane_id}"))
                 });
-                if !seeded { return Err(SceneError::new("seed_failed", "failed agent bar was not created")); }
+                if !seeded {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "failed agent bar was not created",
+                    ));
+                }
                 self.h.run_steps(2);
                 Ok(None)
             }
-            Step::SeedPaneSendTimeout { seed_pane_send_timeout } => {
+            Step::SeedPaneSendTimeout {
+                seed_pane_send_timeout,
+            } => {
                 if !seed_pane_send_timeout {
-                    return Err(SceneError::new("seed_failed", "seed_pane_send_timeout must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_pane_send_timeout must be true",
+                    ));
                 }
-                let (pane_id, context_id) = self.h.with_app(|app| (
-                    app.active_focused_pane_id().unwrap_or(0), app.windows[app.active_window].context_id,
-                ));
+                let (pane_id, context_id) = self.h.with_app(|app| {
+                    (
+                        app.active_focused_pane_id().unwrap_or(0),
+                        app.windows[app.active_window].context_id,
+                    )
+                });
                 let profile = crate::config::config_dir();
                 let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
                 let actor = format!("pane:{pane_id}");
                 let admitted = monitor.admit(crate::broker::gate::AdmitRequest {
-                    call_id: "pane-send", tool: "pane.send",
+                    call_id: "pane-send",
+                    tool: "pane.send",
                     input_json: r#"{"pane_id":42,"operation_id":"scene-retry"}"#,
                     actor_type: crate::broker::ActorType::Agent,
-                    actor_id: &actor, actor_scope: crate::broker::ActorScope::Workspace,
-                    trust_origin: "host", workspace_root: &profile, package_id: "", instance_id: 0,
-                    context_id, target_type: crate::broker::TargetType::Capability,
+                    actor_id: &actor,
+                    actor_scope: crate::broker::ActorScope::Workspace,
+                    trust_origin: "host",
+                    workspace_root: &profile,
+                    package_id: "",
+                    instance_id: 0,
+                    context_id,
+                    target_type: crate::broker::TargetType::Capability,
                 });
-                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
-                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted
+                else {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "expected an approval request",
+                    ));
                 };
-                monitor.detach_pane_send_waiter(&pending_request_id)
+                monitor
+                    .detach_pane_send_waiter(&pending_request_id)
                     .map_err(|error| SceneError::new("seed_failed", error))?;
                 self.seeded_approval = Some((profile, pending_request_id));
-                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.with_app_mut(|app| {
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
+                });
                 self.h.run_steps(2);
-                Ok(Some(StepDetail::Message { message: "seeded timed-out pane send".to_string() }))
+                Ok(Some(StepDetail::Message {
+                    message: "seeded timed-out pane send".to_string(),
+                }))
             }
-            Step::SeedCliOperationApproval { seed_cli_operation_approval } => {
+            Step::SeedCliOperationApproval {
+                seed_cli_operation_approval,
+            } => {
                 if !seed_cli_operation_approval {
-                    return Err(SceneError::new("seed_failed", "seed_cli_operation_approval must be true"));
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_cli_operation_approval must be true",
+                    ));
                 }
-                let context_id = self.h.with_app(|app| app.windows[app.active_window].context_id);
+                let context_id = self
+                    .h
+                    .with_app(|app| app.windows[app.active_window].context_id);
                 let profile = crate::config::config_dir();
                 let monitor = crate::broker::gate::PermissionMonitor::for_profile(&profile);
                 let authority = crate::app::cli_operation::AuthorityDecl {
@@ -3068,13 +3289,22 @@ impl HeadlessBackend {
                     trust_origin: "host", workspace_root: &profile, package_id: "scene-package",
                     instance_id: 0, context_id, target_type: crate::broker::TargetType::CliOperation,
                 }, &disclosure);
-                let crate::broker::gate::Admission::Required { pending_request_id } = admitted else {
-                    return Err(SceneError::new("seed_failed", "expected an approval request"));
+                let crate::broker::gate::Admission::Required { pending_request_id } = admitted
+                else {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "expected an approval request",
+                    ));
                 };
                 self.seeded_approval = Some((profile, pending_request_id));
-                self.h.with_app_mut(|app| { app.sync_attention_queue(); app.attention_queue.open = true; });
+                self.h.with_app_mut(|app| {
+                    app.sync_attention_queue();
+                    app.attention_queue.open = true;
+                });
                 self.h.run_steps(2);
-                Ok(Some(StepDetail::Message { message: "seeded cli operation approval".to_string() }))
+                Ok(Some(StepDetail::Message {
+                    message: "seeded cli operation approval".to_string(),
+                }))
             }
             Step::SwitchContext { switch_context } => {
                 let idx = *switch_context;
@@ -3471,12 +3701,29 @@ impl HeadlessBackend {
 
     fn check(&mut self, spec: &AssertSpec) -> Result<(), SceneError> {
         if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
-            let reports = self.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+            let reports = self
+                .h
+                .with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
             let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
-            if reports.is_empty() || spec.layout_surfaces.iter().any(|surface| !reports.iter().any(|r| &r.surface == surface)) {
-                return Err(SceneError::new("layout_missing", format!("required surfaces {:?}; recorded {:?}", spec.layout_surfaces, reports.iter().map(|r| &r.surface).collect::<Vec<_>>())));
+            if reports.is_empty()
+                || spec
+                    .layout_surfaces
+                    .iter()
+                    .any(|surface| !reports.iter().any(|r| &r.surface == surface))
+            {
+                return Err(SceneError::new(
+                    "layout_missing",
+                    format!(
+                        "required surfaces {:?}; recorded {:?}",
+                        spec.layout_surfaces,
+                        reports.iter().map(|r| &r.surface).collect::<Vec<_>>()
+                    ),
+                ));
             }
-            if spec.layout_valid.is_some_and(|expected| expected != errors.is_empty()) {
+            if spec
+                .layout_valid
+                .is_some_and(|expected| expected != errors.is_empty())
+            {
                 return Err(SceneError::new("layout_failed", errors.join("; ")));
             }
         }
@@ -3492,16 +3739,34 @@ impl HeadlessBackend {
         }
         if let Some(expected) = spec.context_pane_count {
             let target = spec.target.as_deref().ok_or_else(|| {
-                SceneError::new("missing_assert_target", "assert context_pane_count requires target")
+                SceneError::new(
+                    "missing_assert_target",
+                    "assert context_pane_count requires target",
+                )
             })?;
             let pane_id = self.handles.resolve(target)?;
-            let actual = self.h.with_app(|app| {
-                let context_id = app.windows.iter()
-                    .find(|window| window.panes.contains_key(&pane_id))?.context_id;
-                Some(app.windows.iter().filter(|window| window.context_id == context_id)
-                    .map(|window| window.panes.len()).sum::<usize>())
-            }).ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
-            expect("context_pane_count", expected.to_string(), actual.to_string());
+            let actual = self
+                .h
+                .with_app(|app| {
+                    let context_id = app
+                        .windows
+                        .iter()
+                        .find(|window| window.panes.contains_key(&pane_id))?
+                        .context_id;
+                    Some(
+                        app.windows
+                            .iter()
+                            .filter(|window| window.context_id == context_id)
+                            .map(|window| window.panes.len())
+                            .sum::<usize>(),
+                    )
+                })
+                .ok_or_else(|| SceneError::new("missing_target", "target pane has no context"))?;
+            expect(
+                "context_pane_count",
+                expected.to_string(),
+                actual.to_string(),
+            );
         }
         if let Some(v) = spec.window_count {
             expect("window_count", v.to_string(), host.window_count.to_string());
@@ -3584,7 +3849,9 @@ impl HeadlessBackend {
             if let Some(needle) = &spec.tree_contains {
                 let haystack = app.tree.to_string();
                 if !haystack.contains(needle.as_str()) {
-                    failures.push(format!("tree_contains: \"{needle}\" not found in plugin tree"));
+                    failures.push(format!(
+                        "tree_contains: \"{needle}\" not found in plugin tree"
+                    ));
                 }
             }
             if spec.fit.is_some() || spec.aspect.is_some() {
@@ -3602,7 +3869,9 @@ impl HeadlessBackend {
         let pane_id = self.handles.resolve(&spec.target)?;
         let before = self
             .plugin_state_for(pane_id)
-            .ok_or_else(|| SceneError::new("app_state_unavailable", "expect requires plugin state"))?
+            .ok_or_else(|| {
+                SceneError::new("app_state_unavailable", "expect requires plugin state")
+            })?
             .tree;
         if let Some(key) = &spec.after_key {
             self.exec(
@@ -3872,7 +4141,9 @@ mod tests {
     fn layout_matrix_failure_has_minimal_replay_and_painted_report() {
         let directory = tempfile::tempdir().unwrap();
         let scene = directory.path().join("layout-failure.toml");
-        std::fs::write(&scene, r#"
+        std::fs::write(
+            &scene,
+            r#"
 size = [520.0, 800.0]
 scales = [1.0, 2.0]
 themes = ["plexi-dusk", "plexi-dawn"]
@@ -3883,19 +4154,25 @@ run_steps = 2
 assert = { layout_valid = true, layout_surfaces = ["deliberately-missing-surface"] }
 [[steps]]
 run_steps = 100
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let report = run_scene(&scene, directory.path(), true);
         assert!(!report.passed);
         let bundle = Path::new(report.failure_bundle.as_ref().unwrap());
         for file in ["layout.json", "screenshot.png", "replay.toml"] {
             assert!(bundle.join(file).is_file(), "missing {file}");
         }
-        let replay: Scene = toml::from_str(&std::fs::read_to_string(bundle.join("replay.toml")).unwrap()).unwrap();
+        let replay: Scene =
+            toml::from_str(&std::fs::read_to_string(bundle.join("replay.toml")).unwrap()).unwrap();
         assert_eq!(replay.steps.len(), 2);
         assert_eq!(replay.scales, vec![1.0]);
         let live = run_live_scene(&scene, directory.path(), true);
         assert!(!live.passed);
-        assert_eq!(live.steps[0].error.as_ref().unwrap().code, "unsupported_live_verb");
+        assert_eq!(
+            live.steps[0].error.as_ref().unwrap().code,
+            "unsupported_live_verb"
+        );
     }
 
     #[test]
@@ -3932,7 +4209,8 @@ run_steps = 100
     fn geometry_fit_rejects_contain_for_committed_fill_canvas() {
         let tree = serde_json::json!({"semantic":{"nodes":[{"role":"canvas","value":"1280x720 fit=fill","canvas_commands":[]}]}});
         let spec = AssertSpec {
-            layout_valid: None, layout_surfaces: Vec::new(),
+            layout_valid: None,
+            layout_surfaces: Vec::new(),
             fit: Some("contain".to_string()),
             ..Default::default()
         };
@@ -4130,10 +4408,25 @@ run_steps = 100
             (true, true, true, seed.clone()),
             (true, false, false, seed.clone()),
             (true, false, true, serde_json::json!([])),
-            (true, false, true, serde_json::json!([{"id": 1, "type": "view"}])),
-            (true, false, true, serde_json::json!([{"id": 1, "type": "terminal"}, {"id": 2, "type": "terminal"}])),
+            (
+                true,
+                false,
+                true,
+                serde_json::json!([{"id": 1, "type": "view"}]),
+            ),
+            (
+                true,
+                false,
+                true,
+                serde_json::json!([{"id": 1, "type": "terminal"}, {"id": 2, "type": "terminal"}]),
+            ),
         ] {
-            assert_eq!(live_seed_to_clear(owned, attached, empty, &panes).unwrap_err().code, "unsafe_seed_clear");
+            assert_eq!(
+                live_seed_to_clear(owned, attached, empty, &panes)
+                    .unwrap_err()
+                    .code,
+                "unsafe_seed_clear"
+            );
         }
     }
 
@@ -4144,7 +4437,9 @@ run_steps = 100
         let mut backend = LiveBackend::from_env(&std::env::temp_dir(), true).unwrap();
         backend.binary = "/nonexistent/should-not-run".into();
         backend.attached_host = true;
-        let error = backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap_err();
+        let error = backend
+            .exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new())
+            .unwrap_err();
         assert_eq!(error.code, "unsafe_seed_clear");
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
     }
@@ -4168,7 +4463,14 @@ run_steps = 100
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         backend.binary = binary.to_string_lossy().into_owned();
         backend.last_view_pane = Some(3);
-        backend.exec(&Step::PushToSubcontext { push_to_subcontext: "child".into() }, &mut Vec::new()).unwrap();
+        backend
+            .exec(
+                &Step::PushToSubcontext {
+                    push_to_subcontext: "child".into(),
+                },
+                &mut Vec::new(),
+            )
+            .unwrap();
         assert!(marker.exists());
     }
 
@@ -4176,18 +4478,22 @@ run_steps = 100
     fn live_push_rejects_missing_or_ambiguous_focus() {
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([{"id": 1, "focused": false}]))
-                .unwrap_err().code,
+                .unwrap_err()
+                .code,
             "missing_target"
         );
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([
                 {"id": 1, "focused": true}, {"id": 2, "focused": true}
-            ])).unwrap_err().code,
+            ]))
+            .unwrap_err()
+            .code,
             "live_focus_ambiguous"
         );
         assert_eq!(
             live_focused_pane_id(&serde_json::json!([{"focused": true}]))
-                .unwrap_err().code,
+                .unwrap_err()
+                .code,
             "live_json_invalid"
         );
     }
@@ -4202,10 +4508,19 @@ run_steps = 100
         assert_ne!(modified, source);
         std::fs::write(&scene, modified).unwrap();
         let report = run_scene(&scene, temp.path(), true);
-        assert!(!report.passed, "an extra parent pane must prevent a scene pass");
-        assert!(report.steps.iter().any(|step| step.error.as_ref().is_some_and(|error| {
-            error.code == "assertion_failed" && error.message.contains("context_pane_count")
-        })), "the pre-close topology assertion must catch the extra pane: {report:?}");
+        assert!(
+            !report.passed,
+            "an extra parent pane must prevent a scene pass"
+        );
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|step| step.error.as_ref().is_some_and(|error| {
+                    error.code == "assertion_failed" && error.message.contains("context_pane_count")
+                })),
+            "the pre-close topology assertion must catch the extra pane: {report:?}"
+        );
     }
 
     #[test]
@@ -4217,10 +4532,17 @@ run_steps = 100
         ]);
         assert_eq!(live_context_pane_count(&panes, 1).unwrap(), 2);
         assert_eq!(live_context_pane_count(&panes, 3).unwrap(), 1);
-        assert_eq!(live_context_pane_count(&panes, 99).unwrap_err().code, "missing_target");
         assert_eq!(
-            live_context_pane_count(&serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]), 1)
-                .unwrap_err().code,
+            live_context_pane_count(&panes, 99).unwrap_err().code,
+            "missing_target"
+        );
+        assert_eq!(
+            live_context_pane_count(
+                &serde_json::json!([{"id": 1, "context_id": 8}, {"id": 2}]),
+                1
+            )
+            .unwrap_err()
+            .code,
             "live_json_invalid"
         );
     }
@@ -4244,7 +4566,9 @@ run_steps = 100
         std::env::remove_var("PLEXI_SCENE_CHANNEL");
         backend.binary = binary.to_string_lossy().into_owned();
         backend.owned_host = true;
-        backend.exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new()).unwrap();
+        backend
+            .exec(&Step::ClearSeed { clear_seed: true }, &mut Vec::new())
+            .unwrap();
         assert!(marker.exists());
     }
 
@@ -4345,7 +4669,11 @@ exit 1
         let state_dir = tempfile::tempdir().unwrap();
         let out_dir = tempfile::tempdir().unwrap();
         let mut backend = fake_live_backend(
-            "test-single-seed", script_dir.path(), state_dir.path(), out_dir.path(), true,
+            "test-single-seed",
+            script_dir.path(),
+            state_dir.path(),
+            out_dir.path(),
+            true,
         );
         backend.start_or_attach().unwrap();
         let args = std::fs::read_to_string(state_dir.path().join("start-args")).unwrap();

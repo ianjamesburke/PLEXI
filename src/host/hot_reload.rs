@@ -221,7 +221,9 @@ impl HotReloadWatcher {
         };
 
         if let Err(e) = watcher.watch(plugin_dir, RecursiveMode::Recursive) {
-            log::error!("hot_reload: failed to begin watching {plugin_dir:?} for pane {pane_id}: {e}");
+            log::error!(
+                "hot_reload: failed to begin watching {plugin_dir:?} for pane {pane_id}: {e}"
+            );
             return;
         }
 
@@ -232,7 +234,9 @@ impl HotReloadWatcher {
                 cancel_thread,
                 Duration::from_millis(DEBOUNCE_MS),
                 |_| {
-                    log::info!("hot_reload: debounced reload for pane {pane_id} ({plugin_dir_log:?})");
+                    log::info!(
+                        "hot_reload: debounced reload for pane {pane_id} ({plugin_dir_log:?})"
+                    );
                     sender.send(ReloadRequest { pane_id }).is_ok()
                 },
             );
@@ -311,14 +315,20 @@ mod tests {
             &plugin_dir.join(".mypy_cache/3.12"),
             plugin_dir
         ));
-        assert!(!is_reload_relevant(&plugin_dir.join(".DS_Store"), plugin_dir));
+        assert!(!is_reload_relevant(
+            &plugin_dir.join(".DS_Store"),
+            plugin_dir
+        ));
     }
 
     #[test]
     fn is_reload_relevant_allows_source_files() {
         let plugin_dir = Path::new("/apps/foo");
         assert!(is_reload_relevant(&plugin_dir.join("main.py"), plugin_dir));
-        assert!(is_reload_relevant(&plugin_dir.join("lib/helpers.py"), plugin_dir));
+        assert!(is_reload_relevant(
+            &plugin_dir.join("lib/helpers.py"),
+            plugin_dir
+        ));
     }
 
     #[test]

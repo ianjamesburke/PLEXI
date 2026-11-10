@@ -280,15 +280,21 @@ pub fn load_agent_history_from(profile_dir: &Path) -> Vec<AgentHistoryRecord> {
         Ok(d) => d,
         Err(_) => return Vec::new(),
     };
-    let records = data.lines()
+    let records = data
+        .lines()
         .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| match serde_json::from_str::<AgentHistoryRecord>(line) {
-            Ok(rec) => Some(rec),
-            Err(e) => {
-                log::warn!("agent_history: skipping malformed line in {}: {e}", path.display());
-                None
-            }
-        })
+        .filter_map(
+            |line| match serde_json::from_str::<AgentHistoryRecord>(line) {
+                Ok(rec) => Some(rec),
+                Err(e) => {
+                    log::warn!(
+                        "agent_history: skipping malformed line in {}: {e}",
+                        path.display()
+                    );
+                    None
+                }
+            },
+        )
         .map(|r| (r.run_id.clone(), r))
         .collect::<std::collections::BTreeMap<_, _>>();
     let mut records: Vec<_> = records.into_values().collect();
@@ -399,13 +405,20 @@ impl WorkspaceFile {
                     let mut existing: Self = serde_json::from_slice(&data).map_err(|error| {
                         io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("refusing to overwrite invalid workspace {}: {error}", path.display()),
+                            format!(
+                                "refusing to overwrite invalid workspace {}: {error}",
+                                path.display()
+                            ),
                         )
                     })?;
                     if !matches!(existing.version, 2 | 3) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            format!("refusing to overwrite workspace {} with unsupported version {}", path.display(), existing.version),
+                            format!(
+                                "refusing to overwrite workspace {} with unsupported version {}",
+                                path.display(),
+                                existing.version
+                            ),
                         ));
                     }
                     if migration_source.is_some() && existing.version == 2 && self.version == 3 {
@@ -416,7 +429,10 @@ impl WorkspaceFile {
                         preserve_v2_rollback(&path, &data)?;
                     }
                     if existing.version == 3 && self.version == 2 {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, "refusing to downgrade a version 3 workspace"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "refusing to downgrade a version 3 workspace",
+                        ));
                     }
                 }
                 Err(error)
@@ -486,7 +502,10 @@ impl WorkspaceFile {
             ws.remove_legacy_deleted_context_focus();
         }
         if let Err(error) = ws.validate() {
-            log::error!("workspace_load: invalid workspace {}: {error}; preserving original", path.display());
+            log::error!(
+                "workspace_load: invalid workspace {}: {error}; preserving original",
+                path.display()
+            );
             return None;
         }
         if ws.version == 2 {
@@ -527,8 +546,12 @@ impl WorkspaceFile {
             }
         }
         if migrated {
-            if let Err(error) = ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes())) {
-                log::error!("workspace plugin-path migration: {}: {error}; preserving original", path.display());
+            if let Err(error) = ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes()))
+            {
+                log::error!(
+                    "workspace plugin-path migration: {}: {error}; preserving original",
+                    path.display()
+                );
                 return None;
             }
             log::info!("workspace migration: saved plugin launch paths after package migration v2");
@@ -545,11 +568,8 @@ impl WorkspaceFile {
             .iter()
             .map(|context| context.context_id)
             .collect();
-        let windows: std::collections::HashSet<_> = self
-            .windows
-            .iter()
-            .map(|window| window.window_id)
-            .collect();
+        let windows: std::collections::HashSet<_> =
+            self.windows.iter().map(|window| window.window_id).collect();
         self.context_active_window.retain(|context, window| {
             let orphaned = !contexts.contains(context) && !windows.contains(window);
             if orphaned {
@@ -565,25 +585,39 @@ impl WorkspaceFile {
         let mut used = std::collections::HashSet::new();
         for window in &self.windows {
             if window.window_id != 0 && !used.insert(window.window_id) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("duplicate window identity {}", window.window_id)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("duplicate window identity {}", window.window_id),
+                ));
             }
         }
         let mut next = 1_u64;
         let mut assigned: HashMap<u64, Vec<u64>> = HashMap::new();
         for window in &mut self.windows {
-            if window.window_id != 0 { continue; }
+            if window.window_id != 0 {
+                continue;
+            }
             while used.contains(&next) {
-                next = next.checked_add(1).ok_or_else(|| io::Error::other("window identity space exhausted"))?;
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("window identity space exhausted"))?;
             }
             window.window_id = next;
             used.insert(next);
             assigned.entry(window.context_id).or_default().push(next);
         }
         for (context, window_id) in &mut self.context_active_window {
-            if *window_id != 0 { continue; }
+            if *window_id != 0 {
+                continue;
+            }
             match assigned.get(context).map(Vec::as_slice) {
                 Some([id]) => *window_id = *id,
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("context {context} has an ambiguous legacy active window"))),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("context {context} has an ambiguous legacy active window"),
+                    ))
+                }
             }
         }
         Ok(())
@@ -598,19 +632,41 @@ impl WorkspaceFile {
             let count = columns.len();
             let mut strip = Strip::new(context.context_id);
             for (index, (panes, saved_width, heights)) in columns.into_iter().enumerate() {
-                let width = saved_width.unwrap_or(ColumnWidth::Preset(if count > 1 && index == 0 { ColumnWidthPreset::Parent35 } else { ColumnWidthPreset::Child65 }));
+                let width =
+                    saved_width.unwrap_or(ColumnWidth::Preset(if count > 1 && index == 0 {
+                        ColumnWidthPreset::Parent35
+                    } else {
+                        ColumnWidthPreset::Child65
+                    }));
                 let id = strip.alloc_column_id();
                 let mut column = Column::new_stacked(id, panes, width);
                 column.heights = heights;
                 strip.push_column(column);
             }
-            let focused = self.context_active_window.get(&context.context_id)
-                .and_then(|id| self.windows.iter().find(|window| window.window_id == *id && window.context_id == context.context_id))
-                .or_else(|| self.windows.iter().find(|window| window.context_id == context.context_id))
-                .and_then(|window| window.focused_pane.and_then(|tile| match window.tree.tiles.get(tile) {
-                    Some(egui_tiles::Tile::Pane(pane)) => Some(*pane), _ => None,
-                }));
-            if let Some(focused) = focused { strip.focus_pane(focused); }
+            let focused = self
+                .context_active_window
+                .get(&context.context_id)
+                .and_then(|id| {
+                    self.windows.iter().find(|window| {
+                        window.window_id == *id && window.context_id == context.context_id
+                    })
+                })
+                .or_else(|| {
+                    self.windows
+                        .iter()
+                        .find(|window| window.context_id == context.context_id)
+                })
+                .and_then(|window| {
+                    window
+                        .focused_pane
+                        .and_then(|tile| match window.tree.tiles.get(tile) {
+                            Some(egui_tiles::Tile::Pane(pane)) => Some(*pane),
+                            _ => None,
+                        })
+                });
+            if let Some(focused) = focused {
+                strip.focus_pane(focused);
+            }
             strips.insert(context.context_id, strip);
         }
         Ok(strips)
@@ -618,37 +674,66 @@ impl WorkspaceFile {
 
     fn validate(&self) -> io::Result<()> {
         let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
-        let context_ids: std::collections::HashSet<_> = self.contexts.iter().map(|c| c.context_id).collect();
+        let context_ids: std::collections::HashSet<_> =
+            self.contexts.iter().map(|c| c.context_id).collect();
         if context_ids.len() != self.contexts.len() {
             return Err(invalid("duplicate context identity".into()));
         }
         if !self.contexts.is_empty() && self.active_context >= self.contexts.len() {
-            return Err(invalid(format!("invalid active context index {}", self.active_context)));
+            return Err(invalid(format!(
+                "invalid active context index {}",
+                self.active_context
+            )));
         }
-        let parents: HashMap<_, _> = self.contexts.iter().map(|context| (context.context_id, context.parent_id)).collect();
+        let parents: HashMap<_, _> = self
+            .contexts
+            .iter()
+            .map(|context| (context.context_id, context.parent_id))
+            .collect();
         for context in &self.contexts {
             let mut seen = std::collections::HashSet::new();
             let mut next = Some(context.context_id);
             while let Some(id) = next {
-                if !seen.insert(id) { return Err(invalid(format!("context hierarchy contains a cycle at {id}"))); }
-                next = *parents.get(&id).ok_or_else(|| invalid(format!("context hierarchy references missing context {id}")))?;
+                if !seen.insert(id) {
+                    return Err(invalid(format!(
+                        "context hierarchy contains a cycle at {id}"
+                    )));
+                }
+                next = *parents.get(&id).ok_or_else(|| {
+                    invalid(format!("context hierarchy references missing context {id}"))
+                })?;
             }
         }
         let mut owners = HashMap::new();
         let mut window_ids = std::collections::HashSet::new();
         for window in &self.windows {
-            if self.version == 3 && (window.window_id == 0 || !window_ids.insert(window.window_id)) {
-                return Err(invalid(format!("invalid or duplicate window identity {}", window.window_id)));
+            if self.version == 3 && (window.window_id == 0 || !window_ids.insert(window.window_id))
+            {
+                return Err(invalid(format!(
+                    "invalid or duplicate window identity {}",
+                    window.window_id
+                )));
             }
             if !context_ids.contains(&window.context_id) {
-                return Err(invalid(format!("window {} references missing context {}", window.window_id, window.context_id)));
+                return Err(invalid(format!(
+                    "window {} references missing context {}",
+                    window.window_id, window.context_id
+                )));
             }
             for pane in &window.panes {
                 if matches!(pane.kind, SavedPaneKind::View) && pane.plugin_id.is_none() {
-                    return Err(invalid(format!("view pane {} has no plugin identity", pane.id)));
+                    return Err(invalid(format!(
+                        "view pane {} has no plugin identity",
+                        pane.id
+                    )));
                 }
                 if let SavedPaneKind::Portal { context_id, .. } = pane.kind {
-                    if !context_ids.contains(&context_id) { return Err(invalid(format!("portal {} references missing context {context_id}", pane.id))); }
+                    if !context_ids.contains(&context_id) {
+                        return Err(invalid(format!(
+                            "portal {} references missing context {context_id}",
+                            pane.id
+                        )));
+                    }
                 }
                 if owners.insert(pane.id, window.context_id).is_some() {
                     return Err(invalid(format!("duplicate pane identity {}", pane.id)));
@@ -656,28 +741,49 @@ impl WorkspaceFile {
             }
         }
         for (context, window_id) in &self.context_active_window {
-            let matches = self.windows.iter().filter(|window| window.context_id == *context && window.window_id == *window_id).count();
+            let matches = self
+                .windows
+                .iter()
+                .filter(|window| window.context_id == *context && window.window_id == *window_id)
+                .count();
             if !context_ids.contains(context) || matches != 1 {
-                return Err(invalid(format!("context {context} references invalid active window {window_id}")));
+                return Err(invalid(format!(
+                    "context {context} references invalid active window {window_id}"
+                )));
             }
         }
         for window in &self.windows {
             if let Some(focused) = window.focused_pane {
-                if !matches!(window.tree.tiles.get(focused), Some(egui_tiles::Tile::Pane(_))) {
-                    return Err(invalid(format!("window {} references invalid focused tile", window.window_id)));
+                if !matches!(
+                    window.tree.tiles.get(focused),
+                    Some(egui_tiles::Tile::Pane(_))
+                ) {
+                    return Err(invalid(format!(
+                        "window {} references invalid focused tile",
+                        window.window_id
+                    )));
                 }
             }
         }
         if owners.keys().any(|id| *id >= self.next_pane_id) {
-            return Err(invalid(format!("next pane identity {} is not greater than every saved pane", self.next_pane_id)));
+            return Err(invalid(format!(
+                "next pane identity {} is not greater than every saved pane",
+                self.next_pane_id
+            )));
         }
         if self.version == 3 && self.strips.len() != context_ids.len() {
             return Err(invalid("version 3 must have one strip per context".into()));
         }
         for (child, parent_pane) in &self.conjoined_contexts {
-            let parent_context = self.contexts.iter().find(|context| context.context_id == *child).and_then(|context| context.parent_id);
+            let parent_context = self
+                .contexts
+                .iter()
+                .find(|context| context.context_id == *child)
+                .and_then(|context| context.parent_id);
             if parent_context.is_none() || owners.get(parent_pane).copied() != parent_context {
-                return Err(invalid(format!("invalid conjoined parent {parent_pane} for context {child}")));
+                return Err(invalid(format!(
+                    "invalid conjoined parent {parent_pane} for context {child}"
+                )));
             }
         }
         for window in &self.windows {
@@ -691,41 +797,70 @@ impl WorkspaceFile {
         let mut membership = std::collections::HashSet::new();
         for (context, strip) in &self.strips {
             if !context_ids.contains(context) || strip.context_id != *context {
-                return Err(invalid(format!("strip references invalid context {context}")));
+                return Err(invalid(format!(
+                    "strip references invalid context {context}"
+                )));
             }
             if !strip.scroll_offset_px.is_finite() || strip.scroll_offset_px < 0.0 {
-                return Err(invalid(format!("strip {context} has invalid scroll offset")));
+                return Err(invalid(format!(
+                    "strip {context} has invalid scroll offset"
+                )));
             }
             let mut column_ids = std::collections::HashSet::new();
             for column in &strip.columns {
-                if !column_ids.insert(column.id) || column.panes.is_empty() || column.panes.len() != column.heights.len() {
-                    return Err(invalid(format!("strip {context} has invalid column {:?}", column.id)));
+                if !column_ids.insert(column.id)
+                    || column.panes.is_empty()
+                    || column.panes.len() != column.heights.len()
+                {
+                    return Err(invalid(format!(
+                        "strip {context} has invalid column {:?}",
+                        column.id
+                    )));
                 }
                 let valid_width = match column.width {
                     crate::strip::ColumnWidth::Preset(_) => true,
-                    crate::strip::ColumnWidth::CustomRatio(value) => value.is_finite() && (0.05..=0.95).contains(&value),
-                    crate::strip::ColumnWidth::CustomPixels(value) | crate::strip::ColumnWidth::FixedPx(value) => value.is_finite() && value > 0.0,
+                    crate::strip::ColumnWidth::CustomRatio(value) => {
+                        value.is_finite() && (0.05..=0.95).contains(&value)
+                    }
+                    crate::strip::ColumnWidth::CustomPixels(value)
+                    | crate::strip::ColumnWidth::FixedPx(value) => value.is_finite() && value > 0.0,
                 };
-                if !valid_width { return Err(invalid(format!("strip {context} has invalid column width"))); }
+                if !valid_width {
+                    return Err(invalid(format!("strip {context} has invalid column width")));
+                }
                 if column.heights.iter().any(|h| !h.is_finite() || *h <= 0.0) {
                     return Err(invalid(format!("strip {context} has invalid stack shares")));
                 }
-                if column.last_focused.is_some_and(|pane| !column.panes.contains(&pane)) {
+                if column
+                    .last_focused
+                    .is_some_and(|pane| !column.panes.contains(&pane))
+                {
                     return Err(invalid(format!("strip {context} has invalid column focus")));
                 }
                 for pane in &column.panes {
                     if owners.get(pane) != Some(context) || !membership.insert(*pane) {
-                        return Err(invalid(format!("strip {context} has invalid or duplicate pane {pane}")));
+                        return Err(invalid(format!(
+                            "strip {context} has invalid or duplicate pane {pane}"
+                        )));
                     }
                 }
             }
-            if strip.focused_pane.is_some_and(|pane| !strip.contains_pane(pane)) {
+            if strip
+                .focused_pane
+                .is_some_and(|pane| !strip.contains_pane(pane))
+            {
                 return Err(invalid(format!("strip {context} has invalid focus")));
             }
             let expected = saved_strip_columns(&self.windows, *context)?;
-            let actual: Vec<_> = strip.columns.iter().map(|column| column.panes.clone()).collect();
+            let actual: Vec<_> = strip
+                .columns
+                .iter()
+                .map(|column| column.panes.clone())
+                .collect();
             if actual != expected {
-                return Err(invalid(format!("strip {context} does not match saved window tree membership")));
+                return Err(invalid(format!(
+                    "strip {context} does not match saved window tree membership"
+                )));
             }
         }
         Ok(())
@@ -739,16 +874,33 @@ fn validate_saved_tree(
     visited: &mut std::collections::HashSet<TileId>,
 ) -> io::Result<()> {
     if !visited.insert(tile_id) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} contains a repeated tile", window.window_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("window {} contains a repeated tile", window.window_id),
+        ));
     }
-    let tile = window.tree.tiles.get(tile_id).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("window {} references a missing tile", window.window_id)))?;
+    let tile = window.tree.tiles.get(tile_id).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("window {} references a missing tile", window.window_id),
+        )
+    })?;
     match tile {
         egui_tiles::Tile::Pane(id) if !owners.contains_key(id) => {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} references missing pane {id}", window.window_id)));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("window {} references missing pane {id}", window.window_id),
+            ));
         }
         egui_tiles::Tile::Pane(_) => {}
         egui_tiles::Tile::Container(egui_tiles::Container::Grid(_)) => {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} uses an unsupported grid layout", window.window_id)));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "window {} uses an unsupported grid layout",
+                    window.window_id
+                ),
+            ));
         }
         egui_tiles::Tile::Container(container) => {
             for &child in container.children() {
@@ -763,35 +915,67 @@ type LegacyColumn = (Vec<PaneId>, Option<crate::strip::ColumnWidth>, Vec<f32>);
 
 fn saved_legacy_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<Vec<LegacyColumn>> {
     use egui_tiles::{Container, LinearDir, Tile};
-    let mut windows: Vec<_> = windows.iter().enumerate().filter(|(_, w)| w.context_id == context_id).collect();
+    let mut windows: Vec<_> = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.context_id == context_id)
+        .collect();
     windows.sort_by_key(|(index, w)| (w.grid_x, w.grid_y, *index));
     let mut columns = Vec::new();
     for (_, window) in windows {
-        let Some(root) = window.tree.root() else { continue };
+        let Some(root) = window.tree.root() else {
+            continue;
+        };
         let children: Vec<_> = match window.tree.tiles.get(root) {
-            Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => {
-                let shares: Vec<_> = linear.children.iter().map(|id| linear.shares[*id]).collect();
-                if shares.iter().any(|share| !share.is_finite() || *share <= 0.0) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} has invalid column shares", window.window_id)));
+            Some(Tile::Container(Container::Linear(linear)))
+                if linear.dir == LinearDir::Horizontal =>
+            {
+                let shares: Vec<_> = linear
+                    .children
+                    .iter()
+                    .map(|id| linear.shares[*id])
+                    .collect();
+                if shares
+                    .iter()
+                    .any(|share| !share.is_finite() || *share <= 0.0)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("window {} has invalid column shares", window.window_id),
+                    ));
                 }
                 let total: f32 = shares.iter().sum();
                 if !total.is_finite() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} has invalid column share total", window.window_id)));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("window {} has invalid column share total", window.window_id),
+                    ));
                 }
                 // Egui's default shares sum to the number of children; divider
                 // drags preserve that total. Strip projection stores pixel widths.
                 let relative = total <= shares.len() as f32 + 0.0001;
-                linear.children.iter().zip(shares.iter()).map(|(&id, &share)| {
-                    let width = if relative {
-                        Some(crate::strip::ColumnWidth::CustomRatio(share / total))
-                    } else {
-                        Some(crate::strip::ColumnWidth::CustomPixels(share))
-                    };
-                    (id, width)
-                }).collect()
+                linear
+                    .children
+                    .iter()
+                    .zip(shares.iter())
+                    .map(|(&id, &share)| {
+                        let width = if relative {
+                            Some(crate::strip::ColumnWidth::CustomRatio(share / total))
+                        } else {
+                            Some(crate::strip::ColumnWidth::CustomPixels(share))
+                        };
+                        (id, width)
+                    })
+                    .collect()
             }
             Some(Tile::Container(Container::Grid(_))) => {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} uses an unsupported legacy grid layout", window.window_id)));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "window {} uses an unsupported legacy grid layout",
+                        window.window_id
+                    ),
+                ));
             }
             _ => vec![(root, None)],
         };
@@ -799,17 +983,26 @@ fn saved_legacy_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<
         for (child, width) in children {
             let mut panes = Vec::new();
             collect_saved_strip_panes(window, child, &mut visited, &mut panes)?;
-            if panes.is_empty() { continue; }
+            if panes.is_empty() {
+                continue;
+            }
             let mut heights = vec![1.0; panes.len()];
             if let Some(Tile::Container(Container::Linear(linear))) = window.tree.tiles.get(child) {
                 if linear.dir == LinearDir::Vertical && linear.children.len() == panes.len() {
                     let mut rows = Vec::new();
                     for &row in &linear.children {
                         let mut row_panes = Vec::new();
-                        collect_saved_strip_panes(window, row, &mut std::collections::HashSet::new(), &mut row_panes)?;
+                        collect_saved_strip_panes(
+                            window,
+                            row,
+                            &mut std::collections::HashSet::new(),
+                            &mut row_panes,
+                        )?;
                         rows.push((row_panes, linear.shares[row]));
                     }
-                    if rows.iter().zip(&panes).all(|((row, share), pane)| row.as_slice() == [*pane] && share.is_finite() && *share > 0.0) {
+                    if rows.iter().zip(&panes).all(|((row, share), pane)| {
+                        row.as_slice() == [*pane] && share.is_finite() && *share > 0.0
+                    }) {
                         heights = rows.into_iter().map(|(_, share)| share).collect();
                     }
                 }
@@ -822,13 +1015,23 @@ fn saved_legacy_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<
 
 fn saved_strip_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<Vec<Vec<PaneId>>> {
     use egui_tiles::{Container, LinearDir, Tile};
-    let mut windows: Vec<_> = windows.iter().enumerate().filter(|(_, w)| w.context_id == context_id).collect();
+    let mut windows: Vec<_> = windows
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.context_id == context_id)
+        .collect();
     windows.sort_by_key(|(index, w)| (w.grid_x, w.grid_y, *index));
     let mut columns = Vec::new();
     for (_, window) in windows {
-        let Some(root) = window.tree.root() else { continue };
+        let Some(root) = window.tree.root() else {
+            continue;
+        };
         let children: Vec<_> = match window.tree.tiles.get(root) {
-            Some(Tile::Container(Container::Linear(linear))) if linear.dir == LinearDir::Horizontal => linear.children.clone(),
+            Some(Tile::Container(Container::Linear(linear)))
+                if linear.dir == LinearDir::Horizontal =>
+            {
+                linear.children.clone()
+            }
             Some(Tile::Container(Container::Grid(grid))) => grid.children().copied().collect(),
             _ => vec![root],
         };
@@ -836,7 +1039,9 @@ fn saved_strip_columns(windows: &[SavedWindow], context_id: u64) -> io::Result<V
         for child in children {
             let mut panes = Vec::new();
             collect_saved_strip_panes(window, child, &mut visited, &mut panes)?;
-            if !panes.is_empty() { columns.push(panes); }
+            if !panes.is_empty() {
+                columns.push(panes);
+            }
         }
     }
     Ok(columns)
@@ -850,12 +1055,22 @@ fn collect_saved_strip_panes(
 ) -> io::Result<()> {
     use egui_tiles::{Container, Tile};
     if !visited.insert(tile_id) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("window {} has a repeated tile", window.window_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("window {} has a repeated tile", window.window_id),
+        ));
     }
-    let tile = window.tree.tiles.get(tile_id).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("window {} references a missing tile", window.window_id)))?;
+    let tile = window.tree.tiles.get(tile_id).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("window {} references a missing tile", window.window_id),
+        )
+    })?;
     match tile {
         Tile::Pane(id) => {
-            if window.panes.iter().any(|pane| pane.id == *id && !pane.hidden && !matches!(pane.kind, SavedPaneKind::Portal { .. })) {
+            if window.panes.iter().any(|pane| {
+                pane.id == *id && !pane.hidden && !matches!(pane.kind, SavedPaneKind::Portal { .. })
+            }) {
                 panes.push(*id);
             }
         }
@@ -876,29 +1091,49 @@ fn collect_saved_strip_panes(
 /// Export the pre-migration workspace into a new, isolated profile.
 pub fn export_v2_rollback(source_profile: &Path, destination_profile: &Path) -> io::Result<()> {
     let source = workspace_path_in(source_profile);
-    let current: WorkspaceFile = serde_json::from_slice(&std::fs::read(&source)?)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("invalid current workspace: {error}")))?;
+    let current: WorkspaceFile =
+        serde_json::from_slice(&std::fs::read(&source)?).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid current workspace: {error}"),
+            )
+        })?;
     if current.version != 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "current workspace is not version 3"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "current workspace is not version 3",
+        ));
     }
     current.validate()?;
     let backup = source.with_extension("v2.rollback.json");
     let bytes = std::fs::read(&backup)?;
-    let mut legacy: WorkspaceFile = serde_json::from_slice(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("invalid rollback workspace: {error}")))?;
+    let mut legacy: WorkspaceFile = serde_json::from_slice(&bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid rollback workspace: {error}"),
+        )
+    })?;
     if legacy.version != 2 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "rollback workspace is not version 2"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollback workspace is not version 2",
+        ));
     }
     legacy.remove_legacy_deleted_context_focus();
     legacy.validate()?;
     std::fs::create_dir(destination_profile)?;
     let result = (|| {
         let destination = workspace_path_in(destination_profile);
-        let parent = destination.parent().ok_or_else(|| io::Error::other("rollback destination has no parent"))?;
+        let parent = destination
+            .parent()
+            .ok_or_else(|| io::Error::other("rollback destination has no parent"))?;
         std::fs::create_dir(parent)?;
         let temp = unique_temp_path(&destination);
         let write = (|| {
-            let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
             file.write_all(&bytes)?;
             file.sync_all()?;
             std::fs::hard_link(&temp, &destination)?;
@@ -907,15 +1142,25 @@ pub fn export_v2_rollback(source_profile: &Path, destination_profile: &Path) -> 
         })();
         if let Err(error) = std::fs::remove_file(&temp) {
             if error.kind() != io::ErrorKind::NotFound {
-                log::warn!("workspace rollback: could not remove temporary file {}: {error}", temp.display());
+                log::warn!(
+                    "workspace rollback: could not remove temporary file {}: {error}",
+                    temp.display()
+                );
             }
         }
         write
     })();
     if result.is_err() {
-        log::error!("workspace rollback export failed for {}: {:?}", destination_profile.display(), result.as_ref().err());
+        log::error!(
+            "workspace rollback export failed for {}: {:?}",
+            destination_profile.display(),
+            result.as_ref().err()
+        );
     } else {
-        log::info!("workspace rollback exported to {}", destination_profile.display());
+        log::info!(
+            "workspace rollback exported to {}",
+            destination_profile.display()
+        );
     }
     result
 }
@@ -924,17 +1169,30 @@ fn preserve_v2_rollback(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let backup = path.with_extension("v2.rollback.json");
     let temp = unique_temp_path(&backup);
     let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
         match std::fs::hard_link(&temp, &backup) {
             Ok(()) => {
-                File::open(path.parent().ok_or_else(|| io::Error::other("workspace has no parent"))?)?.sync_all()?;
-                log::info!("workspace migration: preserved version 2 rollback copy at {}", backup.display());
+                File::open(
+                    path.parent()
+                        .ok_or_else(|| io::Error::other("workspace has no parent"))?,
+                )?
+                .sync_all()?;
+                log::info!(
+                    "workspace migration: preserved version 2 rollback copy at {}",
+                    backup.display()
+                );
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 if std::fs::read(&backup)? != bytes {
-                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "existing version 2 rollback copy differs; refusing migration"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "existing version 2 rollback copy differs; refusing migration",
+                    ));
                 }
             }
             Err(error) => return Err(error),
@@ -943,7 +1201,10 @@ fn preserve_v2_rollback(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })();
     if let Err(error) = std::fs::remove_file(&temp) {
         if error.kind() != io::ErrorKind::NotFound {
-            log::warn!("workspace migration: could not remove temporary file {}: {error}", temp.display());
+            log::warn!(
+                "workspace migration: could not remove temporary file {}: {error}",
+                temp.display()
+            );
         }
     }
     result
@@ -1159,10 +1420,16 @@ mod tests {
         let newer = std::fs::read(&path).unwrap();
         let destination = root.path().join("isolated");
         export_v2_rollback(&source, &destination).unwrap();
-        assert_eq!(std::fs::read(workspace_path_in(&destination)).unwrap(), original);
+        assert_eq!(
+            std::fs::read(workspace_path_in(&destination)).unwrap(),
+            original
+        );
         assert_eq!(std::fs::read(&path).unwrap(), newer);
         assert!(export_v2_rollback(&source, &destination).is_err());
-        assert_eq!(std::fs::read(workspace_path_in(&destination)).unwrap(), original);
+        assert_eq!(
+            std::fs::read(workspace_path_in(&destination)).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -1301,15 +1568,13 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).expect("read JSON"))
                 .expect("prior workspace remains loadable");
         assert_eq!(loaded.version, 2);
-        assert!(
-            std::fs::read_dir(directory.path())
-                .expect("read workspace directory")
-                .all(|entry| !entry
-                    .expect("directory entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .contains(".tmp-"))
-        );
+        assert!(std::fs::read_dir(directory.path())
+            .expect("read workspace directory")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")));
     }
 
     /// `SavedPaneKind` must serialise every Pane variant produced by mirror-split
@@ -1343,7 +1608,10 @@ mod tests {
         // Portal round-trips with embedded context_id.
         let portal_pane = SavedPane {
             id: 99,
-            kind: SavedPaneKind::Portal { context_id: 42, reveal_after_close: false },
+            kind: SavedPaneKind::Portal {
+                context_id: 42,
+                reveal_after_close: false,
+            },
             cwd: PathBuf::new(),
             name: None,
             plugin_id: None,
@@ -1358,7 +1626,13 @@ mod tests {
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");
         assert!(
-            matches!(restored.kind, SavedPaneKind::Portal { context_id: 42, reveal_after_close: false }),
+            matches!(
+                restored.kind,
+                SavedPaneKind::Portal {
+                    context_id: 42,
+                    reveal_after_close: false
+                }
+            ),
             "Portal kind must round-trip with correct context_id"
         );
         assert_eq!(restored.id, 99);
@@ -1368,7 +1642,13 @@ mod tests {
         let legacy: SavedPane =
             serde_json::from_str(legacy_json).expect("deserialize legacy sub_context");
         assert!(
-            matches!(legacy.kind, SavedPaneKind::Portal { context_id: 42, reveal_after_close: false }),
+            matches!(
+                legacy.kind,
+                SavedPaneKind::Portal {
+                    context_id: 42,
+                    reveal_after_close: false
+                }
+            ),
             "legacy sub_context must deserialize to Portal"
         );
     }
@@ -1542,7 +1822,8 @@ mod tests {
             Some(vec!["Waiting for permission...".to_string()])
         );
 
-        let mut legacy_json: serde_json::Value = serde_json::from_str(&json).expect("saved pane JSON");
+        let mut legacy_json: serde_json::Value =
+            serde_json::from_str(&json).expect("saved pane JSON");
         legacy_json["agent_session"]
             .as_object_mut()
             .expect("agent session object")
@@ -1590,29 +1871,66 @@ mod tests {
 }
 
 /// Preserve an unseen completion before restore discards its finished ephemeral PTY.
-pub(crate) fn archive_saved_completion(profile: &Path, pane: &SavedPane, context_id: u64, context_name: &str) {
-    let Some(session) = &pane.agent_session else { return };
-    if load_agent_history_from(profile).iter().any(|r| r.pane_id == pane.id && r.session_id == session.session_id) { return; }
-    let result = session.fleet_result.clone().or_else(|| pane.slots.get("result").and_then(|path| {
-        match std::fs::read_to_string(path).and_then(|data| serde_json::from_str(&data).map_err(io::Error::other)) {
-            Ok(value) => Some(value),
-            Err(error) => { log::warn!("agents: restore completion result {}: {error}", path.display()); None }
-        }
-    }));
+pub(crate) fn archive_saved_completion(
+    profile: &Path,
+    pane: &SavedPane,
+    context_id: u64,
+    context_name: &str,
+) {
+    let Some(session) = &pane.agent_session else {
+        return;
+    };
+    if load_agent_history_from(profile)
+        .iter()
+        .any(|r| r.pane_id == pane.id && r.session_id == session.session_id)
+    {
+        return;
+    }
+    let result = session.fleet_result.clone().or_else(|| {
+        pane.slots.get("result").and_then(|path| {
+            match std::fs::read_to_string(path)
+                .and_then(|data| serde_json::from_str(&data).map_err(io::Error::other))
+            {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    log::warn!(
+                        "agents: restore completion result {}: {error}",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        })
+    });
     let record = AgentHistoryRecord {
         fleet_seen: session.fleet_seen,
         fleet_dismissed: session.fleet_dismissed,
         run_id: format!("run-{}-{}", pane.id, session.fleet_since),
-        pane_id: pane.id, context_id, context_name: context_name.into(), parent_pane_id: session.parent_pane_id,
+        pane_id: pane.id,
+        context_id,
+        context_name: context_name.into(),
+        parent_pane_id: session.parent_pane_id,
         spawned_by: session.spawned_by.clone(),
-        pane_name: pane.name.clone(), harness: session.harness.clone(), config_name: session.config_name.clone(),
+        pane_name: pane.name.clone(),
+        harness: session.harness.clone(),
+        config_name: session.config_name.clone(),
         permission_posture: session.permission_posture.clone(),
-        session_id: session.session_id.clone(), cwd: pane.cwd.clone(), ephemeral: session.ephemeral,
-        last_state: crate::protocol::AgentState::Completed, last_blocked_reason: None,
-        last_detail: session.last_detail.clone(), summary: session.last_detail.clone(), result,
-        tail_preview: session.tail_preview.clone(), slots: pane.slots.clone(), closed_at: session.fleet_since,
+        session_id: session.session_id.clone(),
+        cwd: pane.cwd.clone(),
+        ephemeral: session.ephemeral,
+        last_state: crate::protocol::AgentState::Completed,
+        last_blocked_reason: None,
+        last_detail: session.last_detail.clone(),
+        summary: session.last_detail.clone(),
+        result,
+        tail_preview: session.tail_preview.clone(),
+        slots: pane.slots.clone(),
+        closed_at: session.fleet_since,
     };
     if let Err(error) = append_agent_history_to(profile, &record) {
-        log::error!("agents: archive restored completion pane={}: {error}", pane.id);
+        log::error!(
+            "agents: archive restored completion pane={}: {error}",
+            pane.id
+        );
     }
 }

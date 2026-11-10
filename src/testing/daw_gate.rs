@@ -304,7 +304,10 @@ fn daw_gate_mixdown_determinism() {
         pcm_hash(&b),
         "independent mixdowns of one fixture must hash identically"
     );
-    assert_eq!(a, b, "PCM samples must be byte-identical, not just hash-equal");
+    assert_eq!(
+        a, b,
+        "PCM samples must be byte-identical, not just hash-equal"
+    );
 }
 
 /// Block-size independence: rendering the whole span at once equals rendering
@@ -350,7 +353,10 @@ fn daw_gate_wav_export_is_byte_identical() {
     let mix = engine.mixdown(0, end).expect("mixdown");
     let a = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode a");
     let b = wav::encode_f32(mix.sample_rate, mix.channels, &mix.samples).expect("encode b");
-    assert_eq!(a, b, "WAV export must be byte-identical for identical samples");
+    assert_eq!(
+        a, b,
+        "WAV export must be byte-identical for identical samples"
+    );
     assert_eq!(
         pcm_hash_bytes(&a),
         pcm_hash_bytes(&b),

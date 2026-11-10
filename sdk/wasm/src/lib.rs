@@ -1,6 +1,6 @@
 //! Rust authoring API for Plexi WASM component apps.
 //!
-//! Implement [`App`], then call [`export_app!`] once with an app constructor.
+//! Implement [`View`], then call [`export_plugin!`] once with an app constructor.
 
 wit_bindgen::generate!({
     world: "plexi-plugin",
@@ -14,7 +14,7 @@ pub mod bindings {
 
 pub use bindings::plexi::platform::types::*;
 
-/// Values passed to [`App::init`].
+/// Values passed to [`View::init`].
 pub struct InitContext {
     /// State persisted by an earlier app instance.
     pub state: StateSnapshot,
@@ -89,7 +89,7 @@ impl bindings::exports::plexi::platform::lifecycle::Guest for PlexiComponent {
 
 export!(PlexiComponent);
 
-/// Exports an [`App`] as the `plexi-plugin` WIT world.
+/// Exports an [`View`] as the `plexi-plugin` WIT world.
 #[macro_export]
 macro_rules! export_plugin {
     ($constructor:expr) => {

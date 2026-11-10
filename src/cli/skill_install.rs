@@ -331,7 +331,10 @@ mod tests {
         assert!(assistant_only.contains("assistant send"));
         assert!(!assistant_only.contains("agents-dashboard"));
         let both = render_skill(EMBEDDED_SKILL, |f| {
-            matches!(f, ReleaseFeature::AgentsDashboard | ReleaseFeature::Assistant)
+            matches!(
+                f,
+                ReleaseFeature::AgentsDashboard | ReleaseFeature::Assistant
+            )
         })
         .unwrap();
         assert!(both.contains("assistant send"));

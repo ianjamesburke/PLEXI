@@ -285,7 +285,7 @@
           ]
         },
         "PipStatus": {
-          "description": "App-reported \"pip\" status — a traffic-light health indicator an plugin sets for\nitself via the SDK (`App.set_pip_status`). Optional: when unset the host\nfalls back to derived activity. Distinct from `AgentState` (the hook-script\nvocabulary) so the SDK surface reads as red/yellow/green.",
+          "description": "App-reported \"pip\" status — a traffic-light health indicator a plugin sets for\nitself via the SDK (`App.set_pip_status`). Optional: when unset the host\nfalls back to derived activity. Distinct from `AgentState` (the hook-script\nvocabulary) so the SDK surface reads as red/yellow/green.",
           "enum": [
             "green",
             "yellow",
@@ -294,7 +294,7 @@
           "type": "string"
         },
         "PluginEventActor": {
-          "description": "Who caused an plugin state change (`HostRequest::EmitEvent`).",
+          "description": "Who caused a plugin state change (`HostRequest::EmitEvent`).",
           "enum": [
             "user",
             "agent",
@@ -1171,7 +1171,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Report an plugin's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the plugin process via `App.set_pip_status`. Takes\npriority over derived activity until the plugin reports a new status.\n\n`pane_id` is stamped by the host with the sending plugin's own pane (the plugin\ndoes not know its pane id), so it defaults to 0 on the wire and an plugin\ncan only ever set its own pip — never another pane's.",
+          "description": "Report a plugin's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the plugin process via `App.set_pip_status`. Takes\npriority over derived activity until the plugin reports a new status.\n\n`pane_id` is stamped by the host with the sending plugin's own pane (the plugin\ndoes not know its pane id), so it defaults to 0 on the wire and a plugin\ncan only ever set its own pip — never another pane's.",
           "properties": {
             "pane_id": {
               "default": 0,
@@ -2514,7 +2514,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Write text to a terminal PTY or an plugin's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal plugin paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on view panes.",
+          "description": "Write text to a terminal PTY or a plugin's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal plugin paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on view panes.",
           "properties": {
             "generated_operation_id": {
               "default": false,
@@ -2535,7 +2535,7 @@
             },
             "paste": {
               "default": false,
-              "description": "Deliver literal text as one paste event to an view pane.",
+              "description": "Deliver literal text as one paste event to a view pane.",
               "type": "boolean"
             },
             "peer_ancestry": {
@@ -2686,7 +2686,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic pointer click to an view pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
+          "description": "Deliver a synthetic pointer click to a view pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2729,7 +2729,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic click to an view pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
+          "description": "Deliver a synthetic click to a view pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2766,7 +2766,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a sanctioned pointer drag to an view pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
+          "description": "Deliver a sanctioned pointer drag to a view pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2997,7 +2997,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Dispatch a semantic action to an view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target view pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
+          "description": "Dispatch a semantic action to a view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target view pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
           "properties": {
             "action": {
               "description": "Action name, e.g. \"refresh\", \"navigate-to\".",
@@ -3334,7 +3334,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Call an plugin-exposed tool through the host tool dispatcher. Sent by\n`plexi plugin call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the plugin answers or the host deadline passes.",
+          "description": "Call a plugin-exposed tool through the host tool dispatcher. Sent by\n`plexi plugin call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the plugin answers or the host deadline passes.",
           "properties": {
             "call_credential": {
               "description": "Host-issued session credential. A client-supplied pane id is only a claim.",
@@ -6125,7 +6125,7 @@
               "type": "string"
             },
             "caller_id": {
-              "description": "Broker identity of the caller (e.g. `\"agent:chess-opponent\"` or\nan plugin id). The SDK stamps `caused_by` on events emitted while\nthis call is being serviced.",
+              "description": "Broker identity of the caller (e.g. `\"agent:chess-opponent\"` or\na plugin id). The SDK stamps `caused_by` on events emitted while\nthis call is being serviced.",
               "type": "string"
             },
             "input_json": {
@@ -6599,7 +6599,7 @@
           "type": "object"
         },
         {
-          "description": "Emitted when the mouse wheel moves over an view pane that has no\nhost-managed scroll region or list_view under the cursor.\n`delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =\nscroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from\nthe plugin's `on_scroll_delta` handler.",
+          "description": "Emitted when the mouse wheel moves over a view pane that has no\nhost-managed scroll region or list_view under the cursor.\n`delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =\nscroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from\nthe plugin's `on_scroll_delta` handler.",
           "properties": {
             "delta_y": {
               "format": "float",

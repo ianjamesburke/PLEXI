@@ -18,24 +18,34 @@ fn minimap_shortcut_without_experiments_toggles_bottom_right() {
         modifiers,
     };
     frame_with_events(&mut h, vec![press()]);
-    assert!(h.app.minimap.visible, "shortcut must show minimap without experiments");
+    assert!(
+        h.app.minimap.visible,
+        "shortcut must show minimap without experiments"
+    );
     let rect = crate::render::minimap::minimap_panel_rect(
         &h.ctx,
         h.ctx.content_rect(),
         &h.app.windows,
         h.app.router.active().context_id,
         &h.app.router.active().name.to_string(),
-    ).unwrap();
+    )
+    .unwrap();
     let screen = h.ctx.content_rect();
     assert!(rect.right() <= screen.right() && rect.bottom() <= screen.bottom());
-    assert!(rect.center().x > screen.center().x && rect.center().y > screen.center().y, "minimap must be bottom-right: {rect:?}");
-    frame_with_events(&mut h, vec![egui::Event::Key {
-        key: egui::Key::M,
-        physical_key: None,
-        pressed: false,
-        repeat: false,
-        modifiers,
-    }]);
+    assert!(
+        rect.center().x > screen.center().x && rect.center().y > screen.center().y,
+        "minimap must be bottom-right: {rect:?}"
+    );
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::M,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers,
+        }],
+    );
     frame_with_events(&mut h, vec![press()]);
     assert!(!h.app.minimap.visible, "shortcut must hide minimap");
 }
@@ -50,7 +60,9 @@ fn terminal_process_activity_is_not_agent_activity() {
     assert!(pane.agent().is_none());
     assert_eq!(pane.effective_activity(), None);
     let state = crate::host::context_state::ContextState::compute(
-        h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+        h.app.windows[0].context_id,
+        h.app.router.as_slice(),
+        &h.app.windows,
     );
     assert_eq!(state.active_agents, 0);
 
@@ -70,7 +82,9 @@ fn terminal_process_activity_is_not_agent_activity() {
         }));
         assert_eq!(pane.effective_activity(), Some(&agent_state));
         let state = crate::host::context_state::ContextState::compute(
-            h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+            h.app.windows[0].context_id,
+            h.app.router.as_slice(),
+            &h.app.windows,
         );
         assert_eq!(state.active_agents, expected);
     }
@@ -105,7 +119,8 @@ fn foreground_and_background_programs_are_not_agents() {
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
     for command in ["sleep 30\n", "sleep 30 & PLEXI_TEST_JOB=$!\n"] {
-        h.terminal_backend(id).process_command(BackendCommand::Write(command.as_bytes().to_vec()));
+        h.terminal_backend(id)
+            .process_command(BackendCommand::Write(command.as_bytes().to_vec()));
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
             h.run_frames(1);
@@ -114,26 +129,43 @@ fn foreground_and_background_programs_are_not_agents() {
                 assert!(pane.agent().is_none());
                 assert_eq!(pane.effective_activity(), None);
                 let state = crate::host::context_state::ContextState::compute(
-                    h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+                    h.app.windows[0].context_id,
+                    h.app.router.as_slice(),
+                    &h.app.windows,
                 );
                 assert_eq!(state.active_agents, 0);
                 break;
             }
-            assert!(Instant::now() < deadline, "process activity was not observed for {command:?}");
+            assert!(
+                Instant::now() < deadline,
+                "process activity was not observed for {command:?}"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
         if command.starts_with("sleep 30 &") {
-            h.terminal_backend(id).process_command(BackendCommand::Write(b"kill \"$PLEXI_TEST_JOB\"\n".to_vec()));
+            h.terminal_backend(id)
+                .process_command(BackendCommand::Write(
+                    b"kill \"$PLEXI_TEST_JOB\"\n".to_vec(),
+                ));
         } else {
-            h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+            h.terminal_backend(id)
+                .process_command(BackendCommand::Write(b"\x03".to_vec()));
         }
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
             h.run_frames(1);
-            if h.app.windows[0].panes[&id].as_terminal().unwrap().activity.is_none() {
+            if h.app.windows[0].panes[&id]
+                .as_terminal()
+                .unwrap()
+                .activity
+                .is_none()
+            {
                 break;
             }
-            assert!(Instant::now() < deadline, "process did not exit for {command:?}");
+            assert!(
+                Instant::now() < deadline,
+                "process did not exit for {command:?}"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -142,16 +174,25 @@ fn foreground_and_background_programs_are_not_agents() {
 #[test]
 #[ignore = "requires-pty"]
 fn manually_launched_agent_exit_clears_working_report() {
-    assert_manual_agent_exit(crate::protocol::AgentState::Working, crate::protocol::AgentState::Interrupted);
+    assert_manual_agent_exit(
+        crate::protocol::AgentState::Working,
+        crate::protocol::AgentState::Interrupted,
+    );
 }
 
 #[test]
 #[ignore = "requires-pty"]
 fn manually_launched_idle_agent_exit_is_not_idle() {
-    assert_manual_agent_exit(crate::protocol::AgentState::Idle, crate::protocol::AgentState::ExitedUnreported);
+    assert_manual_agent_exit(
+        crate::protocol::AgentState::Idle,
+        crate::protocol::AgentState::ExitedUnreported,
+    );
 }
 
-fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expected: crate::protocol::AgentState) {
+fn assert_manual_agent_exit(
+    reported_state: crate::protocol::AgentState,
+    expected: crate::protocol::AgentState,
+) {
     use crate::protocol::PaneAgentState;
     use egui_term::BackendCommand;
     use std::time::{Duration, Instant};
@@ -161,11 +202,17 @@ fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expecte
     let mut h = HostHarness::new();
     let id = h.add_focused_terminal();
     let command = format!("{} 30\n", fake.display());
-    h.terminal_backend(id).process_command(BackendCommand::Write(command.into_bytes()));
+    h.terminal_backend(id)
+        .process_command(BackendCommand::Write(command.into_bytes()));
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
     loop {
         h.run_frames(1);
-        if h.app.windows[0].panes[&id].as_terminal().unwrap().observed_agent.is_some() {
+        if h.app.windows[0].panes[&id]
+            .as_terminal()
+            .unwrap()
+            .observed_agent
+            .is_some()
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -177,20 +224,35 @@ fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expecte
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(PaneAgentState {
-        pane_id: id, state: reported_state, agent: "codex".into(), detail: None, session_id: None,
-    }));
-    h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
+    h.app.windows[0]
+        .panes
+        .get_mut(&id)
+        .unwrap()
+        .set_agent(Some(PaneAgentState {
+            pane_id: id,
+            state: reported_state,
+            agent: "codex".into(),
+            detail: None,
+            session_id: None,
+        }));
+    h.terminal_backend(id)
+        .process_command(BackendCommand::Write(b"\x03".to_vec()));
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
     loop {
         h.run_frames(1);
         let pane = &h.app.windows[0].panes[&id];
         let terminal = pane.as_terminal().unwrap();
         if terminal.observed_agent.is_none() && terminal.activity.is_none() {
-            assert_eq!(pane.effective_agent().map(|a| a.state), Some(expected.clone()),
+            assert_eq!(
+                pane.effective_agent().map(|a| a.state),
+                Some(expected.clone()),
                 "shell={} fg={:?} last={:?} harness={:?} role={:?}",
-                terminal.backend.child_pid(), terminal.backend.foreground_pid(), terminal.last_observed_agent,
-                terminal.agent_harness, terminal.agent_role);
+                terminal.backend.child_pid(),
+                terminal.backend.foreground_pid(),
+                terminal.last_observed_agent,
+                terminal.agent_harness,
+                terminal.agent_role
+            );
             assert_eq!(pane.effective_activity(), Some(&expected));
             break;
         }
@@ -212,7 +274,11 @@ fn add_view_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &st
 /// Push a second context + window (no PTY dependency) and return its window
 /// index. Mirrors the pattern in `plugin::tests::context_tests`, duplicated here
 /// since that helper is module-private.
-pub(super) fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path::Path) -> usize {
+pub(super) fn push_secondary_context(
+    h: &mut HostHarness,
+    context_id: u64,
+    root: &std::path::Path,
+) -> usize {
     let win_id = h.app.next_window_id;
     h.app.next_window_id += 1;
     h.app.windows.push(crate::host::context::Window {
@@ -1006,23 +1072,37 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
     let old = profile.join("apps");
     std::fs::create_dir_all(&old).unwrap();
     let plugin_dir = write_restore_fixture_plugin(&old, "legacy");
-    let pane_id = harness.app
-        .launch_view_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
-        .unwrap().unwrap();
+    let pane_id = harness
+        .app
+        .launch_view_by_path_with_layout_no_review_modal(
+            &plugin_dir.to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
     let original_paths = harness.app.windows[harness.app.active_window].panes[&pane_id]
-        .as_view().unwrap().runtime.state_paths();
+        .as_view()
+        .unwrap()
+        .runtime
+        .state_paths();
     harness.app.save_workspace_now();
     // Produce the exact old package and serialized launch shape. The disk
     // layout keys intentionally retain their 0.4.4 spelling.
     std::fs::write(plugin_dir.join("manifest.toml"),
         "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n[runtime]\npython_compat = true\n").unwrap();
     let restored = HostHarness::from_profile_dir(&profile);
-    let pane = restored.app.windows[restored.app.active_window].panes[&pane_id].as_view().unwrap();
+    let pane = restored.app.windows[restored.app.active_window].panes[&pane_id]
+        .as_view()
+        .unwrap();
     assert_eq!(pane.manifest_id, "legacy");
     assert!(matches!(pane.runtime, ViewRuntime::Python(_)));
     assert_eq!(pane.runtime.state_paths(), original_paths);
     assert!(profile.join("plugins/legacy/manifest.toml").is_file());
-    assert!(profile.join("migration-plugin-v2/apps/legacy/manifest.toml").is_file());
+    assert!(profile
+        .join("migration-plugin-v2/apps/legacy/manifest.toml")
+        .is_file());
 }
 
 #[test]
@@ -1034,7 +1114,12 @@ fn saved_python_view_pane_restores_as_that_view() {
     let saved_profile = h.profile_dir().to_path_buf();
     let pane_id = h
         .app
-        .launch_view_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout_no_review_modal(
+            &plugin_dir.to_string_lossy(),
+            None,
+            None,
+            &[],
+        )
         .expect("launch fixture plugin")
         .expect("a Python launch returns a pane id");
     let context_id = h.app.windows[h.app.active_window].context_id;
@@ -1173,7 +1258,10 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 tree: tree_a,
                 panes: vec![crate::workspace::SavedPane {
                     id: 41,
-                    kind: crate::workspace::SavedPaneKind::Portal { context_id: 20, reveal_after_close: false },
+                    kind: crate::workspace::SavedPaneKind::Portal {
+                        context_id: 20,
+                        reveal_after_close: false,
+                    },
                     cwd: root_a.path().to_path_buf(),
                     name: None,
                     plugin_id: None,
@@ -1341,7 +1429,10 @@ fn legacy_view_pane_without_launch_context_still_loads() {
         workspace_json.as_bytes(),
         "migration must preserve the original legacy record",
     );
-    assert!(workspace_path.exists(), "migration keeps the active workspace path");
+    assert!(
+        workspace_path.exists(),
+        "migration keeps the active workspace path"
+    );
 }
 
 /// The other half of the migration path: a `launch` that names a plugin
@@ -1413,7 +1504,10 @@ fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
         "record with no runtime_kind and a runtime-kind plugin_id must be flagged legacy"
     );
 
-    let plugin_type = record.plugin_id.clone().expect("legacy record carries plugin_id");
+    let plugin_type = record
+        .plugin_id
+        .clone()
+        .expect("legacy record carries plugin_id");
     // Exact reason format the restore loop in `PlexiApp::new` builds for this
     // branch (src/app/mod.rs) — asserted here so a drift in either place
     // shows up as a test failure.
@@ -1714,7 +1808,6 @@ fn send_to_view_pane_injects_text_through_focused_render_input() {
     let response_file = temp_response(tmp.path(), "send-text");
 
     h.app.handle_pane_ipc_request(HostRequest::SendToPane {
-
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -3016,42 +3109,83 @@ fn osc_title_content_stays_out_of_persistent_logs() {
         crate::host::flight_recorder::adopt_session(&profile, "sess-osc");
         let mut h = HostHarness::from_profile_dir(&profile);
         let pane_id = h.add_focused_terminal();
-        h.app.pty_event_tx.send((pane_id, egui_term::PtyEvent::Title(SENTINEL.to_string()))).unwrap();
+        h.app
+            .pty_event_tx
+            .send((pane_id, egui_term::PtyEvent::Title(SENTINEL.to_string())))
+            .unwrap();
         h.run_frames(1);
-        let terminal = h.app.windows[0].panes.get(&pane_id).unwrap().as_terminal().unwrap();
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pane_id)
+            .unwrap()
+            .as_terminal()
+            .unwrap();
         assert_eq!(terminal.pty_title.as_deref(), Some(SENTINEL));
         assert_eq!(terminal.name.as_deref(), Some(SENTINEL));
         h.app.reconcile_focus_logging(std::time::Duration::ZERO);
         let journal = std::fs::read_to_string(profile.join("focus-journal.jsonl")).unwrap();
         h.app.bank_final_focus_segment();
         let events_path = profile.join("events.jsonl");
-        let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
+        let deadline = std::time::Instant::now()
+            + crate::testing::load_aware_timeout(std::time::Duration::from_secs(5));
         let events = loop {
             let content = std::fs::read_to_string(&events_path).unwrap_or_default();
-            if content.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .any(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id) { break content; }
-            assert!(std::time::Instant::now() < deadline, "focus event not written");
+            if content
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .any(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id)
+            {
+                break content;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "focus event not written"
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         log::logger().flush();
         let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
         let trace = std::fs::read_to_string(profile.join("sessions/sess-osc.jsonl")).unwrap();
         assert!(!log.contains(SENTINEL), "OSC title leaked to plexi.log");
-        assert!(!events.contains(SENTINEL), "OSC title leaked to events.jsonl");
-        let row = events.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id).unwrap();
+        assert!(
+            !events.contains(SENTINEL),
+            "OSC title leaked to events.jsonl"
+        );
+        let row = events
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|row| row["kind"] == "focus_changed" && row["pane_id"] == pane_id)
+            .unwrap();
         assert!(row["pty_title"].is_null());
         assert!(row["pane_name"].is_null());
-        assert!(!journal.contains(SENTINEL), "OSC title leaked to focus journal");
-        assert!(!trace.contains(SENTINEL), "OSC title leaked to session trace");
+        assert!(
+            !journal.contains(SENTINEL),
+            "OSC title leaked to focus journal"
+        );
+        assert!(
+            !trace.contains(SENTINEL),
+            "OSC title leaked to session trace"
+        );
         assert!(log.contains(&format!("title_chars={}", SENTINEL.chars().count())));
         return;
     }
     let profile = tempfile::tempdir().unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "testing::harness_tests::osc_title_content_stays_out_of_persistent_logs", "--ignored", "--nocapture"])
-        .env(CHILD, profile.path()).output().unwrap();
-    assert!(output.status.success(), "child failed: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        .args([
+            "--exact",
+            "testing::harness_tests::osc_title_content_stays_out_of_persistent_logs",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(CHILD, profile.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -3705,13 +3839,22 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         Some(&AgentState::Idle),
         "green pip -> Idle (green dot), overriding the Working agent state"
     );
-    h.inject_ipc(HostRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
+    h.inject_ipc(HostRequest::SetPipStatus {
+        pane_id: pane,
+        status: PipStatus::Yellow,
+    });
     h.run_frames(3);
     let p = h.app.windows[0].panes.get_mut(&pane).unwrap();
     assert_eq!(p.effective_activity(), Some(&AgentState::Working));
-    assert!(!p.static_health_pip(), "an identified working agent still animates");
+    assert!(
+        !p.static_health_pip(),
+        "an identified working agent still animates"
+    );
     p.set_agent(None);
-    assert!(p.static_health_pip(), "yellow plugin health keeps its color without an agent animation");
+    assert!(
+        p.static_health_pip(),
+        "yellow plugin health keeps its color without an agent animation"
+    );
 }
 
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
@@ -4791,7 +4934,10 @@ fn context_1041_parked_rename_releases_input() {
     h.run_frames(2);
     h.app.park_context(1);
     h.run_frames(2);
-    assert!(h.app.context_rename.is_none(), "parking hides the editor and must cancel rename");
+    assert!(
+        h.app.context_rename.is_none(),
+        "parking hides the editor and must cancel rename"
+    );
     assert!(!h.app.input_captured_by_overlay());
 }
 
@@ -4806,7 +4952,10 @@ fn context_1041_direct_router_navigation_releases_rename_input() {
     h.run_frames(2);
     h.app.router.set_active(1);
     h.run_frames(1);
-    assert!(h.app.context_rename.is_none(), "direct navigation must cancel rename before routing input");
+    assert!(
+        h.app.context_rename.is_none(),
+        "direct navigation must cancel rename before routing input"
+    );
     assert!(!h.app.input_captured_by_overlay());
 }
 
@@ -4859,24 +5008,44 @@ fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
     let tmp = tempfile::tempdir().unwrap();
     let mut h = HostHarness::new();
     h.app.open_builtin_view_pane(
-        Box::<KeyBurstProbe>::default(), PluginPermissions::builtin(),
-        tmp.path().to_path_buf(), None, Some("split_h"), None,
+        Box::<KeyBurstProbe>::default(),
+        PluginPermissions::builtin(),
+        tmp.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
     );
     let pane_id = h.state().open_panes[0];
     h.focus_pane(pane_id);
     h.app.open_context_rename(0);
     h.run_frames(2);
     run_blurred_frames(&mut h, 1);
-    frame_with_events(&mut h, vec![egui::Event::Key {
-        key: egui::Key::Escape, physical_key: None, pressed: true,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }]);
-    frame_with_events(&mut h, vec![egui::Event::Key {
-        key: egui::Key::ArrowDown, physical_key: None, pressed: true,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }]);
-    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_view)
-        .and_then(|pane| pane.runtime.serialize_state()).unwrap();
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowDown,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    let state = h.app.windows[0]
+        .panes
+        .get(&pane_id)
+        .and_then(Pane::as_view)
+        .and_then(|pane| pane.runtime.serialize_state())
+        .unwrap();
     assert_ne!(state["received"], serde_json::json!([] as [&str; 0]));
     assert!(!h.app.input_captured_by_overlay());
 }
@@ -4889,25 +5058,40 @@ fn context_1041_rename_switch_cancel_commit_and_remove() {
     h.app.sidebar_visible = true;
     h.app.open_context_rename(1);
     h.run_frames(2);
-    assert_eq!(h.app.focus_stack.last(), Some(&crate::app::FocusKind::ContextRename));
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&crate::app::FocusKind::ContextRename)
+    );
     h.app.switch_workspace(1);
     assert!(h.app.context_rename.is_none());
     assert!(!h.app.input_captured_by_overlay());
     h.app.open_context_rename(1);
     h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
     h.run_frames(2);
-    frame_with_events(&mut h, vec![egui::Event::Key {
-        key: egui::Key::Escape, physical_key: None, pressed: true,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }]);
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
     assert_ne!(h.app.router.get(1).name.to_string(), "changed");
     h.app.open_context_rename(1);
     h.app.context_rename.as_mut().unwrap().buffer = "changed".into();
     h.run_frames(2);
-    frame_with_events(&mut h, vec![egui::Event::Key {
-        key: egui::Key::Enter, physical_key: None, pressed: true,
-        repeat: false, modifiers: egui::Modifiers::NONE,
-    }]);
+    frame_with_events(
+        &mut h,
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
     assert_eq!(h.app.router.get(1).name.to_string(), "changed");
     h.app.open_context_rename(1);
     h.app.delete_context(1);
@@ -4923,14 +5107,26 @@ fn context_1041_backspace_does_not_delete_blank_context() {
     h.app.switch_workspace(1);
     h.run_frames(2);
     for _ in 0..3 {
-        frame_with_events(&mut h, vec![egui::Event::Key {
-            key: egui::Key::Backspace, physical_key: None, pressed: true,
-            repeat: false, modifiers: egui::Modifiers::NONE,
-        }]);
-        frame_with_events(&mut h, vec![egui::Event::Key {
-            key: egui::Key::Backspace, physical_key: None, pressed: false,
-            repeat: false, modifiers: egui::Modifiers::NONE,
-        }]);
+        frame_with_events(
+            &mut h,
+            vec![egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame_with_events(
+            &mut h,
+            vec![egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
     }
     assert_eq!(h.app.router.len(), 2, "backspace must not remove a context");
 }
@@ -5464,9 +5660,14 @@ description = "test anchor project"
         .clone()
         .expect("new_context_at_path must record stage timing");
     assert_eq!(timing_cold_empty.context_id, active_ctx.context_id);
-    assert_eq!(timing_cold_empty.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert_eq!(
+        timing_cold_empty.kind,
+        crate::pane_ops::NewContextKind::AtPath
+    );
     assert!(timing_cold_empty.total >= timing_cold_empty.pane_spawn);
-    assert!(timing_cold_empty.total <= cold_empty_host_elapsed + std::time::Duration::from_millis(50));
+    assert!(
+        timing_cold_empty.total <= cold_empty_host_elapsed + std::time::Duration::from_millis(50)
+    );
 
     // First paint frame:
     let paint_start = std::time::Instant::now();
@@ -5506,10 +5707,19 @@ description = "test anchor project"
         .last_new_context_timing
         .clone()
         .expect("new_context_at_path for project must record stage timing");
-    assert_eq!(timing_cold_project.context_id, active_project_ctx.context_id);
-    assert_eq!(timing_cold_project.kind, crate::pane_ops::NewContextKind::AtPath);
+    assert_eq!(
+        timing_cold_project.context_id,
+        active_project_ctx.context_id
+    );
+    assert_eq!(
+        timing_cold_project.kind,
+        crate::pane_ops::NewContextKind::AtPath
+    );
     assert!(timing_cold_project.total >= timing_cold_project.pane_spawn);
-    assert!(timing_cold_project.total <= cold_project_host_elapsed + std::time::Duration::from_millis(50));
+    assert!(
+        timing_cold_project.total
+            <= cold_project_host_elapsed + std::time::Duration::from_millis(50)
+    );
 
     let paint_project_start = std::time::Instant::now();
     h.run_frames(1);
@@ -5534,7 +5744,10 @@ description = "test anchor project"
         .clone()
         .expect("new_context must record stage timing");
     assert_eq!(timing_cold_home.context_id, active_empty_home.context_id);
-    assert_eq!(timing_cold_home.kind, crate::pane_ops::NewContextKind::Empty);
+    assert_eq!(
+        timing_cold_home.kind,
+        crate::pane_ops::NewContextKind::Empty
+    );
     let paint_home_start = std::time::Instant::now();
     h.run_frames(1);
     let cold_home_first_paint = paint_home_start.elapsed();
@@ -5564,7 +5777,8 @@ description = "test anchor project"
 
     for i in 0..5 {
         let warm_empty_sub = tempfile::tempdir().expect("create warm empty tempdir");
-        h.app.new_context_at_path(warm_empty_sub.path().to_path_buf());
+        h.app
+            .new_context_at_path(warm_empty_sub.path().to_path_buf());
         let t_empty = h
             .app
             .last_new_context_timing
@@ -5611,7 +5825,8 @@ description = "test anchor project"
             format!("id = \"warm-{i}\"\n\n[context]\nname = \"warm-{i}\"\n"),
         )
         .expect("write sub workspace.toml");
-        h.app.new_context_at_path(warm_project_sub.path().to_path_buf());
+        h.app
+            .new_context_at_path(warm_project_sub.path().to_path_buf());
         let t_proj = h
             .app
             .last_new_context_timing
@@ -7712,7 +7927,9 @@ fn python_pane_has_rendered_tree(h: &HostHarness, pane_id: PaneId) -> bool {
         .panes
         .get(&pane_id)
         .and_then(Pane::as_view)
-        .is_some_and(|pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()))
+        .is_some_and(
+            |pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()),
+        )
 }
 
 fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
@@ -8519,7 +8736,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
 mod routine_firing {
     use super::*;
     use crate::host::context::{Context, Window};
-    use crate::host::pane::{ViewPane, ViewRuntime, Pane};
+    use crate::host::pane::{Pane, ViewPane, ViewRuntime};
     use crate::spatial::tiling::PaneId;
 
     /// Write `routines.toml` into `root`'s workspace channel dir.
@@ -8539,7 +8756,11 @@ mod routine_firing {
 
     /// Insert a builtin view pane (rooted at `root`, never a real machine dir)
     /// into `win_idx` and focus it, so `split_focused` has a split target.
-    fn add_focused_view_pane(h: &mut HostHarness, win_idx: usize, root: &std::path::Path) -> PaneId {
+    fn add_focused_view_pane(
+        h: &mut HostHarness,
+        win_idx: usize,
+        root: &std::path::Path,
+    ) -> PaneId {
         let pane_id = h.app.host.alloc_pane_id();
         let pane = ViewPane {
             pip_status: None,
@@ -11564,8 +11785,16 @@ mod flight_recorder_session {
         assert_eq!(timeline[requested]["pane_id"], caller);
         assert_eq!(timeline[requested]["context_id"], context_id);
         assert_eq!(timeline[requested]["data"]["wait_approved"], true);
-        assert_eq!(timeline[requested]["data"]["input"],
-            format!("<{} chars>", serde_json::json!({"text":"Buy groceries"}).to_string().chars().count()));
+        assert_eq!(
+            timeline[requested]["data"]["input"],
+            format!(
+                "<{} chars>",
+                serde_json::json!({"text":"Buy groceries"})
+                    .to_string()
+                    .chars()
+                    .count()
+            )
+        );
         assert!(timeline[ask]["data"]["pending_request_id"]
             .as_str()
             .is_some());
@@ -11575,8 +11804,16 @@ mod flight_recorder_session {
             timeline[ask]["data"]["pending_request_id"]
         );
         assert_eq!(timeline[completed]["data"]["ok"], true);
-        assert_eq!(timeline[completed]["data"]["output"],
-            format!("<{} chars>", serde_json::json!({"added":true}).to_string().chars().count()));
+        assert_eq!(
+            timeline[completed]["data"]["output"],
+            format!(
+                "<{} chars>",
+                serde_json::json!({"added":true})
+                    .to_string()
+                    .chars()
+                    .count()
+            )
+        );
 
         // --pane keeps the pane's own rows and the calls it made.
         let (_, _, pane_rows) =
@@ -12321,8 +12558,11 @@ mod agent_state_restoration_tests {
         for (role, harness) in [("lead", "claude"), ("worker", "codex")] {
             let agent_dir = profile_dir.path().join("agents").join(role);
             std::fs::create_dir_all(&agent_dir).expect("create agent definition");
-            std::fs::write(agent_dir.join("AGENT.md"), "Resume with the configured flags.")
-                .expect("write agent persona");
+            std::fs::write(
+                agent_dir.join("AGENT.md"),
+                "Resume with the configured flags.",
+            )
+            .expect("write agent persona");
             std::fs::write(
                 agent_dir.join("settings.toml"),
                 format!(
@@ -12419,7 +12659,10 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 11,
-                            kind: SavedPaneKind::Portal { context_id: 2, reveal_after_close: false },
+                            kind: SavedPaneKind::Portal {
+                                context_id: 2,
+                                reveal_after_close: false,
+                            },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -12433,7 +12676,10 @@ mod agent_state_restoration_tests {
                         },
                         SavedPane {
                             id: 12,
-                            kind: SavedPaneKind::Portal { context_id: 3, reveal_after_close: false },
+                            kind: SavedPaneKind::Portal {
+                                context_id: 3,
+                                reveal_after_close: false,
+                            },
                             cwd: PathBuf::new(),
                             name: None,
                             plugin_id: None,
@@ -13387,8 +13633,8 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
 /// `DeliverPipeMessage` frames reach the WASM runtime.
 #[test]
 fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
-    use crate::host::wasm_view::{Grants, StateStore, WasmView};
     use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
+    use crate::host::wasm_view::{Grants, StateStore, WasmView};
 
     let mut h = HostHarness::new();
     let win_idx = h.app.active_window;
@@ -13876,7 +14122,8 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     req_json["command"] = serde_json::Value::String("sleep 30".to_string());
     req_json["response_file"] = serde_json::Value::String(spawn_reply.clone());
 
-    let plugin_req: HostRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
+    let plugin_req: HostRequest =
+        serde_json::from_value(req_json).expect("valid AgentSpawn request");
     h.inject_ipc(plugin_req);
     h.hidden_frame();
 
@@ -13977,7 +14224,12 @@ impl AgentFocusFixture {
         .unwrap();
         let proj_dir = home.path().join("proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
-        Self { home, _profile_guard: guard, profile_dir, proj_dir }
+        Self {
+            home,
+            _profile_guard: guard,
+            profile_dir,
+            proj_dir,
+        }
     }
 
     fn stops(&self) -> Vec<std::path::PathBuf> {
@@ -14650,7 +14902,8 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
 }
 
 #[test]
-fn v1_interactive_agent_start_and_task_seeded_spawn_with_human_and_claude_provenance_and_lifecycle() {
+fn v1_interactive_agent_start_and_task_seeded_spawn_with_human_and_claude_provenance_and_lifecycle()
+{
     let fake_home = tempfile::tempdir().expect("fake home");
     let profile_dir = fake_home.path().join(".plexi-alpha");
     std::fs::create_dir_all(&profile_dir).unwrap();
@@ -14707,8 +14960,14 @@ allow = ["pane.send"]
         cmd.contains("--append-system-prompt 'You are an interactive researcher persona.\n\n# Plexi worker contract"),
         "must append system prompt with persona and worker contract: {cmd}"
     );
-    assert!(!cmd.contains(" -p"), "interactive start must not contain -p flag: {cmd}");
-    assert!(!cmd.contains(" --print"), "interactive start must not contain --print flag: {cmd}");
+    assert!(
+        !cmd.contains(" -p"),
+        "interactive start must not contain -p flag: {cmd}"
+    );
+    assert!(
+        !cmd.contains(" --print"),
+        "interactive start must not contain --print flag: {cmd}"
+    );
     assert_eq!(start_payload_no_msg["task"], "");
     assert_eq!(start_payload_no_msg["ephemeral"], false);
     assert_eq!(start_payload_no_msg["role"], "researcher");
@@ -14724,14 +14983,22 @@ allow = ["pane.send"]
     let spawn_resp_1 = read_json_response(&spawn_reply_1);
     assert_eq!(spawn_resp_1["ok"], true);
     let start_pane_id = spawn_resp_1["pane_id"].as_u64().unwrap();
-    assert_eq!(spawn_resp_1["spawned_by"], "human", "human parent must yield spawned_by=human");
+    assert_eq!(
+        spawn_resp_1["spawned_by"], "human",
+        "human parent must yield spawned_by=human"
+    );
 
-    let term_1 = h.app.windows[0].panes[&start_pane_id].as_terminal().unwrap();
+    let term_1 = h.app.windows[0].panes[&start_pane_id]
+        .as_terminal()
+        .unwrap();
     assert_eq!(term_1.spawned_by.as_deref(), Some("human"));
     assert_eq!(term_1.spawned_by_badge().as_deref(), Some("spawned by you"));
     assert_eq!(term_1.agent_role.as_deref(), Some("researcher"));
     assert_eq!(term_1.agent_harness.as_deref(), Some("pi"));
-    assert!(!term_1.ephemeral, "interactive start pane must not be ephemeral");
+    assert!(
+        !term_1.ephemeral,
+        "interactive start pane must not be ephemeral"
+    );
 
     // 3. Claude parent provenance:
     // Spawn a parent agent running Claude (`role: "claude-code"`).
@@ -14796,9 +15063,14 @@ allow = ["pane.send"]
         "Claude parent must yield spawned_by=agent:claude-code"
     );
 
-    let term_2 = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    let term_2 = h.app.windows[0].panes[&child_pane_id]
+        .as_terminal()
+        .unwrap();
     assert_eq!(term_2.spawned_by.as_deref(), Some("agent:claude-code"));
-    assert_eq!(term_2.spawned_by_badge().as_deref(), Some("spawned by claude-code"));
+    assert_eq!(
+        term_2.spawned_by_badge().as_deref(),
+        Some("spawned by claude-code")
+    );
     assert_eq!(term_2.parent_pane_id, Some(claude_pane));
 
     // 4. One bounded wait before completion: blocks while child is running.
@@ -14840,22 +15112,35 @@ allow = ["pane.send"]
     assert_eq!(results[0]["result"]["vulnerabilities"], 0);
 
     // 6. Verify result persistence on disk:
-    let result_md_path = std::path::PathBuf::from(done_resp["result_path"].as_str().expect("result_path"));
-    let result_json_path = std::path::PathBuf::from(done_resp["json_path"].as_str().expect("json_path"));
-    assert!(result_md_path.exists(), "RESULT.md must exist at {}", result_md_path.display());
-    assert!(result_json_path.exists(), "result.json must exist at {}", result_json_path.display());
+    let result_md_path =
+        std::path::PathBuf::from(done_resp["result_path"].as_str().expect("result_path"));
+    let result_json_path =
+        std::path::PathBuf::from(done_resp["json_path"].as_str().expect("json_path"));
+    assert!(
+        result_md_path.exists(),
+        "RESULT.md must exist at {}",
+        result_md_path.display()
+    );
+    assert!(
+        result_json_path.exists(),
+        "result.json must exist at {}",
+        result_json_path.display()
+    );
 
     let result_md = std::fs::read_to_string(&result_md_path).expect("read RESULT.md");
     assert!(result_md.contains("Token lifetime audit passed cleanly"));
     assert!(result_md.contains("\"status\": \"passed\""));
 
     let result_json = std::fs::read_to_string(&result_json_path).expect("read result.json");
-    let json_val: serde_json::Value = serde_json::from_str(&result_json).expect("valid json in result.json");
+    let json_val: serde_json::Value =
+        serde_json::from_str(&result_json).expect("valid json in result.json");
     assert_eq!(json_val["status"], "passed");
     assert_eq!(json_val["vulnerabilities"], 0);
 
     // 7. Interactive child transitions to Idle on done:
-    let term_child_after = h.app.windows[0].panes[&child_pane_id].as_terminal().unwrap();
+    let term_child_after = h.app.windows[0].panes[&child_pane_id]
+        .as_terminal()
+        .unwrap();
     assert_eq!(
         term_child_after.agent.as_ref().map(|a| a.state.clone()),
         Some(crate::protocol::AgentState::Idle),
@@ -14908,10 +15193,12 @@ allow = ["pane.send"]
     let start_closed_wait = read_json_response(&start_close_wait);
     assert_eq!(start_closed_wait["ok"], true);
     assert_eq!(start_closed_wait["results"][0]["pane_id"], start_pane_id);
-    assert_eq!(start_closed_wait["results"][0]["status"], "exited_unreported");
     assert_eq!(
-        start_closed_wait["results"][0]["summary"],
-        "pane closed without agent done",
+        start_closed_wait["results"][0]["status"],
+        "exited_unreported"
+    );
+    assert_eq!(
+        start_closed_wait["results"][0]["summary"], "pane closed without agent done",
         "a closed interactive pane without agent done must retain the synthesized exit reason"
     );
 
@@ -14965,7 +15252,10 @@ allow = ["pane.send"]
 
     let failed_wait_response = read_json_response(&failed_wait);
     assert_eq!(failed_wait_response["ok"], true);
-    assert_eq!(failed_wait_response["results"][0]["pane_id"], failed_child_pane_id);
+    assert_eq!(
+        failed_wait_response["results"][0]["pane_id"],
+        failed_child_pane_id
+    );
     assert_eq!(failed_wait_response["results"][0]["status"], "failed");
     assert!(
         failed_wait_response["results"][0]["summary"]
@@ -15337,8 +15627,18 @@ ask = ["pane.send"]
     );
     assert_eq!(timed_out.run_outcome.as_deref(), Some("retry_required"));
     h.app.sync_attention_queue();
-    let item = h.app.attention_queue.items.iter().find(|item| item.id == req_id).unwrap();
-    assert!(item.summary.contains("retry"), "the approval card must tell the person the caller stopped waiting: {}", item.summary);
+    let item = h
+        .app
+        .attention_queue
+        .items
+        .iter()
+        .find(|item| item.id == req_id)
+        .unwrap();
+    assert!(
+        item.summary.contains("retry"),
+        "the approval card must tell the person the caller stopped waiting: {}",
+        item.summary
+    );
 
     // User approves Allow once after the initial CLI call timed out.
     monitor
@@ -15394,7 +15694,8 @@ ask = ["pane.send"]
         "the unrelated request must remain pending after an exact retry"
     );
     assert_eq!(
-        h.app.pending_send_approvals.len(), 1,
+        h.app.pending_send_approvals.len(),
+        1,
         "an unrelated request must keep its own live waiter"
     );
 
@@ -15414,17 +15715,27 @@ ask = ["pane.send"]
     h.hidden_frame();
     let duplicate = read_json_response(&duplicate_reply);
     assert_eq!(duplicate["duplicate"], true, "{duplicate}");
-    assert_eq!(h.terminal_backend(target_pane).take_input_tap(), b"attempt 1",
-        "the original send writes once, and the duplicate writes nothing");
+    assert_eq!(
+        h.terminal_backend(target_pane).take_input_tap(),
+        b"attempt 1",
+        "the original send writes once, and the duplicate writes nothing"
+    );
 
     let forged_reply = temp_response(&ws, "send-forged-completion");
-    h.app.handle_needs_you_api("complete", &serde_json::json!({
-        "id": "op-pane-send-1", "state": "running"
-    }), &[lead_pid], &forged_reply);
+    h.app.handle_needs_you_api(
+        "complete",
+        &serde_json::json!({
+            "id": "op-pane-send-1", "state": "running"
+        }),
+        &[lead_pid],
+        &forged_reply,
+    );
     let forged = read_json_response(&forged_reply);
     assert_eq!(forged["error_code"], "host_owned_operation", "{forged}");
-    assert_eq!(monitor.get_continuation("op-pane-send-1").unwrap().state,
-        crate::broker::gate::ContinuationState::Completed);
+    assert_eq!(
+        monitor.get_continuation("op-pane-send-1").unwrap().state,
+        crate::broker::gate::ContinuationState::Completed
+    );
 
     let conflict_reply = temp_response(&ws, "send-retry-conflict");
     h.inject_ipc(HostRequest::SendToPane {
@@ -15443,8 +15754,10 @@ ask = ["pane.send"]
         conflict["error_code"], "operation_id_conflict",
         "{conflict}"
     );
-    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
-        "a conflicting retry must not write terminal input");
+    assert!(
+        h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a conflicting retry must not write terminal input"
+    );
 
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
@@ -15480,23 +15793,34 @@ ask = ["pane.send"]
     h.hidden_frame();
     let disconnected = read_json_response(&reply_3);
     assert_eq!(disconnected["error_code"], "caller_disconnected");
-    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
-        "a dead caller's late approval must not write terminal input");
+    assert!(
+        h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a dead caller's late approval must not write terminal input"
+    );
     assert_eq!(
         monitor.get_continuation(&disconnected_id).unwrap().state,
         crate::broker::gate::ContinuationState::Paused
     );
 
-    let denied_id = h.app.pending_send_approvals.iter()
+    let denied_id = h
+        .app
+        .pending_send_approvals
+        .iter()
         .find(|wait| wait.response_file.as_deref() == Some(unrelated_reply.as_str()))
-        .expect("unrelated waiter remains live").pending_request_id.clone();
-    monitor.approve_pending(&denied_id, crate::broker::gate::ApprovalChoice::Deny).unwrap();
+        .expect("unrelated waiter remains live")
+        .pending_request_id
+        .clone();
+    monitor
+        .approve_pending(&denied_id, crate::broker::gate::ApprovalChoice::Deny)
+        .unwrap();
     h.hidden_frame();
     let denied = read_json_response(&unrelated_reply);
     assert_eq!(denied["error_code"], "permission_denied");
     assert_eq!(denied["operation_state"], "cancelled");
-    assert!(h.terminal_backend(target_pane).take_input_tap().is_empty(),
-        "a denied request must not write terminal input");
+    assert!(
+        h.terminal_backend(target_pane).take_input_tap().is_empty(),
+        "a denied request must not write terminal input"
+    );
 }
 
 #[test]
@@ -16041,7 +16365,10 @@ mod program_status_agent {
         h.run_frames(1);
     }
 
-    fn state_of(h: &HostHarness, pane: u64) -> Option<(crate::protocol::AgentState, Option<String>)> {
+    fn state_of(
+        h: &HostHarness,
+        pane: u64,
+    ) -> Option<(crate::protocol::AgentState, Option<String>)> {
         h.app.windows[0]
             .panes
             .get(&pane)
@@ -16059,10 +16386,18 @@ mod program_status_agent {
             assert!(p.agent().is_none(), "{payload} must not identify an agent");
             assert!(p.effective_activity().is_none());
             let state = crate::host::context_state::ContextState::compute(
-                h.app.windows[0].context_id, h.app.router.as_slice(), &h.app.windows,
+                h.app.windows[0].context_id,
+                h.app.router.as_slice(),
+                &h.app.windows,
             );
             assert_eq!(state.active_agents, 0);
-            assert!(!p.as_terminal().unwrap().program_status.lock().unwrap().is_empty());
+            assert!(!p
+                .as_terminal()
+                .unwrap()
+                .program_status
+                .lock()
+                .unwrap()
+                .is_empty());
         }
     }
 
@@ -16071,16 +16406,29 @@ mod program_status_agent {
         let mut h = HostHarness::new();
         let pane = h.add_focused_terminal();
         apply(&mut h, pane, "state=working:app=claude");
-        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+        assert_eq!(
+            state_of(&h, pane).unwrap().0,
+            crate::protocol::AgentState::Working
+        );
         // "cGVybWlzc2lvbiB0byBydW4=" = "permission to run"
-        apply(&mut h, pane, "state=blocked:kind=permission:msg=cGVybWlzc2lvbiB0byBydW4=");
+        apply(
+            &mut h,
+            pane,
+            "state=blocked:kind=permission:msg=cGVybWlzc2lvbiB0byBydW4=",
+        );
         let (state, detail) = state_of(&h, pane).unwrap();
         assert_eq!(state, crate::protocol::AgentState::NeedsYou);
         assert_eq!(detail.as_deref(), Some("permission: permission to run"));
         apply(&mut h, pane, "state=working");
-        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+        assert_eq!(
+            state_of(&h, pane).unwrap().0,
+            crate::protocol::AgentState::Working
+        );
         apply(&mut h, pane, "state=done");
-        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Completed);
+        assert_eq!(
+            state_of(&h, pane).unwrap().0,
+            crate::protocol::AgentState::Completed
+        );
     }
 
     #[test]
@@ -16100,11 +16448,17 @@ mod program_status_agent {
             session_id: None,
         });
         apply(&mut h, pane, "state=blocked:kind=auth");
-        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::NeedsYou);
+        assert_eq!(
+            state_of(&h, pane).unwrap().0,
+            crate::protocol::AgentState::NeedsYou
+        );
         apply(&mut h, pane, "state=clear");
         let terminal = h.app.windows[0].panes[&pane].as_terminal().unwrap();
         assert!(terminal.reported_7501.is_none());
-        assert_eq!(state_of(&h, pane).unwrap().0, crate::protocol::AgentState::Working);
+        assert_eq!(
+            state_of(&h, pane).unwrap().0,
+            crate::protocol::AgentState::Working
+        );
     }
 }
 
@@ -16126,11 +16480,10 @@ mod tiled_navigation_frame_tests {
             );
         }
         let ctx_id = h.app.router.active().context_id;
-        h.app.set_context_columns(
-            ctx_id,
-            terminals.iter().map(|t| vec![*t]).collect(),
-        );
-        h.app.focus_pane_in_strip(*terminals.last().expect("terminals"));
+        h.app
+            .set_context_columns(ctx_id, terminals.iter().map(|t| vec![*t]).collect());
+        h.app
+            .focus_pane_in_strip(*terminals.last().expect("terminals"));
         h.run_frames(6);
         terminals
     }
@@ -16141,19 +16494,42 @@ mod tiled_navigation_frame_tests {
             let mut h = HostHarness::new();
             let top = h.add_test_pane();
             h.focus_pane(top);
-            let bottom = h.app.split_focused(true, None, false, false, None).expect("split");
+            let bottom = h
+                .app
+                .split_focused(true, None, false, false, None)
+                .expect("split");
             assert_eq!(h.app.windows[0].panes.len(), 2);
             h.run_frames(3);
             let pane = if end { bottom } else { top };
             assert!(h.app.focus_pane_in_strip(pane));
             h.run_frames(2);
-            let focused = h.app.windows[h.app.active_window].focused_pane.expect("focus");
-            assert!(h.app.windows[h.app.active_window].find_pane_in_direction_from(focused, direction).is_none(), "fixture must be at {direction:?} boundary");
+            let focused = h.app.windows[h.app.active_window]
+                .focused_pane
+                .expect("focus");
+            assert!(
+                h.app.windows[h.app.active_window]
+                    .find_pane_in_direction_from(focused, direction)
+                    .is_none(),
+                "fixture must be at {direction:?} boundary"
+            );
             h.app.swap_pane_action(direction);
             h.run_frames(2);
-            let moved = h.app.windows.iter().find(|w| w.panes.contains_key(&pane)).expect("moved pane");
-            let other = h.app.windows.iter().find(|w| w.panes.contains_key(&if end { top } else { bottom })).expect("remaining pane");
-            assert_ne!(moved.window_id, other.window_id, "{direction:?} must create a window");
+            let moved = h
+                .app
+                .windows
+                .iter()
+                .find(|w| w.panes.contains_key(&pane))
+                .expect("moved pane");
+            let other = h
+                .app
+                .windows
+                .iter()
+                .find(|w| w.panes.contains_key(&if end { top } else { bottom }))
+                .expect("remaining pane");
+            assert_ne!(
+                moved.window_id, other.window_id,
+                "{direction:?} must create a window"
+            );
             assert_eq!(moved.grid_x < other.grid_x, !end);
             let strip = h.app.strip_for_context(moved.context_id);
             assert_eq!(strip.focused_pane, Some(pane));
@@ -16180,13 +16556,24 @@ mod tiled_navigation_frame_tests {
         let panes = five_terminal_columns(&mut h);
         let context_id = h.app.router.active().context_id;
         assert!(h.app.focus_pane_in_strip(panes[2]));
-        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        assert!(matches!(
+            h.app.swap_pane(Direction::Left),
+            crate::pane_ops::SwapResult::Swapped { .. }
+        ));
         let strip = h.app.strip_for_context(context_id);
         assert_eq!(strip.find_column_for_pane(panes[2]), Some(1));
         assert_eq!(strip.find_column_for_pane(panes[1]), Some(2));
         assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
-        assert!(matches!(h.app.swap_pane(Direction::Right), crate::pane_ops::SwapResult::Swapped { .. }));
-        assert_eq!(h.app.strip_for_context(context_id).find_column_for_pane(panes[2]), Some(2));
+        assert!(matches!(
+            h.app.swap_pane(Direction::Right),
+            crate::pane_ops::SwapResult::Swapped { .. }
+        ));
+        assert_eq!(
+            h.app
+                .strip_for_context(context_id)
+                .find_column_for_pane(panes[2]),
+            Some(2)
+        );
         assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
         h.run_frames(2);
         h.terminal_backend(panes[2]).enable_input_tap();
@@ -16201,17 +16588,34 @@ mod tiled_navigation_frame_tests {
         let mut h = HostHarness::new();
         let panes = five_terminal_columns(&mut h);
         let context_id = h.app.router.active().context_id;
-        h.app.set_context_columns(context_id, vec![vec![panes[0]], vec![panes[1], panes[2]], vec![panes[3]], vec![panes[4]]]);
+        h.app.set_context_columns(
+            context_id,
+            vec![
+                vec![panes[0]],
+                vec![panes[1], panes[2]],
+                vec![panes[3]],
+                vec![panes[4]],
+            ],
+        );
         h.app.focus_pane_in_strip(panes[2]);
         h.run_frames(2);
-        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::Swapped { .. }));
+        assert!(matches!(
+            h.app.swap_pane(Direction::Left),
+            crate::pane_ops::SwapResult::Swapped { .. }
+        ));
         let strip = h.app.strip_for_context(context_id);
         assert_eq!(strip.columns[0].panes, vec![panes[2]]);
         assert_eq!(strip.columns[1].panes, vec![panes[1], panes[0]]);
         assert_eq!(h.app.active_focused_pane_id(), Some(panes[2]));
-        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(matches!(
+            h.app.swap_pane(Direction::Left),
+            crate::pane_ops::SwapResult::AtBoundary
+        ));
         h.app.focus_pane_in_strip(panes[1]);
-        assert!(matches!(h.app.swap_pane(Direction::Up), crate::pane_ops::SwapResult::AtBoundary));
+        assert!(matches!(
+            h.app.swap_pane(Direction::Up),
+            crate::pane_ops::SwapResult::AtBoundary
+        ));
         h.app.focus_pane_in_strip(panes[2]);
         assert!(h.app.navigate_columns_strip(Direction::Right));
         let strip = h.app.strip_for_context(context_id);
@@ -16252,8 +16656,14 @@ mod tiled_navigation_frame_tests {
         let strip = h.app.host.strip(ctx_id).cloned();
         let model = h.app.host.test_pane_ids();
         let tree_count = h.app.windows[0].tree.tiles.len();
-        assert!(h.app.split_focused(false, None, false, false, None).is_none());
-        assert!(matches!(h.app.swap_pane(Direction::Left), crate::pane_ops::SwapResult::NoFocus));
+        assert!(h
+            .app
+            .split_focused(false, None, false, false, None)
+            .is_none());
+        assert!(matches!(
+            h.app.swap_pane(Direction::Left),
+            crate::pane_ops::SwapResult::NoFocus
+        ));
         h.app.close_tile(0, tile);
         h.app.close_pane_by_id(panes[2]);
         assert_eq!(h.app.host.strip(ctx_id), strip.as_ref());
@@ -16271,7 +16681,8 @@ mod tiled_navigation_frame_tests {
         h.run_frames(1);
 
         let ctx_idx = h.app.active_window;
-        h.app.router.get_mut(ctx_idx).name = crate::host::context::ContextName::custom("alpha-cleanup");
+        h.app.router.get_mut(ctx_idx).name =
+            crate::host::context::ContextName::custom("alpha-cleanup");
 
         // Split focused to create a new terminal pane.
         // Before shell integration arrives, the shell is starting up (slow-shell scenario).
@@ -16284,19 +16695,26 @@ mod tiled_navigation_frame_tests {
         h.run_frames(1);
 
         // 1. Verify stable chrome on first frame
-        let layout_frame1 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
-            .expect("first frame must render stable pane chrome / tab bar layout");
+        let layout_frame1 =
+            crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+                .expect("first frame must render stable pane chrome / tab bar layout");
         assert_eq!(
             layout_frame1.elided_label.as_deref(),
             Some("alpha-cleanup"),
             "first frame must paint context-derived placeholder title in chrome"
         );
-        let label_rect_frame1 = layout_frame1.label_rect.expect("label rect must exist on frame 1");
+        let label_rect_frame1 = layout_frame1
+            .label_rect
+            .expect("label rect must exist on frame 1");
 
         // Verify provenance icon exists on first frame
-        let prov_rect_frame1 = h.app.ctx.data(|d| {
-            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
-        }).expect("provenance icon rect must exist on first frame");
+        let prov_rect_frame1 = h
+            .app
+            .ctx
+            .data(|d| {
+                d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+            })
+            .expect("provenance icon rect must exist on first frame");
 
         // Verify correct input ownership on first frame
         assert_eq!(
@@ -16322,8 +16740,9 @@ mod tiled_navigation_frame_tests {
         h.run_frames(1);
 
         // Verify title updated
-        let layout_frame2 = crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
-            .expect("chrome layout must persist after delayed metadata arrives");
+        let layout_frame2 =
+            crate::render::terminal_pane::last_rendered_tab_bar_layout(&h.app.ctx, new_pane_id)
+                .expect("chrome layout must persist after delayed metadata arrives");
         assert_eq!(
             layout_frame2.elided_label.as_deref(),
             Some("zsh — ~/work"),
@@ -16331,15 +16750,21 @@ mod tiled_navigation_frame_tests {
         );
 
         // Verify NO layout movement / geometry change
-        let prov_rect_frame2 = h.app.ctx.data(|d| {
-            d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
-        }).expect("provenance icon rect must exist after title update");
+        let prov_rect_frame2 = h
+            .app
+            .ctx
+            .data(|d| {
+                d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", new_pane_id)))
+            })
+            .expect("provenance icon rect must exist after title update");
         assert_eq!(
             prov_rect_frame1, prov_rect_frame2,
             "provenance icon position must remain identical across shell integration update"
         );
 
-        let label_rect_frame2 = layout_frame2.label_rect.expect("label rect must exist on frame 2");
+        let label_rect_frame2 = layout_frame2
+            .label_rect
+            .expect("label rect must exist on frame 2");
         assert_eq!(
             label_rect_frame1.center().y, label_rect_frame2.center().y,
             "chrome header baseline/center must remain identical across shell integration update (zero layout movement)"
@@ -16382,16 +16807,31 @@ mod tiled_navigation_frame_tests {
         crate::host::event_log::test_capture_events();
         for vertical in [false, true] {
             assert!(
-                h.app.split_focused(vertical, None, false, false, None).is_none(),
+                h.app
+                    .split_focused(vertical, None, false, false, None)
+                    .is_none(),
                 "the real split path must report terminal spawn failure"
             );
         }
         h.app.new_tab(0, None, false, None, false, false);
         let events = crate::host::event_log::test_take_events();
-        assert!(!events.iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { .. })), "failed spawn must not emit PaneSplit");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { .. })),
+            "failed spawn must not emit PaneSplit"
+        );
 
-        assert_eq!(h.app.host.test_pane_ids(), initial_model_panes, "failed spawn must not register a model pane");
-        assert_eq!(h.app.host.test_focused_pane(), initial_model_focus, "failed spawn must not change model focus");
+        assert_eq!(
+            h.app.host.test_pane_ids(),
+            initial_model_panes,
+            "failed spawn must not register a model pane"
+        );
+        assert_eq!(
+            h.app.host.test_focused_pane(),
+            initial_model_focus,
+            "failed spawn must not change model focus"
+        );
         let window = &h.app.windows[0];
         let final_panes: std::collections::BTreeSet<_> = window.panes.keys().copied().collect();
         let final_tree_panes: std::collections::BTreeSet<_> = window
@@ -16427,7 +16867,10 @@ mod tiled_navigation_frame_tests {
         );
         drop(_shell_override);
         crate::host::event_log::test_capture_events();
-        let created = h.app.split_focused(false, None, false, false, None).expect("control spawn succeeds");
+        let created = h
+            .app
+            .split_focused(false, None, false, false, None)
+            .expect("control spawn succeeds");
         assert!(crate::host::event_log::test_take_events().iter().any(|event| matches!(event, crate::host::event_log::HostEvent::PaneSplit { pane_id, .. } if *pane_id == created)), "capture must observe a successful split event");
     }
 }
@@ -16455,7 +16898,11 @@ fn notes_picker_invocation_shortcut_toggles_and_preserves_notes() {
 
         h.press_key(key, egui::Modifiers::COMMAND);
         assert_eq!(
-            h.app.focus_stack.iter().filter(|&&k| k == FocusKind::NotesPicker).count(),
+            h.app
+                .focus_stack
+                .iter()
+                .filter(|&&k| k == FocusKind::NotesPicker)
+                .count(),
             1
         );
         assert_eq!(
@@ -16506,10 +16953,8 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
     let ctx = h.app.ctx.clone();
     assert_eq!(h.app.input_owner(&ctx), InputOwner::Pane(pane));
 
-    let note_path = std::env::temp_dir().join(format!(
-        "plexi-harness-copy-note-{}.md",
-        std::process::id()
-    ));
+    let note_path =
+        std::env::temp_dir().join(format!("plexi-harness-copy-note-{}.md", std::process::id()));
     std::fs::write(&note_path, "harness note text").expect("seed note");
     h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
         title: "harness note".to_string(),
@@ -16539,7 +16984,9 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
     h.frame(input);
 
     assert!(
-        !h.app.focus_stack.contains(&crate::app::FocusKind::NotesPicker),
+        !h.app
+            .focus_stack
+            .contains(&crate::app::FocusKind::NotesPicker),
         "notes picker must close after Cmd+C"
     );
     assert_eq!(
@@ -16550,7 +16997,9 @@ fn notes_picker_copy_closes_and_restores_pane_input_owner() {
     assert!(
         h.last_platform_output
             .commands
-            .contains(&egui::OutputCommand::CopyText("harness note text".to_string())),
+            .contains(&egui::OutputCommand::CopyText(
+                "harness note text".to_string()
+            )),
         "clipboard command must receive full note contents"
     );
     let _ = std::fs::remove_file(&note_path);
@@ -16565,13 +17014,19 @@ fn notes_picker_delete_immediately_removes_index_entry_and_cmd_z_restores() {
     let path = dir.path().join("note.md");
     std::fs::write(&path, b"original\nbytes\n").unwrap();
     h.app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
-        title: "note".into(), preview: "original".into(), search_text: "note".into(),
-        path: path.clone(), tier_label: None,
+        title: "note".into(),
+        preview: "original".into(),
+        search_text: "note".into(),
+        path: path.clone(),
+        tier_label: None,
     }];
     h.app.push_focus_layer(crate::app::FocusKind::NotesPicker);
     h.run_frames(1);
     h.press_key(egui::Key::Backspace, egui::Modifiers::COMMAND);
-    assert!(!path.exists(), "delete must immediately move the note to trash");
+    assert!(
+        !path.exists(),
+        "delete must immediately move the note to trash"
+    );
     assert!(h.app.notes_picker_entries.is_empty());
     h.press_key(egui::Key::Z, egui::Modifiers::COMMAND);
     assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
@@ -16705,7 +17160,11 @@ fn notes_picker_undo_in_another_context_does_not_insert_foreign_row() {
     h.app.notes_picker_entries.clear();
     h.app.notes_picker_undo_delete();
     assert_eq!(std::fs::read(&path).unwrap(), b"original\nbytes\n");
-    assert!(h.app.notes_picker_entries.iter().all(|entry| entry.path != path));
+    assert!(h
+        .app
+        .notes_picker_entries
+        .iter()
+        .all(|entry| entry.path != path));
 }
 
 #[test]
@@ -17040,7 +17499,12 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
     expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden", true);
 
     // Window returns: both are shown, only the focused pane regains focus.
-    expect_presence_log(&mut h, pane_a, "shown,gained,lost,gained,lost,hidden,shown,gained", false);
+    expect_presence_log(
+        &mut h,
+        pane_a,
+        "shown,gained,lost,gained,lost,hidden,shown,gained",
+        false,
+    );
     expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown", false);
 
     // Context switch away and back.
@@ -17053,7 +17517,12 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
         "shown,gained,lost,gained,lost,hidden,shown,gained,lost,hidden",
         false,
     );
-    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden", false);
+    expect_presence_log(
+        &mut h,
+        pane_b,
+        "shown,gained,lost,hidden,shown,hidden",
+        false,
+    );
     h.app.switch_workspace(0);
     expect_presence_log(
         &mut h,
@@ -17061,12 +17530,26 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
         "shown,gained,lost,gained,lost,hidden,shown,gained,lost,hidden,shown,gained",
         false,
     );
-    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden,shown", false);
+    expect_presence_log(
+        &mut h,
+        pane_b,
+        "shown,gained,lost,hidden,shown,hidden,shown",
+        false,
+    );
 
     // Zoom A: B is covered and hidden, A is untouched.
-    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile a");
+    let tile_a = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_a)
+        .expect("tile a");
     h.app.windows[0].zoom_to(tile_a);
-    expect_presence_log(&mut h, pane_b, "shown,gained,lost,hidden,shown,hidden,shown,hidden", false);
+    expect_presence_log(
+        &mut h,
+        pane_b,
+        "shown,gained,lost,hidden,shown,hidden,shown,hidden",
+        false,
+    );
     expect_presence_log(
         &mut h,
         pane_a,

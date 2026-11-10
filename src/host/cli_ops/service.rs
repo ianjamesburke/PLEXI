@@ -559,7 +559,10 @@ impl CliOpService {
         if !super::plugin_id_is_path_safe(&who.plugin_id) {
             return Err((
                 code::PACKAGE_INVALID,
-                format!("plugin id '{}' cannot name a private directory", who.plugin_id),
+                format!(
+                    "plugin id '{}' cannot name a private directory",
+                    who.plugin_id
+                ),
             ));
         }
         let manifest_path = who.plugin_dir.join("manifest.toml");
@@ -655,7 +658,10 @@ impl CliOpService {
         let opened =
             exec::open_and_identify(&admitted.identity.path).map_err(|e| exec_failure(&e))?;
         let sealed = opened
-            .seal(&env.seal_base.join(&who.plugin_id), &admitted.identity.sha256)
+            .seal(
+                &env.seal_base.join(&who.plugin_id),
+                &admitted.identity.sha256,
+            )
             .map_err(|e| exec_failure(&e))?;
         let spec = LaunchSpec {
             sealed,

@@ -137,8 +137,14 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
         let mut seen = std::collections::HashSet::new();
         let mut defaults = 0;
         for view in &wire.contributes.views {
-            if !view.id.starts_with(&prefix) || view.id.len() == prefix.len() || !seen.insert(&view.id) {
-                return Err(format!("view '{}' must be a unique plugin-namespaced id beginning with '{prefix}'", view.id));
+            if !view.id.starts_with(&prefix)
+                || view.id.len() == prefix.len()
+                || !seen.insert(&view.id)
+            {
+                return Err(format!(
+                    "view '{}' must be a unique plugin-namespaced id beginning with '{prefix}'",
+                    view.id
+                ));
             }
             defaults += usize::from(view.default);
         }
@@ -148,18 +154,31 @@ impl TryFrom<PluginManifestWire> for PluginManifest {
         wire.plugin.entry.clone_from(&wire.runtime.entry);
         wire.plugin.manifest_type = wire.runtime.kind;
         Ok(Self {
-            schema_version: wire.schema_version, plugin: wire.plugin,
-            runtime: wire.runtime, contributes: wire.contributes, launch: wire.launch,
-            secrets: wire.secrets, marketplace: wire.marketplace, requires: wire.requires,
-            state: wire.state, cli_operations: wire.cli_operations,
+            schema_version: wire.schema_version,
+            plugin: wire.plugin,
+            runtime: wire.runtime,
+            contributes: wire.contributes,
+            launch: wire.launch,
+            secrets: wire.secrets,
+            marketplace: wire.marketplace,
+            requires: wire.requires,
+            state: wire.state,
+            cli_operations: wire.cli_operations,
         })
     }
 }
 
 impl Contributions {
-    pub fn resolve_view(&self, plugin_id: &str, requested: &str) -> Result<&ViewDeclaration, String> {
+    pub fn resolve_view(
+        &self,
+        plugin_id: &str,
+        requested: &str,
+    ) -> Result<&ViewDeclaration, String> {
         if requested != plugin_id {
-            return self.views.iter().find(|view| view.id == requested)
+            return self
+                .views
+                .iter()
+                .find(|view| view.id == requested)
                 .ok_or_else(|| format!("plugin '{plugin_id}' has no declared view '{requested}'"));
         }
         if self.views.len() == 1 {
@@ -171,7 +190,14 @@ impl Contributions {
         Err(if self.views.is_empty() {
             format!("plugin '{plugin_id}' has no view to open")
         } else {
-            format!("plugin '{plugin_id}' has no default view; choose: {}", self.views.iter().map(|view| view.id.as_str()).collect::<Vec<_>>().join(", "))
+            format!(
+                "plugin '{plugin_id}' has no default view; choose: {}",
+                self.views
+                    .iter()
+                    .map(|view| view.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         })
     }
 }
@@ -857,7 +883,11 @@ impl PluginRegistry {
         let state_format = manifest.state_format()?;
         let state_declared = manifest.state.is_some();
 
-        let bin_path = resolve_entry(plugin_dir, &manifest.plugin.entry, manifest.plugin.manifest_type)?;
+        let bin_path = resolve_entry(
+            plugin_dir,
+            &manifest.plugin.entry,
+            manifest.plugin.manifest_type,
+        )?;
 
         for (name, decl) in &manifest.secrets {
             log::debug!(
@@ -1302,15 +1332,36 @@ mod tests {
     #[test]
     fn plugin_rename_resolves_only_unique_or_declared_default_views() {
         let mut contributions = Contributions { views: vec![] };
-        assert!(contributions.resolve_view("notes", "notes").unwrap_err().contains("no view"));
-        contributions.views.push(ViewDeclaration { id: "notes.editor".into(), default: false });
-        assert_eq!(contributions.resolve_view("notes", "notes").unwrap().id, "notes.editor");
-        contributions.views.push(ViewDeclaration { id: "notes.outline".into(), default: false });
+        assert!(contributions
+            .resolve_view("notes", "notes")
+            .unwrap_err()
+            .contains("no view"));
+        contributions.views.push(ViewDeclaration {
+            id: "notes.editor".into(),
+            default: false,
+        });
+        assert_eq!(
+            contributions.resolve_view("notes", "notes").unwrap().id,
+            "notes.editor"
+        );
+        contributions.views.push(ViewDeclaration {
+            id: "notes.outline".into(),
+            default: false,
+        });
         let error = contributions.resolve_view("notes", "notes").unwrap_err();
         assert!(error.contains("notes.editor") && error.contains("notes.outline"));
-        assert_eq!(contributions.resolve_view("notes", "notes.outline").unwrap().id, "notes.outline");
+        assert_eq!(
+            contributions
+                .resolve_view("notes", "notes.outline")
+                .unwrap()
+                .id,
+            "notes.outline"
+        );
         contributions.views[1].default = true;
-        assert_eq!(contributions.resolve_view("notes", "notes").unwrap().id, "notes.outline");
+        assert_eq!(
+            contributions.resolve_view("notes", "notes").unwrap().id,
+            "notes.outline"
+        );
     }
 
     #[test]
@@ -1319,15 +1370,36 @@ mod tests {
         let old = profile.path().join("apps").join("legacy");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n").unwrap();
-        std::fs::write(old.join("main.py"), "from plexi_sdk.ui import AppBar\ndef view():\n    return AppBar('Legacy')\n").unwrap();
+        std::fs::write(
+            old.join("main.py"),
+            "from plexi_sdk.ui import AppBar\ndef view():\n    return AppBar('Legacy')\n",
+        )
+        .unwrap();
         let global = profile.path().join("plugins");
         let registry = PluginRegistry::load_with_global(profile.path(), &global);
-        let plugin = registry.get("legacy").expect("0.4.4 install must remain discoverable");
-        assert_eq!(plugin.contributes.resolve_view("legacy", "legacy").unwrap().id, "legacy.main");
-        assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py")).unwrap().contains("SurfaceHeader"));
-        assert!(profile.path().join("migration-plugin-v2/apps/legacy/main.py").is_file());
+        let plugin = registry
+            .get("legacy")
+            .expect("0.4.4 install must remain discoverable");
+        assert_eq!(
+            plugin
+                .contributes
+                .resolve_view("legacy", "legacy")
+                .unwrap()
+                .id,
+            "legacy.main"
+        );
+        assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py"))
+            .unwrap()
+            .contains("SurfaceHeader"));
+        assert!(profile
+            .path()
+            .join("migration-plugin-v2/apps/legacy/main.py")
+            .is_file());
         let again = PluginRegistry::load_with_global(profile.path(), &global);
-        assert!(again.get("legacy").is_some(), "migration must be idempotent");
+        assert!(
+            again.get("legacy").is_some(),
+            "migration must be idempotent"
+        );
     }
 
     #[test]
@@ -1346,7 +1418,9 @@ mod tests {
         let result = toml::from_str::<super::PluginManifest>(
             "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\n",
         );
-        let error = result.expect_err("old manifest must require explicit migration").to_string();
+        let error = result
+            .expect_err("old manifest must require explicit migration")
+            .to_string();
         assert!(error.contains("plugin"), "must name [plugin]: {error}");
     }
 
@@ -1983,7 +2057,11 @@ default = true
     fn manifest_with_empty_state_scopes_fails_install_loudly() {
         let global = tempfile::tempdir().unwrap();
         let bare = tempfile::tempdir().unwrap();
-        write_plugin_with_state_section(global.path(), "empty-scope-app", "\n[state]\nscopes = []\n");
+        write_plugin_with_state_section(
+            global.path(),
+            "empty-scope-app",
+            "\n[state]\nscopes = []\n",
+        );
         let registry = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             registry.get("empty-scope-app").is_none(),

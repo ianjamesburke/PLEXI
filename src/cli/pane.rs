@@ -22,7 +22,10 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
             }
         }
     };
-    log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}", name.chars().count());
+    log::info!(
+        "pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}",
+        name.chars().count()
+    );
     send_to_socket(serde_json::json!({
         "type": "set_pane_title",
         "pane_id": resolved_pane_id,
@@ -406,9 +409,7 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_message_recv:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_message_recv",
@@ -459,14 +460,8 @@ fn format_coded_error(error_code: Option<&str>, message: &str) -> String {
 #[derive(Debug, PartialEq)]
 pub enum PaneResultReadOutcome {
     Validated(Vec<u8>),
-    NoResultYet {
-        error_code: String,
-        message: String,
-    },
-    InvalidResult {
-        error_code: String,
-        message: String,
-    },
+    NoResultYet { error_code: String, message: String },
+    InvalidResult { error_code: String, message: String },
     Failed(String),
 }
 
@@ -550,9 +545,7 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
         Ok(id) => id,
         Err(code) => return code,
     };
-    log::info!(
-        "pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}"
-    );
+    log::info!("pane_result_read:cli: pane_id={resolved_pane_id} wait={wait} timeout={timeout}");
     let response_file = match super::send_request(
         serde_json::json!({
             "type": "pane_result_read",
@@ -593,7 +586,11 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
 /// Returns 0 on success, 1 on error.
 pub fn pane_layout_cli() -> i32 {
     log::info!("pane_layout:cli: requesting workspace snapshot");
-    match super::request(serde_json::json!({"type":"workspace_snapshot"}), "pane-layout-response", "pane layout") {
+    match super::request(
+        serde_json::json!({"type":"workspace_snapshot"}),
+        "pane-layout-response",
+        "pane layout",
+    ) {
         Ok(content) => match super::check_reply_error(&content) {
             Ok(()) => print_json_output(&content),
             Err(code) => code,
@@ -695,7 +692,9 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .or_else(|| {
-                pane.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                pane.get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
             })
             .unwrap_or("pane");
         let role = pane
@@ -747,7 +746,13 @@ pub fn format_pane_tree(panes: &[serde_json::Value], json: bool) -> String {
             for (idx, child) in kids.iter().enumerate() {
                 let is_last = idx + 1 == kids.len();
                 let child_branch = if is_last { "└── " } else { "├── " };
-                walk(child, &child_prefix, child_branch, children_by_parent, lines);
+                walk(
+                    child,
+                    &child_prefix,
+                    child_branch,
+                    children_by_parent,
+                    lines,
+                );
             }
         }
     }
@@ -1851,11 +1856,9 @@ mod capture_and_status_tests {
                 pane_status_cli(42)
             });
         assert_eq!(host_error, 1);
-        assert!(
-            validate_status_reply("{}")
-                .expect_err("missing fields")
-                .contains("missing verdict")
-        );
+        assert!(validate_status_reply("{}")
+            .expect_err("missing fields")
+            .contains("missing verdict"));
     }
 }
 
@@ -1989,7 +1992,12 @@ mod submit_tests {
     /// the absence of it — the host branches on this field alone.
     #[test]
     fn submit_flag_lands_in_the_host_payload() {
-        for (submit, paste, operation_id) in [(true, false, None), (false, false, None), (false, true, None), (false, false, Some("explicit-id"))] {
+        for (submit, paste, operation_id) in [
+            (true, false, None),
+            (false, false, None),
+            (false, true, None),
+            (false, false, Some("explicit-id")),
+        ] {
             let env = socket_env_guard();
             let dir = tempfile::tempdir().expect("tempdir");
             let socket_path = dir.path().join("notify.sock");
@@ -2027,7 +2035,12 @@ mod submit_tests {
             if let Some(id) = operation_id {
                 assert_eq!(payload["operation_id"], id);
             } else {
-                assert!(payload["operation_id"].as_str().is_some_and(|id| id.starts_with("pane-send-")), "payload was {payload}");
+                assert!(
+                    payload["operation_id"]
+                        .as_str()
+                        .is_some_and(|id| id.starts_with("pane-send-")),
+                    "payload was {payload}"
+                );
             }
         }
     }
@@ -2365,7 +2378,9 @@ mod pane_result_tests {
         );
 
         // End-to-end `plexi pane focus <name>` (via unique prefix "tester" -> pane 12)
-        let focus_pane = PaneTarget::from("tester").resolve().expect("resolve tester");
+        let focus_pane = PaneTarget::from("tester")
+            .resolve()
+            .expect("resolve tester");
         assert_eq!(focus_pane, 12);
         assert_eq!(pane_focus_cli(focus_pane), 0);
 

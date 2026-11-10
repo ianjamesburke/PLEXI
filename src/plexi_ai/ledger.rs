@@ -983,7 +983,10 @@ mod ledger_tests {
         let result = check_budget("app1", &config);
         assert!(result.is_err(), "should block when per-plugin spend >= cap");
         let msg = result.unwrap_err();
-        assert!(msg.contains("app1"), "error must mention the plugin_id: {msg}");
+        assert!(
+            msg.contains("app1"),
+            "error must mention the plugin_id: {msg}"
+        );
         assert!(
             msg.contains("per-plugin daily"),
             "error must mention 'per-plugin daily': {msg}"

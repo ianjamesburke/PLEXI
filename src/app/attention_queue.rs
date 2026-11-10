@@ -13,8 +13,8 @@
 //!    on arrival. Shows `"What would you do here?"`, monospace command text, and
 //!    2–4 options (starred recommendation when present). Sends at most one verdict.
 
-use crate::app::view_trait::KeyDisposition;
 use crate::app::input_router::PlexiInput;
+use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
 use crate::ui::card_block::{layout_card, paint_card, wrap_text, CardForm, CardSpec, CardState};
@@ -353,7 +353,8 @@ impl PlexiApp {
         }
         if matches!(overlay.source, QueueSource::Notification { .. }) {
             if self.attention_queue.pending_notification_decision.is_none() {
-                self.attention_queue.pending_notification_decision = Some((overlay.ask_id.clone(), option_idx));
+                self.attention_queue.pending_notification_decision =
+                    Some((overlay.ask_id.clone(), option_idx));
                 self.ctx.request_repaint();
             }
         } else {
@@ -362,13 +363,21 @@ impl PlexiApp {
     }
 
     pub(crate) fn service_pending_notification_decision(&mut self) -> bool {
-        let Some((ask_id, option_idx)) = self.attention_queue.pending_notification_decision.take() else {
+        let Some((ask_id, option_idx)) = self.attention_queue.pending_notification_decision.take()
+        else {
             return false;
         };
-        if self.attention_queue.decision_overlay.as_ref().is_some_and(|overlay| overlay.ask_id == ask_id) {
+        if self
+            .attention_queue
+            .decision_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.ask_id == ask_id)
+        {
             self.pick_decision_overlay_option(option_idx);
         } else {
-            log::info!("attention_queue: queued notification decision no longer active id={ask_id}");
+            log::info!(
+                "attention_queue: queued notification decision no longer active id={ask_id}"
+            );
         }
         true
     }
@@ -508,9 +517,8 @@ impl PlexiApp {
         explicit_pane_id: Option<u64>,
         explicit_context_id: Option<u64>,
     ) -> (u64, u64, String, String) {
-        let valid_ctx = explicit_context_id.filter(|&cid| {
-            cid != 0 && self.router.as_slice().iter().any(|c| c.context_id == cid)
-        });
+        let valid_ctx = explicit_context_id
+            .filter(|&cid| cid != 0 && self.router.as_slice().iter().any(|c| c.context_id == cid));
         let valid_pane = explicit_pane_id.filter(|&pid| pid != 0);
 
         if let Some(pid) = valid_pane {
@@ -536,7 +544,12 @@ impl PlexiApp {
         }
 
         let ctx_id = valid_ctx.unwrap_or(0);
-        (ctx_id, 0, "Unknown source".to_string(), self.context_breadcrumb_string(ctx_id))
+        (
+            ctx_id,
+            0,
+            "Unknown source".to_string(),
+            self.context_breadcrumb_string(ctx_id),
+        )
     }
 
     pub(crate) fn describe_pane_for_queue(&self, pane_id: u64) -> (u64, String, String) {
@@ -664,15 +677,26 @@ impl PlexiApp {
                 pane_name,
                 context_id,
                 context_path,
-                summary: if monitor.get_continuation(&req_id).is_some_and(|record| {
-                    record.run_outcome.as_deref() == Some("retry_required")
-                }) {
-                    format!("{} stopped waiting. Approve, then retry {}.",
-                        self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                summary: if monitor
+                    .get_continuation(&req_id)
+                    .is_some_and(|record| record.run_outcome.as_deref() == Some("retry_required"))
+                {
+                    format!(
+                        "{} stopped waiting. Approve, then retry {}.",
+                        self.approval_actor_label(&pending.actor_id),
+                        pending.tool.replace("__", " / ")
+                    )
                 } else if is_cli_operation {
-                    format!("{} wants to run a program on this computer", self.approval_actor_label(&pending.actor_id))
+                    format!(
+                        "{} wants to run a program on this computer",
+                        self.approval_actor_label(&pending.actor_id)
+                    )
                 } else {
-                    format!("{} wants to use {}", self.approval_actor_label(&pending.actor_id), pending.tool.replace("__", " / "))
+                    format!(
+                        "{} wants to use {}",
+                        self.approval_actor_label(&pending.actor_id),
+                        pending.tool.replace("__", " / ")
+                    )
                 },
                 command_text: cmd_text,
                 options: if pending.tool == "pane.send" {
@@ -741,7 +765,8 @@ impl PlexiApp {
                 .map(|d| d.choices.clone())
                 .unwrap_or_default();
             let recommend = item.details.as_ref().and_then(|d| d.recommend.clone());
-            let is_question = matches!(item.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun);
+            let is_question =
+                matches!(item.kind, NeedsYouKind::Question | NeedsYouKind::BlockedRun);
             let options = if is_question && !choices.is_empty() {
                 choices
                     .into_iter()
@@ -836,18 +861,30 @@ impl PlexiApp {
             } else {
                 QueueCategory::Result
             };
-            let plugin_receiver = !notif.tombstoned && self.windows.iter()
-                .find_map(|win| win.panes.get(&notif.sender_pane_id))
-                .and_then(|pane| pane.as_view())
-                .is_some_and(|app| app.runtime.supports_notify_action());
+            let plugin_receiver = !notif.tombstoned
+                && self
+                    .windows
+                    .iter()
+                    .find_map(|win| win.panes.get(&notif.sender_pane_id))
+                    .and_then(|pane| pane.as_view())
+                    .is_some_and(|app| app.runtime.supports_notify_action());
             let response_receiver = notif.response_file.is_some();
             let uncertain = notif.delivery_unknown;
-            let option_indices: Vec<usize> = notif.options.iter().enumerate().filter_map(|(idx, option)| {
-                let host_receiver = option.host_action.as_deref().and_then(|action| action.strip_prefix("pane_focus:"))
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .is_some_and(|id| self.find_pane_in_any_window(id).is_some());
-                (!uncertain && (plugin_receiver || response_receiver || host_receiver)).then_some(idx)
-            }).collect();
+            let option_indices: Vec<usize> = notif
+                .options
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, option)| {
+                    let host_receiver = option
+                        .host_action
+                        .as_deref()
+                        .and_then(|action| action.strip_prefix("pane_focus:"))
+                        .and_then(|id| id.parse::<u64>().ok())
+                        .is_some_and(|id| self.find_pane_in_any_window(id).is_some());
+                    (!uncertain && (plugin_receiver || response_receiver || host_receiver))
+                        .then_some(idx)
+                })
+                .collect();
             let options = if !option_indices.is_empty() {
                 option_indices
                     .iter()
@@ -855,14 +892,15 @@ impl PlexiApp {
                     .map(|(idx, source_idx)| {
                         let c = &notif.options[*source_idx];
                         QueueOption {
-                        key: if c.value.is_empty() {
-                            c.label.clone()
-                        } else {
-                            c.value.clone()
-                        },
-                        label: c.label.clone(),
-                        recommended: idx == 0,
-                    }})
+                            key: if c.value.is_empty() {
+                                c.label.clone()
+                            } else {
+                                c.value.clone()
+                            },
+                            label: c.label.clone(),
+                            recommended: idx == 0,
+                        }
+                    })
                     .collect()
             } else {
                 Vec::new()
@@ -875,7 +913,11 @@ impl PlexiApp {
             } else {
                 format!("{}: {}", notif.title, notif.body)
             };
-            let summary = if uncertain { format!("Outcome unknown — {summary}") } else { summary };
+            let summary = if uncertain {
+                format!("Outcome unknown — {summary}")
+            } else {
+                summary
+            };
             seen_ids.insert(bar_id.clone());
             bars.push(QueueBar {
                 id: bar_id,
@@ -955,11 +997,16 @@ impl PlexiApp {
         }
         for (ctx_id, pid, pname, ag) in agent_entries {
             if !self.attention_queue.dismissed_ids.is_empty()
-                && !matches!(ag.state, crate::protocol::AgentState::Failed
-                | crate::protocol::AgentState::Blocked
-                | crate::protocol::AgentState::ExitedUnreported)
+                && !matches!(
+                    ag.state,
+                    crate::protocol::AgentState::Failed
+                        | crate::protocol::AgentState::Blocked
+                        | crate::protocol::AgentState::ExitedUnreported
+                )
             {
-                self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pid}"));
+                self.attention_queue
+                    .dismissed_ids
+                    .remove(&format!("agent-failed-{pid}"));
             }
             let (cat, prefix) = match ag.state {
                 crate::protocol::AgentState::NeedsYou => {
@@ -974,11 +1021,12 @@ impl PlexiApp {
                 crate::protocol::AgentState::Failed
                 | crate::protocol::AgentState::Blocked
                 | crate::protocol::AgentState::ExitedUnreported => {
-                    if bars
-                        .iter()
-                        .any(|b| b.pane_id == pid && (b.category == QueueCategory::Failed
-                            || (ag.state == crate::protocol::AgentState::Blocked && b.category == QueueCategory::Ask)))
-                    {
+                    if bars.iter().any(|b| {
+                        b.pane_id == pid
+                            && (b.category == QueueCategory::Failed
+                                || (ag.state == crate::protocol::AgentState::Blocked
+                                    && b.category == QueueCategory::Ask))
+                    }) {
                         continue;
                     }
                     (QueueCategory::Failed, "agent-failed")
@@ -1078,16 +1126,35 @@ impl PlexiApp {
                 .items
                 .iter()
                 .any(|b| b.id == overlay.ask_id && b.category == QueueCategory::Notice);
-            let independent_notification_route = matches!(overlay.source, QueueSource::Notification { .. })
-                && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
+            let independent_notification_route =
+                matches!(overlay.source, QueueSource::Notification { .. })
+                    && self
+                        .attention_queue
+                        .items
+                        .iter()
+                        .any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
             let unbound_host_decision = overlay.pane_id == 0
-                && matches!(overlay.source, QueueSource::BrokerPending { .. } | QueueSource::NeedsYou { .. })
-                && self.attention_queue.items.iter().any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
+                && matches!(
+                    overlay.source,
+                    QueueSource::BrokerPending { .. } | QueueSource::NeedsYou { .. }
+                )
+                && self
+                    .attention_queue
+                    .items
+                    .iter()
+                    .any(|bar| bar.id == overlay.ask_id && !bar.options.is_empty());
             let uncertain_notification = match &overlay.source {
-                QueueSource::Notification { notify_id, .. } => self.pending_notifications.iter().any(|n| &n.notify_id == notify_id && n.delivery_unknown),
+                QueueSource::Notification { notify_id, .. } => self
+                    .pending_notifications
+                    .iter()
+                    .any(|n| &n.notify_id == notify_id && n.delivery_unknown),
                 _ => false,
             };
-            let pane_alive = is_notice || independent_notification_route || unbound_host_decision || uncertain_notification || self.find_pane_in_any_window(overlay.pane_id).is_some();
+            let pane_alive = is_notice
+                || independent_notification_route
+                || unbound_host_decision
+                || uncertain_notification
+                || self.find_pane_in_any_window(overlay.pane_id).is_some();
             if !pane_alive {
                 log::info!(
                     "decision_overlay: closing because target pane {} died",
@@ -1216,8 +1283,7 @@ impl PlexiApp {
             .items
             .iter()
             .find(|b| {
-                b.id == ask_id
-                    && matches!(b.category, QueueCategory::Ask | QueueCategory::Notice)
+                b.id == ask_id && matches!(b.category, QueueCategory::Ask | QueueCategory::Notice)
             })
             .cloned()
         else {
@@ -1472,8 +1538,14 @@ impl PlexiApp {
                 }
                 self.attention_queue.open = false;
                 let navigated = self.jump_to_pane_at_columns(*source_id);
-                if navigated && bar.category == QueueCategory::Failed && self.dismiss_queue_bar(&bar.id) {
-                    log::info!("attention_queue: dismissed failed bar on activation id={}", bar.id);
+                if navigated
+                    && bar.category == QueueCategory::Failed
+                    && self.dismiss_queue_bar(&bar.id)
+                {
+                    log::info!(
+                        "attention_queue: dismissed failed bar on activation id={}",
+                        bar.id
+                    );
                 }
                 log::info!(
                     "attention_queue: source pane navigation bar_id={} pane_id={} succeeded={}",
@@ -1642,9 +1714,18 @@ impl PlexiApp {
                     }
                 }
             }
-            QueueSource::Notification { notify_id, option_indices } => {
-                if self.pending_notifications.iter().any(|n| &n.notify_id == notify_id && n.delivery_unknown) {
-                    self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+            QueueSource::Notification {
+                notify_id,
+                option_indices,
+            } => {
+                if self
+                    .pending_notifications
+                    .iter()
+                    .any(|n| &n.notify_id == notify_id && n.delivery_unknown)
+                {
+                    self.attention_queue
+                        .answered_ask_ids
+                        .remove(&overlay.ask_id);
                     self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "The action may already have happened. Check the recipient before taking further action.".into()));
                     return false;
                 }
@@ -1656,15 +1737,25 @@ impl PlexiApp {
                     self.pending_notifications[pos].delivery_unknown = true;
                     if let Err(error) = self.try_save_notifications() {
                         self.pending_notifications[pos].delivery_unknown = false;
-                        self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
-                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), format!("Could not record this decision; no action was sent: {error}")));
+                        self.attention_queue
+                            .answered_ask_ids
+                            .remove(&overlay.ask_id);
+                        self.approval_keyboard.last_error = Some((
+                            overlay.ask_id.clone(),
+                            format!("Could not record this decision; no action was sent: {error}"),
+                        ));
                         log::warn!("decision_overlay: notification attempt not recorded id={notify_id}: {error}");
                         return false;
                     }
                     let n = self.pending_notifications.remove(pos);
                     let host_action = n
                         .options
-                        .get(option_indices.get(option_idx).copied().unwrap_or(usize::MAX))
+                        .get(
+                            option_indices
+                                .get(option_idx)
+                                .copied()
+                                .unwrap_or(usize::MAX),
+                        )
                         .and_then(|o| o.host_action.clone());
                     let delivered = self.deliver_notify_action(
                         n.sender_pane_id,
@@ -1676,7 +1767,9 @@ impl PlexiApp {
                     );
                     if delivered != crate::app::notifications::NotifyDelivery::Delivered {
                         self.pending_notifications.insert(pos, n);
-                        self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
+                        self.attention_queue
+                            .answered_ask_ids
+                            .remove(&overlay.ask_id);
                         let message = match delivered {
                             crate::app::notifications::NotifyDelivery::Unavailable => {
                                 self.pending_notifications[pos].delivery_unknown = false;
@@ -1693,14 +1786,20 @@ impl PlexiApp {
                             },
                             crate::app::notifications::NotifyDelivery::Delivered => "The response was delivered.",
                         };
-                        self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), message.into()));
+                        self.approval_keyboard.last_error =
+                            Some((overlay.ask_id.clone(), message.into()));
                         log::warn!("decision_overlay: notification response failed id={notify_id}; outcome={delivered:?}");
                         return false;
                     }
                     self.save_notifications();
                 } else {
-                    self.attention_queue.answered_ask_ids.remove(&overlay.ask_id);
-                    self.approval_keyboard.last_error = Some((overlay.ask_id.clone(), "This request is no longer available.".into()));
+                    self.attention_queue
+                        .answered_ask_ids
+                        .remove(&overlay.ask_id);
+                    self.approval_keyboard.last_error = Some((
+                        overlay.ask_id.clone(),
+                        "This request is no longer available.".into(),
+                    ));
                     log::info!("decision_overlay: notification no longer available id={notify_id}");
                     return false;
                 }
@@ -2047,7 +2146,10 @@ impl PlexiApp {
         // Scrim behind the pulled-up queue list, positioned below the toolbar
         // so the top chrome and mailbox button remain interactively accessible.
         let scrim_rect = Rect::from_min_max(
-            Pos2::new(screen.min.x, screen.min.y + crate::platform::titlebar::toolbar_height(ctx)),
+            Pos2::new(
+                screen.min.x,
+                screen.min.y + crate::platform::titlebar::toolbar_height(ctx),
+            ),
             screen.max,
         );
         egui::Area::new(egui::Id::new("attention_queue_scrim"))
@@ -2055,7 +2157,8 @@ impl PlexiApp {
             .fixed_pos(scrim_rect.min)
             .fade_in(false)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(scrim_rect, CornerRadius::ZERO, colors.scrim_queue);
+                ui.painter()
+                    .rect_filled(scrim_rect, CornerRadius::ZERO, colors.scrim_queue);
                 if ui.allocate_rect(scrim_rect, egui::Sense::click()).clicked() {
                     scrim_clicked = true;
                 }
@@ -2064,7 +2167,9 @@ impl PlexiApp {
         let panel_w = style::QUEUE_PANEL_W.min(screen.width() - 32.0).max(280.0);
         let pos = Pos2::new(
             screen.max.x - panel_w - style::SPACE_MD,
-            screen.min.y + (style::PATH_BAR_H + style::SPACE_SM).max(crate::platform::titlebar::toolbar_height(ctx) + style::SPACE_SM),
+            screen.min.y
+                + (style::PATH_BAR_H + style::SPACE_SM)
+                    .max(crate::platform::titlebar::toolbar_height(ctx) + style::SPACE_SM),
         );
 
         let mut clicked_idx: Option<usize> = None;
@@ -2144,7 +2249,10 @@ impl PlexiApp {
                                             "{} ▸ {}",
                                             crate::ui::shortcuts::key_text(&["Enter"]),
                                             if bar.options.is_empty() {
-                                                if self.find_pane_in_any_window(bar.pane_id).is_some() {
+                                                if self
+                                                    .find_pane_in_any_window(bar.pane_id)
+                                                    .is_some()
+                                                {
                                                     "Open pane"
                                                 } else {
                                                     "Pane unavailable"
@@ -2255,119 +2363,123 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.set_width(modal_w);
 
-                        if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error {
-                            if err_id == &overlay.ask_id {
-                                ui.label(
-                                    RichText::new(format!("Decision failed: {err_msg}"))
-                                        .color(colors.danger)
-                                        .size(style::TEXT_HINT),
-                                );
-                            }
-                        }
+                                if let Some((err_id, err_msg)) = &self.approval_keyboard.last_error
+                                {
+                                    if err_id == &overlay.ask_id {
+                                        ui.label(
+                                            RichText::new(format!("Decision failed: {err_msg}"))
+                                                .color(colors.danger)
+                                                .size(style::TEXT_HINT),
+                                        );
+                                    }
+                                }
 
-                        // Header: ◆ Needs you · pane_name · context_path
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("◆ NEEDS YOU")
-                                    .font(crate::ui::theme::font_medium(style::TEXT_CAPTION))
-                                    .color(colors.zoom_needs),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "· {} ({})",
-                                    overlay.pane_name, overlay.context_path
-                                ))
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                            );
-                        });
-                        ui.add_space(style::SPACE_SM);
+                                // Header: ◆ Needs you · pane_name · context_path
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("◆ NEEDS YOU")
+                                            .font(crate::ui::theme::font_medium(
+                                                style::TEXT_CAPTION,
+                                            ))
+                                            .color(colors.zoom_needs),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "· {} ({})",
+                                            overlay.pane_name, overlay.context_path
+                                        ))
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                    );
+                                });
+                                ui.add_space(style::SPACE_SM);
 
-                        // Question: wrapped in full, the overlay grows to fit.
-                        let question_font = crate::ui::theme::font_medium(style::TEXT_TITLE);
-                        wrapped_label(
-                            ui,
-                            &overlay.question,
-                            question_font,
-                            colors.text_primary,
-                            modal_w,
-                        );
-                        ui.add_space(style::SPACE_SM);
-
-                        // Command text in monospace block
-                        egui::Frame::NONE
-                            .fill(colors.code_bg)
-                            .stroke(Stroke::new(1.0_f32, colors.border))
-                            .corner_radius(style::RADIUS_BAR)
-                            .inner_margin(egui::Margin::symmetric(12, 10))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                let code_w = ui.available_width();
+                                // Question: wrapped in full, the overlay grows to fit.
+                                let question_font =
+                                    crate::ui::theme::font_medium(style::TEXT_TITLE);
                                 wrapped_label(
                                     ui,
-                                    &overlay.command_text,
-                                    FontId::new(style::TEXT_CAPTION, FontFamily::Monospace),
+                                    &overlay.question,
+                                    question_font,
                                     colors.text_primary,
-                                    code_w,
+                                    modal_w,
                                 );
-                            });
-                        ui.add_space(style::SPACE_MD);
+                                ui.add_space(style::SPACE_SM);
 
-                        // 2–4 options
-                        for (idx, opt) in overlay.options.iter().enumerate() {
-                            let is_sel = idx == overlay.selected_idx;
-                            let fill = if is_sel {
-                                colors.focus_fill
-                            } else {
-                                colors.tile_bg
-                            };
-                            let stroke = if is_sel {
-                                Stroke::new(1.5_f32, colors.accent)
-                            } else {
-                                // Same width as the selected stroke so selection never resizes the row.
-                                Stroke::new(1.5_f32, colors.border)
-                            };
-                            let resp = egui::Frame::NONE
-                                .fill(fill)
-                                .stroke(stroke)
-                                .corner_radius(style::RADIUS_BAR)
-                                .inner_margin(egui::Margin::symmetric(12, 9))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    paint_option_row(ui, idx + 1, opt, &colors);
-                                })
-                                .response
-                                .interact(Sense::click());
+                                // Command text in monospace block
+                                egui::Frame::NONE
+                                    .fill(colors.code_bg)
+                                    .stroke(Stroke::new(1.0_f32, colors.border))
+                                    .corner_radius(style::RADIUS_BAR)
+                                    .inner_margin(egui::Margin::symmetric(12, 10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        let code_w = ui.available_width();
+                                        wrapped_label(
+                                            ui,
+                                            &overlay.command_text,
+                                            FontId::new(style::TEXT_CAPTION, FontFamily::Monospace),
+                                            colors.text_primary,
+                                            code_w,
+                                        );
+                                    });
+                                ui.add_space(style::SPACE_MD);
 
-                            let rect = resp.rect;
-                            self.approval_buttons.push(crate::app::ApprovalButton {
-                                label: opt.label.clone(),
-                                bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
-                                pending_request_id: overlay.ask_id.clone(),
-                            });
-                            if resp.clicked_by(egui::PointerButton::Primary) {
-                                picked_option = Some(idx);
-                            }
-                            ui.add_space(style::SPACE_XS);
-                        }
+                                // 2–4 options
+                                for (idx, opt) in overlay.options.iter().enumerate() {
+                                    let is_sel = idx == overlay.selected_idx;
+                                    let fill = if is_sel {
+                                        colors.focus_fill
+                                    } else {
+                                        colors.tile_bg
+                                    };
+                                    let stroke = if is_sel {
+                                        Stroke::new(1.5_f32, colors.accent)
+                                    } else {
+                                        // Same width as the selected stroke so selection never resizes the row.
+                                        Stroke::new(1.5_f32, colors.border)
+                                    };
+                                    let resp = egui::Frame::NONE
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .corner_radius(style::RADIUS_BAR)
+                                        .inner_margin(egui::Margin::symmetric(12, 9))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            paint_option_row(ui, idx + 1, opt, &colors);
+                                        })
+                                        .response
+                                        .interact(Sense::click());
 
-                        ui.add_space(style::SPACE_SM);
-                        if let Some((ref hint_text, at)) = overlay.hint {
-                            if at.elapsed() < Duration::from_secs(3) {
-                                ui.label(
-                                    RichText::new(hint_text)
-                                        .size(style::TEXT_HINT)
-                                        .color(colors.zoom_needs),
-                                );
-                            }
-                        }
-                        HintBar::new(&[
-                            HintGroup::new(&["1\u{2013}9"], "pick"),
-                            HintGroup::alternatives(&[&["j"], &["k"]], "move"),
-                            HintGroup::new(&["Enter"], "confirm"),
-                            HintGroup::new(&["Esc"], "close"),
-                        ])
-                        .show(ui, &colors);
+                                    let rect = resp.rect;
+                                    self.approval_buttons.push(crate::app::ApprovalButton {
+                                        label: opt.label.clone(),
+                                        bounds: [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+                                        pending_request_id: overlay.ask_id.clone(),
+                                    });
+                                    if resp.clicked_by(egui::PointerButton::Primary) {
+                                        picked_option = Some(idx);
+                                    }
+                                    ui.add_space(style::SPACE_XS);
+                                }
+
+                                ui.add_space(style::SPACE_SM);
+                                if let Some((ref hint_text, at)) = overlay.hint {
+                                    if at.elapsed() < Duration::from_secs(3) {
+                                        ui.label(
+                                            RichText::new(hint_text)
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.zoom_needs),
+                                        );
+                                    }
+                                }
+                                HintBar::new(&[
+                                    HintGroup::new(&["1\u{2013}9"], "pick"),
+                                    HintGroup::alternatives(&[&["j"], &["k"]], "move"),
+                                    HintGroup::new(&["Enter"], "confirm"),
+                                    HintGroup::new(&["Esc"], "close"),
+                                ])
+                                .show(ui, &colors);
                             });
                         if scroll_out.content_size.y <= scroll_out.inner_rect.height() + 0.5 {
                             ui.ctx().data_mut(|d| {
@@ -2439,7 +2551,11 @@ pub(crate) fn format_attention_mailbox(
     total: usize,
 ) -> (&'static str, String, AttentionMailboxVisualState) {
     if total == 0 {
-        ("\u{1F4ED}", "0".to_string(), AttentionMailboxVisualState::Empty)
+        (
+            "\u{1F4ED}",
+            "0".to_string(),
+            AttentionMailboxVisualState::Empty,
+        )
     } else if asks > 0 {
         let count_str = if asks >= total {
             crate::ui::text::compact_count(asks)
@@ -2450,7 +2566,11 @@ pub(crate) fn format_attention_mailbox(
                 crate::ui::text::compact_count(total)
             )
         };
-        ("\u{1F4EC}", count_str, AttentionMailboxVisualState::AsksPresent)
+        (
+            "\u{1F4EC}",
+            count_str,
+            AttentionMailboxVisualState::AsksPresent,
+        )
     } else if failed > 0 {
         (
             "\u{1F4EC}",
@@ -2557,7 +2677,10 @@ mod tests {
     fn pane_send_always_option_names_caller_breadth_and_expiry() {
         let options = pane_send_ask_options();
         assert_eq!(options[1].key, "allow_always");
-        assert_eq!(options[1].label, "Allow this workspace caller any text to any pane for 30 days");
+        assert_eq!(
+            options[1].label,
+            "Allow this workspace caller any text to any pane for 30 days"
+        );
     }
     use crate::broker::gate::{NeedsYouFile, NeedsYouKind, PermissionMonitor};
     use crate::testing::HostHarness;
@@ -3110,8 +3233,14 @@ mod tests {
 
     fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: crate::protocol::AgentState) {
         h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-            peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
-            detail: None, session_id: None, event: None, blocked_reason: None,
+            peer_ancestry: None,
+            pane_id,
+            state,
+            agent: "test-agent".into(),
+            detail: None,
+            session_id: None,
+            event: None,
+            blocked_reason: None,
         });
         h.hidden_frame();
         h.app.sync_attention_queue();
@@ -3123,9 +3252,19 @@ mod tests {
         let pane_id = h.add_focused_terminal();
         report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
         let id = format!("agent-failed-{pane_id}");
-        let bar = h.app.attention_queue.items.iter().find(|b| b.id == id).unwrap().clone();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.id == id)
+            .unwrap()
+            .clone();
         let count = h.app.attention_queue.items.len();
-        assert_eq!(h.app.activate_attention_bar(&bar), AttentionDestination::SourcePane(pane_id));
+        assert_eq!(
+            h.app.activate_attention_bar(&bar),
+            AttentionDestination::SourcePane(pane_id)
+        );
         assert!(!h.app.attention_queue.items.iter().any(|b| b.id == id));
         assert_eq!(h.app.attention_queue.items.len(), count - 1);
         report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
@@ -3142,10 +3281,19 @@ mod tests {
         report_failure_state(&mut h, pane_id, crate::protocol::AgentState::Failed);
         let id = format!("agent-failed-{pane_id}");
         assert!(h.app.dismiss_queue_bar(&id));
-        for state in [crate::protocol::AgentState::Working, crate::protocol::AgentState::Failed] {
+        for state in [
+            crate::protocol::AgentState::Working,
+            crate::protocol::AgentState::Failed,
+        ] {
             h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
-                peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
-                detail: None, session_id: None, event: None, blocked_reason: None,
+                peer_ancestry: None,
+                pane_id,
+                state,
+                agent: "test-agent".into(),
+                detail: None,
+                session_id: None,
+                event: None,
+                blocked_reason: None,
             });
         }
         h.hidden_frame();
@@ -3178,7 +3326,10 @@ mod tests {
         prior.options = default_ask_options();
         h.app.attention_queue.decision_overlay = Some(DecisionOverlayState::from_bar(&prior));
         assert!(h.app.open_decision_overlay_for_ask(&bar.id));
-        assert!(h.app.attention_queue.decision_overlay.is_none(), "navigation must close the previous decision");
+        assert!(
+            h.app.attention_queue.decision_overlay.is_none(),
+            "navigation must close the previous decision"
+        );
         assert!(h.app.attention_queue.verdicts.is_empty());
     }
 
@@ -3199,12 +3350,38 @@ mod tests {
         h.hidden_frame();
         h.app.sync_attention_queue();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let item = monitor.open_needs_you().into_iter().find(|item| item.kind == NeedsYouKind::BlockedRun).unwrap();
-        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == item.id).unwrap().clone();
-        assert_eq!(h.app.attention_queue.items.iter().filter(|bar| bar.pane_id == pane_id).count(), 1);
+        let item = monitor
+            .open_needs_you()
+            .into_iter()
+            .find(|item| item.kind == NeedsYouKind::BlockedRun)
+            .unwrap();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == item.id)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            h.app
+                .attention_queue
+                .items
+                .iter()
+                .filter(|bar| bar.pane_id == pane_id)
+                .count(),
+            1
+        );
         assert!(bar.options.is_empty());
-        assert_eq!(h.app.activate_attention_bar(&bar), AttentionDestination::SourcePane(pane_id));
-        assert!(monitor.get_needs_you(&item.id).unwrap().resolution.is_none());
+        assert_eq!(
+            h.app.activate_attention_bar(&bar),
+            AttentionDestination::SourcePane(pane_id)
+        );
+        assert!(monitor
+            .get_needs_you(&item.id)
+            .unwrap()
+            .resolution
+            .is_none());
         assert!(h.app.attention_queue.verdicts.is_empty());
     }
 
@@ -3225,18 +3402,37 @@ mod tests {
         });
         h.hidden_frame();
         h.app.sync_attention_queue();
-        let asks: Vec<_> = h.app.attention_queue.items.iter()
+        let asks: Vec<_> = h
+            .app
+            .attention_queue
+            .items
+            .iter()
             .filter(|bar| bar.pane_id == pane_id && bar.category == QueueCategory::Ask)
             .collect();
         assert_eq!(asks.len(), 2, "distinct requests must remain visible");
         assert_ne!(asks[0].id, asks[1].id);
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
         for ask in &asks {
-            assert_eq!(monitor.get_continuation(&ask.id).and_then(|c| c.needs_you_id), Some(ask.id.clone()), "each request must keep its own continuation");
+            assert_eq!(
+                monitor
+                    .get_continuation(&ask.id)
+                    .and_then(|c| c.needs_you_id),
+                Some(ask.id.clone()),
+                "each request must keep its own continuation"
+            );
         }
-        monitor.resolve_needs_you_from(&asks[0].id, false, ResolveSurface::Desktop).unwrap();
-        assert!(monitor.get_needs_you(&asks[1].id).unwrap().resolution.is_none());
-        assert_eq!(monitor.get_continuation(&asks[1].id).unwrap().state, crate::broker::gate::ContinuationState::WaitingUser);
+        monitor
+            .resolve_needs_you_from(&asks[0].id, false, ResolveSurface::Desktop)
+            .unwrap();
+        assert!(monitor
+            .get_needs_you(&asks[1].id)
+            .unwrap()
+            .resolution
+            .is_none());
+        assert_eq!(
+            monitor.get_continuation(&asks[1].id).unwrap().state,
+            crate::broker::gate::ContinuationState::WaitingUser
+        );
     }
 
     #[test]
@@ -3244,52 +3440,91 @@ mod tests {
         let mut h = HostHarness::new();
         h.add_focused_terminal();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let id = monitor.file_needs_you_with_details(
-            NeedsYouFile {
-                kind: NeedsYouKind::PermissionRequest,
-                actor: "test-agent".into(),
-                resource: "test-tool".into(),
-                summary: "Allow test tool?".into(),
-                expires_at: None,
-                run_tag: None,
-            },
-            None,
-        ).unwrap().0;
+        let id = monitor
+            .file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::PermissionRequest,
+                    actor: "test-agent".into(),
+                    resource: "test-tool".into(),
+                    summary: "Allow test tool?".into(),
+                    expires_at: None,
+                    run_tag: None,
+                },
+                None,
+            )
+            .unwrap()
+            .0;
         // No workspace or run is available to receive the grant.
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask(&id));
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
-        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("unknown"));
+        assert!(h
+            .app
+            .approval_keyboard
+            .last_error
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("unknown"));
     }
 
     #[test]
     fn ended_notification_source_has_no_action_choices() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "ended".into(), sender_pane_id: pane_id, title: "Approval".into(),
-            tombstoned: true,
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "ended".into(),
+                sender_pane_id: pane_id,
+                title: "Approval".into(),
+                tombstoned: true,
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        let item = h.app.attention_queue.items.iter().find(|item| item.id == "notify-ended").unwrap();
-        assert!(item.options.is_empty(), "ended sources cannot receive actions");
+        let item = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|item| item.id == "notify-ended")
+            .unwrap();
+        assert!(
+            item.options.is_empty(),
+            "ended sources cannot receive actions"
+        );
     }
 
     #[test]
     fn failed_notification_response_is_not_reported_as_delivered() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "broken-response".into(), sender_pane_id: pane_id, title: "Choice".into(),
-            response_file: Some("/dev/null/not-a-response".into()),
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "broken-response".into(),
+                sender_pane_id: pane_id,
+                title: "Choice".into(),
+                response_file: Some("/dev/null/not-a-response".into()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        assert!(h.app.open_decision_overlay_for_ask("notify-broken-response"));
+        assert!(h
+            .app
+            .open_decision_overlay_for_ask("notify-broken-response"));
         assert!(!h.app.pick_decision_overlay_option(0));
         assert!(h.app.attention_queue.verdicts.is_empty());
         assert!(h.app.approval_keyboard.last_error.is_some());
@@ -3300,7 +3535,18 @@ mod tests {
         let mut h = HostHarness::new();
         let terminal = h.add_focused_terminal();
         for pane_id in [terminal, u64::MAX] {
-            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive a plugin event");
+            assert_eq!(
+                h.app.deliver_notify_action(
+                    pane_id,
+                    "dead".into(),
+                    "Continue".into(),
+                    Some("go".into()),
+                    None,
+                    None
+                ),
+                crate::app::notifications::NotifyDelivery::Unavailable,
+                "a terminal or missing pane cannot receive a plugin event"
+            );
         }
     }
 
@@ -3312,17 +3558,48 @@ mod tests {
         std::fs::write(&path, "note").unwrap();
         h.app.open_builtin_view_pane(
             Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(path)),
-            crate::app::permissions::PluginPermissions::builtin(), dir.path().to_path_buf(), None, Some("split_h"), None,
+            crate::app::permissions::PluginPermissions::builtin(),
+            dir.path().to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
         );
         let pane_id = h.state().open_panes[0];
-        assert_eq!(h.app.deliver_notify_action(pane_id, "builtin".into(), "Continue".into(), None, None, None), crate::app::notifications::NotifyDelivery::Unavailable);
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "builtin".into(), sender_pane_id: pane_id, title: "Choice".into(),
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        assert_eq!(
+            h.app.deliver_notify_action(
+                pane_id,
+                "builtin".into(),
+                "Continue".into(),
+                None,
+                None,
+                None
+            ),
+            crate::app::notifications::NotifyDelivery::Unavailable
+        );
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "builtin".into(),
+                sender_pane_id: pane_id,
+                title: "Choice".into(),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        assert!(h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-builtin").unwrap().options.is_empty());
+        assert!(h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == "notify-builtin")
+            .unwrap()
+            .options
+            .is_empty());
     }
 
     #[test]
@@ -3330,16 +3607,36 @@ mod tests {
         let mut h = HostHarness::new();
         let source = h.add_focused_terminal();
         let destination = h.add_test_pane();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "mixed".into(), sender_pane_id: source, title: "Choice".into(),
-            options: vec![
-                crate::protocol::NotifyOption { label: "Unsupported".into(), value: "bad".into(), shortcut: None, host_action: None },
-                crate::protocol::NotifyOption { label: "Open pane".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) },
-            ],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "mixed".into(),
+                sender_pane_id: source,
+                title: "Choice".into(),
+                options: vec![
+                    crate::protocol::NotifyOption {
+                        label: "Unsupported".into(),
+                        value: "bad".into(),
+                        shortcut: None,
+                        host_action: None,
+                    },
+                    crate::protocol::NotifyOption {
+                        label: "Open pane".into(),
+                        value: "go".into(),
+                        shortcut: None,
+                        host_action: Some(format!("pane_focus:{destination}")),
+                    },
+                ],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-mixed").unwrap();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == "notify-mixed")
+            .unwrap();
         assert_eq!(bar.options.len(), 1);
         assert_eq!(bar.options[0].label, "Open pane");
         assert!(h.app.open_decision_overlay_for_ask("notify-mixed"));
@@ -3352,29 +3649,58 @@ mod tests {
         let mut h = HostHarness::new();
         let source = h.add_focused_terminal();
         let destination = h.add_test_pane();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "partial".into(), sender_pane_id: source, title: "Choice".into(),
-            response_file: Some("/dev/null/not-a-response".into()),
-            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "partial".into(),
+                sender_pane_id: source,
+                title: "Choice".into(),
+                response_file: Some("/dev/null/not-a-response".into()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Go".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: Some(format!("pane_focus:{destination}")),
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask("notify-partial"));
         assert!(!h.app.pick_decision_overlay_option(0));
         assert_eq!(h.app.active_focused_pane_id(), Some(destination));
         assert!(h.app.pane_navigate(source));
         assert!(!h.app.pick_decision_overlay_option(0));
-        assert_eq!(h.app.active_focused_pane_id(), Some(source), "retry must not replay host action");
+        assert_eq!(
+            h.app.active_focused_pane_id(),
+            Some(source),
+            "retry must not replay host action"
+        );
         assert!(h.app.attention_queue.verdicts.is_empty());
         let dir = tempfile::tempdir().unwrap();
         let snapshot = dir.path().join("notifications.json");
-        crate::app::notifications::save_pending_notifications_to(&h.app.pending_notifications, &snapshot);
-        h.app.pending_notifications = crate::app::notifications::load_pending_notifications_from(&snapshot);
+        crate::app::notifications::save_pending_notifications_to(
+            &h.app.pending_notifications,
+            &snapshot,
+        );
+        h.app.pending_notifications =
+            crate::app::notifications::load_pending_notifications_from(&snapshot);
         h.app.attention_queue = AttentionQueueState::default();
         h.app.sync_attention_queue();
-        let restored = h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-partial").unwrap();
-        assert!(restored.summary.contains("Outcome unknown"), "restart must retain uncertain outcome");
-        assert!(restored.options.is_empty(), "restart must not expose replayable actions");
+        let restored = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == "notify-partial")
+            .unwrap();
+        assert!(
+            restored.summary.contains("Outcome unknown"),
+            "restart must retain uncertain outcome"
+        );
+        assert!(
+            restored.options.is_empty(),
+            "restart must not expose replayable actions"
+        );
         assert_eq!(h.app.active_focused_pane_id(), Some(source));
     }
 
@@ -3385,17 +3711,35 @@ mod tests {
         let destination = h.add_test_pane();
         let blocked_path = crate::config::config_dir().join("notifications.json");
         std::fs::create_dir_all(&blocked_path).unwrap();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "persist-failure".into(), sender_pane_id: source, title: "Choice".into(),
-            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: Some(format!("pane_focus:{destination}")) }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "persist-failure".into(),
+                sender_pane_id: source,
+                title: "Choice".into(),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Go".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: Some(format!("pane_focus:{destination}")),
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        assert!(h.app.open_decision_overlay_for_ask("notify-persist-failure"));
+        assert!(h
+            .app
+            .open_decision_overlay_for_ask("notify-persist-failure"));
         assert!(!h.app.pick_decision_overlay_option(0));
         assert_eq!(h.app.active_focused_pane_id(), Some(source));
         assert!(h.app.attention_queue.verdicts.is_empty());
-        assert!(h.app.approval_keyboard.last_error.as_ref().unwrap().1.contains("no action was sent"));
+        assert!(h
+            .app
+            .approval_keyboard
+            .last_error
+            .as_ref()
+            .unwrap()
+            .1
+            .contains("no action was sent"));
     }
 
     #[test]
@@ -3404,22 +3748,50 @@ mod tests {
         let source = h.add_focused_terminal();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("response");
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "deferred".into(), sender_pane_id: source, title: "Choice".into(),
-            response_file: Some(path.to_string_lossy().into_owned()),
-            options: vec![crate::protocol::NotifyOption { label: "Go".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "deferred".into(),
+                sender_pane_id: source,
+                title: "Choice".into(),
+                response_file: Some(path.to_string_lossy().into_owned()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Go".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask("notify-deferred"));
-        let mut input = PlexiInput::synthetic(vec![egui::Event::Key {
-            key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }], egui::Modifiers::NONE);
-        assert!(matches!(h.app.handle_decision_overlay_input(&mut input), KeyDisposition::Consumed));
+        let mut input = PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            egui::Modifiers::NONE,
+        );
+        assert!(matches!(
+            h.app.handle_decision_overlay_input(&mut input),
+            KeyDisposition::Consumed
+        ));
         assert!(!path.exists(), "UI input must not perform external I/O");
         h.hidden_frame();
-        assert!(path.exists(), "pending={:?} error={:?} overlay={:?}", h.app.attention_queue.pending_notification_decision, h.app.approval_keyboard.last_error, h.app.attention_queue.decision_overlay.as_ref().map(|o| &o.ask_id));
+        assert!(
+            path.exists(),
+            "pending={:?} error={:?} overlay={:?}",
+            h.app.attention_queue.pending_notification_decision,
+            h.app.approval_keyboard.last_error,
+            h.app
+                .attention_queue
+                .decision_overlay
+                .as_ref()
+                .map(|o| &o.ask_id)
+        );
         assert_eq!(std::fs::read_to_string(path).unwrap(), "go");
     }
 
@@ -3427,26 +3799,52 @@ mod tests {
     fn unbound_notifications_do_not_inherit_or_navigate_to_focused_pane() {
         let mut h = HostHarness::new();
         let focused = h.add_focused_terminal();
-        if let Some(pane) = h.app.windows[0].panes.get_mut(&focused).and_then(|p| p.as_terminal_mut()) {
+        if let Some(pane) = h.app.windows[0]
+            .panes
+            .get_mut(&focused)
+            .and_then(|p| p.as_terminal_mut())
+        {
             pane.name = Some("unrelated-codex".into());
         }
         let context = h.app.router.active().context_id;
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("response");
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "unbound-choice".into(), title: "CLI request".into(), source_context_id: context,
-            response_file: Some(response.to_string_lossy().into_owned()), required: true,
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "restored".into(), title: "Old CLI request".into(), source_context_id: context,
-            tombstoned: true, delivery_unknown: true, required: true,
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "unbound-choice".into(),
+                title: "CLI request".into(),
+                source_context_id: context,
+                response_file: Some(response.to_string_lossy().into_owned()),
+                required: true,
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "restored".into(),
+                title: "Old CLI request".into(),
+                source_context_id: context,
+                tombstoned: true,
+                delivery_unknown: true,
+                required: true,
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
         for id in ["notify-unbound-choice", "notify-restored"] {
-            let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == id).unwrap();
+            let bar = h
+                .app
+                .attention_queue
+                .items
+                .iter()
+                .find(|bar| bar.id == id)
+                .unwrap();
             assert_eq!(bar.context_id, context);
             assert_eq!(bar.pane_id, 0, "{id} has no pane binding");
             assert_ne!(bar.pane_name, "unrelated-codex");
@@ -3463,17 +3861,40 @@ mod tests {
         let focused = h.add_focused_terminal();
         let context = h.app.router.active().context_id;
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
-        let id = monitor.file_needs_you_with_details(NeedsYouFile {
-            kind: NeedsYouKind::Question, actor: "agent:unbound".into(), resource: "task".into(),
-            summary: "Choose a branch".into(), expires_at: None, run_tag: None,
-        }, Some(crate::broker::gate::NeedsYouDetails { context_id: Some(context), choices: vec!["Alpha".into()], ..Default::default() })).unwrap().0;
+        let id = monitor
+            .file_needs_you_with_details(
+                NeedsYouFile {
+                    kind: NeedsYouKind::Question,
+                    actor: "agent:unbound".into(),
+                    resource: "task".into(),
+                    summary: "Choose a branch".into(),
+                    expires_at: None,
+                    run_tag: None,
+                },
+                Some(crate::broker::gate::NeedsYouDetails {
+                    context_id: Some(context),
+                    choices: vec!["Alpha".into()],
+                    ..Default::default()
+                }),
+            )
+            .unwrap()
+            .0;
         h.app.sync_attention_queue();
-        let bar = h.app.attention_queue.items.iter().find(|bar| bar.id == id).unwrap();
+        let bar = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == id)
+            .unwrap();
         assert_eq!(bar.context_id, context);
         assert_eq!(bar.pane_id, 0);
         assert!(h.app.open_decision_overlay_for_ask(&id));
         assert!(h.app.pick_decision_overlay_option(0));
-        assert_eq!(monitor.get_needs_you(&id).unwrap().answer.as_deref(), Some("Alpha"));
+        assert_eq!(
+            monitor.get_needs_you(&id).unwrap().answer.as_deref(),
+            Some("Alpha")
+        );
         assert_eq!(h.app.active_focused_pane_id(), Some(focused));
     }
 
@@ -3484,9 +3905,29 @@ mod tests {
         let destination = h.add_test_pane();
         let dir = tempfile::tempdir().unwrap();
         let response = dir.path().join("response");
-        assert_eq!(h.app.deliver_notify_action(u64::MAX, "file".into(), "Continue".into(), Some("go".into()), Some(response.to_string_lossy().into_owned()), None), crate::app::notifications::NotifyDelivery::Delivered);
+        assert_eq!(
+            h.app.deliver_notify_action(
+                u64::MAX,
+                "file".into(),
+                "Continue".into(),
+                Some("go".into()),
+                Some(response.to_string_lossy().into_owned()),
+                None
+            ),
+            crate::app::notifications::NotifyDelivery::Delivered
+        );
         assert_eq!(std::fs::read_to_string(response).unwrap(), "go");
-        assert_eq!(h.app.deliver_notify_action(source, "host".into(), "Open".into(), None, None, Some(format!("pane_focus:{destination}"))), crate::app::notifications::NotifyDelivery::Delivered);
+        assert_eq!(
+            h.app.deliver_notify_action(
+                source,
+                "host".into(),
+                "Open".into(),
+                None,
+                None,
+                Some(format!("pane_focus:{destination}"))
+            ),
+            crate::app::notifications::NotifyDelivery::Delivered
+        );
         assert_eq!(h.app.active_focused_pane_id(), Some(destination));
     }
 
@@ -3496,14 +3937,25 @@ mod tests {
         h.add_focused_terminal();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("response");
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "independent-file".into(), sender_pane_id: u64::MAX, title: "Choice".into(),
-            response_file: Some(path.to_string_lossy().into_owned()),
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "independent-file".into(),
+                sender_pane_id: u64::MAX,
+                title: "Choice".into(),
+                response_file: Some(path.to_string_lossy().into_owned()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
-        assert!(h.app.open_decision_overlay_for_ask("notify-independent-file"));
+        assert!(h
+            .app
+            .open_decision_overlay_for_ask("notify-independent-file"));
         assert!(h.app.pick_decision_overlay_option(0));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "go");
     }
@@ -3512,18 +3964,38 @@ mod tests {
     fn dead_sender_with_unknown_delivery_keeps_error_visible() {
         let mut h = HostHarness::new();
         h.add_focused_terminal();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "unknown-dead".into(), sender_pane_id: u64::MAX, title: "Choice".into(),
-            response_file: Some("/dev/null/not-a-response".into()),
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "unknown-dead".into(),
+                sender_pane_id: u64::MAX,
+                title: "Choice".into(),
+                response_file: Some("/dev/null/not-a-response".into()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask("notify-unknown-dead"));
         assert!(!h.app.pick_decision_overlay_option(0));
         h.app.sync_attention_queue();
-        assert!(h.app.attention_queue.decision_overlay.is_some(), "outcome error must remain visible");
-        assert!(h.app.attention_queue.items.iter().find(|bar| bar.id == "notify-unknown-dead").unwrap().summary.contains("Outcome unknown"));
+        assert!(
+            h.app.attention_queue.decision_overlay.is_some(),
+            "outcome error must remain visible"
+        );
+        assert!(h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| bar.id == "notify-unknown-dead")
+            .unwrap()
+            .summary
+            .contains("Outcome unknown"));
         assert!(!h.app.pick_decision_overlay_option(0));
     }
 
@@ -3531,12 +4003,21 @@ mod tests {
     fn removed_notification_cannot_receive_a_verdict() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.app.pending_notifications.push(crate::app::notifications::PendingNotification {
-            notify_id: "stale".into(), sender_pane_id: pane_id, title: "Choice".into(),
-            response_file: Some("/dev/null/not-a-response".into()),
-            options: vec![crate::protocol::NotifyOption { label: "Continue".into(), value: "go".into(), shortcut: None, host_action: None }],
-            ..Default::default()
-        });
+        h.app
+            .pending_notifications
+            .push(crate::app::notifications::PendingNotification {
+                notify_id: "stale".into(),
+                sender_pane_id: pane_id,
+                title: "Choice".into(),
+                response_file: Some("/dev/null/not-a-response".into()),
+                options: vec![crate::protocol::NotifyOption {
+                    label: "Continue".into(),
+                    value: "go".into(),
+                    shortcut: None,
+                    host_action: None,
+                }],
+                ..Default::default()
+            });
         h.app.sync_attention_queue();
         assert!(h.app.open_decision_overlay_for_ask("notify-stale"));
         h.app.pending_notifications.clear();
@@ -3570,20 +4051,35 @@ mod tests {
                 )
                 .unwrap();
         } else {
-            permission_id = Some(monitor.file_needs_you_with_details(
-                NeedsYouFile {
-                    kind: NeedsYouKind::PermissionRequest,
-                    actor: "test-agent".into(),
-                    resource: "test-tool".into(),
-                    summary: "Allow test tool?".into(),
-                    expires_at: None,
-                    run_tag: None,
-                },
-                Some(crate::broker::gate::NeedsYouDetails { pane_id: Some(pane_id), ..Default::default() }),
-            ).unwrap().0);
+            permission_id = Some(
+                monitor
+                    .file_needs_you_with_details(
+                        NeedsYouFile {
+                            kind: NeedsYouKind::PermissionRequest,
+                            actor: "test-agent".into(),
+                            resource: "test-tool".into(),
+                            summary: "Allow test tool?".into(),
+                            expires_at: None,
+                            run_tag: None,
+                        },
+                        Some(crate::broker::gate::NeedsYouDetails {
+                            pane_id: Some(pane_id),
+                            ..Default::default()
+                        }),
+                    )
+                    .unwrap()
+                    .0,
+            );
         }
         report_attention(&mut h, pane_id);
-        let id = permission_id.unwrap_or_else(|| monitor.open_needs_you().into_iter().find(|item| item.kind == NeedsYouKind::Question).unwrap().id);
+        let id = permission_id.unwrap_or_else(|| {
+            monitor
+                .open_needs_you()
+                .into_iter()
+                .find(|item| item.kind == NeedsYouKind::Question)
+                .unwrap()
+                .id
+        });
         let bar = h
             .app
             .attention_queue
@@ -3641,7 +4137,13 @@ mod tests {
 
         // Agent state remains an observed signal, not a second approval endpoint.
         h.app.sync_attention_queue();
-        if let Some(fallback) = h.app.attention_queue.items.iter().find(|bar| matches!(bar.source, QueueSource::AgentState { .. })) {
+        if let Some(fallback) = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|bar| matches!(bar.source, QueueSource::AgentState { .. }))
+        {
             assert!(fallback.options.is_empty());
         }
     }
@@ -3664,13 +4166,25 @@ mod tests {
         let a1 = h.add_test_pane();
         let a2 = h.add_test_pane();
         let a3 = h.add_test_pane();
-        if let Some(p) = h.app.windows[0].panes.get_mut(&a1).and_then(|p| p.as_terminal_mut()) {
+        if let Some(p) = h.app.windows[0]
+            .panes
+            .get_mut(&a1)
+            .and_then(|p| p.as_terminal_mut())
+        {
             p.name = Some("a1".to_string());
         }
-        if let Some(p) = h.app.windows[0].panes.get_mut(&a2).and_then(|p| p.as_terminal_mut()) {
+        if let Some(p) = h.app.windows[0]
+            .panes
+            .get_mut(&a2)
+            .and_then(|p| p.as_terminal_mut())
+        {
             p.name = Some("a2".to_string());
         }
-        if let Some(p) = h.app.windows[0].panes.get_mut(&a3).and_then(|p| p.as_terminal_mut()) {
+        if let Some(p) = h.app.windows[0]
+            .panes
+            .get_mut(&a3)
+            .and_then(|p| p.as_terminal_mut())
+        {
             p.name = Some("a3".to_string());
         }
 
@@ -3701,7 +4215,8 @@ mod tests {
             })
             .unwrap();
 
-        h.app.enqueue_ask("ask-a2", a2, "cargo test", 1_000, Vec::new());
+        h.app
+            .enqueue_ask("ask-a2", a2, "cargo test", 1_000, Vec::new());
         h.app
             .enqueue_ask("ask-pane5-2", pane_5, "git push", 2_000, Vec::new());
 
@@ -3812,10 +4327,7 @@ mod tests {
             record.resolution,
             Some(crate::broker::gate::NeedsYouResolution::Acknowledged)
         );
-        assert_eq!(
-            record.resolution.map(|r| r.as_str()),
-            Some("acknowledged")
-        );
+        assert_eq!(record.resolution.map(|r| r.as_str()), Some("acknowledged"));
 
         // Verify auto-clear-once-seen still works when opening & closing the list without Enter.
         let auto_notice_id = monitor
@@ -3874,7 +4386,10 @@ mod tests {
         }
         let with = option_row_heights(true);
         let without = option_row_heights(false);
-        assert!((with[0] - without[0]).abs() < 0.5, "tag must not inflate the row");
+        assert!(
+            (with[0] - without[0]).abs() < 0.5,
+            "tag must not inflate the row"
+        );
     }
 
     #[test]
@@ -3886,7 +4401,10 @@ mod tests {
         // asks == 0, total > 0
         let h_no_asks = format_attention_queue_header_count(0, 3);
         assert_eq!(h_no_asks, "3 items");
-        assert!(!h_no_asks.contains('0'), "asks==0 must not print ◆0: {h_no_asks}");
+        assert!(
+            !h_no_asks.contains('0'),
+            "asks==0 must not print ◆0: {h_no_asks}"
+        );
 
         // asks == total (must show the number 3 only once!)
         let h_all_asks = format_attention_queue_header_count(3, 3);
@@ -3970,7 +4488,8 @@ mod tests {
         term.parent_pane_id = parent_id;
         term.spawned_by = spawned_by.map(str::to_string);
         let win = &mut h.app.windows[0];
-        win.panes.insert(id, crate::host::pane::Pane::Terminal(Box::new(term)));
+        win.panes
+            .insert(id, crate::host::pane::Pane::Terminal(Box::new(term)));
         let tile = win.tree.tiles.insert_pane(id);
         if win.tree.root().is_none() {
             win.tree.root = Some(tile);
@@ -4053,7 +4572,11 @@ mod tests {
         // Result remains reachable in the queue
         h.app.sync_attention_queue();
         assert!(
-            h.app.attention_queue.items.iter().any(|b| b.pane_id == p_child),
+            h.app
+                .attention_queue
+                .items
+                .iter()
+                .any(|b| b.pane_id == p_child),
             "child result must remain reachable in the queue"
         );
     }
@@ -4150,7 +4673,14 @@ mod tests {
         h.app.close_pane_by_id(p_parent);
         h.app.close_pane_by_id(p_child);
         h.app.sync_attention_queue();
-        let bar_a = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child).unwrap().clone();
+        let bar_a = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.pane_id == p_child)
+            .unwrap()
+            .clone();
         let dest_a = h.app.resolve_attention_destination(&bar_a);
         assert!(matches!(dest_a, AttentionDestination::ResultArtifact(_)));
 
@@ -4175,15 +4705,21 @@ mod tests {
         );
         h.app.close_pane_by_id(p_child_b);
         h.app.sync_attention_queue();
-        let bar_b = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child_b).unwrap().clone();
+        let bar_b = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.pane_id == p_child_b)
+            .unwrap()
+            .clone();
         assert_eq!(h.app.find_parent_pane_id(p_child_b), Some(p_shell));
         let (parent_window, _) = h
             .app
             .find_pane_in_any_window(p_shell)
             .expect("live non-agent parent");
         assert!(
-            !h.app
-                .windows[parent_window]
+            !h.app.windows[parent_window]
                 .panes
                 .get(&p_shell)
                 .expect("live non-agent parent pane")
@@ -4219,11 +4755,26 @@ mod tests {
 
         // Also add an ask
         let p_ask = h.add_test_pane();
-        h.app.enqueue_ask("ask-test", p_ask, "cargo test", 500, Vec::new());
+        h.app
+            .enqueue_ask("ask-test", p_ask, "cargo test", 500, Vec::new());
 
         h.app.sync_attention_queue();
-        let bar_res = h.app.attention_queue.items.iter().find(|b| b.pane_id == p_child).unwrap().clone();
-        let bar_ask = h.app.attention_queue.items.iter().find(|b| b.id == "ask-test").unwrap().clone();
+        let bar_res = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.pane_id == p_child)
+            .unwrap()
+            .clone();
+        let bar_ask = h
+            .app
+            .attention_queue
+            .items
+            .iter()
+            .find(|b| b.id == "ask-test")
+            .unwrap()
+            .clone();
 
         // 1. Enter drives the real queue activation path to the live parent.
         h.app.toggle_attention_queue_list();
@@ -4253,9 +4804,20 @@ mod tests {
 
         // 2. Ask overlay semantics stay on the shared activation helper.
         let dest_ask = h.app.resolve_attention_destination(&bar_ask);
-        assert_eq!(dest_ask, AttentionDestination::DecisionOverlay("ask-test".into()));
+        assert_eq!(
+            dest_ask,
+            AttentionDestination::DecisionOverlay("ask-test".into())
+        );
         h.app.activate_attention_bar(&bar_ask);
         assert!(h.app.attention_queue.decision_overlay.is_some());
-        assert_eq!(h.app.attention_queue.decision_overlay.as_ref().unwrap().ask_id, "ask-test");
+        assert_eq!(
+            h.app
+                .attention_queue
+                .decision_overlay
+                .as_ref()
+                .unwrap()
+                .ask_id,
+            "ask-test"
+        );
     }
 }

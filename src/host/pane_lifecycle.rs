@@ -69,7 +69,6 @@ impl From<egui_term::PtyExitStatus> for ExitStatus {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PaneLifecycleEvent {
@@ -170,8 +169,8 @@ impl PaneLifecycleEvent {
 mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
-    use crate::host::plugin_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
-    use crate::protocol::{PluginEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+    use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
+    use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 
     #[test]
     fn pane_lifecycle_uses_scoped_resource_filtered_bus_and_reserves_publisher() {

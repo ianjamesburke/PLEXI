@@ -22,8 +22,8 @@ use crate::ui::style;
 use crate::ui::text_field::TextArea;
 use crate::ui::theme::Colors;
 
-use crate::protocol::ModelTier;
 use crate::broker::Decision;
+use crate::protocol::ModelTier;
 
 use super::commands;
 
@@ -465,8 +465,11 @@ impl AssistantRenderer {
                 });
         }
         let review = if turn.text.contains("plexi permissions list") {
-            let response = chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
-            response.clicked().then_some(ComposerEvent::ReviewPermissions)
+            let response =
+                chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
+            response
+                .clicked()
+                .then_some(ComposerEvent::ReviewPermissions)
         } else {
             None
         };
@@ -802,9 +805,9 @@ impl AssistantRenderer {
                 // The click driver reads these bounds from `assistant permission
                 // list` when pane state has no labeled button. Window points,
                 // same space as the accesskit rect above.
-                if let Some(monitor) = crate::broker::gate::PermissionMonitor::loaded(
-                    &crate::config::config_dir(),
-                ) {
+                if let Some(monitor) =
+                    crate::broker::gate::PermissionMonitor::loaded(&crate::config::config_dir())
+                {
                     monitor.publish_sheet_buttons(&painted);
                 }
             });

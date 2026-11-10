@@ -280,7 +280,12 @@ impl EventLog {
     pub fn emit_scoped(&self, mut event: HostEvent, context_root: Option<&std::path::Path>) {
         // Terminal OSC titles can contain shell input, and the pane name may
         // have been derived from that same title. Keep both out of files.
-        if let HostEvent::FocusChanged { pty_title, pane_name, .. } = &mut event {
+        if let HostEvent::FocusChanged {
+            pty_title,
+            pane_name,
+            ..
+        } = &mut event
+        {
             *pty_title = None;
             *pane_name = None;
         }
@@ -347,7 +352,6 @@ pub(crate) fn test_capture_events() {
 pub(crate) fn test_take_events() -> Vec<HostEvent> {
     TEST_EVENTS.with(|events| events.borrow_mut().take().unwrap_or_default())
 }
-
 
 /// Initialize the global event log. Call once at plugin startup.
 /// Subsequent calls are no-ops (OnceLock guarantees at-most-once init).
@@ -445,12 +449,22 @@ mod tests {
         let path = dir.path().join("events.jsonl");
         let log = EventLog::new(path.clone());
         let sentinel = "SENTINEL_0948_OSC_SECRET";
-        log.emit_scoped(HostEvent::FocusChanged {
-            pane_id: 42, context_name: "work".into(), context_description: String::new(),
-            context_root: None, cwd: None, pty_title: Some(sentinel.into()),
-            pane_name: Some(sentinel.into()), plugin_type_id: None, reason: Some("shutdown".into()),
-            duration_secs: 3, timestamp: now_timestamp(),
-        }, None);
+        log.emit_scoped(
+            HostEvent::FocusChanged {
+                pane_id: 42,
+                context_name: "work".into(),
+                context_description: String::new(),
+                context_root: None,
+                cwd: None,
+                pty_title: Some(sentinel.into()),
+                pane_name: Some(sentinel.into()),
+                plugin_type_id: None,
+                reason: Some("shutdown".into()),
+                duration_secs: 3,
+                timestamp: now_timestamp(),
+            },
+            None,
+        );
         let rows = wait_for_line(&path);
         assert_eq!(rows.len(), 1);
         assert!(rows[0]["pty_title"].is_null());

@@ -62,9 +62,7 @@ fn key_label(token: &str, mac: bool) -> String {
         "left" | "arrowleft" | "\u{2190}" => "\u{2190}".into(),
         "right" | "arrowright" | "\u{2192}" => "\u{2192}".into(),
         "tab" => "Tab".into(),
-        "space" | "\u{2423}" => {
-            if mac { "\u{2423}" } else { "Space" }.into()
-        }
+        "space" | "\u{2423}" => if mac { "\u{2423}" } else { "Space" }.into(),
         _ if token.chars().count() == 1 => token.to_uppercase(),
         _ => token.to_string(),
     }
@@ -469,7 +467,10 @@ mod tests {
 
     #[test]
     fn chord_text_joins_per_platform() {
-        assert_eq!(chord_text(&["cmd", "shift", "n"], true), "\u{2318}\u{21e7}N");
+        assert_eq!(
+            chord_text(&["cmd", "shift", "n"], true),
+            "\u{2318}\u{21e7}N"
+        );
         assert_eq!(chord_text(&["cmd", "shift", "n"], false), "Ctrl+Shift+N");
         assert_eq!(chord_text(&["cmd", "down"], false), "Ctrl+\u{2193}");
     }

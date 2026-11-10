@@ -67,7 +67,9 @@ fn move_to_recovery(
     root: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let root_type = std::fs::symlink_metadata(root).map_err(|e| e.to_string())?.file_type();
+    let root_type = std::fs::symlink_metadata(root)
+        .map_err(|e| e.to_string())?
+        .file_type();
     if !root_type.is_dir() {
         return Err("Recovery location must be a real directory".into());
     }
@@ -278,9 +280,8 @@ impl PlexiApp {
             }
             Err(e) => {
                 log::warn!("notes_picker: copy failed for {path:?}: {e}");
-                self.notes_picker_status = Some(format!(
-                    "Can't copy \u{201c}{title}\u{201d}: {e}."
-                ));
+                self.notes_picker_status =
+                    Some(format!("Can't copy \u{201c}{title}\u{201d}: {e}."));
                 None
             }
         }
@@ -291,8 +292,12 @@ impl PlexiApp {
         let identity = note_path_identity(path);
         self.windows.iter().any(|window| {
             window.panes.iter().any(|(&pane_id, pane)| {
-                Self::text_editor_path_for_pane(window, pane_id).as_deref() == Some(identity.as_path())
-                    && pane.as_view().and_then(|app| app.runtime.editor_buffer()).is_some_and(|buffer| buffer.dirty)
+                Self::text_editor_path_for_pane(window, pane_id).as_deref()
+                    == Some(identity.as_path())
+                    && pane
+                        .as_view()
+                        .and_then(|app| app.runtime.editor_buffer())
+                        .is_some_and(|buffer| buffer.dirty)
             })
         })
     }
@@ -479,7 +484,9 @@ impl PlexiApp {
             .offset(egui::vec2(0.0, -style::SPACE_SM))
             .action(ctx, &colors, &caption, "Undo", undo_error);
         #[cfg(test)]
-        ctx.data_mut(|data| data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect));
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect)
+        });
         if response.clicked() {
             self.notes_picker_undo_delete();
         }
@@ -752,7 +759,8 @@ impl PlexiApp {
                 }
 
                 let list_width = if show_preview {
-                    ((ui.available_width() - style::SPACE_MD) * style::NOTES_PICKER_LIST_FRACTION).floor()
+                    ((ui.available_width() - style::SPACE_MD) * style::NOTES_PICKER_LIST_FRACTION)
+                        .floor()
                 } else {
                     ui.available_width()
                 };
@@ -961,7 +969,7 @@ fn emit_note_opened(path: &std::path::Path, context_root: Option<&std::path::Pat
 mod tests {
     use super::*;
     use crate::app::permissions::PluginPermissions;
-    use crate::host::pane::{ViewPane, ViewRuntime, Pane};
+    use crate::host::pane::{Pane, ViewPane, ViewRuntime};
     use crate::notes::NotePickerEntry;
 
     fn picker_entry(path: std::path::PathBuf, preview: &str) -> NotePickerEntry {
@@ -1057,8 +1065,7 @@ mod tests {
             .with(egui::Id::new("notes_picker_halves"))
             .with(egui::Id::new("notes_picker_list_half"))
             .with(egui::Id::new("notes_picker_list"));
-        let mut state =
-            egui::scroll_area::State::load(ctx, id).expect("notes picker scroll state");
+        let mut state = egui::scroll_area::State::load(ctx, id).expect("notes picker scroll state");
         state.offset.y = offset;
         state.store(ctx, id);
     }
@@ -1764,12 +1771,27 @@ mod tests {
         let (_, second) = app.add_test_pane();
         replace_with_text_editor(&mut app, first, paths[0].clone());
         replace_with_text_editor(&mut app, second, paths[0].clone());
-        let initially_found = app.find_open_text_editor_pane_any_window(&paths[0]).unwrap();
-        let dirty = if initially_found == first { second } else { first };
+        let initially_found = app
+            .find_open_text_editor_pane_any_window(&paths[0])
+            .unwrap();
+        let dirty = if initially_found == first {
+            second
+        } else {
+            first
+        };
         set_editor_pane_unsaved(&mut app, dirty, "unsaved draft");
-        press_picker_chord(&mut app, &ctx, egui::Modifiers::COMMAND, egui::Key::Backspace);
+        press_picker_chord(
+            &mut app,
+            &ctx,
+            egui::Modifiers::COMMAND,
+            egui::Key::Backspace,
+        );
         assert!(paths[0].exists());
-        assert!(app.notes_picker_status.as_deref().unwrap().contains("unsaved edits"));
+        assert!(app
+            .notes_picker_status
+            .as_deref()
+            .unwrap()
+            .contains("unsaved edits"));
         let _ = std::fs::remove_file(&paths[0]);
     }
 

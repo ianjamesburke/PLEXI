@@ -232,7 +232,11 @@ impl PlexiInput {
         if self.consume_key(egui::Modifiers::COMMAND, egui::Key::C) {
             return true;
         }
-        if let Some(pos) = self.events.iter().position(|e| matches!(e, egui::Event::Copy)) {
+        if let Some(pos) = self
+            .events
+            .iter()
+            .position(|e| matches!(e, egui::Event::Copy))
+        {
             self.events.remove(pos);
             true
         } else {
@@ -245,7 +249,11 @@ impl PlexiInput {
         if self.consume_key(egui::Modifiers::COMMAND, egui::Key::X) {
             return true;
         }
-        if let Some(pos) = self.events.iter().position(|e| matches!(e, egui::Event::Cut)) {
+        if let Some(pos) = self
+            .events
+            .iter()
+            .position(|e| matches!(e, egui::Event::Cut))
+        {
             self.events.remove(pos);
             true
         } else {

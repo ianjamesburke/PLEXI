@@ -119,7 +119,8 @@ impl PlexiApp {
     /// are reloaded from disk first so a just-granted permission applies without
     /// a host restart.
     fn drain_event_subscribe_channel(&mut self) {
-        self.pending_event_consents.retain(|consent| !consent.is_cancelled());
+        self.pending_event_consents
+            .retain(|consent| !consent.is_cancelled());
         self.observe_pane_spawns();
         // Pull all pending requests before touching the grant store so the
         // reload happens at most once per frame regardless of request count.
@@ -162,7 +163,9 @@ impl PlexiApp {
             if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
                 if let (Some(caller_id), Some(target_pane_id)) = (
                     req.from_pane_id,
-                    req.resource_id.as_deref().and_then(|s| s.parse::<u64>().ok()),
+                    req.resource_id
+                        .as_deref()
+                        .and_then(|s| s.parse::<u64>().ok()),
                 ) {
                     let target_parent = self
                         .windows
@@ -315,32 +318,80 @@ impl PlexiApp {
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
         match &cmd {
-            crate::protocol::HostRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop, status_for, client, kind } => {
+            crate::protocol::HostRequest::SubmitAssistantTurn {
+                text,
+                request_id,
+                response_file,
+                pane_id,
+                context_id,
+                conversation_id,
+                join_desktop,
+                status_for,
+                client,
+                kind,
+            } => {
                 if pane_id.is_none() {
                     let _ = self.ensure_headless_assistant(*context_id);
                 }
                 let mut submitted = false;
                 let mut failure = None;
                 for window in &mut self.windows {
-                    if context_id.is_some_and(|id| window.context_id != id) { continue; }
+                    if context_id.is_some_and(|id| window.context_id != id) {
+                        continue;
+                    }
                     for (id, pane) in &mut window.panes {
-                        if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
-                        let Some(app) = pane.as_view_mut() else { continue; };
-                        if app.runtime.type_id() != "assistant" { continue; }
+                        if pane_id.is_some_and(|wanted| wanted != *id) {
+                            continue;
+                        }
+                        let Some(app) = pane.as_view_mut() else {
+                            continue;
+                        };
+                        if app.runtime.type_id() != "assistant" {
+                            continue;
+                        }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone(), crate::app::view_trait::ExternalTurnOpts { conversation_id: conversation_id.clone(), join_desktop: *join_desktop, status_for: status_for.clone(), client: client.clone(), kind: kind.clone() }) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_external_turn(
+                            text.clone(),
+                            request_id.clone(),
+                            response_file.clone(),
+                            crate::app::view_trait::ExternalTurnOpts {
+                                conversation_id: conversation_id.clone(),
+                                join_desktop: *join_desktop,
+                                status_for: status_for.clone(),
+                                client: client.clone(),
+                                kind: kind.clone(),
+                            },
+                        ) {
+                            failure = Some(error);
+                        }
                         break;
                     }
-                    if submitted { break; }
+                    if submitted {
+                        break;
+                    }
                 }
-                if let Some(error) = failure { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
-                    ); }
-                else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
-                    ); }
+                if let Some(error) = failure {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"request_id": request_id, "state":"failed", "error":error}),
+                    );
+                } else if !submitted {
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
+                    );
+                }
             }
-            crate::protocol::HostRequest::AgentsDashboard { op, payload, response_file } => {
+            crate::protocol::HostRequest::AgentsDashboard {
+                op,
+                payload,
+                response_file,
+            } => {
                 log::info!("pane_ipc: kind=command_view op={op}");
-                let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
+                let workspace = payload
+                    .get("workspace")
+                    .and_then(|v| v.as_str())
+                    .map(std::path::PathBuf::from)
                     .or_else(crate::config::active_workspace_root)
                     .unwrap_or_else(|| self.router.active().root.clone());
                 let body = match op.as_str() {
@@ -349,15 +400,25 @@ impl PlexiApp {
                         Err(error) => serde_json::json!({"ok": false, "error": error}),
                     },
                     "cancel" => {
-                        let run = payload.get("run").and_then(|value| value.as_str()).unwrap_or("");
+                        let run = payload
+                            .get("run")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
                         log::info!("command_view: cancel run={run}");
-                        crate::agent::runs::handle_request("finish_run", &serde_json::json!({"workspace": workspace, "id": run}))
+                        crate::agent::runs::handle_request(
+                            "finish_run",
+                            &serde_json::json!({"workspace": workspace, "id": run}),
+                        )
                     }
                     _ => crate::agent::runs::projection(&workspace),
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::HostRequest::AssistantHostTool { name, input_json, response_file } => {
+            crate::protocol::HostRequest::AssistantHostTool {
+                name,
+                input_json,
+                response_file,
+            } => {
                 log::info!("assistant_host_tool: ipc name={name}");
                 let result = self.dispatch_assistant_host_tool(name, input_json);
                 let body = if let Some(error) = result.error.as_deref() {
@@ -377,23 +438,39 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::HostRequest::ResourceLease { op, name, max, holder_pid, peer_ancestry, response_file } => {
+            crate::protocol::HostRequest::ResourceLease {
+                op,
+                name,
+                max,
+                holder_pid,
+                peer_ancestry,
+                response_file,
+            } => {
                 if !peer_ancestry.contains(holder_pid) || *holder_pid <= 1 {
-                    write_json_response(response_file, serde_json::json!({"error": "holder must be a verified caller ancestor", "error_code": "permission_denied"}));
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"error": "holder must be a verified caller ancestor", "error_code": "permission_denied"}),
+                    );
                 } else {
                     if self.resource_leases.is_none() {
                         match crate::host::resource_leases::LeaseService::start() {
                             Ok(service) => self.resource_leases = Some(service),
                             Err(error) => {
                                 log::error!("lease: service start failed: {error}");
-                                write_json_response(response_file, serde_json::json!({"error": error.to_string(), "error_code": "lease_unavailable"}));
+                                write_json_response(
+                                    response_file,
+                                    serde_json::json!({"error": error.to_string(), "error_code": "lease_unavailable"}),
+                                );
                             }
                         }
                     }
                     if let Some(service) = &self.resource_leases {
                         service.submit(crate::host::resource_leases::LeaseRequest {
-                            op: op.clone(), name: name.clone(), max: *max,
-                            holder_pid: *holder_pid, response_file: response_file.clone(),
+                            op: op.clone(),
+                            name: name.clone(),
+                            max: *max,
+                            holder_pid: *holder_pid,
+                            response_file: response_file.clone(),
                         });
                     }
                 }
@@ -401,11 +478,23 @@ impl PlexiApp {
             crate::protocol::HostRequest::ListPermissionRequests { response_file } => {
                 self.observe_permissions("list", None, None, response_file);
             }
-            crate::protocol::HostRequest::ShowPermissionRequest { pending_request_id, response_file } => {
+            crate::protocol::HostRequest::ShowPermissionRequest {
+                pending_request_id,
+                response_file,
+            } => {
                 self.observe_permissions("show", Some(pending_request_id), None, response_file);
             }
-            crate::protocol::HostRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
-                self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
+            crate::protocol::HostRequest::ResolvePermissionRequest {
+                pending_request_id,
+                choice,
+                response_file,
+            } => {
+                self.observe_permissions(
+                    "resolve",
+                    Some(pending_request_id),
+                    Some(choice),
+                    response_file,
+                );
             }
             crate::protocol::HostRequest::Permissions {
                 op,
@@ -448,7 +537,11 @@ impl PlexiApp {
             crate::protocol::HostRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you("list", None, None, response_file);
             }
-            crate::protocol::HostRequest::ResolveNeedsYou { id, approve, response_file } => {
+            crate::protocol::HostRequest::ResolveNeedsYou {
+                id,
+                approve,
+                response_file,
+            } => {
                 self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
             }
             crate::protocol::HostRequest::NeedsYouApi {
@@ -481,7 +574,11 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::AgentsApi { op, payload, response_file } => {
+            crate::protocol::HostRequest::AgentsApi {
+                op,
+                payload,
+                response_file,
+            } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
                 let mut payload = payload.clone();
                 if let Some(obj) = payload.as_object_mut() {
@@ -534,14 +631,20 @@ impl PlexiApp {
                             obj.insert("caller_context_root".to_string(), serde_json::json!(root));
                         }
                         if context_denied {
-                            obj.insert("caller_context_denied".to_string(), serde_json::json!(true));
+                            obj.insert(
+                                "caller_context_denied".to_string(),
+                                serde_json::json!(true),
+                            );
                         }
                     }
                 }
                 if op == "team_run" {
                     if let Err(error) = self.start_team(&payload, response_file) {
                         log::error!("agent_team: start failed: {error}");
-                        crate::rpc::write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                        crate::rpc::write_json_response(
+                            response_file,
+                            serde_json::json!({"ok":false,"error":error}),
+                        );
                     }
                     return;
                 }
@@ -615,7 +718,10 @@ impl PlexiApp {
                 }
             }
             crate::protocol::HostRequest::GetBuildInfo { response_file } => {
-                log::info!("host: reporting running build identity {}", env!("PLEXI_BUILD_ID"));
+                log::info!(
+                    "host: reporting running build identity {}",
+                    env!("PLEXI_BUILD_ID")
+                );
                 let mut value = crate::distribution::build_info();
                 value["pid"] = serde_json::json!(std::process::id());
                 value["core_only"] = serde_json::json!(self.config.core_only.unwrap_or(false));
@@ -1005,7 +1111,8 @@ impl PlexiApp {
                     "pane_ipc: kind=slot_write pane_id={pane_id} slot={slot_name:?} bytes={} append={append} replace={replace}",
                     content.len()
                 );
-                match self.write_pane_slot_internal(*pane_id, slot_name, content, *append, *replace) {
+                match self.write_pane_slot_internal(*pane_id, slot_name, content, *append, *replace)
+                {
                     Ok((absolute, size)) => {
                         write_json_response(
                             response_file,
@@ -1133,7 +1240,8 @@ impl PlexiApp {
                     );
                     return;
                 };
-                let (message_id, delivered_to_waiter) = self.enqueue_pane_message(*pane_id, from_pane_id, payload.clone());
+                let (message_id, delivered_to_waiter) =
+                    self.enqueue_pane_message(*pane_id, from_pane_id, payload.clone());
                 let mut woke = false;
                 if *submit && !delivered_to_waiter {
                     let can_wake =
@@ -1150,9 +1258,10 @@ impl PlexiApp {
                             let notice = format!(
                                 "[plexi message from pane {sender_label}] run `plexi pane message recv`"
                             );
-                            term.backend.process_command(
-                                egui_term::BackendCommand::Write(notice.clone().into_bytes()),
-                            );
+                            term.backend
+                                .process_command(egui_term::BackendCommand::Write(
+                                    notice.clone().into_bytes(),
+                                ));
                             self.register_pending_submit(*pane_id, None, notice.chars().count());
                             woke = true;
                             log::info!(
@@ -1667,7 +1776,11 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::ContextRename { context_id, name, response_file } => {
+            crate::protocol::HostRequest::ContextRename {
+                context_id,
+                name,
+                response_file,
+            } => {
                 let reply = match self.router.position(|c| c.context_id == *context_id) {
                     Some(idx) => {
                         serde_json::json!({"ok":true, "name":self.rename_context(idx, name)})
@@ -1676,24 +1789,39 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::ContextClose { context_id, response_file } => {
+            crate::protocol::HostRequest::ContextClose {
+                context_id,
+                response_file,
+            } => {
                 let reply = match self.close_context_action(*context_id) {
                     Ok(pending) => serde_json::json!({"ok":true, "pending_confirmation":pending}),
                     Err(error) => serde_json::json!({"error":error}),
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::ContextPark { context_id, parked, response_file } => {
+            crate::protocol::HostRequest::ContextPark {
+                context_id,
+                parked,
+                response_file,
+            } => {
                 let reply = match self.router.position(|c| c.context_id == *context_id) {
                     Some(idx) => {
-                        if *parked { self.park_context(idx); } else { self.unpark_context(idx); }
+                        if *parked {
+                            self.park_context(idx);
+                        } else {
+                            self.unpark_context(idx);
+                        }
                         serde_json::json!({"ok":true})
                     }
                     None => serde_json::json!({"error":format!("context {context_id} not found")}),
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::PaneVisibility { pane_id, hidden, response_file } => {
+            crate::protocol::HostRequest::PaneVisibility {
+                pane_id,
+                hidden,
+                response_file,
+            } => {
                 log::info!("pane_visibility: pane_id={pane_id} hidden={hidden}");
                 let reply = match self.set_pane_hidden(*pane_id, *hidden) {
                     Ok(()) => {
@@ -1703,29 +1831,48 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::HostRequest::PaneZoom { pane_id, response_file } => {
+            crate::protocol::HostRequest::PaneZoom {
+                pane_id,
+                response_file,
+            } => {
                 if self.fleet_focused_pane() == Some(*pane_id) || self.pane_navigate(*pane_id) {
                     self.toggle_pane_zoom();
                     write_json_response(response_file, serde_json::json!({"ok":true}));
                 } else {
-                    write_json_response(response_file, serde_json::json!({"error":format!("pane {pane_id} not found")}));
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"error":format!("pane {pane_id} not found")}),
+                    );
                 }
             }
-            crate::protocol::HostRequest::PaneSwap { pane_id, direction, response_file } => {
+            crate::protocol::HostRequest::PaneSwap {
+                pane_id,
+                direction,
+                response_file,
+            } => {
                 use crate::host::keys::Direction;
                 let dir = match direction.as_str() {
-                    "left" => Some(Direction::Left), "right" => Some(Direction::Right),
-                    "up" => Some(Direction::Up), "down" => Some(Direction::Down), _ => None,
+                    "left" => Some(Direction::Left),
+                    "right" => Some(Direction::Right),
+                    "up" => Some(Direction::Up),
+                    "down" => Some(Direction::Down),
+                    _ => None,
                 };
                 if let Some(dir) = dir {
                     if self.pane_navigate(*pane_id) {
                         self.swap_pane_action(dir);
                         write_json_response(response_file, serde_json::json!({"ok":true}));
                     } else {
-                        write_json_response(response_file, serde_json::json!({"error":format!("pane {pane_id} not found")}));
+                        write_json_response(
+                            response_file,
+                            serde_json::json!({"error":format!("pane {pane_id} not found")}),
+                        );
                     }
                 } else {
-                    write_json_response(response_file, serde_json::json!({"error":"direction must be left, right, up, or down"}));
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"error":"direction must be left, right, up, or down"}),
+                    );
                 }
             }
             crate::protocol::HostRequest::WorkspaceSnapshot { response_file } => {
@@ -1733,7 +1880,12 @@ impl PlexiApp {
                 // Focus and visibility can change while the host is occluded. Refresh
                 // the snapshot from the last rendered tile rects without waiting for UI.
                 let window = &self.windows[self.active_window];
-                if window.tree.root().and_then(|root| window.tree.tiles.rect(root)).is_some() {
+                if window
+                    .tree
+                    .root()
+                    .and_then(|root| window.tree.tiles.rect(root))
+                    .is_some()
+                {
                     self.ensure_authoritative_strip(context_id);
                     let layout = self.active_strip_layout();
                     self.host.set_strip_layout(context_id, layout);
@@ -1753,12 +1905,17 @@ impl PlexiApp {
                     }
                 };
                 let reply = if let Some(snapshot) = self.host.published_strip_snapshot(context_id) {
-                    let columns: Vec<_> = snapshot.strip.columns.iter().map(|column| {
+                    let columns: Vec<_> = snapshot
+                        .strip
+                        .columns
+                        .iter()
+                        .map(|column| {
                             serde_json::json!({
-                        "column_id":column.id.0, "panes":column.panes, "width":column.width,
-                        "height_shares":column.heights,
-                    })
-                        }).collect();
+                                "column_id":column.id.0, "panes":column.panes, "width":column.width,
+                                "height_shares":column.heights,
+                            })
+                        })
+                        .collect();
                     let panes: Vec<_> = snapshot.strip.columns.iter().flat_map(|column| column.panes.iter().map(move |pane_id| (column.id, *pane_id))).map(|(column_id, pane_id)| {
                         let window_id = self.windows.iter().find(|window| window.panes.contains_key(&pane_id)).map(|window| window.window_id);
                         let geometry = snapshot.layout.pane(pane_id);
@@ -1776,7 +1933,10 @@ impl PlexiApp {
                 } else {
                     serde_json::json!({"error":"workspace geometry is not available yet"})
                 };
-                log::info!("workspace_snapshot: context={context_id} available={}", reply.get("error").is_none());
+                log::info!(
+                    "workspace_snapshot: context={context_id} available={}",
+                    reply.get("error").is_none()
+                );
                 write_json_response(response_file, reply);
             }
             crate::protocol::HostRequest::ReloadConfig { response_file } => {
@@ -1784,9 +1944,16 @@ impl PlexiApp {
                 self.reload_config();
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
-            crate::protocol::HostRequest::FocusHistory { forward, response_file } => {
+            crate::protocol::HostRequest::FocusHistory {
+                forward,
+                response_file,
+            } => {
                 log::info!("focus_history: forward={forward}");
-                if *forward { self.step_focus_history_forward(); } else { self.step_focus_history_back(); }
+                if *forward {
+                    self.step_focus_history_forward();
+                } else {
+                    self.step_focus_history_back();
+                }
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
             crate::protocol::HostRequest::FocusPane { pane_id } => {
@@ -1857,13 +2024,16 @@ impl PlexiApp {
                     .filter(|pids| !pids.is_empty())
                     .and_then(|pids| self.resolve_socket_peer_pane(pids).map(|(pid, _, _)| pid));
                 let requester_is_pane = peer_pane.is_some();
-                let requester_is_agent = peer_pane.is_some_and(|pid| !self.is_human_owned_pane(pid))
+                let requester_is_agent = peer_pane
+                    .is_some_and(|pid| !self.is_human_owned_pane(pid))
                     || spec
                         .from_pane_id
                         .is_some_and(|pid| !self.is_human_owned_pane(pid));
                 let is_agent_pane = spec.agent.is_some() || requester_is_agent;
                 let inject_folder_secrets = !requester_is_pane
-                    && crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets);
+                    && crate::release::feature_enabled(
+                        crate::release::ReleaseFeature::FolderSecrets,
+                    );
                 if requester_is_pane {
                     log::info!(
                         "pane_ipc: spawn_pane requester is a pane (peer_pane={peer_pane:?}, is_agent_pane={is_agent_pane}); withholding folder secrets"
@@ -2308,10 +2478,11 @@ impl PlexiApp {
                                 .get_mut(&response_pane_id)
                                 .and_then(|p| p.as_terminal_mut())
                             {
-                                term.agent_permission_posture = Some(match term.agent_permission_posture.take() {
-                                    Some(child) => child.restricted_by(&parent_posture),
-                                    None => parent_posture,
-                                });
+                                term.agent_permission_posture =
+                                    Some(match term.agent_permission_posture.take() {
+                                        Some(child) => child.restricted_by(&parent_posture),
+                                        None => parent_posture,
+                                    });
                             }
                         }
                     }
@@ -2374,13 +2545,21 @@ impl PlexiApp {
                             Some((caller, None))
                         }
                     });
-                if !*generated_operation_id && operation_id.is_some() && caller_and_posture.is_none() {
-                    log::info!("pane_send: explicit operation ID refused without a brokered caller");
+                if !*generated_operation_id
+                    && operation_id.is_some()
+                    && caller_and_posture.is_none()
+                {
+                    log::info!(
+                        "pane_send: explicit operation ID refused without a brokered caller"
+                    );
                     if let Some(rf) = response_file {
-                        write_json_response(rf, serde_json::json!({
-                            "error": "explicit operation IDs require a brokered agent caller; this send was not dispatched",
-                            "error_code": "idempotency_unavailable"
-                        }));
+                        write_json_response(
+                            rf,
+                            serde_json::json!({
+                                "error": "explicit operation IDs require a brokered agent caller; this send was not dispatched",
+                                "error_code": "idempotency_unavailable"
+                            }),
+                        );
                     }
                     return;
                 }
@@ -2509,10 +2688,13 @@ impl PlexiApp {
                                 && item.response_file != *response_file
                             {
                                 if let Some(ref rf) = item.response_file {
-                                    write_json_response(rf, serde_json::json!({
-                                        "error": "approval_wait_replaced: another caller is waiting on this request",
-                                        "pending_request_id": item.pending_request_id,
-                                    }));
+                                    write_json_response(
+                                        rf,
+                                        serde_json::json!({
+                                            "error": "approval_wait_replaced: another caller is waiting on this request",
+                                            "pending_request_id": item.pending_request_id,
+                                        }),
+                                    );
                                 }
                             } else {
                                 kept.push(item);
@@ -2593,49 +2775,49 @@ impl PlexiApp {
                             }
                         }
                         let mut send_res = match pane_kind {
-                    None => {
-                        log::warn!(
+                            None => {
+                                log::warn!(
                             "pane_ipc: send_to_pane: pane_id={pane_id} not found in any window"
                         );
-                        Err(format!("pane {pane_id} not found"))
-                    }
-                    Some(_) if *paste && *submit => {
-                        Err("--paste and --submit cannot be combined".to_string())
-                    }
-                    Some("terminal") if *paste => {
-                        Err("--paste only applies to view panes".to_string())
-                    }
-                    Some("terminal") if *submit && self.submit_in_flight(*pane_id) => {
-                        // Refuse before typing anything. Two submits racing on
-                        // one input line interleave their enters, which is the
-                        // exact corruption this verb exists to prevent.
-                        log::warn!(
+                                Err(format!("pane {pane_id} not found"))
+                            }
+                            Some(_) if *paste && *submit => {
+                                Err("--paste and --submit cannot be combined".to_string())
+                            }
+                            Some("terminal") if *paste => {
+                                Err("--paste only applies to view panes".to_string())
+                            }
+                            Some("terminal") if *submit && self.submit_in_flight(*pane_id) => {
+                                // Refuse before typing anything. Two submits racing on
+                                // one input line interleave their enters, which is the
+                                // exact corruption this verb exists to prevent.
+                                log::warn!(
                             "pane_submit: pane_id={pane_id} refused — a submit is already in flight"
                         );
-                        Err(format!(
-                            "pane {pane_id} already has a `pane send --submit` in flight"
-                        ))
-                    }
-                    Some("terminal") => {
-                        self.resume_standby_pane(*pane_id);
-                        match self
-                            .windows
-                            .iter_mut()
-                            .find_map(|win| win.panes.get_mut(pane_id))
-                            .and_then(crate::host::pane::Pane::as_terminal_mut)
-                        {
-                            Some(term) => {
-                                term.backend
-                                    .process_command(egui_term::BackendCommand::Write(
-                                        text_with_newlines.into_bytes(),
-                                    ),
+                                Err(format!(
+                                    "pane {pane_id} already has a `pane send --submit` in flight"
+                                ))
+                            }
+                            Some("terminal") => {
+                                self.resume_standby_pane(*pane_id);
+                                match self
+                                    .windows
+                                    .iter_mut()
+                                    .find_map(|win| win.panes.get_mut(pane_id))
+                                    .and_then(crate::host::pane::Pane::as_terminal_mut)
+                                {
+                                    Some(term) => {
+                                        term.backend.process_command(
+                                            egui_term::BackendCommand::Write(
+                                                text_with_newlines.into_bytes(),
+                                            ),
                                         );
-                                if *submit {
-                                    self.register_pending_submit(
-                                        *pane_id,
-                                        response_file.clone(),
-                                        text.chars().count(),
-                                    );
+                                        if *submit {
+                                            self.register_pending_submit(
+                                                *pane_id,
+                                                response_file.clone(),
+                                                text.chars().count(),
+                                            );
                                             if proceed_or_none.is_some() {
                                                 if let Some(wait) = self.pending_submits.last_mut()
                                                 {
@@ -2644,44 +2826,46 @@ impl PlexiApp {
                                                 }
                                             }
                                             deferred = response_file.is_some();
-                                }
-                                Ok(())
-                            }
-                            None => {
+                                        }
+                                        Ok(())
+                                    }
+                                    None => {
                                         Err(format!("pane {pane_id} changed while routing text"))
                                     }
                                 }
-                    }
-                    Some("view") if *submit => {
-                        log::warn!("pane_submit: pane_id={pane_id} refused — not a terminal pane");
-                        Err(format!(
+                            }
+                            Some("view") if *submit => {
+                                log::warn!(
+                                    "pane_submit: pane_id={pane_id} refused — not a terminal pane"
+                                );
+                                Err(format!(
                             "pane {pane_id} is a view pane; --submit only applies to terminal panes"
                         ))
-                    }
-                    Some("view") => {
-                        if !self.pane_navigate(*pane_id) {
-                            Err(format!("pane {pane_id} could not be focused"))
-                        } else {
-                            self.pending_pane_inputs.entry(*pane_id).or_default().push(
-                                egui::RawInput {
-                                    events: vec![if *paste {
-                                        egui::Event::Paste(text_with_newlines)
-                                    } else {
-                                        egui::Event::Text(text_with_newlines)
-                                    }],
-                                    ..Default::default()
-                                },
-                            );
-                            self.ctx.request_repaint();
-                            log::info!(
+                            }
+                            Some("view") => {
+                                if !self.pane_navigate(*pane_id) {
+                                    Err(format!("pane {pane_id} could not be focused"))
+                                } else {
+                                    self.pending_pane_inputs.entry(*pane_id).or_default().push(
+                                        egui::RawInput {
+                                            events: vec![if *paste {
+                                                egui::Event::Paste(text_with_newlines)
+                                            } else {
+                                                egui::Event::Text(text_with_newlines)
+                                            }],
+                                            ..Default::default()
+                                        },
+                                    );
+                                    self.ctx.request_repaint();
+                                    log::info!(
                                 "pane_ipc: send_to_pane: view pane_id={pane_id} paste={paste} text_chars={}",
                                 text.chars().count()
                             );
-                            Ok(())
-                        }
-                    }
-                    Some(_) => Err(format!("pane {pane_id} does not accept text input")),
-                };
+                                    Ok(())
+                                }
+                            }
+                            Some(_) => Err(format!("pane {pane_id} does not accept text input")),
+                        };
                         if let Some((
                             caller,
                             crate::broker::gate::Admission::Proceed {
@@ -2708,16 +2892,16 @@ impl PlexiApp {
                             let effect_succeeded = send_res.is_ok();
                             let outcome_record = if !*submit || !effect_succeeded {
                                 monitor.note_outcome(
-                                &actor,
-                                "pane-send",
-                                &grant_id,
-                                &fingerprint,
-                                &resource,
+                                    &actor,
+                                    "pane-send",
+                                    &grant_id,
+                                    &fingerprint,
+                                    &resource,
                                     &send_operation_id,
-                                if send_res.is_ok() { "ok" } else { "failed" },
-                                "",
-                                "",
-                            )
+                                    if send_res.is_ok() { "ok" } else { "failed" },
+                                    "",
+                                    "",
+                                )
                             } else {
                                 Ok(())
                             };
@@ -2817,126 +3001,127 @@ impl PlexiApp {
                 ) {
                     // Sheet keys from the socket never reach the approval widget.
                 } else {
-                let mut passthrough_raw = None;
-                // Mirror the live dispatch gate (stint 0456): while this
-                // pane's TextInput holds egui focus, keys belong to the
-                // host TextEdit — replay into the real ctx (the passthrough
-                // path below) instead of the plugin's raw KeyEvent path, the
-                // same routing a physical keypress gets.
-                let text_input_focused =
-                    crate::app::input_owner::focused_pane_text_surface(&self.ctx, *pane_id);
-                let mut result: Result<serde_json::Value, String> = match self
-                    .windows
-                    .iter_mut()
-                    .find_map(|win| win.panes.get_mut(pane_id))
-                {
-                    None => {
-                        log::warn!("pane_ipc: key_pane: pane_id={pane_id} not found");
-                        Err(format!("pane {pane_id} not found"))
-                    }
-                    Some(pane) => {
-                        if let Some(term) = pane.as_terminal_mut() {
-                            let is_enter = key.eq_ignore_ascii_case("enter")
-                                || key.eq_ignore_ascii_case("return");
-                            if is_enter && term.is_standby() {
-                                self.resume_standby_pane(*pane_id);
-                            } else {
-                                let bytes = super::key_str_to_pty_bytes(key);
-                                term.backend
-                                    .process_command(egui_term::BackendCommand::Write(bytes));
-                            }
-                            Ok(serde_json::json!({"ok": true}))
-                        } else if pane.as_view_mut().is_some()
-                            && text_input_focused
-                            && key.eq_ignore_ascii_case("escape")
-                        {
-                            // Escape parity with a live keypress (stint 0460):
-                            // a replayed raw Escape lands mid-frame, after the
-                            // dispatch gate already ran, so it would fall
-                            // through to the ViewActive CloseView binding and
-                            // destroy the pane. Deliver it to the plugin's
-                            // handle_key instead — the assistant interrupts
-                            // its in-flight turn — and never replay it raw.
-                            let view_pane = pane.as_view_mut().expect("checked above");
-                            match super::drive_native_pane_key(&mut view_pane.runtime, key) {
-                                Ok(disposition) => {
-                                    log::info!(
+                    let mut passthrough_raw = None;
+                    // Mirror the live dispatch gate (stint 0456): while this
+                    // pane's TextInput holds egui focus, keys belong to the
+                    // host TextEdit — replay into the real ctx (the passthrough
+                    // path below) instead of the plugin's raw KeyEvent path, the
+                    // same routing a physical keypress gets.
+                    let text_input_focused =
+                        crate::app::input_owner::focused_pane_text_surface(&self.ctx, *pane_id);
+                    let mut result: Result<serde_json::Value, String> = match self
+                        .windows
+                        .iter_mut()
+                        .find_map(|win| win.panes.get_mut(pane_id))
+                    {
+                        None => {
+                            log::warn!("pane_ipc: key_pane: pane_id={pane_id} not found");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => {
+                            if let Some(term) = pane.as_terminal_mut() {
+                                let is_enter = key.eq_ignore_ascii_case("enter")
+                                    || key.eq_ignore_ascii_case("return");
+                                if is_enter && term.is_standby() {
+                                    self.resume_standby_pane(*pane_id);
+                                } else {
+                                    let bytes = super::key_str_to_pty_bytes(key);
+                                    term.backend
+                                        .process_command(egui_term::BackendCommand::Write(bytes));
+                                }
+                                Ok(serde_json::json!({"ok": true}))
+                            } else if pane.as_view_mut().is_some()
+                                && text_input_focused
+                                && key.eq_ignore_ascii_case("escape")
+                            {
+                                // Escape parity with a live keypress (stint 0460):
+                                // a replayed raw Escape lands mid-frame, after the
+                                // dispatch gate already ran, so it would fall
+                                // through to the ViewActive CloseView binding and
+                                // destroy the pane. Deliver it to the plugin's
+                                // handle_key instead — the assistant interrupts
+                                // its in-flight turn — and never replay it raw.
+                                let view_pane = pane.as_view_mut().expect("checked above");
+                                match super::drive_native_pane_key(&mut view_pane.runtime, key) {
+                                    Ok(disposition) => {
+                                        log::info!(
                                         "pane_ipc: key_pane: pane {pane_id} Escape delivered to plugin (text surface focused, CloseView suppressed, result={disposition:?})"
                                     );
-                                    Ok(serde_json::json!({
-                                        "ok": true,
-                                        "disposition": "text_input_escape",
-                                    }))
+                                        Ok(serde_json::json!({
+                                            "ok": true,
+                                            "disposition": "text_input_escape",
+                                        }))
+                                    }
+                                    Err(e) => Err(e),
                                 }
-                                Err(e) => Err(e),
-                            }
-                        } else if pane.as_view_mut().is_some() && text_input_focused {
-                            match super::key_str_to_egui_raw_input(key) {
-                                Some(raw) => {
-                                    log::info!(
+                            } else if pane.as_view_mut().is_some() && text_input_focused {
+                                match super::key_str_to_egui_raw_input(key) {
+                                    Some(raw) => {
+                                        log::info!(
                                         "pane_ipc: key_pane: pane {pane_id} routed to its focused TextInput"
                                     );
-                                    passthrough_raw = Some(raw);
-                                    Ok(serde_json::json!({
-                                        "ok": true,
-                                        "disposition": "text_input",
-                                    }))
+                                        passthrough_raw = Some(raw);
+                                        Ok(serde_json::json!({
+                                            "ok": true,
+                                            "disposition": "text_input",
+                                        }))
+                                    }
+                                    None => Err(format!(
+                                        "key {key:?} does not map to a native plugin key event"
+                                    )),
                                 }
-                                None => Err(format!(
-                                    "key {key:?} does not map to a native plugin key event"
-                                )),
-                            }
-                        } else if let Some(view_pane) = pane.as_view_mut() {
-                            let runtime = &mut view_pane.runtime;
-                            match super::drive_native_pane_key(runtime, key) {
-                                Ok(disposition) => {
-                                    let disposition_label = match disposition {
-                                        crate::app::view_trait::KeyDisposition::Consumed => {
-                                            "consumed"
-                                        }
-                                        crate::app::view_trait::KeyDisposition::Passthrough => {
-                                            passthrough_raw = super::key_str_to_egui_raw_input(key);
-                                            "passthrough"
-                                        }
-                                    };
-                                    log::info!(
-                                        "pane_ipc: key_pane: native view pane_id={pane_id} \
+                            } else if let Some(view_pane) = pane.as_view_mut() {
+                                let runtime = &mut view_pane.runtime;
+                                match super::drive_native_pane_key(runtime, key) {
+                                    Ok(disposition) => {
+                                        let disposition_label = match disposition {
+                                            crate::app::view_trait::KeyDisposition::Consumed => {
+                                                "consumed"
+                                            }
+                                            crate::app::view_trait::KeyDisposition::Passthrough => {
+                                                passthrough_raw =
+                                                    super::key_str_to_egui_raw_input(key);
+                                                "passthrough"
+                                            }
+                                        };
+                                        log::info!(
+                                            "pane_ipc: key_pane: native view pane_id={pane_id} \
                                              key_chars={} disposition={disposition_label}",
-                                        key.chars().count()
-                                    );
-                                    Ok(serde_json::json!({
-                                        "ok": true,
-                                        "disposition": disposition_label,
-                                    }))
+                                            key.chars().count()
+                                        );
+                                        Ok(serde_json::json!({
+                                            "ok": true,
+                                            "disposition": disposition_label,
+                                        }))
+                                    }
+                                    Err(e) => {
+                                        log::warn!("pane_ipc: key_pane: {e}");
+                                        Err(e)
+                                    }
                                 }
-                                Err(e) => {
-                                    log::warn!("pane_ipc: key_pane: {e}");
-                                    Err(e)
-                                }
+                            } else {
+                                Err(format!("pane {pane_id}: unknown pane type"))
                             }
+                        }
+                    };
+                    if let Some(raw) = passthrough_raw {
+                        if self.pane_navigate(*pane_id) {
+                            self.pending_pane_inputs
+                                .entry(*pane_id)
+                                .or_default()
+                                .push(raw);
+                            self.ctx.request_repaint();
                         } else {
-                            Err(format!("pane {pane_id}: unknown pane type"))
+                            result = Err(format!("pane {pane_id} could not be focused"));
                         }
                     }
-                };
-                if let Some(raw) = passthrough_raw {
-                    if self.pane_navigate(*pane_id) {
-                        self.pending_pane_inputs
-                            .entry(*pane_id)
-                            .or_default()
-                            .push(raw);
-                        self.ctx.request_repaint();
-                    } else {
-                        result = Err(format!("pane {pane_id} could not be focused"));
+                    if let Some(rf) = response_file {
+                        let json = match &result {
+                            Ok(v) => v.to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                        };
+                        write_response(rf, json.as_bytes());
                     }
-                }
-                if let Some(rf) = response_file {
-                    let json = match &result {
-                        Ok(v) => v.to_string(),
-                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
-                    };
-                    write_response(rf, json.as_bytes());
-                }
                 }
             }
             crate::protocol::HostRequest::DropFile {
@@ -2956,7 +3141,12 @@ impl PlexiApp {
                         .get_mut(pane_id)
                         .and_then(crate::host::pane::Pane::as_view_mut)
                         .ok_or_else(|| format!("pane {pane_id} cannot accept this drop"))?;
-                    crate::spatial::tiling::dispatch_drop_to_plugin(*pane_id, app, path_or_url, true)
+                    crate::spatial::tiling::dispatch_drop_to_plugin(
+                        *pane_id,
+                        app,
+                        path_or_url,
+                        true,
+                    )
                 })();
                 match &result {
                     Ok(_) => log::info!(
@@ -2988,13 +3178,15 @@ impl PlexiApp {
                 log::info!(
                     "pane_ipc: kind=click_pane pane_id={pane_id} x={x} y={y} button={button:?}"
                 );
-                let click_abs = self.find_pane_in_any_window(*pane_id).and_then(|(win, tile)| {
-                    self.windows[win]
-                        .tree
-                        .tiles
-                        .rect(tile)
-                        .map(|rect| rect.min + egui::vec2(*x, *y))
-                });
+                let click_abs = self
+                    .find_pane_in_any_window(*pane_id)
+                    .and_then(|(win, tile)| {
+                        self.windows[win]
+                            .tree
+                            .tiles
+                            .rect(tile)
+                            .map(|rect| rect.min + egui::vec2(*x, *y))
+                    });
                 if self.refuse_synthetic_approval(
                     *pane_id,
                     None,
@@ -3003,106 +3195,110 @@ impl PlexiApp {
                 ) {
                     // A socket click on an approval button or surface is not a grant.
                 } else {
-                let result: Result<serde_json::Value, String> = (|| {
-                    let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id) else {
-                        return Err(format!("pane {pane_id} not found"));
-                    };
-                    let Some(pane_rect) = self.windows[win_idx].tree.tiles.rect(tile_id) else {
-                        return Err(format!(
-                            "pane {pane_id}: no known screen rect (pane has not rendered yet)"
-                        ));
-                    };
-                    let Some(is_builtin) = self.windows[win_idx]
-                        .panes
-                        .get(pane_id)
-                        .and_then(crate::host::pane::Pane::as_view)
-                        .map(|view_pane| {
-                            matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_))
-                        })
-                    else {
-                        return Err(format!(
-                            "pane {pane_id}: click injection is only supported for view panes"
-                        ));
-                    };
-                    if !self.pane_navigate(*pane_id) {
-                        return Err(format!("pane {pane_id} could not be focused"));
-                    }
-                    let abs = pane_rect.min + egui::vec2(*x, *y);
-                    let button_str = match button.as_deref() {
-                        Some("right") => "right",
-                        Some("middle") => "middle",
-                        _ => "left",
-                    };
-                    // NOT a mid-pass `ctx.input_mut()` replay (that pattern only
-                    // works for `KeyPane`): egui resolves `Response::clicked()`
-                    // once, inside `Context::begin_pass`, strictly before this
-                    // dispatch code runs, and discards unconsumed `events` at
-                    // the next pass — so a mutated pointer event can never be
-                    // recognized as a click. Queue instead, on the plane the
-                    // pane's runtime actually consumes:
-                    if is_builtin {
-                        // Builtin plugins are ordinary egui widgets — nothing
-                        // consumes `PendingPaneClick` on their render path, so
-                        // queue genuine pointer events through the same
-                        // pre-pass raw-input merge `KeyPane` uses
-                        // (`raw_input_hook`). egui then resolves an authentic
-                        // press/release click on whatever widget owns that
-                        // position, exactly as a physical click would.
-                        let pointer_button = match button_str {
-                            "right" => egui::PointerButton::Secondary,
-                            "middle" => egui::PointerButton::Middle,
-                            _ => egui::PointerButton::Primary,
+                    let result: Result<serde_json::Value, String> = (|| {
+                        let Some((win_idx, tile_id)) = self.find_pane_in_any_window(*pane_id)
+                        else {
+                            return Err(format!("pane {pane_id} not found"));
                         };
-                        let events = vec![
-                            egui::Event::PointerMoved(abs),
-                            egui::Event::PointerButton {
-                                pos: abs,
-                                button: pointer_button,
-                                pressed: true,
-                                modifiers: egui::Modifiers::default(),
-                            },
-                            egui::Event::PointerButton {
-                                pos: abs,
-                                button: pointer_button,
-                                pressed: false,
-                                modifiers: egui::Modifiers::default(),
-                            },
-                        ];
-                        self.pending_pane_inputs.entry(*pane_id).or_default().push(
-                            egui::RawInput {
-                                events,
-                                ..Default::default()
-                            },
+                        let Some(pane_rect) = self.windows[win_idx].tree.tiles.rect(tile_id) else {
+                            return Err(format!(
+                                "pane {pane_id}: no known screen rect (pane has not rendered yet)"
+                            ));
+                        };
+                        let Some(is_builtin) = self.windows[win_idx]
+                            .panes
+                            .get(pane_id)
+                            .and_then(crate::host::pane::Pane::as_view)
+                            .map(|view_pane| {
+                                matches!(
+                                    view_pane.runtime,
+                                    crate::host::pane::ViewRuntime::Builtin(_)
+                                )
+                            })
+                        else {
+                            return Err(format!(
+                                "pane {pane_id}: click injection is only supported for view panes"
+                            ));
+                        };
+                        if !self.pane_navigate(*pane_id) {
+                            return Err(format!("pane {pane_id} could not be focused"));
+                        }
+                        let abs = pane_rect.min + egui::vec2(*x, *y);
+                        let button_str = match button.as_deref() {
+                            Some("right") => "right",
+                            Some("middle") => "middle",
+                            _ => "left",
+                        };
+                        // NOT a mid-pass `ctx.input_mut()` replay (that pattern only
+                        // works for `KeyPane`): egui resolves `Response::clicked()`
+                        // once, inside `Context::begin_pass`, strictly before this
+                        // dispatch code runs, and discards unconsumed `events` at
+                        // the next pass — so a mutated pointer event can never be
+                        // recognized as a click. Queue instead, on the plane the
+                        // pane's runtime actually consumes:
+                        if is_builtin {
+                            // Builtin plugins are ordinary egui widgets — nothing
+                            // consumes `PendingPaneClick` on their render path, so
+                            // queue genuine pointer events through the same
+                            // pre-pass raw-input merge `KeyPane` uses
+                            // (`raw_input_hook`). egui then resolves an authentic
+                            // press/release click on whatever widget owns that
+                            // position, exactly as a physical click would.
+                            let pointer_button = match button_str {
+                                "right" => egui::PointerButton::Secondary,
+                                "middle" => egui::PointerButton::Middle,
+                                _ => egui::PointerButton::Primary,
+                            };
+                            let events = vec![
+                                egui::Event::PointerMoved(abs),
+                                egui::Event::PointerButton {
+                                    pos: abs,
+                                    button: pointer_button,
+                                    pressed: true,
+                                    modifiers: egui::Modifiers::default(),
+                                },
+                                egui::Event::PointerButton {
+                                    pos: abs,
+                                    button: pointer_button,
+                                    pressed: false,
+                                    modifiers: egui::Modifiers::default(),
+                                },
+                            ];
+                            self.pending_pane_inputs.entry(*pane_id).or_default().push(
+                                egui::RawInput {
+                                    events,
+                                    ..Default::default()
+                                },
+                            );
+                        } else {
+                            // Canvas/Python panes: the render branch
+                            // (`wasm_render.rs`) picks the queued click up against
+                            // the frame's live widget rect, still through the
+                            // pane's real `canvas_transform` inversion.
+                            self.pending_pane_clicks.insert(
+                                *pane_id,
+                                crate::host::pane::PendingPaneClick {
+                                    target: crate::host::pane::PaneClickTarget::Pos(abs),
+                                    button: button_str,
+                                    phase: crate::host::pane::PointerPhase::Click,
+                                },
+                            );
+                        }
+                        self.ctx.request_repaint();
+                        log::info!(
+                            "pane_ipc: click_pane: pane_id={pane_id} queued at abs=({:.1},{:.1})",
+                            abs.x,
+                            abs.y
                         );
-                    } else {
-                        // Canvas/Python panes: the render branch
-                        // (`wasm_render.rs`) picks the queued click up against
-                        // the frame's live widget rect, still through the
-                        // pane's real `canvas_transform` inversion.
-                        self.pending_pane_clicks.insert(
-                            *pane_id,
-                            crate::host::pane::PendingPaneClick {
-                                target: crate::host::pane::PaneClickTarget::Pos(abs),
-                                button: button_str,
-                                phase: crate::host::pane::PointerPhase::Click,
-                            },
-                        );
+                        Ok(serde_json::json!({"ok": true}))
+                    })();
+                    if let Some(rf) = response_file {
+                        let json = match &result {
+                            Ok(v) => v.to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                        };
+                        write_response(rf, json.as_bytes());
                     }
-                    self.ctx.request_repaint();
-                    log::info!(
-                        "pane_ipc: click_pane: pane_id={pane_id} queued at abs=({:.1},{:.1})",
-                        abs.x,
-                        abs.y
-                    );
-                    Ok(serde_json::json!({"ok": true}))
-                })();
-                if let Some(rf) = response_file {
-                    let json = match &result {
-                        Ok(v) => v.to_string(),
-                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
-                    };
-                    write_response(rf, json.as_bytes());
-                }
                 }
             }
             crate::protocol::HostRequest::ClickPaneNode {
@@ -3197,8 +3393,10 @@ impl PlexiApp {
                             "pane {pane_id}: drag injection is only supported for view panes"
                         ));
                     };
-                    let is_builtin =
-                        matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_));
+                    let is_builtin = matches!(
+                        view_pane.runtime,
+                        crate::host::pane::ViewRuntime::Builtin(_)
+                    );
                     // Resolve each endpoint to an absolute screen position:
                     // pane-pixel coordinates directly, or a semantic node's
                     // cached bounds center. Nodes without recorded bounds
@@ -3401,13 +3599,9 @@ impl PlexiApp {
                                         captured.len()
                                     );
                                 }
-                                if term
-                                    .agent
-                                    .as_ref()
-                                    .is_some_and(|a| {
+                                if term.agent.as_ref().is_some_and(|a| {
                                     a.state == crate::protocol::AgentState::Interrupted
-                                })
-                                {
+                                }) {
                                     if let Some(tail) = term
                                         .tail_preview
                                         .as_deref()
@@ -3519,7 +3713,9 @@ impl PlexiApp {
                             output_path: output_path.clone(),
                             response_file: response_file.clone(),
                             capture_requested_at: None,
-                            initial_ui_frame: self.frame_tick.load(std::sync::atomic::Ordering::Relaxed),
+                            initial_ui_frame: self
+                                .frame_tick
+                                .load(std::sync::atomic::Ordering::Relaxed),
                             expires_at: std::time::Instant::now()
                                 + crate::app::screenshot::SCREENSHOT_DEADLINE,
                         });
@@ -3569,7 +3765,10 @@ impl PlexiApp {
                     Some(pane) => {
                         let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
                         let mut response = if let Some(view_pane) = pane.as_view() {
-                            if matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
+                            if matches!(
+                                view_pane.runtime,
+                                crate::host::pane::ViewRuntime::Builtin(_)
+                            ) {
                                 // Core pane inspection needs the rendered tree even when
                                 // experimental eager accessibility capture is off. This
                                 // enables internal capture, not the native OS adapter.
@@ -3638,7 +3837,8 @@ impl PlexiApp {
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=send_pane_action pane_id={pane_id} action={action:?} argc={}", args.len()
+                    "pane_ipc: kind=send_pane_action pane_id={pane_id} action={action:?} argc={}",
+                    args.len()
                 );
                 let approval_verb = {
                     let name = action.to_ascii_lowercase();
@@ -3687,35 +3887,35 @@ impl PlexiApp {
                         );
                     }
                 } else {
-                let result = match self
-                    .windows
-                    .iter_mut()
-                    .find_map(|win| win.panes.get_mut(pane_id))
-                {
-                    None => {
-                        log::warn!("pane_ipc: send_pane_action: pane_id={pane_id} not found");
-                        Err(format!("pane {pane_id} not found"))
-                    }
-                    Some(pane) => {
-                        if let Some(view_pane) = pane.as_view_mut() {
-                            view_pane
-                                .runtime
-                                .send_plugin_action(action.clone(), args.clone())
-                        } else {
-                            log::warn!(
+                    let result = match self
+                        .windows
+                        .iter_mut()
+                        .find_map(|win| win.panes.get_mut(pane_id))
+                    {
+                        None => {
+                            log::warn!("pane_ipc: send_pane_action: pane_id={pane_id} not found");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => {
+                            if let Some(view_pane) = pane.as_view_mut() {
+                                view_pane
+                                    .runtime
+                                    .send_plugin_action(action.clone(), args.clone())
+                            } else {
+                                log::warn!(
                                 "pane_ipc: send_pane_action: pane_id={pane_id} is not a view pane"
                             );
-                            Err(format!("pane {pane_id} is not a view pane"))
+                                Err(format!("pane {pane_id} is not a view pane"))
+                            }
                         }
-                    }
-                };
-                if let Some(rf) = response_file {
-                    let json = match &result {
-                        Ok(()) => serde_json::json!({"ok": true}).to_string(),
-                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
-                    write_response(rf, json.as_bytes());
-                }
+                    if let Some(rf) = response_file {
+                        let json = match &result {
+                            Ok(()) => serde_json::json!({"ok": true}).to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                        };
+                        write_response(rf, json.as_bytes());
+                    }
                 }
             }
             crate::protocol::HostRequest::CallPluginTool {
@@ -3802,7 +4002,9 @@ impl PlexiApp {
                             if let Some(mut a) = existing_agent {
                                 a.state = crate::protocol::AgentState::Completed;
                                 let _ = pane.set_agent(Some(a));
-                                self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pane_id}"));
+                                self.attention_queue
+                                    .dismissed_ids
+                                    .remove(&format!("agent-failed-{pane_id}"));
                             }
                             break;
                         }
@@ -3867,11 +4069,19 @@ impl PlexiApp {
                         result_state.last_invalid_error = None;
                         result_state.last_validation_errors.clear();
                         self.complete_result_waits(*pane_id);
-                        self.finish_agent_tool_waits(*pane_id, serde_json::json!({
-                            "ok": true, "pane_id": pane_id, "status": "exited_unreported",
-                            "result": fallback,
-                        }));
-                        self.mark_agent_exited_unreported(*pane_id, detail.as_deref().unwrap_or("harness exited without agent done"));
+                        self.finish_agent_tool_waits(
+                            *pane_id,
+                            serde_json::json!({
+                                "ok": true, "pane_id": pane_id, "status": "exited_unreported",
+                                "result": fallback,
+                            }),
+                        );
+                        self.mark_agent_exited_unreported(
+                            *pane_id,
+                            detail
+                                .as_deref()
+                                .unwrap_or("harness exited without agent done"),
+                        );
                         self.record_child_agent_result(
                             parent_pane_id,
                             crate::workspace::QueuedChildResult {
@@ -3891,7 +4101,13 @@ impl PlexiApp {
                         );
                         return;
                     }
-                    let reason = format!("{}{}", detail.as_deref().unwrap_or("harness exited without agent done"), tail.map(|tail| format!("\n{tail}")).unwrap_or_default());
+                    let reason = format!(
+                        "{}{}",
+                        detail
+                            .as_deref()
+                            .unwrap_or("harness exited without agent done"),
+                        tail.map(|tail| format!("\n{tail}")).unwrap_or_default()
+                    );
                     self.mark_agent_failed(*pane_id, &reason);
                     self.record_child_agent_result(
                         parent_pane_id,
@@ -3942,7 +4158,8 @@ impl PlexiApp {
                                 t.last_blocked_reason = new_reason;
                                 dirty = true;
                             }
-                            if *state == crate::protocol::AgentState::Completed && !t.agent_completed
+                            if *state == crate::protocol::AgentState::Completed
+                                && !t.agent_completed
                             {
                                 t.agent_completed = true;
                                 dirty = true;
@@ -3974,31 +4191,55 @@ impl PlexiApp {
                     self.mark_workspace_dirty();
                 }
                 if found {
-                    if !matches!(state, crate::protocol::AgentState::Failed
-                        | crate::protocol::AgentState::Blocked
-                        | crate::protocol::AgentState::ExitedUnreported)
-                    {
-                        self.attention_queue.dismissed_ids.remove(&format!("agent-failed-{pane_id}"));
+                    if !matches!(
+                        state,
+                        crate::protocol::AgentState::Failed
+                            | crate::protocol::AgentState::Blocked
+                            | crate::protocol::AgentState::ExitedUnreported
+                    ) {
+                        self.attention_queue
+                            .dismissed_ids
+                            .remove(&format!("agent-failed-{pane_id}"));
                     }
                     let provenance = Provenance {
-                        source: if event.is_some() { Source::Hook } else { Source::LegacyReport },
-                        agent_label: agent.clone(), session_id: session_id.clone(), raw_event: event.clone(),
+                        source: if event.is_some() {
+                            Source::Hook
+                        } else {
+                            Source::LegacyReport
+                        },
+                        agent_label: agent.clone(),
+                        session_id: session_id.clone(),
+                        raw_event: event.clone(),
                     };
-                    let fact = PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
-                    let session_started = matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
+                    let fact =
+                        PaneLifecycleEvent::from_report(state, provenance.clone(), *blocked_reason);
+                    let session_started =
+                        matches!(&fact, PaneLifecycleEvent::SessionStarted { .. });
                     let session_ended = matches!(&fact, PaneLifecycleEvent::SessionEnded { .. });
-                    let boot_failed = session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
+                    let boot_failed =
+                        session_ended || matches!(&fact, PaneLifecycleEvent::TurnFailed { .. });
                     let idle = *state == crate::protocol::AgentState::Idle
-                        && matches!(&fact, PaneLifecycleEvent::TurnFinished { .. } | PaneLifecycleEvent::SessionStarted { .. });
+                        && matches!(
+                            &fact,
+                            PaneLifecycleEvent::TurnFinished { .. }
+                                | PaneLifecycleEvent::SessionStarted { .. }
+                        );
                     self.emit_pane_lifecycle(*pane_id, fact);
                     if idle {
-                        self.emit_pane_lifecycle(*pane_id, PaneLifecycleEvent::AgentIdle { provenance: provenance.clone() });
+                        self.emit_pane_lifecycle(
+                            *pane_id,
+                            PaneLifecycleEvent::AgentIdle {
+                                provenance: provenance.clone(),
+                            },
+                        );
                     }
                     if session_ended {
                         if let Some(tracked) = self.host.pane_lifecycle.get_mut(pane_id) {
                             tracked.booted = false;
                         }
-                    } else if *state == crate::protocol::AgentState::Idle && (session_started || event.is_none()) {
+                    } else if *state == crate::protocol::AgentState::Idle
+                        && (session_started || event.is_none())
+                    {
                         self.emit_agent_booted(*pane_id, provenance);
                     }
                     self.refresh_portal_context_states();
@@ -4019,7 +4260,10 @@ impl PlexiApp {
                         _ => false,
                     };
                     if should_file_human_needs_you {
-                        let summary = detail.clone().filter(|text| !text.is_empty()).unwrap_or_else(|| format!("{agent} is blocked"));
+                        let summary = detail
+                            .clone()
+                            .filter(|text| !text.is_empty())
+                            .unwrap_or_else(|| format!("{agent} is blocked"));
                         let kind = if *state == crate::protocol::AgentState::NeedsYou
                             || event.as_deref() == Some("AskQuestion")
                             || event.as_deref() == Some("AgentAsk")
@@ -4031,14 +4275,18 @@ impl PlexiApp {
                         let filed = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
                         )
-                        .file_needs_you(crate::broker::gate::NeedsYouFile {
-                            kind,
-                            actor: agent.clone(),
-                            resource: format!("pane:{pane_id}"),
-                            summary,
-                            expires_at: None,
-                            run_tag: session_id.clone().or_else(|| Some(format!("pane:{pane_id}"))),
-                        });
+                        .file_needs_you(
+                            crate::broker::gate::NeedsYouFile {
+                                kind,
+                                actor: agent.clone(),
+                                resource: format!("pane:{pane_id}"),
+                                summary,
+                                expires_at: None,
+                                run_tag: session_id
+                                    .clone()
+                                    .or_else(|| Some(format!("pane:{pane_id}"))),
+                            },
+                        );
                         if let Err(error) = filed {
                             log::info!("needs_you: could not file blocked pane {pane_id}: {error}");
                         }
@@ -4204,10 +4452,12 @@ impl PlexiApp {
                 // drives auto-dismiss-on-focus (`notifications.rs`), which
                 // CLI notifications opt out of on purpose.
                 let dismiss_owner_pane_id = resolved.map(|(pane_id, ..)| pane_id).unwrap_or(0);
-                let is_invalid_choice = matches!(kind, crate::protocol::NotifyKind::Choice)
-                    && options.is_empty();
+                let is_invalid_choice =
+                    matches!(kind, crate::protocol::NotifyKind::Choice) && options.is_empty();
                 if is_invalid_choice {
-                    log::warn!("pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly");
+                    log::warn!(
+                        "pane_ipc: notify id={internal_id:?} has no choices; resolving explicitly"
+                    );
                     self.deliver_notify_action(
                         0,
                         internal_id,
@@ -4217,30 +4467,30 @@ impl PlexiApp {
                         None,
                     );
                 } else {
-                self.enqueue_notification(
-                    crate::app::notifications::NotifySource::Cli,
-                    PendingNotification {
-                        notify_id: internal_id,
-                        dismiss_owner_pane_id,
-                        // 0 = no context / no window, the same sentinel
-                        // host-internal notifications use. Real ids start at 1.
-                        source_context_id: caller_context_id.unwrap_or(0),
-                        source_window_id: caller_window_id.unwrap_or(0),
-                        scope: effective_scope,
-                        title: title.clone(),
-                        body: body.clone(),
-                        kind: kind.clone(),
-                        options: options.clone(),
-                        input_prompt: input_prompt.clone(),
-                        required: *required,
-                        image_inline: image_inline.clone(),
-                        image_pipe_id: image_pipe_id.clone(),
-                        response_file: response_file.clone(),
-                        timeout_secs: *timeout_secs,
-                        on_dismiss: on_dismiss.clone(),
-                        ..Default::default()
-                    },
-                );
+                    self.enqueue_notification(
+                        crate::app::notifications::NotifySource::Cli,
+                        PendingNotification {
+                            notify_id: internal_id,
+                            dismiss_owner_pane_id,
+                            // 0 = no context / no window, the same sentinel
+                            // host-internal notifications use. Real ids start at 1.
+                            source_context_id: caller_context_id.unwrap_or(0),
+                            source_window_id: caller_window_id.unwrap_or(0),
+                            scope: effective_scope,
+                            title: title.clone(),
+                            body: body.clone(),
+                            kind: kind.clone(),
+                            options: options.clone(),
+                            input_prompt: input_prompt.clone(),
+                            required: *required,
+                            image_inline: image_inline.clone(),
+                            image_pipe_id: image_pipe_id.clone(),
+                            response_file: response_file.clone(),
+                            timeout_secs: *timeout_secs,
+                            on_dismiss: on_dismiss.clone(),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             crate::protocol::HostRequest::DismissNotification {
@@ -4507,7 +4757,8 @@ impl PlexiApp {
                     return;
                 };
                 let parent_ctx_id = self.router.get(parent_idx).context_id;
-                let resolved_layout = layout.unwrap_or_else(|| crate::pane_ops::default_squad_layout(panes.len()));
+                let resolved_layout =
+                    layout.unwrap_or_else(|| crate::pane_ops::default_squad_layout(panes.len()));
                 log::info!(
                     "pane_ipc: kind=create_sub_context name={name:?} parent_ctx_id={parent_ctx_id} \
                      panes={} requested_layout={layout:?} layout={resolved_layout:?} focus={focus} \
@@ -4735,27 +4986,65 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::HostRequest::AgentCall { role, task, parent_pane_id, call_credential, peer_ancestry, cwd, worktree, asynchronous, handoff, response_file } => {
-                let result = self.start_agent_tool_call(crate::app::agent_tools::AgentCallRequest {
-                    role, task, parent_pane_id: *parent_pane_id,
-                    credential: call_credential.as_deref(), peer_ancestry,
-                    cwd: cwd.as_deref(), worktree: worktree.as_deref(),
-                    asynchronous: *asynchronous, handoff: *handoff, response_file,
-                });
+            crate::protocol::HostRequest::AgentCall {
+                role,
+                task,
+                parent_pane_id,
+                call_credential,
+                peer_ancestry,
+                cwd,
+                worktree,
+                asynchronous,
+                handoff,
+                response_file,
+            } => {
+                let result =
+                    self.start_agent_tool_call(crate::app::agent_tools::AgentCallRequest {
+                        role,
+                        task,
+                        parent_pane_id: *parent_pane_id,
+                        credential: call_credential.as_deref(),
+                        peer_ancestry,
+                        cwd: cwd.as_deref(),
+                        worktree: worktree.as_deref(),
+                        asynchronous: *asynchronous,
+                        handoff: *handoff,
+                        response_file,
+                    });
                 if let Err(error) = result {
                     log::warn!("agent_call: {error}");
-                    write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"ok":false,"error":error}),
+                    );
                 }
             }
-            crate::protocol::HostRequest::AgentMessage { pane_id, text, parent_pane_id, call_credential, peer_ancestry, wait, response_file } => {
+            crate::protocol::HostRequest::AgentMessage {
+                pane_id,
+                text,
+                parent_pane_id,
+                call_credential,
+                peer_ancestry,
+                wait,
+                response_file,
+            } => {
                 let result = self.send_agent_tool_message(
-                    *pane_id, text, crate::app::agent_tools::AgentCaller {
-                        pane_id: *parent_pane_id, credential: call_credential.as_deref(), peer_ancestry,
-                    }, *wait, response_file,
+                    *pane_id,
+                    text,
+                    crate::app::agent_tools::AgentCaller {
+                        pane_id: *parent_pane_id,
+                        credential: call_credential.as_deref(),
+                        peer_ancestry,
+                    },
+                    *wait,
+                    response_file,
                 );
                 if let Err(error) = result {
                     log::warn!("agent_message: {error}");
-                    write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({"ok":false,"error":error}),
+                    );
                 }
             }
             crate::protocol::HostRequest::AgentSpawn {
@@ -4814,18 +5103,17 @@ impl PlexiApp {
                                 true,
                             );
                         }
-                        let portal_pane_id = self
-                            .windows
-                            .iter()
-                            .flat_map(|w| w.panes.values())
-                            .find_map(|p| match p {
-                                crate::host::pane::Pane::Portal(portal)
-                                    if portal.target_context_id == target_ctx_id =>
-                                {
-                                    Some(portal.pane_id)
-                                }
-                                _ => None,
-                            });
+                        let portal_pane_id =
+                            self.windows.iter().flat_map(|w| w.panes.values()).find_map(
+                                |p| match p {
+                                    crate::host::pane::Pane::Portal(portal)
+                                        if portal.target_context_id == target_ctx_id =>
+                                    {
+                                        Some(portal.pane_id)
+                                    }
+                                    _ => None,
+                                },
+                            );
                         serde_json::json!({
                             "ok": true,
                             "pane_id": new_pane_id,
@@ -4893,10 +5181,13 @@ impl PlexiApp {
                 {
                     Ok(committed) => {
                         self.complete_result_waits(*pane_id);
-                        self.finish_agent_tool_waits(*pane_id, serde_json::json!({
-                            "ok": true, "pane_id": pane_id, "status": "completed",
-                            "summary": summary_str, "result": committed,
-                        }));
+                        self.finish_agent_tool_waits(
+                            *pane_id,
+                            serde_json::json!({
+                                "ok": true, "pane_id": pane_id, "status": "completed",
+                                "summary": summary_str, "result": committed,
+                            }),
+                        );
                         let completed_payload = serde_json::json!({
                             "pane_id": pane_id,
                             "status": "completed",
@@ -5007,7 +5298,9 @@ impl PlexiApp {
                                 Some(js_p.to_string_lossy().into_owned()),
                             ),
                             Err(e) => {
-                                log::warn!("agent_done: failed to persist result for pane {pane_id}: {e}");
+                                log::warn!(
+                                    "agent_done: failed to persist result for pane {pane_id}: {e}"
+                                );
                                 (None, None)
                             }
                         };
@@ -5037,7 +5330,10 @@ impl PlexiApp {
                                         Some(crate::broker::gate::NeedsYouDetails {
                                             pane_id: Some(*pane_id),
                                             session_id: session_id.clone(),
-                                            preview_refs: result_md_path.clone().into_iter().collect(),
+                                            preview_refs: result_md_path
+                                                .clone()
+                                                .into_iter()
+                                                .collect(),
                                             ..Default::default()
                                         }),
                                     )
@@ -5050,7 +5346,9 @@ impl PlexiApp {
                             &crate::protocol::AgentState::Completed,
                             (!summary_str.is_empty()).then_some(summary_str),
                         );
-                        if self.fleet_focused_pane() == Some(*pane_id) { self.mark_agent_seen(*pane_id); }
+                        if self.fleet_focused_pane() == Some(*pane_id) {
+                            self.mark_agent_seen(*pane_id);
+                        }
                         self.mark_workspace_dirty();
                         let provenance = Provenance {
                             source: Source::LegacyReport,
@@ -5074,8 +5372,7 @@ impl PlexiApp {
                                 child_pane_id: *pane_id,
                                 child_agent: agent_label,
                                 status: "completed".to_string(),
-                                summary: (!summary_str.is_empty())
-                                    .then(|| summary_str.to_string()),
+                                summary: (!summary_str.is_empty()).then(|| summary_str.to_string()),
                                 result_json: serde_json::to_string(&committed)
                                     .unwrap_or_else(|_| "{}".to_string()),
                                 finished_at_epoch_secs: crate::platform::clock::now_secs(),
@@ -5107,9 +5404,15 @@ impl PlexiApp {
                         };
                         write_json_response(response_file, payload);
                         let close = self.agent_tool_children.contains_key(pane_id)
-                            && self.windows.iter().find_map(|w| w.panes.get(pane_id))
-                                .and_then(|p| p.as_terminal()).is_some_and(|t| t.ephemeral);
-                        if close { self.close_pane_by_id(*pane_id); }
+                            && self
+                                .windows
+                                .iter()
+                                .find_map(|w| w.panes.get(pane_id))
+                                .and_then(|p| p.as_terminal())
+                                .is_some_and(|t| t.ephemeral);
+                        if close {
+                            self.close_pane_by_id(*pane_id);
+                        }
                     }
                     Err(err) => {
                         log::warn!(
@@ -5149,7 +5452,10 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::HostRequest::AgentFleet { filter, response_file } => {
+            crate::protocol::HostRequest::AgentFleet {
+                filter,
+                response_file,
+            } => {
                 log::info!("agents: fleet query filter={filter:?}");
                 write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
             }
@@ -5249,14 +5555,16 @@ impl PlexiApp {
                         let _ = crate::broker::gate::PermissionMonitor::for_profile(
                             &crate::config::config_dir(),
                         )
-                        .file_needs_you(crate::broker::gate::NeedsYouFile {
-                            kind: crate::broker::gate::NeedsYouKind::Question,
-                            actor: agent_label,
-                            resource: format!("pane:{pane_id}"),
-                            summary: question.clone(),
-                            expires_at: None,
-                            run_tag: session_id.or_else(|| Some(format!("pane:{pane_id}"))),
-                        });
+                        .file_needs_you(
+                            crate::broker::gate::NeedsYouFile {
+                                kind: crate::broker::gate::NeedsYouKind::Question,
+                                actor: agent_label,
+                                resource: format!("pane:{pane_id}"),
+                                summary: question.clone(),
+                                expires_at: None,
+                                run_tag: session_id.or_else(|| Some(format!("pane:{pane_id}"))),
+                            },
+                        );
                     }
                     let payload = serde_json::json!({
                         "ok": true,
@@ -5279,9 +5587,7 @@ impl PlexiApp {
                 subcontext,
                 response_file,
             } => {
-                log::info!(
-                    "pane_ipc: kind=agent_reopen query={query} subcontext={subcontext:?}"
-                );
+                log::info!("pane_ipc: kind=agent_reopen query={query} subcontext={subcontext:?}");
                 let history = crate::workspace::load_agent_history();
                 let matched = history.into_iter().rev().find(|r| {
                     r.run_id == *query || r.session_id.as_deref() == Some(query.as_str())
@@ -5299,9 +5605,7 @@ impl PlexiApp {
                 };
                 let resume_cmd = match record.session_id.as_deref() {
                     Some(sid) if !sid.trim().is_empty() => {
-                        if let Some(adapter) =
-                            crate::cli::agent::harness_adapter(&record.harness)
-                        {
+                        if let Some(adapter) = crate::cli::agent::harness_adapter(&record.harness) {
                             let flags = crate::cli::agent::resolved_session_harness_flags_in(
                                 record.config_name.as_deref(),
                                 adapter.harness,
@@ -5330,7 +5634,10 @@ impl PlexiApp {
                     record.parent_pane_id,
                     Some(record.cwd.clone()),
                     None,
-                    None, false, None);
+                    None,
+                    false,
+                    None,
+                );
                 let payload = match result {
                     Ok((new_pane_id, target_ctx_id)) => {
                         for win in &mut self.windows {
@@ -5535,7 +5842,9 @@ impl PlexiApp {
         let mut running: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for win in &self.windows {
             for pane in win.panes.values() {
-                let Pane::View(view_pane) = pane else { continue };
+                let Pane::View(view_pane) = pane else {
+                    continue;
+                };
                 running.insert(view_pane.manifest_id.clone());
                 let workspace = view_pane
                     .workspace_root
@@ -5548,7 +5857,13 @@ impl PlexiApp {
                     .capabilities
                     .iter()
                     .map(|&cap| (cap, "green"))
-                    .chain(view_pane.permissions.blocked.iter().map(|&cap| (cap, "red")));
+                    .chain(
+                        view_pane
+                            .permissions
+                            .blocked
+                            .iter()
+                            .map(|&cap| (cap, "red")),
+                    );
                 for (cap, state) in live {
                     let key = format!("{}::{}::{}", view_pane.manifest_id, workspace, cap.as_str());
                     if !stored_keys.insert(key) {
@@ -5633,7 +5948,9 @@ impl PlexiApp {
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
             for win in &mut self.windows {
                 for pane in win.panes.values_mut() {
-                    let Pane::View(view_pane) = pane else { continue };
+                    let Pane::View(view_pane) = pane else {
+                        continue;
+                    };
                     if view_pane.manifest_id != plugin_id {
                         continue;
                     }
@@ -5730,23 +6047,27 @@ impl PlexiApp {
                 // OSC 7501 describes arbitrary programs. Its state can refine
                 // an identified agent, but generic program activity is not
                 // itself evidence of agent identity.
-                let reported = crate::program_status::reported_agent_state(*pane_id, &t.program_status)
-                    .and_then(|mut report| {
-                        let known = report.agent == "claude-code"
-                            || crate::host::shell::known_agent_process(&report.agent).is_some();
-                        let identity = t.agent.as_ref().map(|a| a.agent.as_str())
-                            .or_else(|| t.observed_agent.as_ref().map(|a| a.agent.as_str()))
-                            .or(t.agent_harness.as_deref())
-                            .or(t.agent_role.as_deref())
-                            .or_else(|| t.reported_7501.as_ref().map(|a| a.agent.as_str()));
-                        if !known && identity.is_none() {
-                            return None;
-                        }
-                        if !known {
-                            report.agent = identity.unwrap_or_default().to_owned();
-                        }
-                        Some(report)
-                    });
+                let reported =
+                    crate::program_status::reported_agent_state(*pane_id, &t.program_status)
+                        .and_then(|mut report| {
+                            let known = report.agent == "claude-code"
+                                || crate::host::shell::known_agent_process(&report.agent).is_some();
+                            let identity = t
+                                .agent
+                                .as_ref()
+                                .map(|a| a.agent.as_str())
+                                .or_else(|| t.observed_agent.as_ref().map(|a| a.agent.as_str()))
+                                .or(t.agent_harness.as_deref())
+                                .or(t.agent_role.as_deref())
+                                .or_else(|| t.reported_7501.as_ref().map(|a| a.agent.as_str()));
+                            if !known && identity.is_none() {
+                                return None;
+                            }
+                            if !known {
+                                report.agent = identity.unwrap_or_default().to_owned();
+                            }
+                            Some(report)
+                        });
                 let reported_changed = match (&t.reported_7501, &reported) {
                     (None, None) => false,
                     (Some(a), Some(b)) => {
@@ -5758,7 +6079,9 @@ impl PlexiApp {
                     log::info!(
                         "program_status: pane {} agent {:?} -> {:?}",
                         pane_id,
-                        t.reported_7501.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
+                        t.reported_7501
+                            .as_ref()
+                            .map(|a| (&a.agent, &a.state, &a.detail)),
                         reported.as_ref().map(|a| (&a.agent, &a.state, &a.detail)),
                     );
                     if let Some(agent) = &reported {
@@ -5796,10 +6119,7 @@ impl PlexiApp {
                                 } else {
                                     AgentState::Working
                                 },
-                                agent: t
-                                    .agent_role
-                                    .clone()
-                                    .unwrap_or_else(|| agent.to_string()),
+                                agent: t.agent_role.clone().unwrap_or_else(|| agent.to_string()),
                                 detail: None,
                                 session_id: None,
                             }
@@ -5827,7 +6147,10 @@ impl PlexiApp {
                         } else {
                             AgentState::ExitedUnreported
                         };
-                        log::info!("observed agent: pane {pane_id} returned to shell; marking {:?}", hook.state);
+                        log::info!(
+                            "observed agent: pane {pane_id} returned to shell; marking {:?}",
+                            hook.state
+                        );
                         transitions.push((*pane_id, hook.clone()));
                         observed_dirty = true;
                     }
@@ -6003,7 +6326,11 @@ impl PlexiApp {
                 ..Default::default()
             },
         );
-        log::info!("scheduler: routine notification queued={queued} title_chars={} body_chars={}", title.chars().count(), body.chars().count());
+        log::info!(
+            "scheduler: routine notification queued={queued} title_chars={} body_chars={}",
+            title.chars().count(),
+            body.chars().count()
+        );
     }
 
     /// The pane a context-targeted terminal spawn splits beside: the first
@@ -6252,7 +6579,8 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(&id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 newly_exited = !t.exited;
-                                let (prior_agent_state, prior_agent_detail) = t.effective_agent_state();
+                                let (prior_agent_state, prior_agent_detail) =
+                                    t.effective_agent_state();
                                 t.exited = true;
                                 t.exit_status = Some(status);
                                 t.program_status
@@ -6269,7 +6597,10 @@ impl PlexiApp {
                                 );
                                 if newly_exited && t.is_agent_pane() {
                                     let (state, detail) = t.effective_agent_state();
-                                    if (prior_agent_state != state || prior_agent_detail != detail) && state == crate::protocol::AgentState::Failed && detail.as_deref() == Some(status.summary().as_str()) {
+                                    if (prior_agent_state != state || prior_agent_detail != detail)
+                                        && state == crate::protocol::AgentState::Failed
+                                        && detail.as_deref() == Some(status.summary().as_str())
+                                    {
                                         log::info!("agents: pane {id} effective state overridden to Failed on {}", status.summary());
                                     }
                                 }
@@ -6300,7 +6631,10 @@ impl PlexiApp {
                     if let Some(cmd) = title.strip_prefix("plexi:") {
                         match cmd {
                             "close" => panes_to_close.push(id),
-                            _ => log::debug!("pty: unknown plexi command chars={}", cmd.chars().count()),
+                            _ => log::debug!(
+                                "pty: unknown plexi command chars={}",
+                                cmd.chars().count()
+                            ),
                         }
                     } else {
                         let title_trimmed = title.trim();

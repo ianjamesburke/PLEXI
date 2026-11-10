@@ -49,8 +49,8 @@ use plexi::platform::types::{
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, DeclareToolsEffect, Effect,
     FilePickedEvent, FilePickerMode, FileReadEffect, FileWriteEffect, FooterKeyEntry,
     FooterKeysNode, IndexedNode, InputEvent, KeyEvent, MouseButton, MouseEvent,
-    OpenFilePickerEffect, PaddingNode, RowNode, StateSnapshot, TextNode, TimerEffect, ToolCallEvent,
-    ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
+    OpenFilePickerEffect, PaddingNode, RowNode, StateSnapshot, TextNode, TimerEffect,
+    ToolCallEvent, ToolDecl, ToolResultEffect, UiActionEvent, UiNodeData, UiTree,
 };
 
 use plexi_daw_bundle::{
@@ -236,13 +236,37 @@ fn demo_source_data(path: &str, sample_rate: u32) -> Option<SourceData> {
                     (t * core::f32::consts::TAU * 220.0).sin() * 0.6 * decay
                 })
                 .collect();
-            Some(SourceData::AudioPcm { sample_rate, channels: 1, samples })
+            Some(SourceData::AudioPcm {
+                sample_rate,
+                channels: 1,
+                samples,
+            })
         }
         "demo:arp" => Some(SourceData::MidiNotes(vec![
-            Note { key: 60, velocity: 100, start_ticks: 0, length_ticks: TICKS_PER_BEAT / 2 },
-            Note { key: 64, velocity: 92, start_ticks: TICKS_PER_BEAT / 2, length_ticks: TICKS_PER_BEAT / 2 },
-            Note { key: 67, velocity: 84, start_ticks: TICKS_PER_BEAT, length_ticks: TICKS_PER_BEAT / 2 },
-            Note { key: 72, velocity: 76, start_ticks: TICKS_PER_BEAT * 3 / 2, length_ticks: TICKS_PER_BEAT / 2 },
+            Note {
+                key: 60,
+                velocity: 100,
+                start_ticks: 0,
+                length_ticks: TICKS_PER_BEAT / 2,
+            },
+            Note {
+                key: 64,
+                velocity: 92,
+                start_ticks: TICKS_PER_BEAT / 2,
+                length_ticks: TICKS_PER_BEAT / 2,
+            },
+            Note {
+                key: 67,
+                velocity: 84,
+                start_ticks: TICKS_PER_BEAT,
+                length_ticks: TICKS_PER_BEAT / 2,
+            },
+            Note {
+                key: 72,
+                velocity: 76,
+                start_ticks: TICKS_PER_BEAT * 3 / 2,
+                length_ticks: TICKS_PER_BEAT / 2,
+            },
         ])),
         _ => None,
     }
@@ -254,16 +278,64 @@ fn seed_demo_project(model: &mut DawModel) {
     // Pluck=T1, pluck source=S2, its clips=C3..C5, Arp=T6, arp source=S7,
     // its clips=C8..C9.
     let cmds = [
-        DawCommand::AddTrack { kind: TrackKind::Audio, name: "Pluck".into() },
-        DawCommand::AddSource { kind: TrackKind::Audio, path: "demo:pluck".into(), duration: 2 * beat },
-        DawCommand::AddClip { track: TrackId(1), source: SourceId(2), position: 0, length: beat, source_offset: 0 },
-        DawCommand::AddClip { track: TrackId(1), source: SourceId(2), position: 2 * beat, length: beat, source_offset: 0 },
-        DawCommand::AddClip { track: TrackId(1), source: SourceId(2), position: 4 * beat, length: beat, source_offset: 0 },
-        DawCommand::AddTrack { kind: TrackKind::Midi, name: "Arp".into() },
-        DawCommand::AddSource { kind: TrackKind::Midi, path: "demo:arp".into(), duration: 2 * beat },
-        DawCommand::AddClip { track: TrackId(6), source: SourceId(7), position: 0, length: 2 * beat, source_offset: 0 },
-        DawCommand::AddClip { track: TrackId(6), source: SourceId(7), position: 4 * beat, length: 2 * beat, source_offset: 0 },
-        DawCommand::SetLoop { enabled: true, start: 0, end: 4 * beat },
+        DawCommand::AddTrack {
+            kind: TrackKind::Audio,
+            name: "Pluck".into(),
+        },
+        DawCommand::AddSource {
+            kind: TrackKind::Audio,
+            path: "demo:pluck".into(),
+            duration: 2 * beat,
+        },
+        DawCommand::AddClip {
+            track: TrackId(1),
+            source: SourceId(2),
+            position: 0,
+            length: beat,
+            source_offset: 0,
+        },
+        DawCommand::AddClip {
+            track: TrackId(1),
+            source: SourceId(2),
+            position: 2 * beat,
+            length: beat,
+            source_offset: 0,
+        },
+        DawCommand::AddClip {
+            track: TrackId(1),
+            source: SourceId(2),
+            position: 4 * beat,
+            length: beat,
+            source_offset: 0,
+        },
+        DawCommand::AddTrack {
+            kind: TrackKind::Midi,
+            name: "Arp".into(),
+        },
+        DawCommand::AddSource {
+            kind: TrackKind::Midi,
+            path: "demo:arp".into(),
+            duration: 2 * beat,
+        },
+        DawCommand::AddClip {
+            track: TrackId(6),
+            source: SourceId(7),
+            position: 0,
+            length: 2 * beat,
+            source_offset: 0,
+        },
+        DawCommand::AddClip {
+            track: TrackId(6),
+            source: SourceId(7),
+            position: 4 * beat,
+            length: 2 * beat,
+            source_offset: 0,
+        },
+        DawCommand::SetLoop {
+            enabled: true,
+            start: 0,
+            end: 4 * beat,
+        },
     ];
     for cmd in cmds {
         let outcome = model.apply(cmd.clone());
@@ -745,7 +817,10 @@ impl View {
         else {
             return;
         };
-        effects.push(Effect::FileWrite(FileWriteEffect { path, content: bytes }));
+        effects.push(Effect::FileWrite(FileWriteEffect {
+            path,
+            content: bytes,
+        }));
     }
 
     /// Writes `project.json`, clears the dirty flag, and cancels a pending
@@ -916,10 +991,9 @@ impl View {
     /// Renders the offline mixdown and writes a float32 WAV to a picked path —
     /// the same render primitive playback and the `daw_mixdown` tool use.
     fn export_mixdown(&mut self, path: &str, effects: &mut Vec<Effect>) {
-        match self
-            .render_mixdown()
-            .and_then(|md| wav::encode_f32(md.sample_rate, md.channels, &md.samples).map(|b| (b, md.frames)))
-        {
+        match self.render_mixdown().and_then(|md| {
+            wav::encode_f32(md.sample_rate, md.channels, &md.samples).map(|b| (b, md.frames))
+        }) {
             Ok((bytes, frames)) => {
                 effects.push(Effect::FileWrite(FileWriteEffect {
                     path: path.to_string(),
@@ -963,7 +1037,11 @@ impl View {
     }
 
     fn sel_track_id(&self) -> Option<TrackId> {
-        self.model.project().tracks.get(self.sel_track_idx()).map(|t| t.id)
+        self.model
+            .project()
+            .tracks
+            .get(self.sel_track_idx())
+            .map(|t| t.id)
     }
 
     /// The selected clip resolved against the live model, plus its owning
@@ -1094,7 +1172,11 @@ impl View {
         };
         let target = (clip.position as i64 + delta_beats * BEAT as i64).max(0) as u64;
         self.apply(
-            DawCommand::MoveClip { clip: clip.id, track, position: Self::snap(target) },
+            DawCommand::MoveClip {
+                clip: clip.id,
+                track,
+                position: Self::snap(target),
+            },
             effects,
         );
     }
@@ -1110,7 +1192,11 @@ impl View {
         let target = (clip.length as i64 + delta_beats * BEAT as i64).max(GRID_TICKS as i64) as u64;
         let length = Self::snap(target).clamp(GRID_TICKS, max_len.max(GRID_TICKS));
         self.apply(
-            DawCommand::ResizeClip { clip: clip.id, length, source_offset: clip.source_offset },
+            DawCommand::ResizeClip {
+                clip: clip.id,
+                length,
+                source_offset: clip.source_offset,
+            },
             effects,
         );
     }
@@ -1133,7 +1219,11 @@ impl View {
         let right_offset = clip.source_offset + left_len;
         if !matches!(
             self.apply(
-                DawCommand::ResizeClip { clip: clip.id, length: left_len, source_offset: clip.source_offset },
+                DawCommand::ResizeClip {
+                    clip: clip.id,
+                    length: left_len,
+                    source_offset: clip.source_offset
+                },
                 effects,
             ),
             ApplyOutcome::Applied
@@ -1162,14 +1252,20 @@ impl View {
         let Some(id) = self.sel_clip else {
             return;
         };
-        if matches!(self.apply(DawCommand::RemoveClip { clip: id }, effects), ApplyOutcome::Applied) {
+        if matches!(
+            self.apply(DawCommand::RemoveClip { clip: id }, effects),
+            ApplyOutcome::Applied
+        ) {
             self.sel_clip = self.sel_track_clips_sorted().first().copied();
         }
     }
 
     fn op_add_track(&mut self, kind: TrackKind, effects: &mut Vec<Effect>) {
         let name = format!("Track {}", self.tracks_len() + 1);
-        if matches!(self.apply(DawCommand::AddTrack { kind, name }, effects), ApplyOutcome::Applied) {
+        if matches!(
+            self.apply(DawCommand::AddTrack { kind, name }, effects),
+            ApplyOutcome::Applied
+        ) {
             self.sel_track = self.tracks_len().saturating_sub(1);
             self.sel_clip = None;
         }
@@ -1215,11 +1311,23 @@ impl View {
     fn op_toggle_loop(&mut self, effects: &mut Vec<Effect>) {
         let t = *self.model.transport();
         let cmd = if t.loop_enabled {
-            DawCommand::SetLoop { enabled: false, start: t.loop_start, end: t.loop_end }
+            DawCommand::SetLoop {
+                enabled: false,
+                start: t.loop_start,
+                end: t.loop_end,
+            }
         } else if t.loop_start < t.loop_end {
-            DawCommand::SetLoop { enabled: true, start: t.loop_start, end: t.loop_end }
+            DawCommand::SetLoop {
+                enabled: true,
+                start: t.loop_start,
+                end: t.loop_end,
+            }
         } else {
-            DawCommand::SetLoop { enabled: true, start: 0, end: 4 * BEAT }
+            DawCommand::SetLoop {
+                enabled: true,
+                start: 0,
+                end: 4 * BEAT,
+            }
         };
         self.apply(cmd, effects);
     }
@@ -1316,7 +1424,9 @@ impl View {
     /// needed, its target id — self-contained so dispatch never reads ambient
     /// state (the command-handler-data rule).
     fn on_action(&mut self, handler: &str, effects: &mut Vec<Effect>) {
-        let (verb, arg) = handler.split_once(':').map_or((handler, None), |(v, a)| (v, Some(a)));
+        let (verb, arg) = handler
+            .split_once(':')
+            .map_or((handler, None), |(v, a)| (v, Some(a)));
         let track_arg = || arg.and_then(|a| a.parse::<u64>().ok()).map(TrackId);
         match verb {
             "toggle-play" => self.op_toggle_play(effects),
@@ -1448,7 +1558,10 @@ impl View {
                 drag.cur_position = Self::snap(target);
             }
             DragMode::TrimEnd => {
-                let max_len = drag.source_duration.saturating_sub(drag.source_offset).max(GRID_TICKS);
+                let max_len = drag
+                    .source_duration
+                    .saturating_sub(drag.source_offset)
+                    .max(GRID_TICKS);
                 let target = (drag.orig_length as i64 + delta).max(GRID_TICKS as i64) as u64;
                 drag.cur_length = Self::snap(target).clamp(GRID_TICKS, max_len);
             }
@@ -1463,7 +1576,11 @@ impl View {
         match drag.mode {
             DragMode::Move => {
                 self.apply(
-                    DawCommand::MoveClip { clip: drag.clip, track: drag.track, position: drag.cur_position },
+                    DawCommand::MoveClip {
+                        clip: drag.clip,
+                        track: drag.track,
+                        position: drag.cur_position,
+                    },
                     effects,
                 );
             }
@@ -1611,7 +1728,11 @@ impl View {
         })
     }
 
-    fn tool_mixdown(&mut self, input_json: &str, effects: &mut Vec<Effect>) -> Result<String, String> {
+    fn tool_mixdown(
+        &mut self,
+        input_json: &str,
+        effects: &mut Vec<Effect>,
+    ) -> Result<String, String> {
         let input: serde_json::Value = if input_json.trim().is_empty() {
             serde_json::Value::Null
         } else {
@@ -1636,7 +1757,11 @@ impl View {
             // interactive Export op uses the picker grant instead — see
             // `export_mixdown`.)
             effects.push(Effect::RequestCapability(format!("fs:write:{root}")));
-            self.pending_write = Some(PendingWrite { root, path: path.to_string(), bytes });
+            self.pending_write = Some(PendingWrite {
+                root,
+                path: path.to_string(),
+                bytes,
+            });
             out["write_queued"] = serde_json::Value::String(path.to_string());
         }
         self.last_status = format!("mixdown {} frames hash {:016x}", md.frames, md.hash);
@@ -1677,7 +1802,11 @@ impl View {
     fn nid(&mut self, key: &str, data: UiNodeData) -> IndexedNode {
         let id = self.node_id;
         self.node_id += 1;
-        IndexedNode { id, key: key.to_string(), data }
+        IndexedNode {
+            id,
+            key: key.to_string(),
+            data,
+        }
     }
 
     fn text(&mut self, key: &str, text: String, size: f32, bold: bool) -> IndexedNode {
@@ -1735,26 +1864,86 @@ impl View {
             UiNodeData::FooterKeys(FooterKeysNode {
                 divider: true,
                 entries: vec![
-                    FooterKeyEntry { keys: vec!["space".into()], description: "play/stop".into() },
-                    FooterKeyEntry { keys: vec!["<-".into(), "->".into()], description: "seek".into() },
-                    FooterKeyEntry { keys: vec!["up".into(), "down".into()], description: "track".into() },
-                    FooterKeyEntry { keys: vec!["[".into(), "]".into()], description: "clip".into() },
-                    FooterKeyEntry { keys: vec![",".into(), ".".into()], description: "move".into() },
-                    FooterKeyEntry { keys: vec![";".into(), "'".into()], description: "trim".into() },
-                    FooterKeyEntry { keys: vec!["s".into()], description: "split".into() },
-                    FooterKeyEntry { keys: vec!["x".into()], description: "delete".into() },
-                    FooterKeyEntry { keys: vec!["t".into()], description: "add track".into() },
-                    FooterKeyEntry { keys: vec!["m".into(), "n".into()], description: "mute/solo".into() },
-                    FooterKeyEntry { keys: vec!["9".into(), "0".into()], description: "vol".into() },
-                    FooterKeyEntry { keys: vec!["k".into(), "l".into()], description: "pan".into() },
-                    FooterKeyEntry { keys: vec!["-".into(), "=".into()], description: "bpm".into() },
-                    FooterKeyEntry { keys: vec!["\\".into()], description: "loop".into() },
-                    FooterKeyEntry { keys: vec!["z".into(), "r".into()], description: "undo/redo".into() },
-                    FooterKeyEntry { keys: vec!["F2".into()], description: "save".into() },
-                    FooterKeyEntry { keys: vec!["F6".into()], description: "save as".into() },
-                    FooterKeyEntry { keys: vec!["F3".into()], description: "open".into() },
-                    FooterKeyEntry { keys: vec!["F4".into()], description: "import".into() },
-                    FooterKeyEntry { keys: vec!["F5".into()], description: "export".into() },
+                    FooterKeyEntry {
+                        keys: vec!["space".into()],
+                        description: "play/stop".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["<-".into(), "->".into()],
+                        description: "seek".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["up".into(), "down".into()],
+                        description: "track".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["[".into(), "]".into()],
+                        description: "clip".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec![",".into(), ".".into()],
+                        description: "move".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec![";".into(), "'".into()],
+                        description: "trim".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["s".into()],
+                        description: "split".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["x".into()],
+                        description: "delete".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["t".into()],
+                        description: "add track".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["m".into(), "n".into()],
+                        description: "mute/solo".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["9".into(), "0".into()],
+                        description: "vol".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["k".into(), "l".into()],
+                        description: "pan".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["-".into(), "=".into()],
+                        description: "bpm".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["\\".into()],
+                        description: "loop".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["z".into(), "r".into()],
+                        description: "undo/redo".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["F2".into()],
+                        description: "save".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["F6".into()],
+                        description: "save as".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["F3".into()],
+                        description: "open".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["F4".into()],
+                        description: "import".into(),
+                    },
+                    FooterKeyEntry {
+                        keys: vec!["F5".into()],
+                        description: "export".into(),
+                    },
                 ],
             }),
         );
@@ -1772,7 +1961,10 @@ impl View {
         );
         let root_id = root.id;
         nodes.push(root);
-        UiTree { root: root_id, nodes }
+        UiTree {
+            root: root_id,
+            nodes,
+        }
     }
 
     fn transport_row(&mut self, nodes: &mut Vec<IndexedNode>) -> u32 {
@@ -1792,7 +1984,11 @@ impl View {
             "toggle-play",
             if playing { "Pause" } else { "Play" },
             "toggle-play",
-            if playing { ButtonStyle::Secondary } else { ButtonStyle::Primary },
+            if playing {
+                ButtonStyle::Secondary
+            } else {
+                ButtonStyle::Primary
+            },
             false,
         );
         let play_id = play.id;
@@ -1804,9 +2000,17 @@ impl View {
 
         let loop_btn = self.button(
             "loop",
-            if transport.loop_enabled { "Loop On" } else { "Loop Off" },
+            if transport.loop_enabled {
+                "Loop On"
+            } else {
+                "Loop Off"
+            },
             "loop",
-            if transport.loop_enabled { ButtonStyle::Primary } else { ButtonStyle::Ghost },
+            if transport.loop_enabled {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Ghost
+            },
             false,
         );
         let loop_id = loop_btn.id;
@@ -1833,7 +2037,13 @@ impl View {
         let bpm_up_id = bpm_up.id;
         nodes.push(bpm_up);
 
-        let add = self.button("add-track", "+ Track", "add-track", ButtonStyle::Secondary, false);
+        let add = self.button(
+            "add-track",
+            "+ Track",
+            "add-track",
+            ButtonStyle::Secondary,
+            false,
+        );
         let add_id = add.id;
         nodes.push(add);
 
@@ -1854,11 +2064,23 @@ impl View {
         let export_id = export.id;
         nodes.push(export);
 
-        let undo = self.button("undo", "Undo", "undo", ButtonStyle::Ghost, !self.model.can_undo());
+        let undo = self.button(
+            "undo",
+            "Undo",
+            "undo",
+            ButtonStyle::Ghost,
+            !self.model.can_undo(),
+        );
         let undo_id = undo.id;
         nodes.push(undo);
 
-        let redo = self.button("redo", "Redo", "redo", ButtonStyle::Ghost, !self.model.can_redo());
+        let redo = self.button(
+            "redo",
+            "Redo",
+            "redo",
+            ButtonStyle::Ghost,
+            !self.model.can_redo(),
+        );
         let redo_id = redo.id;
         nodes.push(redo);
 
@@ -1870,7 +2092,11 @@ impl View {
                 } else {
                     format!("STOPPED · rev {rev}")
                 },
-                color: if playing { BadgeColor::Accent } else { BadgeColor::Neutral },
+                color: if playing {
+                    BadgeColor::Accent
+                } else {
+                    BadgeColor::Neutral
+                },
             }),
         );
         let badge_id = badge.id;
@@ -1880,8 +2106,22 @@ impl View {
             "transport-row",
             UiNodeData::Row(RowNode {
                 children: vec![
-                    title_id, play_id, stop_id, loop_id, pos_id, bpm_down_id, bpm_id, bpm_up_id,
-                    add_id, save_id, save_as_id, open_id, import_id, export_id, undo_id, redo_id,
+                    title_id,
+                    play_id,
+                    stop_id,
+                    loop_id,
+                    pos_id,
+                    bpm_down_id,
+                    bpm_id,
+                    bpm_up_id,
+                    add_id,
+                    save_id,
+                    save_as_id,
+                    open_id,
+                    import_id,
+                    export_id,
+                    undo_id,
+                    redo_id,
                     badge_id,
                 ],
                 gap: 8.0,
@@ -1919,9 +2159,25 @@ impl View {
         let mut cmds: Vec<CanvasCommand> = Vec::new();
 
         // 1. Backdrop.
-        push_rect(&mut cmds, 0.0, 0.0, CANVAS_W, height, col(18, 18, 22, 255), 0.0);
+        push_rect(
+            &mut cmds,
+            0.0,
+            0.0,
+            CANVAS_W,
+            height,
+            col(18, 18, 22, 255),
+            0.0,
+        );
         // 2. Ruler strip.
-        push_rect(&mut cmds, 0.0, 0.0, CANVAS_W, RULER_H, col(30, 30, 38, 255), 0.0);
+        push_rect(
+            &mut cmds,
+            0.0,
+            0.0,
+            CANVAS_W,
+            RULER_H,
+            col(30, 30, 38, 255),
+            0.0,
+        );
 
         // 3. Lanes + gutter labels.
         for (ti, track) in tracks.iter().enumerate() {
@@ -1935,12 +2191,28 @@ impl View {
             };
             push_rect(&mut cmds, 0.0, y, CANVAS_W, LANE_H, lane, 0.0);
             // Gutter divider.
-            push_line(&mut cmds, LABEL_W, y, LABEL_W, y + LANE_H, col(55, 55, 66, 255), 1.0);
+            push_line(
+                &mut cmds,
+                LABEL_W,
+                y,
+                LABEL_W,
+                y + LANE_H,
+                col(55, 55, 66, 255),
+                1.0,
+            );
             let kind_tag = match track.kind {
                 TrackKind::Audio => "AUD",
                 TrackKind::Midi => "MIDI",
             };
-            push_text(&mut cmds, 6.0, y + 8.0, track.name.clone(), 13.0, col(232, 236, 245, 255), true);
+            push_text(
+                &mut cmds,
+                6.0,
+                y + 8.0,
+                track.name.clone(),
+                13.0,
+                col(232, 236, 245, 255),
+                true,
+            );
             let mut flags = format!("{kind_tag} {:.2}", track.mixer.volume);
             if track.mixer.mute {
                 flags.push_str(" M");
@@ -1948,7 +2220,15 @@ impl View {
             if track.mixer.solo {
                 flags.push_str(" S");
             }
-            push_text(&mut cmds, 6.0, y + 28.0, flags, 10.0, col(150, 156, 172, 255), false);
+            push_text(
+                &mut cmds,
+                6.0,
+                y + 28.0,
+                flags,
+                10.0,
+                col(150, 156, 172, 255),
+                false,
+            );
         }
 
         // 4. Loop region shade (lanes area).
@@ -1956,7 +2236,15 @@ impl View {
             let x0 = self.ticks_to_x(transport.loop_start).max(LABEL_W);
             let x1 = self.ticks_to_x(transport.loop_end).min(CANVAS_W);
             if x1 > x0 {
-                push_rect(&mut cmds, x0, RULER_H, x1 - x0, height - RULER_H, col(90, 150, 100, 40), 0.0);
+                push_rect(
+                    &mut cmds,
+                    x0,
+                    RULER_H,
+                    x1 - x0,
+                    height - RULER_H,
+                    col(90, 150, 100, 40),
+                    0.0,
+                );
             }
         }
 
@@ -1969,10 +2257,30 @@ impl View {
                 continue;
             }
             let is_bar = b % BEATS_PER_BAR == 0;
-            let color = if is_bar { col(78, 80, 96, 255) } else { col(46, 46, 56, 255) };
-            push_line(&mut cmds, x, 0.0, x, height, color, if is_bar { 1.5 } else { 1.0 });
+            let color = if is_bar {
+                col(78, 80, 96, 255)
+            } else {
+                col(46, 46, 56, 255)
+            };
+            push_line(
+                &mut cmds,
+                x,
+                0.0,
+                x,
+                height,
+                color,
+                if is_bar { 1.5 } else { 1.0 },
+            );
             if is_bar {
-                push_text(&mut cmds, x + 3.0, 4.0, format!("{}", b / BEATS_PER_BAR + 1), 11.0, col(176, 182, 198, 255), false);
+                push_text(
+                    &mut cmds,
+                    x + 3.0,
+                    4.0,
+                    format!("{}", b / BEATS_PER_BAR + 1),
+                    11.0,
+                    col(176, 182, 198, 255),
+                    false,
+                );
             }
         }
 
@@ -2006,7 +2314,15 @@ impl View {
                     push_line(&mut cmds, cx, cy, cx, cy + ch, border, 2.0);
                     push_line(&mut cmds, cx + cw, cy, cx + cw, cy + ch, border, 2.0);
                 }
-                push_text(&mut cmds, cx + 5.0, cy + 4.0, source_label(&self.model, clip.source), 11.0, col(240, 244, 250, 255), false);
+                push_text(
+                    &mut cmds,
+                    cx + 5.0,
+                    cy + 4.0,
+                    source_label(&self.model, clip.source),
+                    11.0,
+                    col(240, 244, 250, 255),
+                    false,
+                );
             }
         }
 
@@ -2016,7 +2332,12 @@ impl View {
             push_line(&mut cmds, px, 0.0, px, height, col(242, 120, 92, 255), 2.0);
         }
 
-        CanvasNode { width: CANVAS_W, height, grow: false, commands: cmds }
+        CanvasNode {
+            width: CANVAS_W,
+            height,
+            grow: false,
+            commands: cmds,
+        }
     }
 
     /// Geometry to draw a clip at — the live drag preview when this clip is
@@ -2038,7 +2359,15 @@ impl View {
             .iter()
             .enumerate()
             .map(|(ti, t)| {
-                (t.id, t.name.clone(), t.mixer.volume, t.mixer.pan, t.mixer.mute, t.mixer.solo, ti == self.sel_track_idx())
+                (
+                    t.id,
+                    t.name.clone(),
+                    t.mixer.volume,
+                    t.mixer.pan,
+                    t.mixer.mute,
+                    t.mixer.solo,
+                    ti == self.sel_track_idx(),
+                )
             })
             .collect();
 
@@ -2047,7 +2376,11 @@ impl View {
             let tid = track.0;
             let head = self.text(
                 &format!("mix-name-{tid}"),
-                if selected { format!("> {name}") } else { name.clone() },
+                if selected {
+                    format!("> {name}")
+                } else {
+                    name.clone()
+                },
                 12.0,
                 selected,
             );
@@ -2067,7 +2400,11 @@ impl View {
                 &format!("mix-mute-{tid}"),
                 "M",
                 &format!("mute:{tid}"),
-                if mute { ButtonStyle::Danger } else { ButtonStyle::Ghost },
+                if mute {
+                    ButtonStyle::Danger
+                } else {
+                    ButtonStyle::Ghost
+                },
                 false,
             );
             let mute_id = mute_btn.id;
@@ -2077,22 +2414,50 @@ impl View {
                 &format!("mix-solo-{tid}"),
                 "S",
                 &format!("solo:{tid}"),
-                if solo { ButtonStyle::Primary } else { ButtonStyle::Ghost },
+                if solo {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Ghost
+                },
                 false,
             );
             let solo_id = solo_btn.id;
             nodes.push(solo_btn);
 
-            let vdn = self.button(&format!("mix-vol-down-{tid}"), "v-", &format!("vol-:{tid}"), ButtonStyle::Ghost, false);
+            let vdn = self.button(
+                &format!("mix-vol-down-{tid}"),
+                "v-",
+                &format!("vol-:{tid}"),
+                ButtonStyle::Ghost,
+                false,
+            );
             let vdn_id = vdn.id;
             nodes.push(vdn);
-            let vup = self.button(&format!("mix-vol-up-{tid}"), "v+", &format!("vol+:{tid}"), ButtonStyle::Ghost, false);
+            let vup = self.button(
+                &format!("mix-vol-up-{tid}"),
+                "v+",
+                &format!("vol+:{tid}"),
+                ButtonStyle::Ghost,
+                false,
+            );
             let vup_id = vup.id;
             nodes.push(vup);
-            let pdn = self.button(&format!("mix-pan-down-{tid}"), "p-", &format!("pan-:{tid}"), ButtonStyle::Ghost, false);
+            let pdn = self.button(
+                &format!("mix-pan-down-{tid}"),
+                "p-",
+                &format!("pan-:{tid}"),
+                ButtonStyle::Ghost,
+                false,
+            );
             let pdn_id = pdn.id;
             nodes.push(pdn);
-            let pup = self.button(&format!("mix-pan-up-{tid}"), "p+", &format!("pan+:{tid}"), ButtonStyle::Ghost, false);
+            let pup = self.button(
+                &format!("mix-pan-up-{tid}"),
+                "p+",
+                &format!("pan+:{tid}"),
+                ButtonStyle::Ghost,
+                false,
+            );
             let pup_id = pup.id;
             nodes.push(pup);
 
@@ -2124,12 +2489,23 @@ impl View {
 
         let row = self.nid(
             "mixer-row",
-            UiNodeData::Row(RowNode { children: strip_ids, gap: 16.0, align: Alignment::Start, grow: false }),
+            UiNodeData::Row(RowNode {
+                children: strip_ids,
+                gap: 16.0,
+                align: Alignment::Start,
+                grow: false,
+            }),
         );
         let row_id = row.id;
         let padded = self.nid(
             "mixer",
-            UiNodeData::Padding(PaddingNode { child: row_id, top: 4.0, right: 0.0, bottom: 4.0, left: 0.0 }),
+            UiNodeData::Padding(PaddingNode {
+                child: row_id,
+                top: 4.0,
+                right: 0.0,
+                bottom: 4.0,
+                left: 0.0,
+            }),
         );
         let padded_id = padded.id;
         nodes.push(row);
@@ -2161,22 +2537,43 @@ impl View {
                 &format!("clip-{}", clip_id.0),
                 &format!("clip {}", i + 1),
                 &format!("clip:{}", clip_id.0),
-                if selected { ButtonStyle::Primary } else { ButtonStyle::Ghost },
+                if selected {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Ghost
+                },
                 false,
             );
             children.push(btn.id);
             nodes.push(btn);
         }
-        let split = self.button("split", "Split", "split", ButtonStyle::Secondary, self.sel_clip.is_none());
+        let split = self.button(
+            "split",
+            "Split",
+            "split",
+            ButtonStyle::Secondary,
+            self.sel_clip.is_none(),
+        );
         children.push(split.id);
         nodes.push(split);
-        let del = self.button("del-clip", "Delete", "del-clip", ButtonStyle::Danger, self.sel_clip.is_none());
+        let del = self.button(
+            "del-clip",
+            "Delete",
+            "del-clip",
+            ButtonStyle::Danger,
+            self.sel_clip.is_none(),
+        );
         children.push(del.id);
         nodes.push(del);
 
         let row = self.nid(
             "inspector-row",
-            UiNodeData::Row(RowNode { children, gap: 8.0, align: Alignment::Center, grow: false }),
+            UiNodeData::Row(RowNode {
+                children,
+                gap: 8.0,
+                align: Alignment::Center,
+                grow: false,
+            }),
         );
         let row_id = row.id;
         nodes.push(row);
@@ -2192,19 +2589,70 @@ fn col(r: u8, g: u8, b: u8, a: u8) -> Color {
 
 /// Darkens a fill for a muted track without changing its hue.
 fn dim(c: Color) -> Color {
-    Color { r: c.r / 2, g: c.g / 2, b: c.b / 2, a: c.a }
+    Color {
+        r: c.r / 2,
+        g: c.g / 2,
+        b: c.b / 2,
+        a: c.a,
+    }
 }
 
-fn push_rect(cmds: &mut Vec<CanvasCommand>, x: f32, y: f32, width: f32, height: f32, fill: Color, radius: f32) {
-    cmds.push(CanvasCommand::Rect(CanvasRect { x, y, width, height, fill, radius }));
+fn push_rect(
+    cmds: &mut Vec<CanvasCommand>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    fill: Color,
+    radius: f32,
+) {
+    cmds.push(CanvasCommand::Rect(CanvasRect {
+        x,
+        y,
+        width,
+        height,
+        fill,
+        radius,
+    }));
 }
 
-fn push_line(cmds: &mut Vec<CanvasCommand>, x1: f32, y1: f32, x2: f32, y2: f32, color: Color, width: f32) {
-    cmds.push(CanvasCommand::Line(CanvasLine { x1, y1, x2, y2, width, color }));
+fn push_line(
+    cmds: &mut Vec<CanvasCommand>,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    color: Color,
+    width: f32,
+) {
+    cmds.push(CanvasCommand::Line(CanvasLine {
+        x1,
+        y1,
+        x2,
+        y2,
+        width,
+        color,
+    }));
 }
 
-fn push_text(cmds: &mut Vec<CanvasCommand>, x: f32, y: f32, text: String, size: f32, color: Color, bold: bool) {
-    cmds.push(CanvasCommand::Text(CanvasText { x, y, text, size, color, bold, align: Alignment::Start }));
+fn push_text(
+    cmds: &mut Vec<CanvasCommand>,
+    x: f32,
+    y: f32,
+    text: String,
+    size: f32,
+    color: Color,
+    bold: bool,
+) {
+    cmds.push(CanvasCommand::Text(CanvasText {
+        x,
+        y,
+        text,
+        size,
+        color,
+        bold,
+        align: Alignment::Start,
+    }));
 }
 
 /// Short human label for a clip: the source path's trailing segment.
@@ -2212,7 +2660,13 @@ fn source_label(model: &DawModel, source: SourceId) -> String {
     model
         .project()
         .source(source)
-        .map(|s| s.path.rsplit([':', '/']).next().unwrap_or(&s.path).to_string())
+        .map(|s| {
+            s.path
+                .rsplit([':', '/'])
+                .next()
+                .unwrap_or(&s.path)
+                .to_string()
+        })
         .unwrap_or_else(|| format!("src {}", source.0))
 }
 
@@ -2288,12 +2742,18 @@ impl Guest for Component {
             "daw-engine-poc: init tracks={} sources={} end_frame={}",
             app_state.model.project().tracks.len(),
             app_state.model.project().sources.len(),
-            app_state.engine.as_ref().map(Engine::project_end_frame).unwrap_or(0)
+            app_state
+                .engine
+                .as_ref()
+                .map(Engine::project_end_frame)
+                .unwrap_or(0)
         ));
         unsafe { APP = Some(app_state) }
 
         effects.push(Effect::SetTitle("DAW Engine".to_string()));
-        effects.push(Effect::DeclareTools(DeclareToolsEffect { tools: View::tool_decls() }));
+        effects.push(Effect::DeclareTools(DeclareToolsEffect {
+            tools: View::tool_decls(),
+        }));
         // Request the file-picker capability up front so save/open/import/export
         // are ready without a mid-session prompt round trip.
         effects.push(Effect::RequestCapability("fs.pick".to_string()));
@@ -2304,8 +2764,12 @@ impl Guest for Component {
         let mut effects: Vec<Effect> = Vec::new();
         let a = app();
         match event {
-            InputEvent::Key(KeyEvent { key, pressed: true, .. }) => a.on_key(&key, &mut effects),
-            InputEvent::UiAction(UiActionEvent { handler_id }) => a.on_action(&handler_id, &mut effects),
+            InputEvent::Key(KeyEvent {
+                key, pressed: true, ..
+            }) => a.on_key(&key, &mut effects),
+            InputEvent::UiAction(UiActionEvent { handler_id }) => {
+                a.on_action(&handler_id, &mut effects)
+            }
             InputEvent::Mouse(mouse) => a.on_mouse(mouse, &mut effects),
             InputEvent::FileReadResult(result) => a.finish_read(result, &mut effects),
             InputEvent::FileWriteResult(Ok(())) => {
@@ -2333,8 +2797,14 @@ impl Guest for Component {
                     // it; a grant for some other directory must not.
                     if a.pending_write.as_ref().is_some_and(|w| w.root == root) {
                         let w = a.pending_write.take().expect("checked above");
-                        log_info(&format!("daw-engine-poc: writing mixdown WAV to {}", w.path));
-                        effects.push(Effect::FileWrite(FileWriteEffect { path: w.path, content: w.bytes }));
+                        log_info(&format!(
+                            "daw-engine-poc: writing mixdown WAV to {}",
+                            w.path
+                        ));
+                        effects.push(Effect::FileWrite(FileWriteEffect {
+                            path: w.path,
+                            content: w.bytes,
+                        }));
                     }
                 }
             }
@@ -2437,7 +2907,10 @@ mod tests {
     use crate::plexi::platform::types::Point;
 
     fn seeded() -> View {
-        let mut app = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        let mut app = View::new(EngineConfig {
+            sample_rate: 48_000,
+            channels: 2,
+        });
         let mut fx = Vec::new();
         app.ensure_source_data(&mut fx);
         // Mirror `init`: prepare the engine so offline mixdown/export work.
@@ -2633,7 +3106,15 @@ mod tests {
         let press_y = RULER_H + LANE_H / 2.0;
         let mut fx = Vec::new();
         app.on_mouse(
-            MouseEvent { position: Point { x: press_x, y: press_y }, button: Some(MouseButton::Left), pressed: true, scroll_delta: None },
+            MouseEvent {
+                position: Point {
+                    x: press_x,
+                    y: press_y,
+                },
+                button: Some(MouseButton::Left),
+                pressed: true,
+                scroll_delta: None,
+            },
             &mut fx,
         );
         assert!(app.drag.is_some());
@@ -2642,18 +3123,37 @@ mod tests {
         // Drag two beats to the right.
         let move_x = app.ticks_to_x(BEAT / 2 + 2 * BEAT);
         app.on_mouse(
-            MouseEvent { position: Point { x: move_x, y: press_y }, button: None, pressed: false, scroll_delta: None },
+            MouseEvent {
+                position: Point {
+                    x: move_x,
+                    y: press_y,
+                },
+                button: None,
+                pressed: false,
+                scroll_delta: None,
+            },
             &mut fx,
         );
         // Preview only — the model has not changed yet.
         assert_eq!(app.model.revision(), rev_before);
         app.on_mouse(
-            MouseEvent { position: Point { x: move_x, y: press_y }, button: Some(MouseButton::Left), pressed: false, scroll_delta: None },
+            MouseEvent {
+                position: Point {
+                    x: move_x,
+                    y: press_y,
+                },
+                button: Some(MouseButton::Left),
+                pressed: false,
+                scroll_delta: None,
+            },
             &mut fx,
         );
         assert!(app.drag.is_none());
         let (ti, ci) = app.model.project().find_clip(clip).unwrap();
-        assert_eq!(app.model.project().tracks[ti].clips[ci].position, start + 2 * BEAT);
+        assert_eq!(
+            app.model.project().tracks[ti].clips[ci].position,
+            start + 2 * BEAT
+        );
         // Exactly one command (one revision bump) for the whole gesture.
         assert_eq!(app.model.revision(), rev_before + 1);
     }
@@ -2675,14 +3175,22 @@ mod tests {
         let mut app = seeded();
         let tree = app.build_tree();
         let has_button = |label: &str| {
-            tree.nodes.iter().any(|n| matches!(&n.data, UiNodeData::Button(b) if b.label == label))
+            tree.nodes
+                .iter()
+                .any(|n| matches!(&n.data, UiNodeData::Button(b) if b.label == label))
         };
         assert!(has_button("Play"));
         assert!(has_button("M"));
         assert!(has_button("+ Track"));
-        assert!(tree.nodes.iter().any(|n| matches!(&n.data, UiNodeData::Canvas(_))));
+        assert!(tree
+            .nodes
+            .iter()
+            .any(|n| matches!(&n.data, UiNodeData::Canvas(_))));
         // Transport text is a real Text node so node_changes can see it.
-        assert!(tree.nodes.iter().any(|n| matches!(&n.data, UiNodeData::Text(t) if t.text.starts_with("bar "))));
+        assert!(tree
+            .nodes
+            .iter()
+            .any(|n| matches!(&n.data, UiNodeData::Text(t) if t.text.starts_with("bar "))));
     }
 
     // ── Project bundle (stint 0518) ──────────────────────────────────────────
@@ -2698,7 +3206,11 @@ mod tests {
 
     impl FakeHost {
         fn new() -> Self {
-            Self { fs: std::collections::BTreeMap::new(), picks: VecDeque::new(), timer_armed: false }
+            Self {
+                fs: std::collections::BTreeMap::new(),
+                picks: VecDeque::new(),
+                timer_armed: false,
+            }
         }
 
         /// Processes an effect batch, recursively delivering the result events
@@ -2724,7 +3236,10 @@ mod tests {
                         let mut next = Vec::new();
                         match self.picks.pop_front() {
                             Some(paths) if !paths.is_empty() => app.on_pick(
-                                FilePickedEvent { request_id: p.request_id, paths },
+                                FilePickedEvent {
+                                    request_id: p.request_id,
+                                    paths,
+                                },
                                 &mut next,
                             ),
                             _ => app.on_pick_cancelled(&p.request_id),
@@ -2765,7 +3280,10 @@ mod tests {
         drive_key(&mut host, &mut app, "f2"); // save -> save-as (no bundle yet)
 
         assert_eq!(app.bundle_dir.as_deref(), Some("/proj"));
-        let json = host.fs.get("/proj/project.json").expect("project.json written");
+        let json = host
+            .fs
+            .get("/proj/project.json")
+            .expect("project.json written");
         // Deterministic serialization: re-serializing the model matches disk.
         let expected = BundleDoc::from_model(&app.model).to_json().unwrap();
         assert_eq!(json, &expected.into_bytes());
@@ -2828,7 +3346,10 @@ mod tests {
         let saved_transport = *app.model.transport();
 
         // A fresh app opens the same bundle dir.
-        let mut reopened = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        let mut reopened = View::new(EngineConfig {
+            sample_rate: 48_000,
+            channels: 2,
+        });
         host.picks.push_back(vec!["/proj".into()]);
         {
             let mut fx = Vec::new();
@@ -2865,7 +3386,10 @@ mod tests {
             host.fs.insert(k, v);
         }
 
-        let mut reopened = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        let mut reopened = View::new(EngineConfig {
+            sample_rate: 48_000,
+            channels: 2,
+        });
         host.picks.push_back(vec!["/moved".into()]);
         {
             let mut fx = Vec::new();
@@ -2946,7 +3470,10 @@ mod tests {
         let mut fx = Vec::new();
         let err = app.save_bundle(&mut fx).unwrap_err();
         assert!(err.contains("still loading"), "unexpected error: {err}");
-        assert!(fx.is_empty(), "no writes should be emitted on a guarded save");
+        assert!(
+            fx.is_empty(),
+            "no writes should be emitted on a guarded save"
+        );
     }
 
     #[test]
@@ -2955,8 +3482,10 @@ mod tests {
         let mut host = FakeHost::new();
         let mut doc = BundleDoc::from_model(&app.model);
         doc.project.sources[0].path = "/tmp/x.wav".into(); // non-portable
-        host.fs
-            .insert("/bad/project.json".into(), doc.to_json().unwrap().into_bytes());
+        host.fs.insert(
+            "/bad/project.json".into(),
+            doc.to_json().unwrap().into_bytes(),
+        );
         let before = app.model.project().clone();
 
         host.picks.push_back(vec!["/bad".into()]);

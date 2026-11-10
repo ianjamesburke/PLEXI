@@ -89,54 +89,59 @@ impl ContextState {
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
                         let effective = pane.effective_agent();
-                        let status = if t.exited && t.effective_agent_state().0 == AgentState::Failed {
-                            has_error = true;
-                            PaneSummaryStatus::Error
-                        } else if let Some(agent) = effective.as_ref() {
-                            match agent.state {
-                                AgentState::NeedsYou => {
-                                    has_needs_you = true;
-                                    PaneSummaryStatus::NeedsYou
+                        let status =
+                            if t.exited && t.effective_agent_state().0 == AgentState::Failed {
+                                has_error = true;
+                                PaneSummaryStatus::Error
+                            } else if let Some(agent) = effective.as_ref() {
+                                match agent.state {
+                                    AgentState::NeedsYou => {
+                                        has_needs_you = true;
+                                        PaneSummaryStatus::NeedsYou
+                                    }
+                                    AgentState::Failed
+                                    | AgentState::Blocked
+                                    | AgentState::ExitedUnreported => {
+                                        has_blocked = true;
+                                        PaneSummaryStatus::Blocked
+                                    }
+                                    AgentState::Working => {
+                                        if t.exited {
+                                            PaneSummaryStatus::Idle
+                                        } else {
+                                            active_agents += 1;
+                                            PaneSummaryStatus::Active
+                                        }
+                                    }
+                                    AgentState::Idle
+                                    | AgentState::Interrupted
+                                    | AgentState::Completed => PaneSummaryStatus::Idle,
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
-                                    has_blocked = true;
-                                    PaneSummaryStatus::Blocked
-                                }
-                                AgentState::Working => {
-                                    if t.exited {
-                                        PaneSummaryStatus::Idle
-                                    } else {
+                            } else if t.exited {
+                                PaneSummaryStatus::Idle
+                            } else if let Some(ref sb) = t.standby_session {
+                                match sb.last_state {
+                                    AgentState::NeedsYou => {
+                                        has_needs_you = true;
+                                        PaneSummaryStatus::NeedsYou
+                                    }
+                                    AgentState::Failed
+                                    | AgentState::Blocked
+                                    | AgentState::ExitedUnreported => {
+                                        has_blocked = true;
+                                        PaneSummaryStatus::Blocked
+                                    }
+                                    AgentState::Working => {
                                         active_agents += 1;
                                         PaneSummaryStatus::Active
                                     }
+                                    AgentState::Idle
+                                    | AgentState::Interrupted
+                                    | AgentState::Completed => PaneSummaryStatus::Idle,
                                 }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
-                            }
-                        } else if t.exited {
-                            PaneSummaryStatus::Idle
-                        } else if let Some(ref sb) = t.standby_session {
-                            match sb.last_state {
-                                AgentState::NeedsYou => {
-                                    has_needs_you = true;
-                                    PaneSummaryStatus::NeedsYou
-                                }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
-                                    has_blocked = true;
-                                    PaneSummaryStatus::Blocked
-                                }
-                                AgentState::Working => {
-                                    active_agents += 1;
-                                    PaneSummaryStatus::Active
-                                }
-                                AgentState::Idle
-                                | AgentState::Interrupted
-                                | AgentState::Completed => PaneSummaryStatus::Idle,
-                            }
-                        } else {
-                            PaneSummaryStatus::Idle
-                        };
+                            } else {
+                                PaneSummaryStatus::Idle
+                            };
                         (name, status)
                     }
                     crate::host::pane::Pane::View(a) => {
@@ -146,7 +151,9 @@ impl ContextState {
                                     has_needs_you = true;
                                     PaneSummaryStatus::NeedsYou
                                 }
-                                AgentState::Failed | AgentState::Blocked | AgentState::ExitedUnreported => {
+                                AgentState::Failed
+                                | AgentState::Blocked
+                                | AgentState::ExitedUnreported => {
                                     has_blocked = true;
                                     PaneSummaryStatus::Blocked
                                 }
@@ -410,7 +417,9 @@ mod tests {
             }))
         };
 
-        child_win.panes.insert(10, make_view_pane(10, AgentState::Working));
+        child_win
+            .panes
+            .insert(10, make_view_pane(10, AgentState::Working));
         let windows = vec![make_empty_window(1, 100), child_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Working);

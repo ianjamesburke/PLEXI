@@ -290,7 +290,7 @@ impl TrustLabel {
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
             }
-            Self::ReviewedNative => "Reviewed native process — human-reviewed; not sandboxed",
+            Self::ReviewedNative => "Reviewed Python plugin — human-reviewed",
             Self::SandboxedWasm => "Sandboxed WASM — scoped host imports are capability-gated",
         }
     }
@@ -425,10 +425,11 @@ fn read_manifest(plugin_dir: &Path) -> Result<PluginManifest, PackageError> {
         return Err(PackageError::ManifestMissing(plugin_dir.to_path_buf()));
     }
     let raw = fs::read_to_string(&manifest_path).map_err(|e| io_err("read", &manifest_path, e))?;
-    let manifest: PluginManifest = toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
-        path: manifest_path.clone(),
-        source: Box::new(e),
-    })?;
+    let manifest: PluginManifest =
+        toml::from_str(&raw).map_err(|e| PackageError::ManifestParse {
+            path: manifest_path.clone(),
+            source: Box::new(e),
+        })?;
 
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(PackageError::UnsupportedSchemaVersion {
@@ -778,7 +779,11 @@ pub fn build_package(plugin_dir: &Path, out: Option<&Path>) -> Result<PathBuf, P
     let descriptor_toml = toml::to_string_pretty(&descriptor).map_err(|e| {
         // Serialization of an in-memory struct failing is unexpected; surface
         // it as an io-class error on the output path.
-        io_err("serialize PACKAGE.toml", plugin_dir, std::io::Error::other(e))
+        io_err(
+            "serialize PACKAGE.toml",
+            plugin_dir,
+            std::io::Error::other(e),
+        )
     })?;
 
     let out_path = match out {
@@ -1584,7 +1589,11 @@ values = ["hi"]
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
         write_plugin(&plugin_dir, "pkg-path-bypass", "\"fs.read\"");
-        fs::write(plugin_dir.join("main.py"), "open('../secrets.txt').read()\n").unwrap();
+        fs::write(
+            plugin_dir.join("main.py"),
+            "open('../secrets.txt').read()\n",
+        )
+        .unwrap();
 
         let err = validate_dir(&plugin_dir).unwrap_err();
         assert!(
@@ -1702,10 +1711,7 @@ values = ["hi"]
             trust_label(&r, &["welcome", "snake"], false),
             TrustLabel::FirstPartyCore
         );
-        assert_eq!(
-            TrustLabel::FirstPartyCore.display_str(),
-            "Bundled"
-        );
+        assert_eq!(TrustLabel::FirstPartyCore.display_str(), "Bundled");
     }
 
     #[test]
@@ -1730,7 +1736,7 @@ values = ["hi"]
         );
         assert_eq!(
             TrustLabel::ReviewedNative.display_str(),
-            "Reviewed native process — human-reviewed; not sandboxed"
+            "Reviewed Python plugin — human-reviewed"
         );
     }
 
@@ -1750,8 +1756,9 @@ values = ["hi"]
         // launch path for this shape (stint 0411: PackageRuntime::Native and
         // TrustLabel::NativeUnreviewed described a package that could never
         // actually launch, so validate-time now rejects it outright).
-        let err = PackageRuntime::from_manifest(crate::app::registry::ManifestType::Python, "bin/app")
-            .unwrap_err();
+        let err =
+            PackageRuntime::from_manifest(crate::app::registry::ManifestType::Python, "bin/app")
+                .unwrap_err();
         assert!(
             matches!(err, PackageError::UnlaunchableEntry(ref e) if e == "bin/app"),
             "expected UnlaunchableEntry, got: {err}"

@@ -569,7 +569,7 @@ struct BuiltinPaletteView {
 }
 
 /// Builtin host plugins surfaced in the palette alongside registry plugins.
-const BUILTIN_APPS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
+const BUILTIN_VIEWS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
     id: "assistant",
     name: "Assistant",
     description: "Host-native AI chat for this workspace",
@@ -671,11 +671,18 @@ fn palette_pips_for_context(
         focused_idx,
         hidden_indices,
         activities,
-        static_health_pips: pane_ids.iter().enumerate().filter_map(|(idx, pane_id)| {
-            windows.iter().filter(|w| w.context_id == ctx_id)
-                .find_map(|w| w.panes.get(pane_id))
-                .is_some_and(|pane| pane.static_health_pip()).then_some(idx)
-        }).collect(),
+        static_health_pips: pane_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pane_id)| {
+                windows
+                    .iter()
+                    .filter(|w| w.context_id == ctx_id)
+                    .find_map(|w| w.panes.get(pane_id))
+                    .is_some_and(|pane| pane.static_health_pip())
+                    .then_some(idx)
+            })
+            .collect(),
     })
 }
 
@@ -781,7 +788,11 @@ fn palette_pane_rows_for_context(
                         Vec::new()
                     },
                     activities: vec![pane.effective_activity().cloned()],
-                    static_health_pips: if pane.static_health_pip() { vec![0] } else { Vec::new() },
+                    static_health_pips: if pane.static_health_pip() {
+                        vec![0]
+                    } else {
+                        Vec::new()
+                    },
                 },
                 recency_rank: pane_recency_rank(
                     host_active_window_id,
@@ -1361,7 +1372,7 @@ impl PlexiApp {
             })
             .collect();
 
-        for app in BUILTIN_APPS {
+        for app in BUILTIN_VIEWS {
             if self.config.core_only.unwrap_or(false) {
                 continue;
             }
@@ -2060,8 +2071,12 @@ impl PlexiApp {
             crate::host::keys::Action::ContextZoomOut => {
                 self.zoom_out_of_context();
             }
-            crate::host::keys::Action::NextTab => { self.cycle_tab(true); }
-            crate::host::keys::Action::PrevTab => { self.cycle_tab(false); }
+            crate::host::keys::Action::NextTab => {
+                self.cycle_tab(true);
+            }
+            crate::host::keys::Action::PrevTab => {
+                self.cycle_tab(false);
+            }
             crate::host::keys::Action::NewTab => {
                 self.new_tab(self.active_window, None, false, None, false, true);
                 self.mark_workspace_dirty();
@@ -2392,7 +2407,10 @@ impl PlexiApp {
                 match command.status() {
                     Ok(status) => status.code().unwrap_or(1),
                     Err(e) => {
-                        log::error!("user_command: shell step failed command_chars={} error={e}", rendered.chars().count());
+                        log::error!(
+                            "user_command: shell step failed command_chars={} error={e}",
+                            rendered.chars().count()
+                        );
                         1
                     }
                 }
@@ -2429,13 +2447,17 @@ impl PlexiApp {
         ws_root: Option<&std::path::Path>,
         default_pane_id: Option<u64>,
     ) -> i32 {
-        use crate::cli::args::{ViewCmd, Cli, Commands, PaneCmd};
+        use crate::cli::args::{Cli, Commands, PaneCmd, ViewCmd};
         use clap::Parser;
 
         let cli = match Cli::try_parse_from(argv) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("user_command: invalid CLI step argc={} error_kind={:?}", argv.len(), e.kind());
+                log::warn!(
+                    "user_command: invalid CLI step argc={} error_kind={:?}",
+                    argv.len(),
+                    e.kind()
+                );
                 return 2;
             }
         };
@@ -2751,7 +2773,8 @@ impl PlexiApp {
                 let resp_path = next_resp_path();
                 payload["response_file"] =
                     serde_json::Value::String(resp_path.to_string_lossy().into_owned());
-                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload) else {
+                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
+                else {
                     return 1;
                 };
                 self.handle_pane_ipc_request(req);
@@ -2793,7 +2816,8 @@ impl PlexiApp {
                 let resp_path = next_resp_path();
                 payload["response_file"] =
                     serde_json::Value::String(resp_path.to_string_lossy().into_owned());
-                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload) else {
+                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload)
+                else {
                     return 1;
                 };
                 self.handle_pane_ipc_request(req);
@@ -3064,12 +3088,17 @@ mod tests {
         );
 
         // A user override renders the override, not the default chord.
-        bindings.open_file_browser =
-            (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F);
+        bindings.open_file_browser = (
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::F,
+        );
         let overridden = palette_host_binding(&bindings, &command)
             .expect("overridden binding must still render a label");
         assert_eq!(overridden, bindings.open_file_browser);
-        assert_eq!(shortcut_label(overridden), shortcut_label(bindings.open_file_browser));
+        assert_eq!(
+            shortcut_label(overridden),
+            shortcut_label(bindings.open_file_browser)
+        );
     }
 
     #[test]
@@ -3127,7 +3156,12 @@ mod tests {
                         "workspace config / edit commands are palette-only handoffs with no host chord"
                     );
                 }
-                PaletteCommand::Host(Action::NavBackView | Action::FocusHistoryForward | Action::NextContext | Action::PrevContext) => {
+                PaletteCommand::Host(
+                    Action::NavBackView
+                    | Action::FocusHistoryForward
+                    | Action::NextContext
+                    | Action::PrevContext,
+                ) => {
                     assert!(palette_host_binding(&bindings, &entry.command).is_none());
                 }
                 PaletteCommand::Host(action) => {

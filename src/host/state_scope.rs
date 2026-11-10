@@ -346,7 +346,8 @@ pub fn context_notes_dir(context_root: &Path) -> PathBuf {
 /// persists JSON, so it passes `json`). `context_root` is the root of the
 /// pane's context *at call time*, never a launch-captured copy.
 pub fn state_path(scope: StateScope, plugin_id: &str, ext: &str, context_root: &Path) -> PathBuf {
-    user_data_dir(scope, UserDataKind::PluginStates, context_root).join(format!("{plugin_id}.{ext}"))
+    user_data_dir(scope, UserDataKind::PluginStates, context_root)
+        .join(format!("{plugin_id}.{ext}"))
 }
 
 #[cfg(test)]
@@ -546,7 +547,11 @@ mod tests {
 
         // A genuine directory passes.
         let honest = tempfile::tempdir().expect("honest root");
-        let honest_dir = user_data_dir(StateScope::Context, UserDataKind::PluginStates, honest.path());
+        let honest_dir = user_data_dir(
+            StateScope::Context,
+            UserDataKind::PluginStates,
+            honest.path(),
+        );
         std::fs::create_dir_all(&honest_dir).expect("create app_states");
         let honest_path = state_file(
             StateScope::Context,

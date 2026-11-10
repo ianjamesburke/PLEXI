@@ -235,7 +235,10 @@ pub(crate) fn try_save_pending_notifications_to(
         .collect();
     let json = serde_json::to_string(&persisted).map_err(|e| e.to_string())?;
     crate::platform::fs::atomic_write(path, json.as_bytes()).map_err(|e| e.to_string())?;
-    log::info!("notify:persist: saved {} notification(s)", notifications.len());
+    log::info!(
+        "notify:persist: saved {} notification(s)",
+        notifications.len()
+    );
     Ok(())
 }
 
@@ -289,7 +292,7 @@ pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<Pen
                 timeout_secs: p.timeout_secs,
                 on_dismiss: p.on_dismiss,
                 enqueued_at,
-                tombstoned: true,      // source pane is gone
+                tombstoned: true, // source pane is gone
                 delivery_unknown: p.delivery_unknown,
                 deliver_after: None,   // snooze is session-only
                 origin_in_view: false, // session-only, re-derived each frame
@@ -439,12 +442,13 @@ impl PlexiApp {
         if let Some(win_idx) = window_idx {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_view_mut() {
-                    match app.runtime
-                        .try_queue_notify_action(crate::protocol::PlexiEvent::NotifyAction {
+                    match app.runtime.try_queue_notify_action(
+                        crate::protocol::PlexiEvent::NotifyAction {
                             notify_id,
                             action_label,
                             value,
-                        }) {
+                        },
+                    ) {
                         Some(Ok(())) => delivered = true,
                         Some(Err(crate::host::wasm_python::OutboundEventError::Encode(error))) => {
                             log::warn!("notify:action: plugin event encoding failed: {error}");
@@ -455,7 +459,9 @@ impl PlexiApp {
                             failed = true;
                             uncertain = true;
                         }
-                        None => log::info!("notify:action: plugin runtime does not support notification responses"),
+                        None => log::info!(
+                            "notify:action: plugin runtime does not support notification responses"
+                        ),
                     }
                 }
             }
@@ -743,7 +749,10 @@ impl PlexiApp {
 
     pub(crate) fn try_save_notifications(&mut self) -> Result<(), String> {
         self.prune_notification_images();
-        try_save_pending_notifications_to(&self.pending_notifications, &crate::config::config_dir().join("notifications.json"))
+        try_save_pending_notifications_to(
+            &self.pending_notifications,
+            &crate::config::config_dir().join("notifications.json"),
+        )
     }
 
     /// Drop decoded image state as soon as its notification leaves the live

@@ -14,11 +14,11 @@ pub mod commands;
 pub mod harness;
 pub mod model;
 pub mod render;
+#[cfg(test)]
+mod send_tests;
 pub mod settings;
 pub mod skills;
 pub mod store;
-#[cfg(test)]
-mod send_tests;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -27,8 +27,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
 use crate::app::view_trait::ViewCommand;
-use crate::app::view_trait::{View, ViewRenderContext, KeyDisposition};
-use crate::protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
+use crate::app::view_trait::{KeyDisposition, View, ViewRenderContext};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
@@ -38,6 +37,7 @@ use crate::platform::text;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ReasoningEffort};
 use crate::plexi_ai::turn_loop::TurnDelta;
 use crate::plexi_ai::CancelToken;
+use crate::protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 
 /// Owned streaming delta forwarded from the broker worker thread to the UI
 /// thread (`TurnDelta` borrows from the stream buffer and cannot cross the
@@ -219,7 +219,9 @@ enum PermissionReply {
     Deny,
     /// A durable choice did not reach disk. The call does not run, and the
     /// audit does not record an allow.
-    NotSaved { message: String },
+    NotSaved {
+        message: String,
+    },
 }
 
 /// Tool-flow notifications from the broker worker thread to the pane.
@@ -634,11 +636,8 @@ impl AiBroker for ScriptedToolBroker {
             );
         };
         log::info!("assistant: scripted model calling {name}");
-        let result = dispatcher.dispatch_call(
-            format!("script-{}", uuid::Uuid::new_v4()),
-            &name,
-            input,
-        );
+        let result =
+            dispatcher.dispatch_call(format!("script-{}", uuid::Uuid::new_v4()), &name, input);
         let text = result
             .error
             .clone()
@@ -1652,7 +1651,8 @@ impl AssistantView {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(build_exec::DEFAULT_BUILD_TIMEOUT_MS)
             .min(build_exec::MAX_BUILD_TIMEOUT_MS);
-        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+        let _ = self.audit.append(&AuditEvent::now(
+            &self.audit_actor(),
             "build_command",
             HOST_TOOL_BUILD_RUN,
             "requested",
@@ -1723,7 +1723,8 @@ impl AssistantView {
         if !matches!(tool, HOST_TOOL_SUBSCRIBE | HOST_TOOL_UNSUBSCRIBE) {
             log::info!("assistant: queueing native host tool '{tool}'");
             if tool == HOST_TOOL_TERMINALS_RUN {
-                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                let _ = self.audit.append(&AuditEvent::now(
+                    &self.audit_actor(),
                     "terminal_command",
                     HOST_TOOL_TERMINALS_RUN,
                     "requested",
@@ -1731,7 +1732,8 @@ impl AssistantView {
                 ));
             }
             if tool == HOST_TOOL_NET_FETCH {
-                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                let _ = self.audit.append(&AuditEvent::now(
+                    &self.audit_actor(),
                     "network_request",
                     HOST_TOOL_NET_FETCH,
                     "requested",
@@ -1739,7 +1741,8 @@ impl AssistantView {
                 ));
             }
             if matches!(tool, HOST_TOOL_FILES_WRITE | HOST_TOOL_FILES_EDIT) {
-                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                let _ = self.audit.append(&AuditEvent::now(
+                    &self.audit_actor(),
                     "file_mutation",
                     tool,
                     "requested",
@@ -1791,14 +1794,24 @@ impl AssistantView {
                 match self.event_stream_decision(&app, &event) {
                     Decision::Allow => {
                         self.subscribe_stream(&app, &event);
-                        let _ = self.audit
-                            .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "ok", "granted"));
+                        let _ = self.audit.append(&AuditEvent::now(
+                            &self.audit_actor(),
+                            "subscribe",
+                            &target,
+                            "ok",
+                            "granted",
+                        ));
                         let _ = reply.send(ok(format!("subscribed to {target}")));
                     }
                     Decision::Deny => {
                         log::info!("assistant: subscribe to '{target}' denied by grant");
-                        let _ = self.audit
-                            .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "deny", "grant"));
+                        let _ = self.audit.append(&AuditEvent::now(
+                            &self.audit_actor(),
+                            "subscribe",
+                            &target,
+                            "deny",
+                            "grant",
+                        ));
                         let _ = reply.send(err(format!(
                             "permission_denied: subscription to {target} is denied"
                         )));
@@ -1830,7 +1843,8 @@ impl AssistantView {
             }
             HOST_TOOL_UNSUBSCRIBE => {
                 let removed = self.unsubscribe_stream(&target);
-                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                let _ = self.audit.append(&AuditEvent::now(
+                    &self.audit_actor(),
                     "unsubscribe",
                     &target,
                     if removed > 0 { "ok" } else { "noop" },
@@ -2010,7 +2024,11 @@ impl AssistantView {
         // pauses gracefully later instead of being cut short mid-build.
         const APP_BUILD_MAX_TOOL_ITERATIONS: usize = 60;
         let client = nonempty_tag(client).or_else(|| agent.client.clone());
-        let kind = match kind.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+        let kind = match kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
             Some(text) => match crate::plexi_ai::ledger::RunKind::parse(text) {
                 Ok(kind) => Some(kind),
                 Err(error) => {
@@ -2022,7 +2040,10 @@ impl AssistantView {
         };
         let request = AiBrokerRequest {
             plugin_id: "assistant".to_string(),
-            model_mode: match tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
+            model_mode: match tier {
+                ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow,
+                ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast,
+            },
             concrete_model,
             reasoning_effort: effort,
             system,
@@ -2098,7 +2119,9 @@ impl AssistantView {
             if isolated {
                 self.fail_isolated_before_dispatch(&turn_id, &conversation_id, error);
             } else {
-                let effects = self.model.finish_turn(&self.model.conversation_id.clone(), Err(error));
+                let effects = self
+                    .model
+                    .finish_turn(&self.model.conversation_id.clone(), Err(error));
                 self.execute_effects(effects);
             }
         }
@@ -2115,7 +2138,9 @@ impl AssistantView {
         };
         log::info!(
             "assistant: folder secret sheet pending={} actor={} resource={}",
-            sheet.pending_id, sheet.actor_id, sheet.resource_id
+            sheet.pending_id,
+            sheet.actor_id,
+            sheet.resource_id
         );
         self.model.permission_requested_scoped(
             crate::workspace::secrets::SECRET_READ_TOOL,
@@ -2243,7 +2268,8 @@ impl AssistantView {
                 } else {
                     Self::connector_target(&tool)
                 };
-                let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                let _ = self.audit.append(&AuditEvent::now(
+                    &self.audit_actor(),
                     "tool_call",
                     &audit_target,
                     if error.is_none() { "ok" } else { "error" },
@@ -2372,7 +2398,8 @@ impl AssistantView {
     /// are already in the transcript, so the turn's history ends with them.
     fn start_event_turn(&mut self, line_count: usize) {
         log::info!("assistant: auto-starting turn for {line_count} delivered event(s)");
-        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+        let _ = self.audit.append(&AuditEvent::now(
+            &self.audit_actor(),
             "auto_turn",
             "plugin_events",
             "ok",
@@ -2479,7 +2506,9 @@ impl AssistantView {
             ),
             PermissionChoice::AllowOnce => (
                 "allow_once",
-                PermissionReply::Allow { choice: PermissionChoice::AllowOnce },
+                PermissionReply::Allow {
+                    choice: PermissionChoice::AllowOnce,
+                },
             ),
             PermissionChoice::AllowSession => (
                 "allow_session",
@@ -2602,11 +2631,17 @@ impl AssistantView {
         }
         let target = format!("{app}::{event}");
         let (duration, source, decision_str) = match choice {
-            PermissionChoice::AllowOnce => (GrantDuration::Once, GrantSource::Session, "allow_once"),
-            PermissionChoice::AllowSession => {
-                (GrantDuration::Session, GrantSource::Session, "allow_session")
+            PermissionChoice::AllowOnce => {
+                (GrantDuration::Once, GrantSource::Session, "allow_once")
             }
-            PermissionChoice::AllowAlways => (GrantDuration::Always, GrantSource::User, "allow_always"),
+            PermissionChoice::AllowSession => (
+                GrantDuration::Session,
+                GrantSource::Session,
+                "allow_session",
+            ),
+            PermissionChoice::AllowAlways => {
+                (GrantDuration::Always, GrantSource::User, "allow_always")
+            }
             PermissionChoice::Deny | PermissionChoice::DenyAlways => {
                 if choice == PermissionChoice::DenyAlways {
                     let before = self.durable_grant_ids();
@@ -2708,7 +2743,8 @@ impl AssistantView {
             PermissionChoice::AllowAlways => "allow_always",
         };
         log::info!("assistant: permission sheet decision for stream '{target}' = {decision_str}");
-        let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+        let _ = self.audit.append(&AuditEvent::now(
+            &self.audit_actor(),
             "permission_decision",
             &target,
             decision_str,
@@ -2724,8 +2760,13 @@ impl AssistantView {
             ))
         } else {
             self.subscribe_stream(&app, &event);
-            let _ = self.audit
-                .append(&AuditEvent::now(&self.audit_actor(), "subscribe", &target, "ok", decision_str));
+            let _ = self.audit.append(&AuditEvent::now(
+                &self.audit_actor(),
+                "subscribe",
+                &target,
+                "ok",
+                decision_str,
+            ));
             ToolCallResult::ok_value(
                 serde_json::json!({"ok": true, "detail": format!("subscribed to {target}")}),
             )
@@ -3925,9 +3966,9 @@ impl AssistantView {
                 };
             match row.decision {
                 Decision::Ask => {
-                    let removed =
-                        self.grants()
-                            .revoke(ActorType::Agent, &actor_id, &row.target_id);
+                    let removed = self
+                        .grants()
+                        .revoke(ActorType::Agent, &actor_id, &row.target_id);
                     let unsubscribed = self.unsubscribe_stream(&row.target_id);
                     if removed > 0 {
                         self.grants().save();
@@ -3972,7 +4013,8 @@ impl AssistantView {
                         row.decision,
                     );
                     self.grants().save();
-                    let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                    let _ = self.audit.append(&AuditEvent::now(
+                        &self.audit_actor(),
                         "permission_set",
                         &row.target_id,
                         row.decision.as_str(),
@@ -4028,9 +4070,7 @@ impl AssistantView {
         } else {
             ASSISTANT_ACTOR_ID.to_string()
         };
-        let removed = self
-            .grants()
-            .revoke(ActorType::Agent, &actor_id, target_id);
+        let removed = self.grants().revoke(ActorType::Agent, &actor_id, target_id);
         let unsubscribed = self.unsubscribe_stream(target_id);
         let text = if removed == 0 && unsubscribed == 0 {
             format!("No grants found for '{target_id}'. See /permissions for target ids.")
@@ -4038,7 +4078,8 @@ impl AssistantView {
             if removed > 0 {
                 self.grants().save();
             }
-            let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+            let _ = self.audit.append(&AuditEvent::now(
+                &self.audit_actor(),
                 "revoke",
                 target_id,
                 "revoked",
@@ -4135,7 +4176,8 @@ impl AssistantView {
         let text = format!("{tool} — denied by user");
         log::info!(
             "assistant: external deny row conversation_id={} turn_id={} tool={tool}",
-            owner.conversation_id, owner.turn_id
+            owner.conversation_id,
+            owner.turn_id
         );
         if !self.side_transcripts.contains_key(&owner.conversation_id) {
             let loaded = self.store.load_turns(&owner.conversation_id);
@@ -4156,7 +4198,12 @@ impl AssistantView {
         }
     }
 
-    fn fail_isolated_before_dispatch(&mut self, turn_id: &str, conversation_id: &str, error: String) {
+    fn fail_isolated_before_dispatch(
+        &mut self,
+        turn_id: &str,
+        conversation_id: &str,
+        error: String,
+    ) {
         self.side_in_flight = None;
         self.side_conversation = None;
         self.deliver_external_turn(turn_id, Some(conversation_id), &Err(error));
@@ -4267,7 +4314,11 @@ impl AssistantView {
                     "error": error,
                 }),
             };
-            let state = if result.is_ok() { "succeeded" } else { "failed" };
+            let state = if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            };
             log::info!(
                 "assistant: external turn reply request_id={} turn_id={turn_id} state={state}",
                 waiter.request_id
@@ -4543,7 +4594,8 @@ impl AssistantView {
             .insert(outcome.conversation_id.clone(), turns);
         log::info!(
             "assistant: isolated turn finished conversation_id={} turn_id={}",
-            outcome.conversation_id, outcome.turn_id
+            outcome.conversation_id,
+            outcome.turn_id
         );
         self.start_next_isolated();
     }
@@ -4791,10 +4843,7 @@ impl View for AssistantView {
         if compact_visible_this_frame && self.run_pending_compaction() {
             ui.ctx().request_repaint();
         }
-        if self.model.streaming.in_flight
-            || self.isolated_reply_pending()
-            || self.compact_pending
-        {
+        if self.model.streaming.in_flight || self.isolated_reply_pending() || self.compact_pending {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -4941,7 +4990,8 @@ mod tests {
         let broker = Arc::new(CapturingBroker::default());
         let mut app = AssistantView::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
 
-        app.model.composer = "Build me a tiny counter plugin with plus and minus buttons".to_string();
+        app.model.composer =
+            "Build me a tiny counter plugin with plus and minus buttons".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
         wait_for_turn(&mut app);
@@ -5725,7 +5775,7 @@ enabled = ["allowed.tool"]
             source: GrantSource::User,
             created_at: 0,
             expires_at: None,
-                    ..GrantRecord::unbound()
+            ..GrantRecord::unbound()
         });
     }
 
@@ -5839,9 +5889,10 @@ enabled = ["allowed.tool"]
         });
         // Allow-once is an in-memory consumed grant. It is not written to disk.
         assert!(
-            app.grants().records().iter().any(|record| {
-                record.duration == GrantDuration::Once && record.consumed
-            }),
+            app.grants()
+                .records()
+                .iter()
+                .any(|record| { record.duration == GrantDuration::Once && record.consumed }),
             "allow-once records a consumed grant"
         );
         assert!(
@@ -5928,7 +5979,8 @@ enabled = ["allowed.tool"]
         pump_until(&mut app, "permission sheet", |a| {
             a.model.pending_permission.is_some()
         });
-        let _unreadable = crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
+        let _unreadable =
+            crate::broker::host_key::UnreadableMacKey::acquire().delete_needs_prompt();
         app.resolve_permission(PermissionChoice::AllowAlways);
 
         let result = result_rx
@@ -5996,10 +6048,7 @@ enabled = ["allowed.tool"]
         let events = app.audit.tail(10);
         assert_eq!(events[0].kind, "permission_decision");
         assert_eq!(events[0].decision, "deny");
-        assert!(
-            app.grants().records().is_empty(),
-            "deny persists nothing"
-        );
+        assert!(app.grants().records().is_empty(), "deny persists nothing");
 
         tool_dispatch::unregister(9103);
     }
@@ -6145,8 +6194,8 @@ enabled = ["allowed.tool"]
 
     // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
 
-    use crate::protocol::{PluginEventActor, EventStreamDecl};
     use crate::host::plugin_timeline::EmittedEvent;
+    use crate::protocol::{EventStreamDecl, PluginEventActor};
 
     /// Matches the `context_id` `test_plugin_with_timeline` constructs its
     /// `AssistantView` with, so the assistant's subscriptions (viewer
@@ -6378,7 +6427,12 @@ enabled = ["allowed.tool"]
         );
 
         // App-emitted event caused by the assistant's tool call: row, no turn.
-        emit_move(&timeline, PluginEventActor::View, None, Some("agent:assistant"));
+        emit_move(
+            &timeline,
+            PluginEventActor::View,
+            None,
+            Some("agent:assistant"),
+        );
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 2);
         assert!(
@@ -6638,10 +6692,7 @@ enabled = ["allowed.tool"]
         );
         assert!(app.live_subs.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
-        assert!(
-            app.grants().records().is_empty(),
-            "deny persists nothing"
-        );
+        assert!(app.grants().records().is_empty(), "deny persists nothing");
     }
 
     #[test]
@@ -6794,7 +6845,8 @@ enabled = ["allowed.tool"]
     #[test]
     fn error_turn_appends_error_row() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantView::new(ws.path().to_path_buf(), MockBroker::error(), ws.path(), 1);
+        let mut app =
+            AssistantView::new(ws.path().to_path_buf(), MockBroker::error(), ws.path(), 1);
         app.model.composer = "trigger error".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);

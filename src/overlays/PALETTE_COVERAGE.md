@@ -45,7 +45,7 @@ duplicate an editor or picker merely to claim coverage.
 | Move up from a sub-context | `Zoom out of context` acts on the current context. | `Action::ContextZoomOut`, `PlexiApp::zoom_out_of_context`; CLI `ContextCmd::ZoomOut`. | PAL-03. |
 | Open a terminal pane or tab; split beside/below | `New terminal` offers the everyday placements (right, down, tab). Existing `Split right` and `Split down` remain aliases. | `Action::{SplitRight,SplitDown,NewTab}`; CLI `PaneCmd::New`. | Split entries present; tab and target/parameter flow are PAL-03. |
 | Rename, close, hide/reveal, or zoom a selected pane | Select an explicit pane target. Close must retain the current close confirmation behavior. | `Action::{RenamePane,ClosePane,HidePane,ToggleZoom}`, `PlexiApp::open_rename_for_focused`, `execute_close_pane`. | PAL-03. |
-| Move through recent work | `Back` and `Forward` operate on host focus history; `Back` preserves app navigation precedence. | `Action::{NavBackApp,FocusHistoryForward}`, `try_nav_back_focused`, `step_focus_history_back`, `step_focus_history_forward`. | PAL-03. |
+| Move through recent work | `Back` and `Forward` operate on host focus history; `Back` preserves app navigation precedence. | `Action::{NavBackView,FocusHistoryForward}`, `try_nav_back_focused`, `step_focus_history_back`, `step_focus_history_forward`. | PAL-03. |
 | Browse notes or make a quick note | `Browse notes` opens the picker; Quick Note and Scratch Pad stay searchable. | `Action::OpenNotesPicker` / `PlexiApp::open_notes_picker`; `Action::{OpenQuickNote,OpenScratchpad}`. | Quick Note and Scratch Pad present; picker entry is PAL-04. |
 | Open or reload the applicable configuration | `Open config` identifies effective scope; `Reload configuration` executes host reload. Raw key editing is not required. | `Action::{OpenConfig,ReloadConfig}`, `PlexiApp::reload_config`; CLI `ConfigCmd::{Edit,Check,Get,List,Set,Reset}`. | Open config present but scope is implicit; PAL-04. |
 | Review pending notifications | `Review notifications` opens the existing notification UI. Posting/dismissing a producer notification remains CLI-only. | `Action::ToggleNotificationModal`; `PlexiApp::show_notification_modal`. | PAL-04. |
@@ -83,7 +83,7 @@ terminal handoff or a designed UI, but that is not V1 coverage.
 | Surface | Disposition | Reason |
 | --- | --- | --- |
 | `routine` | Beta/excluded | `ReleaseFeature::Routines`; no palette promotion. |
-| Marketplace: `account`, `app publish/browse/search`, bare marketplace-ID install | Beta/excluded | `ReleaseFeature::Marketplace`; release gate remains authoritative. |
+| Marketplace: `account`, `plugin publish/browse/search`, bare marketplace-ID install | Beta/excluded | `ReleaseFeature::Marketplace`; release gate remains authoritative. |
 | `events mcp-config` | Beta/excluded | `ReleaseFeature::McpClient`; do not expose an MCP credential from palette. |
 | Assistant and mesh capabilities | Excluded | Existing `Action::OpenAssistant` remains release-gated behavior; PAL-02 does not broaden it. |
 | Automation pipes, typed pipes, and pane drop workflows | Excluded | App-to-app and binary transport are not human-trust palette actions. This document does not change their transport contracts. |

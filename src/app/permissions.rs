@@ -544,10 +544,14 @@ impl PermissionStore {
     pub fn iter_wasm_entries(
         &self,
     ) -> impl Iterator<Item = (&str, &str, &str, PermissionState)> + '_ {
-        self.file.data.wasm_entries.iter().filter_map(|(key, &state)| {
-            let (plugin_id, workspace, capability_id) = Self::parse_entry_key(key)?;
-            Some((plugin_id, workspace, capability_id, state))
-        })
+        self.file
+            .data
+            .wasm_entries
+            .iter()
+            .filter_map(|(key, &state)| {
+                let (plugin_id, workspace, capability_id) = Self::parse_entry_key(key)?;
+                Some((plugin_id, workspace, capability_id, state))
+            })
     }
 
     /// Iterate all stored entries as `(plugin_id, workspace_path, capability, state)`.
@@ -716,7 +720,11 @@ impl PermissionStore {
         self.file
             .data
             .wasm_entries
-            .get(&Self::wasm_entry_key(plugin_id, workspace_root, capability_id))
+            .get(&Self::wasm_entry_key(
+                plugin_id,
+                workspace_root,
+                capability_id,
+            ))
             .copied()
     }
 
@@ -739,7 +747,10 @@ impl PermissionStore {
         let label = self.file.label();
         if let Err(error) = crate::broker::seal::write_toml(&self.file.path, label, &self.file.data)
         {
-            log::error!("{label}: failed to save {}: {error}", self.file.path.display());
+            log::error!(
+                "{label}: failed to save {}: {error}",
+                self.file.path.display()
+            );
         } else {
             crate::broker::integrity::note_saved_file(&self.file.path);
         }

@@ -131,7 +131,9 @@ impl RegistryViews {
         if !self.views.contains_key(&key) {
             return;
         }
-        let still_referenced = router.iter().any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
+        let still_referenced = router
+            .iter()
+            .any(|c| crate::platform::path::canonical_or_self(&c.root) == key);
         if !still_referenced {
             log::info!(
                 "registry_views: dropping orphaned root={} (no live context references it)",
@@ -270,7 +272,10 @@ mod tests {
         let global = tempfile::tempdir().unwrap();
         let root = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        write_plugin(&root.path().join(&channel_dir).join("plugins"), "shared-app");
+        write_plugin(
+            &root.path().join(&channel_dir).join("plugins"),
+            "shared-app",
+        );
 
         let router = WorkspaceRouter::new(vec![ctx(1, root.path()), ctx(2, root.path())], 0);
         let mut views = RegistryViews::new_with_global(global.path());
@@ -356,7 +361,10 @@ mod tests {
         let old_root = tempfile::tempdir().unwrap();
         let new_root = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        write_plugin(&new_root.path().join(&channel_dir).join("plugins"), "new-app");
+        write_plugin(
+            &new_root.path().join(&channel_dir).join("plugins"),
+            "new-app",
+        );
 
         let mut views = RegistryViews::new_with_global(global.path());
         // Prime the old root's view before the "move".

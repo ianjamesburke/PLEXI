@@ -331,10 +331,7 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
         .as_ref()
         .unwrap()
         .prompt_line();
-    assert!(
-        prompt.contains("requested from a CLI turn"),
-        "{prompt}"
-    );
+    assert!(prompt.contains("requested from a CLI turn"), "{prompt}");
 
     let (_dir, next_path) = response_path();
     submit(&h, &next_path, "phone-next", "while the sheet is up");
@@ -357,7 +354,10 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
     // file so a reader waiting on it sees the outcome.
     let after = pump_until_terminal(&path);
     assert_eq!(after["state"], "failed");
-    assert!(after["error"].as_str().unwrap_or("").contains("denied"), "{after}");
+    assert!(
+        after["error"].as_str().unwrap_or("").contains("denied"),
+        "{after}"
+    );
     assert!(after.get("reply").is_none());
     let assistant = h.assistant_mut(pane);
     assert!(

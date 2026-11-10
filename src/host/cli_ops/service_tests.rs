@@ -924,7 +924,11 @@ fn package_content_change_requires_reapproval() {
     let mut rig = Rig::new();
     rig.remember(ApprovalChoice::Always);
     let launched = rig.launches().len();
-    std::fs::write(rig.plugin_dir.join("main.py"), "# entry\nprint('changed')\n").unwrap();
+    std::fs::write(
+        rig.plugin_dir.join("main.py"),
+        "# entry\nprint('changed')\n",
+    )
+    .unwrap();
     assert!(rig
         .submit("p", "fixture.echo", json!({"word": "x"}))
         .is_empty());
@@ -1224,5 +1228,7 @@ fn an_plugin_id_that_could_escape_its_directory_is_refused() {
     let reply = rig.submit("e", "fixture.echo", json!({"word": "x"}));
     assert_eq!(code_of(&reply[0]), "package_invalid", "{}", reply[0]);
     assert!(!crate::host::cli_ops::plugin_id_is_path_safe(".."));
-    assert!(crate::host::cli_ops::plugin_id_is_path_safe("stint-board.v2"));
+    assert!(crate::host::cli_ops::plugin_id_is_path_safe(
+        "stint-board.v2"
+    ));
 }

@@ -554,7 +554,10 @@ impl PublishClient {
         let text = resp
             .into_string()
             .map_err(|e| PublishError::Upload(e.to_string()))?;
-        log::info!("marketplace: submission accepted response_bytes={}", text.len());
+        log::info!(
+            "marketplace: submission accepted response_bytes={}",
+            text.len()
+        );
         Ok(SubmissionState::Submitted)
     }
 }
@@ -821,8 +824,7 @@ mod tests {
         let mut catalog_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
         catalog_entry.name = "Reviewed Notes".to_string();
         catalog_entry.description = "A free reviewed smoke plugin".to_string();
-        catalog_entry.trust_label =
-            "Reviewed native process — human-reviewed; not sandboxed".to_string();
+        catalog_entry.trust_label = "Reviewed Python plugin — human-reviewed".to_string();
         catalog_entry.reviewed_native = true;
         catalog_entry.checksum = checksum;
         catalog_entry.package_url = Some(package_url);

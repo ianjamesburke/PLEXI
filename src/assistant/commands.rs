@@ -27,7 +27,10 @@ pub const BUILT_IN_COMMANDS: &[(&str, &str)] = &[
         "tools",
         "Show plugin connector tools and event streams with their broker decisions.",
     ),
-    ("plugins", "Show plugin connectors available in the workspace."),
+    (
+        "plugins",
+        "Show plugin connectors available in the workspace.",
+    ),
     ("skills", "Show installed user and workspace skills."),
     (
         "context",

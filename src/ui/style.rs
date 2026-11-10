@@ -84,14 +84,26 @@ pub fn paint_pane_state_ring(
 ) {
     let inset = if focused { PANE_FOCUS_WIDTH } else { 0.0 } + PANE_STATE_WIDTH / 2.0;
     let center_rect = rect.shrink(inset);
-    if !center_rect.is_positive() { return; }
-    let r = (radius.nw as f32 - inset).max(0.0)
+    if !center_rect.is_positive() {
+        return;
+    }
+    let r = (radius.nw as f32 - inset)
+        .max(0.0)
         .min(center_rect.width().min(center_rect.height()) / 2.0);
     let centers = [
-        (center_rect.right_top() + egui::vec2(-r, r), -std::f32::consts::FRAC_PI_2),
+        (
+            center_rect.right_top() + egui::vec2(-r, r),
+            -std::f32::consts::FRAC_PI_2,
+        ),
         (center_rect.right_bottom() + egui::vec2(-r, -r), 0.0),
-        (center_rect.left_bottom() + egui::vec2(r, -r), std::f32::consts::FRAC_PI_2),
-        (center_rect.left_top() + egui::vec2(r, r), std::f32::consts::PI),
+        (
+            center_rect.left_bottom() + egui::vec2(r, -r),
+            std::f32::consts::FRAC_PI_2,
+        ),
+        (
+            center_rect.left_top() + egui::vec2(r, r),
+            std::f32::consts::PI,
+        ),
     ];
     let mut points = Vec::with_capacity(36);
     for (center, start) in centers {
@@ -102,7 +114,10 @@ pub fn paint_pane_state_ring(
     }
     let mut painter = painter.clone();
     painter.set_opacity(1.0);
-    painter.add(egui::Shape::closed_line(points, egui::Stroke::new(PANE_STATE_WIDTH, color)));
+    painter.add(egui::Shape::closed_line(
+        points,
+        egui::Stroke::new(PANE_STATE_WIDTH, color),
+    ));
 }
 
 /// Cover the parts of a rectangular pane outside its rounded silhouette.
@@ -134,9 +149,8 @@ pub fn mask_pane_corners(
         for i in 0..=segments {
             let angle = std::f32::consts::FRAC_PI_2 * i as f32 / segments as f32;
             let (sin, cos) = angle.sin_cos();
-            let point = |radius: f32| {
-                origin + egui::vec2(sx * (r - radius * sin), sy * (r - radius * cos))
-            };
+            let point =
+                |radius: f32| origin + egui::vec2(sx * (r - radius * sin), sy * (r - radius * cos));
             mesh.colored_vertex(point(r), background);
             mesh.colored_vertex(point((r - aa).max(0.0)), egui::Color32::TRANSPARENT);
         }

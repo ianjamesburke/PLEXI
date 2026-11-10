@@ -468,8 +468,12 @@ pub fn open_mcp_by_name(
 
     let title = format!("mcp: {name}");
     pane_new_cli(PaneNewCliArgs {
-        name: Some(&title), layout, from_pane_id, cwd,
-        plugin: Some("mcp-renderer"), mcp: &[name.to_string()],
+        name: Some(&title),
+        layout,
+        from_pane_id,
+        cwd,
+        plugin: Some("mcp-renderer"),
+        mcp: &[name.to_string()],
         ..Default::default()
     })
 }
@@ -605,10 +609,6 @@ fn review_raw_wasm_open(path: &Path) -> Result<(), String> {
     review_raw_wasm_open_with_reader(path, is_tty, &mut stdin)
 }
 
-
-
-
-
 /// Thin wrapper preserving the existing `plexi view open` call site.
 pub fn open_cli(
     type_id: &str,
@@ -626,7 +626,9 @@ pub fn open_cli(
         log::warn!(
             "open:cli: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead"
         );
-        eprintln!("warning: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead");
+        eprintln!(
+            "warning: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead"
+        );
     }
 
     // If type_id looks like a path to a plugin directory (contains manifest.toml), open by path.
@@ -908,8 +910,6 @@ mod open_cli_tests {
             );
         }
     }
-
-    
 }
 
 /// Read a line from stdin with echo disabled (for password-style input).

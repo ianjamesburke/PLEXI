@@ -48,7 +48,8 @@ fn snoozed_notification_invisible_then_visible() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: Some(wake_past), // already elapsed → visible
         origin_in_view: false,
     });
@@ -140,7 +141,8 @@ fn snoozed_notification_exempt_from_timeout() {
         timeout_secs: Some(60),
         on_dismiss: None,
         enqueued_at: std::time::Instant::now() - std::time::Duration::from_secs(600),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: Some(std::time::Instant::now() + std::time::Duration::from_secs(300)),
         origin_in_view: false,
     });
@@ -179,7 +181,8 @@ fn persist_roundtrip() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     };
@@ -363,7 +366,8 @@ fn window_scoped_notification_visible_only_on_source_window() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -457,7 +461,8 @@ fn auto_dismiss_removes_message_when_sender_focused() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -586,7 +591,8 @@ fn auto_dismiss_spares_required_notifications() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -632,7 +638,8 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     });
@@ -738,7 +745,8 @@ fn cue_test_notification(id: &str) -> PendingNotification {
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     }
@@ -1190,7 +1198,8 @@ fn parked_view_window_notification_narrows_without_active_window_provenance() {
             timeout_secs: None,
             on_dismiss: None,
             enqueued_at: std::time::Instant::now(),
-            tombstoned: false, delivery_unknown: false,
+            tombstoned: false,
+            delivery_unknown: false,
             deliver_after: None,
             origin_in_view: false,
         },
@@ -1724,7 +1733,8 @@ fn resurface_test_notification(id: &str, sender_pane_id: u64) -> PendingNotifica
         timeout_secs: None,
         on_dismiss: None,
         enqueued_at: std::time::Instant::now(),
-        tombstoned: false, delivery_unknown: false,
+        tombstoned: false,
+        delivery_unknown: false,
         deliver_after: None,
         origin_in_view: false,
     }

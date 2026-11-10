@@ -15,8 +15,8 @@
 //! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag
 //! to set the subscriber/emitter identity, so a CLI agent cannot spoof another.
 
-use std::io::{BufRead, BufReader, Write};
 use crate::platform::ipc::{self, IpcStream};
+use std::io::{BufRead, BufReader, Write};
 
 /// Connect to the running host's command socket. Mirrors the connect/cleanup
 /// behaviour of `send_to_socket`, but returns the live stream so the caller can
@@ -285,9 +285,11 @@ fn mcp_config_output(
     let (port, token) = match (port, token) {
         (Some(p), Some(t)) if !p.is_empty() && !t.is_empty() => (p, t),
         _ => {
-            return Err("PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
+            return Err(
+                "PLEXI_HOST_MCP_PORT / PLEXI_HOST_MCP_TOKEN not set — run this inside a \
                  Plexi terminal pane on a build with the host MCP server"
-                .to_string());
+                    .to_string(),
+            );
         }
     };
     let config = serde_json::json!({
@@ -452,11 +454,9 @@ mod pane_consumer_output_tests {
             ),
             1
         );
-        assert!(
-            String::from_utf8(errors)
-                .unwrap()
-                .contains("writing lifecycle output")
-        );
+        assert!(String::from_utf8(errors)
+            .unwrap()
+            .contains("writing lifecycle output"));
     }
 
     #[test]
@@ -494,13 +494,10 @@ mod pane_consumer_output_tests {
         // McpClient is off by default on every channel.
         for channel in [None, Some("main"), Some("rc-010"), Some("client")] {
             let _channel = channel.map(crate::config::set_test_channel);
-            let enabled = crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient);
-            let err = mcp_config_output(
-                enabled,
-                Some("54321".into()),
-                Some("s3cret-token".into()),
-            )
-            .expect_err("gate must refuse");
+            let enabled =
+                crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient);
+            let err = mcp_config_output(enabled, Some("54321".into()), Some("s3cret-token".into()))
+                .expect_err("gate must refuse");
             assert!(!err.contains("http://"), "{channel:?}: {err}");
             assert!(!err.contains("Bearer"), "{channel:?}: {err}");
             assert!(!err.contains("54321"), "{channel:?}: {err}");
@@ -519,8 +516,8 @@ mod pane_consumer_output_tests {
 
     #[test]
     fn mcp_config_prints_when_the_experiment_is_on() {
-        use crate::release::ReleaseFeature;
         use super::mcp_config_output;
+        use crate::release::ReleaseFeature;
         let _on = crate::release::set_test_experiments(&[ReleaseFeature::McpClient]);
         for channel in [Some("alpha"), Some("beta"), Some("pr-2259"), None] {
             let _channel = channel.map(crate::config::set_test_channel);

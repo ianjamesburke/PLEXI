@@ -243,10 +243,18 @@ impl PlexiApp {
                             )
                         })
                 });
-                let failure_detail = effective_detail.clone().filter(|s| !s.is_empty()).or_else(|| match t.exit_status {
-                    Some(crate::host::pane_lifecycle::ExitStatus::Code(0)) if state == AgentState::ExitedUnreported => Some("exited (0) without calling plexi agent done".into()),
-                    _ => None,
-                });
+                let failure_detail =
+                    effective_detail
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| match t.exit_status {
+                            Some(crate::host::pane_lifecycle::ExitStatus::Code(0))
+                                if state == AgentState::ExitedUnreported =>
+                            {
+                                Some("exited (0) without calling plexi agent done".into())
+                            }
+                            _ => None,
+                        });
                 let raw_harness = t
                     .agent_harness
                     .clone()
@@ -282,17 +290,16 @@ impl PlexiApp {
                     blocked_on,
                     failure_detail,
                     tail: if matches!(state, AgentState::Failed | AgentState::ExitedUnreported) {
-                        effective_detail
-                            .map(|reason| {
-                                format!(
-                                    "{}: {reason}",
-                                    if state == AgentState::Failed {
-                                        "failed"
-                                    } else {
-                                        "exited without report"
-                                    }
-                                )
-                            })
+                        effective_detail.map(|reason| {
+                            format!(
+                                "{}: {reason}",
+                                if state == AgentState::Failed {
+                                    "failed"
+                                } else {
+                                    "exited without report"
+                                }
+                            )
+                        })
                     } else {
                         t.capture_tail_preview()
                     },
@@ -576,7 +583,10 @@ mod tests {
             before.tasks[0].rows[0].display_state,
             crate::agent::fleet::DisplayState::Failed
         );
-        assert_eq!(before.tasks[0].rows[0].reason.as_deref(), Some("exited (3)"));
+        assert_eq!(
+            before.tasks[0].rows[0].reason.as_deref(),
+            Some("exited (3)")
+        );
 
         let dismissed = h.app.dismiss_fleet_agent(None, true);
         assert_eq!(dismissed, vec![pane_id]);
@@ -610,7 +620,10 @@ mod tests {
             t.agent_harness = Some("pi".into());
             t.name = Some("review-bot".into());
         }
-        let other_pane = h.app.split_focused(true, None, false, false, None).expect("second terminal");
+        let other_pane = h
+            .app
+            .split_focused(true, None, false, false, None)
+            .expect("second terminal");
         h.run_frames(3);
         h.focus_pane(other_pane);
 
@@ -738,9 +751,17 @@ mod tests {
         h.hidden_frame();
 
         assert_eq!(h.app.fleet_focused_pane(), Some(other_pane));
-        let terminal = h.app.windows[0].panes.get(&pi_pane).unwrap().as_terminal().unwrap();
+        let terminal = h.app.windows[0]
+            .panes
+            .get(&pi_pane)
+            .unwrap()
+            .as_terminal()
+            .unwrap();
         assert!(!terminal.fleet_seen, "agent should remain unseen");
-        assert_eq!(terminal.effective_agent_state().0, crate::protocol::AgentState::Completed);
+        assert_eq!(
+            terminal.effective_agent_state().0,
+            crate::protocol::AgentState::Completed
+        );
         let view_done = h.app.agents_view(crate::protocol::FleetFilter::All);
         assert_eq!(
             view_done.tasks[0].rows[0].display_state,
@@ -789,10 +810,7 @@ mod tests {
         let row = &view_live.tasks[0].rows[0];
         assert_eq!(row.role, "build-runner");
         assert_eq!(row.harness, "pi");
-        assert_eq!(
-            row.display_state,
-            crate::agent::fleet::DisplayState::Failed
-        );
+        assert_eq!(row.display_state, crate::agent::fleet::DisplayState::Failed);
         assert_eq!(row.reason.as_deref(), Some("exited (3)"));
 
         // Close pane: record_closed_agent_pane archives it into history

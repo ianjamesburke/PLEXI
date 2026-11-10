@@ -138,7 +138,7 @@
       "draw_notes_picker | let (status_rect, _) = ui.allocate_exact_size(": 1
     },
     "src/overlays/quick_note.rs": {
-      "draw_quick_note_modal | .allocate_exact_size(egui::vec2(max_width, height), egui::Sense::hover());": 1
+      "draw_quick_note_modal | let (rect, _) = ui.allocate_exact_size(": 1
     },
     "src/overlays/setup.rs": {
       "draw_welcome_screen | f.layout_no_wrap(\"PLEXI\".to_string(), font_id, colors.text_primary)": 1,

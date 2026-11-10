@@ -125,7 +125,7 @@ tips = true
 # [file_handlers]
 # Choose which app opens each file type from the File Explorer (Enter / double-
 # click). Keys are bare, lowercase extensions; values are `kind:value` specs:
-#   "app:<id>"      open in a Plexi app by its registry id (e.g. text-editor)
+#   "app:<id>"      stored config spelling: open a plugin default view by its registry id (e.g. text-editor)
 #   "os"            hand to the OS default opener (open / xdg-open)
 #   "cmd:<command>" reserved for a future release; falls back to "os" for now
 # A handler here overrides an app's own file_types association. Unmapped types
@@ -140,7 +140,7 @@ tips = true
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. Unset / "none" = login/signup fail closed. An account is

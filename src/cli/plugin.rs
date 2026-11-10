@@ -2731,7 +2731,7 @@ mod install_confirm_tests {
         let mut r = report();
         let reviewed_lines = trust_sheet_lines(&r, TrustLabel::ReviewedNative);
         assert!(reviewed_lines.iter().any(|line| {
-            line == "runtime:      python — Reviewed native process — human-reviewed; not sandboxed"
+            line == "runtime:      python — Reviewed Python plugin — human-reviewed"
         }));
 
         r.runtime = PackageRuntime::Wasm;

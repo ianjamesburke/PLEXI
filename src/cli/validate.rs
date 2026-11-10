@@ -74,7 +74,8 @@ pub fn validate_cli(path: &str) -> i32 {
     }
 
     // Check entry file
-    let entry = toml_val.get("runtime")
+    let entry = toml_val
+        .get("runtime")
         .and_then(|a| a.get("entry"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
@@ -87,7 +88,8 @@ pub fn validate_cli(path: &str) -> i32 {
             // 0411): the host only ever launches a WASM entry or a `.py`
             // entry — anything else can never actually run, so this dev-facing
             // validator must reject it too, not just the package/install path.
-            let manifest_type = if toml_val.get("runtime")
+            let manifest_type = if toml_val
+                .get("runtime")
                 .and_then(|a| a.get("kind"))
                 .and_then(|v| v.as_str())
                 == Some("wasm")

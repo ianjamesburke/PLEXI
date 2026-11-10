@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use crate::host::cli_ops::fixture;
-use crate::host::pane::{ViewRuntime, Pane};
+use crate::host::pane::{Pane, ViewRuntime};
 use crate::release::ReleaseFeature;
 
 use super::HostHarness;

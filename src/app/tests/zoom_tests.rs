@@ -36,7 +36,8 @@ fn send_key(h: &mut HostHarness, modifiers: Modifiers, key: Key) {
 /// Both ends of the ladder no-op with an edge bump.
 #[test]
 fn zoom_ladder_round_trip_and_ghost_restore_r31() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -66,13 +67,11 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
     assert_eq!(ghost.column_idx, 1);
     assert_eq!(ghost.pane_id, p2);
 
-
     // Cmd+Esc at TreeAtlas -> no-op + edge bump.
     let bumps_atlas = h.app.zoom.edge_bump_count;
     assert!(!h.app.zoom_out_or_close_surface());
     assert_eq!(h.app.zoom.level, ZoomLevel::TreeAtlas);
     assert_eq!(h.app.zoom.edge_bump_count, bumps_atlas + 1);
-
 
     // Cmd+Enter: TreeAtlas -> Columns, restoring exact ghost pane p2.
     assert!(h.app.zoom_in_level());
@@ -85,7 +84,8 @@ fn zoom_ladder_round_trip_and_ghost_restore_r31() {
 /// pressing `q` falls back cleanly to a surviving column neighbour in that context.
 #[test]
 fn ghost_restore_falls_back_when_origin_pane_closed_r31() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -133,7 +133,8 @@ fn column_width_presets_and_tile_content_tiers_r33() {
 /// and `Enter` dive (asking node -> asking pane + DecisionOverlay open; calm node -> last active pane).
 #[test]
 fn tree_atlas_layout_traversal_and_dive_r35() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let root_pane = h.add_test_pane();
     let root_ctx_id = h.app.router.active().context_id;
@@ -258,7 +259,8 @@ fn tree_atlas_layout_traversal_and_dive_r35() {
 
 #[test]
 fn tree_atlas_layout_multi_root_hub_top_down() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let root1_pane = h.add_test_pane();
     let root1_id = h.app.router.active().context_id;
@@ -482,7 +484,8 @@ fn decision_overlay_verdict_and_esc_handling_r39() {
 /// R40: Strict input ownership across zoom levels and overlays, and R41/R42 checks.
 #[test]
 fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let p1 = h.add_test_pane();
     let p2 = h.add_test_pane();
@@ -497,9 +500,17 @@ fn strict_input_ownership_and_legacy_removal_r40_r41_r42() {
     assert!(h.app.pane_qualifies_for_input(p1));
     assert!(!h.app.pane_qualifies_for_input(p2));
     assert!(!h.app.pane_qualifies_for_input(p3));
-    h.app.windows[0].panes.get_mut(&p1).unwrap().set_hidden(true);
+    h.app.windows[0]
+        .panes
+        .get_mut(&p1)
+        .unwrap()
+        .set_hidden(true);
     assert!(!h.app.pane_qualifies_for_input(p1));
-    h.app.windows[0].panes.get_mut(&p1).unwrap().set_hidden(false);
+    h.app.windows[0]
+        .panes
+        .get_mut(&p1)
+        .unwrap()
+        .set_hidden(false);
     assert!(h.app.pane_qualifies_for_input(p1));
 
     // When AttentionQueue list is open: no pane qualifies for input.
@@ -556,13 +567,23 @@ fn integrity_notice_sorts_below_asks_dedupes_and_acknowledges() {
     }
 
     let pane = h.add_test_pane();
-    h.app.enqueue_ask("ask-1", pane, "cargo publish", 1_000, Vec::new());
+    h.app
+        .enqueue_ask("ask-1", pane, "cargo publish", 1_000, Vec::new());
     h.app.sync_attention_queue();
 
     let items = &h.app.attention_queue.items;
-    assert_eq!(items.iter().filter(|b| b.category == QueueCategory::Notice).count(), 1);
+    assert_eq!(
+        items
+            .iter()
+            .filter(|b| b.category == QueueCategory::Notice)
+            .count(),
+        1
+    );
     assert_eq!(items.first().map(|b| b.category), Some(QueueCategory::Ask));
-    assert_eq!(items.last().map(|b| b.category), Some(QueueCategory::Notice));
+    assert_eq!(
+        items.last().map(|b| b.category),
+        Some(QueueCategory::Notice)
+    );
     assert_eq!(h.app.attention_queue.ask_count(), 1);
 
     let notice_id = items.last().unwrap().id.clone();
@@ -681,13 +702,12 @@ fn esc_swallowed_when_overlay_open() {
     );
 }
 
-
-
 /// Cmd+Enter in TreeAtlas must dive into the highlighted context, exactly like bare Enter,
 /// even after the selection moved off the context that was focused when zooming out.
 #[test]
 fn cmd_enter_enters_selected_atlas_context_like_enter() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     let ctx0_p = h.add_test_pane();
     let ctx0_id = h.app.router.active().context_id;
@@ -891,7 +911,8 @@ fn cmd_enter_toggles_focused_pane_zoom_and_restores_geometry_focus_and_scroll() 
 
 #[test]
 fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
-    let _experiments = crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::TreeAtlas]);
     let mut h = HostHarness::new();
     // Root 1 (active)
     let r1_pane = h.add_test_pane();
@@ -940,10 +961,19 @@ fn tree_atlas_directional_navigation_uneven_multi_root_hierarchy() {
     h.app.set_context_columns(r4_id, vec![vec![r4_pane]]);
 
     // Parked context: marked parked
-    let parked_id = h.app.create_context_without_pty("parked-child", Some(r1_id));
+    let parked_id = h
+        .app
+        .create_context_without_pty("parked-child", Some(r1_id));
     let parked_pane = h.add_test_pane();
-    h.app.set_context_columns(parked_id, vec![vec![parked_pane]]);
-    if let Some(idx) = h.app.router.as_slice().iter().position(|c| c.context_id == parked_id) {
+    h.app
+        .set_context_columns(parked_id, vec![vec![parked_pane]]);
+    if let Some(idx) = h
+        .app
+        .router
+        .as_slice()
+        .iter()
+        .position(|c| c.context_id == parked_id)
+    {
         h.app.router.get_mut(idx).parked = true;
     }
 

@@ -1,9 +1,9 @@
 //! Tiled windows, parent-scope navigation, and the experimental tree atlas.
 //! (`SPEC.md` R31–R36, R40, R42).
 
-use crate::app::view_trait::KeyDisposition;
 use crate::app::attention_queue::QueueCategory;
 use crate::app::input_router::PlexiInput;
+use crate::app::view_trait::KeyDisposition;
 use crate::app::PlexiApp;
 use crate::host::keys::Direction;
 use crate::spatial::tiling::PaneId;
@@ -524,48 +524,101 @@ impl PlexiApp {
     /// wire shape remains compatible, but tile trees own sizing and visibility.
     pub fn active_strip_layout(&self) -> crate::strip::StripLayout {
         let window = &self.windows[self.active_window];
-        let canvas = window.tree.root().and_then(|root| window.tree.tiles.rect(root))
+        let canvas = window
+            .tree
+            .root()
+            .and_then(|root| window.tree.tiles.rect(root))
             .unwrap_or(Rect::ZERO);
         let strip = self.strip_for_context(window.context_id);
-        let column_for = |pane| strip.find_column_for_pane(pane)
-            .map(|index| strip.columns[index].id)
-            .unwrap_or(crate::strip::ColumnId(usize::MAX));
+        let column_for = |pane| {
+            strip
+                .find_column_for_pane(pane)
+                .map(|index| strip.columns[index].id)
+                .unwrap_or(crate::strip::ColumnId(usize::MAX))
+        };
         let focused = self.active_focused_pane_id();
-        let panes: Vec<_> = window.tree.active_tiles().into_iter().filter_map(|tile| {
-            let Tile::Pane(pane) = window.tree.tiles.get(tile)? else { return None };
-            if window.panes.get(pane)?.is_hidden() { return None; }
-            let rect = window.tree.tiles.rect(tile)?;
-            let clip = rect.intersect(canvas);
-            let visible = clip.width() > 0.5 && clip.height() > 0.5;
-            Some(crate::strip::layout::PaneLayout {
-                pane_id: *pane, column_id: column_for(*pane), rect: clip,
-                outer_rect: rect, clip_rect: clip, hit_rect: clip,
-                is_visible: visible, is_on_screen: visible,
-                is_partially_visible: false, is_focused: focused == Some(*pane),
+        let panes: Vec<_> = window
+            .tree
+            .active_tiles()
+            .into_iter()
+            .filter_map(|tile| {
+                let Tile::Pane(pane) = window.tree.tiles.get(tile)? else {
+                    return None;
+                };
+                if window.panes.get(pane)?.is_hidden() {
+                    return None;
+                }
+                let rect = window.tree.tiles.rect(tile)?;
+                let clip = rect.intersect(canvas);
+                let visible = clip.width() > 0.5 && clip.height() > 0.5;
+                Some(crate::strip::layout::PaneLayout {
+                    pane_id: *pane,
+                    column_id: column_for(*pane),
+                    rect: clip,
+                    outer_rect: rect,
+                    clip_rect: clip,
+                    hit_rect: clip,
+                    is_visible: visible,
+                    is_on_screen: visible,
+                    is_partially_visible: false,
+                    is_focused: focused == Some(*pane),
+                })
             })
-        }).collect();
+            .collect();
         let mut dividers = Vec::new();
         for tile in window.tree.active_tiles() {
-            let Some(Tile::Container(Container::Linear(linear))) = window.tree.tiles.get(tile) else { continue };
+            let Some(Tile::Container(Container::Linear(linear))) = window.tree.tiles.get(tile)
+            else {
+                continue;
+            };
             for pair in linear.children.windows(2) {
-                let (Some(left), Some(right)) = (window.tree.tiles.rect(pair[0]), window.tree.tiles.rect(pair[1])) else { continue };
+                let (Some(left), Some(right)) = (
+                    window.tree.tiles.rect(pair[0]),
+                    window.tree.tiles.rect(pair[1]),
+                ) else {
+                    continue;
+                };
                 let vertical = linear.dir == LinearDir::Horizontal;
                 let rect = if vertical {
-                    Rect::from_min_max(Pos2::new(left.right(), left.top()), Pos2::new(right.left(), left.bottom()))
+                    Rect::from_min_max(
+                        Pos2::new(left.right(), left.top()),
+                        Pos2::new(right.left(), left.bottom()),
+                    )
                 } else {
-                    Rect::from_min_max(Pos2::new(left.left(), left.bottom()), Pos2::new(left.right(), right.top()))
+                    Rect::from_min_max(
+                        Pos2::new(left.left(), left.bottom()),
+                        Pos2::new(left.right(), right.top()),
+                    )
                 };
-                let column = |tile| window.find_first_pane_in(tile)
-                    .and_then(|leaf| match window.tree.tiles.get(leaf) { Some(Tile::Pane(pane)) => Some(column_for(*pane)), _ => None });
+                let column = |tile| {
+                    window.find_first_pane_in(tile).and_then(|leaf| {
+                        match window.tree.tiles.get(leaf) {
+                            Some(Tile::Pane(pane)) => Some(column_for(*pane)),
+                            _ => None,
+                        }
+                    })
+                };
                 dividers.push(crate::strip::layout::DividerLayout {
-                    rect, is_vertical: vertical, left_col: column(pair[0]), right_col: column(pair[1]),
+                    rect,
+                    is_vertical: vertical,
+                    left_col: column(pair[0]),
+                    right_col: column(pair[1]),
                 });
             }
         }
-        let focus_frame = panes.iter().find(|pane| pane.is_focused).map(|pane| pane.rect);
+        let focus_frame = panes
+            .iter()
+            .find(|pane| pane.is_focused)
+            .map(|pane| pane.rect);
         crate::strip::StripLayout {
-            panes, dividers, peek_left: None, peek_right: None, focus_frame,
-            scroll_offset_px: 0.0, total_width_px: canvas.width(), canvas_rect: canvas,
+            panes,
+            dividers,
+            peek_left: None,
+            peek_right: None,
+            focus_frame,
+            scroll_offset_px: 0.0,
+            total_width_px: canvas.width(),
+            canvas_rect: canvas,
         }
     }
 
@@ -587,8 +640,15 @@ impl PlexiApp {
             return true;
         }
         self.windows.get(self.active_window).is_some_and(|window| {
-            window.panes.get(&pane_id).is_some_and(|pane| !pane.is_hidden())
-                && window.tree.tiles.find_pane(&pane_id).is_some_and(|tile| window.tree.active_tiles().contains(&tile))
+            window
+                .panes
+                .get(&pane_id)
+                .is_some_and(|pane| !pane.is_hidden())
+                && window
+                    .tree
+                    .tiles
+                    .find_pane(&pane_id)
+                    .is_some_and(|tile| window.tree.active_tiles().contains(&tile))
         })
     }
     /// Focus `pane_id` inside its context and update column & context focus memory
@@ -678,7 +738,9 @@ impl PlexiApp {
     /// at `ZoomLevel::Columns`. Stops at edges without wrapping (`SPEC.md` R32).
     pub fn navigate_columns_strip(&mut self, dir: Direction) -> bool {
         let moved = self.navigate(dir);
-        if !moved { self.record_edge_bump(dir); }
+        if !moved {
+            self.record_edge_bump(dir);
+        }
         moved
     }
 
@@ -727,7 +789,10 @@ impl PlexiApp {
                 if self.router.active().parent_id.is_some()
                     || !crate::release::feature_enabled(crate::release::ReleaseFeature::TreeAtlas)
                 {
-                    log::info!("context_navigation: Cmd+Esc stayed at context={}", self.router.active().context_id);
+                    log::info!(
+                        "context_navigation: Cmd+Esc stayed at context={}",
+                        self.router.active().context_id
+                    );
                     return false;
                 }
                 self.record_focused_pane_memory();
@@ -802,9 +867,7 @@ impl PlexiApp {
                 self.switch_workspace(ctx_idx);
                 true
             } else {
-                log::warn!(
-                    "zoom: Portal target context_id={child_ctx_id} not found in router"
-                );
+                log::warn!("zoom: Portal target context_id={child_ctx_id} not found in router");
                 false
             }
         } else {
@@ -975,8 +1038,8 @@ impl PlexiApp {
         let row_step_y = if deepest == 0 {
             style::ATLAS_NODE_H + 56.0
         } else {
-            let avail_h =
-                (viewport.max.y - 64.0 - root_row_y - style::ATLAS_NODE_H * 0.5).max(style::ATLAS_NODE_H);
+            let avail_h = (viewport.max.y - 64.0 - root_row_y - style::ATLAS_NODE_H * 0.5)
+                .max(style::ATLAS_NODE_H);
             (avail_h / deepest as f32).clamp(style::ATLAS_NODE_H + 36.0, style::ATLAS_NODE_H * 1.85)
         };
 
@@ -986,8 +1049,8 @@ impl PlexiApp {
             .sum::<usize>()
             .max(1);
         let slot_w = style::ATLAS_NODE_W + 48.0;
-        let band_w = (total_leaves as f32 * slot_w)
-            .min((viewport.width() - 48.0).max(style::ATLAS_NODE_W));
+        let band_w =
+            (total_leaves as f32 * slot_w).min((viewport.width() - 48.0).max(style::ATLAS_NODE_W));
         let band_x0 = viewport.center().x - band_w * 0.5;
         // Narrow logical viewports (high UI scale) shrink nodes to their slot
         // rather than letting siblings overlap.
@@ -1023,10 +1086,7 @@ impl PlexiApp {
                 (pl.x0 + pl.x1) * 0.5,
                 root_row_y + (pl.depth as f32) * row_step_y,
             );
-            let rect = Rect::from_center_size(
-                node_center,
-                Vec2::new(node_w, style::ATLAS_NODE_H),
-            );
+            let rect = Rect::from_center_size(node_center, Vec2::new(node_w, style::ATLAS_NODE_H));
             let name = contexts
                 .iter()
                 .find(|c| c.context_id == ctx_id)
@@ -1078,7 +1138,11 @@ impl PlexiApp {
             });
 
             let kids = children_of(ctx_id);
-            let total: usize = kids.iter().map(|&k| leaves(k, &children_of)).sum::<usize>().max(1);
+            let total: usize = kids
+                .iter()
+                .map(|&k| leaves(k, &children_of))
+                .sum::<usize>()
+                .max(1);
             let mut x = pl.x0;
             let mut kid_placements = Vec::new();
             for &k in &kids {
@@ -1410,11 +1474,7 @@ impl PlexiApp {
         self.sync_attention_queue();
         let (mut nodes, _) =
             self.compute_atlas_graph(Rect::from_min_size(Pos2::ZERO, Vec2::new(1440.0, 900.0)));
-        nodes.sort_by(|a, b| {
-            a.depth
-                .cmp(&b.depth)
-                .then_with(|| a.order.cmp(&b.order))
-        });
+        nodes.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.order.cmp(&b.order)));
         let asking: Vec<u64> = nodes
             .iter()
             .filter(|n| n.direct_asks > 0)
@@ -1660,9 +1720,8 @@ impl PlexiApp {
             strip.focused_pane = prev.focused_pane;
         }
 
-        let mut available_old: Vec<crate::strip::Column> = existing
-            .map(|s| s.columns.clone())
-            .unwrap_or_default();
+        let mut available_old: Vec<crate::strip::Column> =
+            existing.map(|s| s.columns.clone()).unwrap_or_default();
         let old_count = available_old.len();
         let total = raw_cols.len();
 
@@ -1687,11 +1746,18 @@ impl PlexiApp {
                 {
                     width = crate::strip::ColumnWidth::Preset(ColumnWidthPreset::Parent35);
                 }
-                let resolved_heights = panes.iter().enumerate().map(|(row, pane)| {
-                    old_col.panes.iter().position(|old| old == pane)
-                        .and_then(|old_row| old_col.heights.get(old_row).copied())
-                        .unwrap_or_else(|| heights.get(row).copied().unwrap_or(1.0))
-                }).collect();
+                let resolved_heights = panes
+                    .iter()
+                    .enumerate()
+                    .map(|(row, pane)| {
+                        old_col
+                            .panes
+                            .iter()
+                            .position(|old| old == pane)
+                            .and_then(|old_row| old_col.heights.get(old_row).copied())
+                            .unwrap_or_else(|| heights.get(row).copied().unwrap_or(1.0))
+                    })
+                    .collect();
                 let last_focused = old_col
                     .last_focused
                     .filter(|p| panes.contains(p))
@@ -1797,7 +1863,8 @@ impl PlexiApp {
                 ui.horizontal_centered(|ui| {
                     let bar = ui.max_rect();
                     ui.scope_builder(
-                        egui::UiBuilder::new().layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        egui::UiBuilder::new()
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| {
                             ui.set_clip_rect(ui.clip_rect().intersect(bar));
                             // Breadcrumb
@@ -1820,13 +1887,27 @@ impl PlexiApp {
                             }
 
                             if self.zoom.level == ZoomLevel::Columns {
-                                let windows: Vec<_> = self.windows.iter().enumerate()
-                                    .filter(|(_, window)| window.context_id == active_ctx_id).collect();
+                                let windows: Vec<_> = self
+                                    .windows
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, window)| window.context_id == active_ctx_id)
+                                    .collect();
                                 if windows.len() > 1 {
-                                    let position = windows.iter().position(|(index, _)| *index == self.active_window).unwrap_or(0) + 1;
+                                    let position = windows
+                                        .iter()
+                                        .position(|(index, _)| *index == self.active_window)
+                                        .unwrap_or(0)
+                                        + 1;
                                     ui.add_space(style::SPACE_SM);
-                                    ui.label(RichText::new(format!("Window {position} / {}", windows.len()))
-                                        .size(style::TEXT_META).color(colors.text_dim));
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Window {position} / {}",
+                                            windows.len()
+                                        ))
+                                        .size(style::TEXT_META)
+                                        .color(colors.text_dim),
+                                    );
                                 }
                             }
 
@@ -1891,11 +1972,7 @@ impl PlexiApp {
                 let mid_y = (edge.from_pos.y + edge.to_pos.y) * 0.5;
                 let p1 = Pos2::new(edge.from_pos.x, mid_y);
                 let p2 = Pos2::new(edge.to_pos.x, mid_y);
-                for seg in [
-                    [edge.from_pos, p1],
-                    [p1, p2],
-                    [p2, edge.to_pos],
-                ] {
+                for seg in [[edge.from_pos, p1], [p1, p2], [p2, edge.to_pos]] {
                     painter.line_segment(seg, casing);
                     painter.line_segment(seg, stroke);
                 }
@@ -1955,7 +2032,11 @@ impl PlexiApp {
             } else {
                 None
             };
-            let subtitle = if node.is_ghost { "◌ you are here" } else { "" };
+            let subtitle = if node.is_ghost {
+                "◌ you are here"
+            } else {
+                ""
+            };
             let detail = node.preview_lines.first().cloned().unwrap_or_default();
             let spec = CardSpec {
                 state,
@@ -2031,13 +2112,9 @@ impl PlexiApp {
                 let peek_font = FontId::new(style::TEXT_HINT, FontFamily::Monospace);
                 let mut py = peek_rect.min.y + 38.0;
                 for line in self.context_preview_lines(fnode.context_id, 6) {
-                    for wrapped in wrap_text(
-                        ui.ctx(),
-                        &line,
-                        peek_font.clone(),
-                        peek_w - 28.0,
-                        Some(2),
-                    ) {
+                    for wrapped in
+                        wrap_text(ui.ctx(), &line, peek_font.clone(), peek_w - 28.0, Some(2))
+                    {
                         if py + 16.0 > peek_rect.max.y {
                             break;
                         }

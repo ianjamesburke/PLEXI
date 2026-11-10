@@ -166,7 +166,8 @@ fn main() -> eframe::Result {
             }
 
             // Always re-seed any deleted core plugins.
-            let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &plugins_dir);
+            let core_outcomes =
+                crate::cli::install_host::apply_core_pack_always(&cloner, &plugins_dir);
             let n_installed = core_outcomes
                 .iter()
                 .filter(|o| {
@@ -188,10 +189,12 @@ fn main() -> eframe::Result {
                 }
             }
             if !is_plugin_prune_command {
-                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&plugins_dir);
+                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(
+                    &plugins_dir,
+                );
                 if !pruned.is_empty() {
                     log::info!(
-                    "core pack: quarantined {} orphaned pre-v3 plugin(s) from {}",
+                        "core pack: quarantined {} orphaned pre-v3 plugin(s) from {}",
                         pruned.len(),
                         plugins_dir.display()
                     );
@@ -205,7 +208,6 @@ fn main() -> eframe::Result {
         }
         drop(profile_init_lock);
     }
-
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
     // If the path has no `.plexi/` ancestor, an adopted context path is set
@@ -312,11 +314,11 @@ fn main() -> eframe::Result {
     // Handle CLI subcommands before launching the GUI.
     let args = strip_profile_args(&raw_args);
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, PluginCmd, ViewCmd, PluginStateCmd, AssistantCmd, AssistantPermissionCmd,
-        ChangesCmd, CliSetupCmd, AgentsDashboardCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
-        DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
-        NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
-        RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        AccountCmd, AgentCmd, AgentsDashboardCmd, AiCmd, AssistantCmd, AssistantPermissionCmd,
+        ChangesCmd, CliSetupCmd, Commands, ConfigCmd, ContextCmd, DebugCmd, DebugSessionCmd,
+        DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd, NotifyCmd, PaneCmd,
+        PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd, PluginCmd, PluginStateCmd,
+        RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, ViewCmd, WorkspaceCmd,
     };
     let args = cli::args::normalize_config_scope_aliases(args);
 
@@ -352,7 +354,17 @@ fn main() -> eframe::Result {
                 }
                 match cmd {
                     Commands::Assistant { cmd } => match cmd {
-                        AssistantCmd::Send { text, request_id, pane_id, context_id, conversation, desktop, status_for, client, kind } => {
+                        AssistantCmd::Send {
+                            text,
+                            request_id,
+                            pane_id,
+                            context_id,
+                            conversation,
+                            desktop,
+                            status_for,
+                            client,
+                            kind,
+                        } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
                             let context_id = resolve_opt_ctx(context_id.as_ref());
                             cli::trace::exit(cli::assistant_send_cli(
@@ -376,16 +388,12 @@ fn main() -> eframe::Result {
                             AssistantPermissionCmd::List => {
                                 cli::trace::exit(cli::assistant_permission_cli("list", None, None))
                             }
-                            AssistantPermissionCmd::Show { id } => {
-                                cli::trace::exit(cli::assistant_permission_cli("show", Some(&id), None))
-                            }
-                            AssistantPermissionCmd::Resolve { id, choice } => {
-                                cli::trace::exit(cli::assistant_permission_cli(
-                                    "resolve",
-                                    Some(&id),
-                                    Some(&choice),
-                                ))
-                            }
+                            AssistantPermissionCmd::Show { id } => cli::trace::exit(
+                                cli::assistant_permission_cli("show", Some(&id), None),
+                            ),
+                            AssistantPermissionCmd::Resolve { id, choice } => cli::trace::exit(
+                                cli::assistant_permission_cli("resolve", Some(&id), Some(&choice)),
+                            ),
                         },
                     },
                     Commands::NeedsYou { cmd } => match cmd {
@@ -479,11 +487,7 @@ fn main() -> eframe::Result {
                                 }),
                             ))
                         }
-                        NeedsYouCmd::Resolve {
-                            id,
-                            approve,
-                            deny,
-                        } => {
+                        NeedsYouCmd::Resolve { id, approve, deny } => {
                             // Approve of a click approval is refused in the host. Deny
                             // still settles. Questions and blocked runs settle
                             // from here and do not mint a grant.
@@ -507,7 +511,13 @@ fn main() -> eframe::Result {
                     },
                     Commands::Skill { cmd } => match cmd {
                         SkillCmd::Draft {
-                            from_session, pane, all_panes, include_internal, include_failed, format, out,
+                            from_session,
+                            pane,
+                            all_panes,
+                            include_internal,
+                            include_failed,
+                            format,
+                            out,
                         } => {
                             let options = cli::skill_draft::DraftOptions {
                                 pane: cli::skill_draft::resolve_pane(
@@ -519,7 +529,10 @@ fn main() -> eframe::Result {
                                 include_failed,
                             };
                             cli::trace::exit(cli::skill_draft::skill_draft_cli(
-                                &from_session, options, &format, out.as_deref(),
+                                &from_session,
+                                options,
+                                &format,
+                                out.as_deref(),
                             ))
                         }
                         SkillCmd::Install { agent } => {
@@ -577,36 +590,32 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::workspace_clean_cli(dry_run))
                         }
                     },
-                    Commands::Routine { cmd } => {
-                        match cmd {
-                            RoutineCmd::List => cli::trace::exit(cli::routine_list()),
-                            RoutineCmd::Run { name, force } => {
-                                cli::trace::exit(cli::routine_run(&name, force))
-                            }
-                            RoutineCmd::Add {
-                                name,
-                                command,
-                                schedule,
-                                context,
-                                ephemeral,
-                            } => cli::trace::exit(cli::routine_add(
-                                &name,
-                                &command,
-                                &schedule,
-                                context.as_deref(),
-                                ephemeral,
-                            )),
-                            RoutineCmd::Remove { name } => {
-                                cli::trace::exit(cli::routine_remove(&name))
-                            }
-                            RoutineCmd::Enable { name } => {
-                                cli::trace::exit(cli::routine_set_enabled(&name, true))
-                            }
-                            RoutineCmd::Disable { name } => {
-                                cli::trace::exit(cli::routine_set_enabled(&name, false))
-                            }
+                    Commands::Routine { cmd } => match cmd {
+                        RoutineCmd::List => cli::trace::exit(cli::routine_list()),
+                        RoutineCmd::Run { name, force } => {
+                            cli::trace::exit(cli::routine_run(&name, force))
                         }
-                    }
+                        RoutineCmd::Add {
+                            name,
+                            command,
+                            schedule,
+                            context,
+                            ephemeral,
+                        } => cli::trace::exit(cli::routine_add(
+                            &name,
+                            &command,
+                            &schedule,
+                            context.as_deref(),
+                            ephemeral,
+                        )),
+                        RoutineCmd::Remove { name } => cli::trace::exit(cli::routine_remove(&name)),
+                        RoutineCmd::Enable { name } => {
+                            cli::trace::exit(cli::routine_set_enabled(&name, true))
+                        }
+                        RoutineCmd::Disable { name } => {
+                            cli::trace::exit(cli::routine_set_enabled(&name, false))
+                        }
+                    },
                     Commands::Lease { cmd } => cli::trace::exit(cli::lease::dispatch(cmd)),
                     Commands::Agent { cmd } => match cmd {
                         AgentCmd::Create {
@@ -638,21 +647,38 @@ fn main() -> eframe::Result {
                             cwd.as_deref(),
                             &flags,
                         )),
-                        AgentCmd::Flags { target, cwd } => {
-                            cli::trace::exit(cli::agent_flags_cli(target.as_deref(), cwd.as_deref(), json))
-                        }
+                        AgentCmd::Flags { target, cwd } => cli::trace::exit(cli::agent_flags_cli(
+                            target.as_deref(),
+                            cwd.as_deref(),
+                            json,
+                        )),
                         AgentCmd::List { cwd } => {
                             cli::trace::exit(cli::agent_list_cli(cwd.as_deref(), json))
                         }
                         AgentCmd::Show { name, cwd } => {
                             cli::trace::exit(cli::agent_show_cli(&name, cwd.as_deref(), json))
                         }
-                        AgentCmd::Call { role, task, worktree, asynchronous } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}))),
-                        AgentCmd::Message { pane_id, text, wait } => {
+                        AgentCmd::Call {
+                            role,
+                            task,
+                            worktree,
+                            asynchronous,
+                        } => cli::trace::exit(cli::agent_tool_cli(
+                            serde_json::json!({"type":"agent_call","role":role,"task":task,"worktree":worktree,"asynchronous":asynchronous}),
+                        )),
+                        AgentCmd::Message {
+                            pane_id,
+                            text,
+                            wait,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait})))
+                            cli::trace::exit(cli::agent_tool_cli(
+                                serde_json::json!({"type":"agent_message","pane_id":pane_id,"text":text,"wait":wait}),
+                            ))
                         }
-                        AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}))),
+                        AgentCmd::Handoff { role, task } => cli::trace::exit(cli::agent_tool_cli(
+                            serde_json::json!({"type":"agent_call","role":role,"task":task,"handoff":true}),
+                        )),
                         AgentCmd::Start {
                             name,
                             prompt,
@@ -703,8 +729,7 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::agent_result_cli(target, json))
                         }
                         AgentCmd::Wait { pane_ids, timeout } => {
-                            let resolved: Vec<u64> =
-                                pane_ids.iter().map(resolve_pane).collect();
+                            let resolved: Vec<u64> = pane_ids.iter().map(resolve_pane).collect();
                             cli::trace::exit(cli::agent_wait_cli(&resolved, timeout, json))
                         }
                         AgentCmd::Ask { question, pane_id } => {
@@ -731,7 +756,9 @@ fn main() -> eframe::Result {
                             working,
                             idle,
                         } => cli::trace::exit(cli::agent_status_cli(blocked, working, idle)),
-                        AgentCmd::Next => { cli::trace::exit(cli::agent_next_cli(json)); }
+                        AgentCmd::Next => {
+                            cli::trace::exit(cli::agent_next_cli(json));
+                        }
                         AgentCmd::Fleet { cmd, filter } => match cmd {
                             Some(cli::args::AgentFleetCmd::Dismiss { target, all_failed }) => {
                                 cli::trace::exit(cli::agent_fleet_dismiss_cli(
@@ -747,15 +774,12 @@ fn main() -> eframe::Result {
                         AgentCmd::History { limit } => {
                             cli::trace::exit(cli::agent_history_cli(limit, json))
                         }
-                        AgentCmd::Reopen {
-                            target,
-                            subcontext,
-                        } => cli::trace::exit(cli::agent_reopen_cli(
-                            &target,
-                            subcontext.as_deref(),
-                            json,
-                        )),
-                        AgentCmd::Team { cmd } => cli::trace::exit(cli::agent_team_dispatch(cmd, json)),
+                        AgentCmd::Reopen { target, subcontext } => cli::trace::exit(
+                            cli::agent_reopen_cli(&target, subcontext.as_deref(), json),
+                        ),
+                        AgentCmd::Team { cmd } => {
+                            cli::trace::exit(cli::agent_team_dispatch(cmd, json))
+                        }
                         AgentCmd::HookEvent { agent } => {
                             cli::trace::exit(cli::agent_hook_event_cli(agent.as_deref()))
                         }
@@ -833,9 +857,7 @@ fn main() -> eframe::Result {
                         SecretCmd::Delete {
                             friendly_name,
                             global,
-                        } => {
-                            cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global))
-                        }
+                        } => cli::trace::exit(cli::workspace_secret_delete(&friendly_name, global)),
                         SecretCmd::Rm { name, folder } => {
                             cli::trace::exit(cli::folder_secret_rm(&name, &folder))
                         }
@@ -866,150 +888,150 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::View { cmd } => match cmd {
- ViewCmd::List => cli::trace::exit(cli::view_list(json)),
-ViewCmd::Open {
-                                type_id,
-                                mcp,
-                                cli: cli_flag,
-                                down,
-                                left,
-                                up,
-                                right,
-                                tab,
-                                window,
-                                split,
-                                from: from_pane_id,
-                                extra_args,
-                            } => {
-                                let from_pane_id = resolve_opt_pane(from_pane_id.as_ref());
-                                let layout: Option<String> = match split.as_deref() {
-                                    Some("down") => Some("split_v".into()),
-                                    Some("left") => Some("split_left".into()),
-                                    Some("up") => Some("split_above".into()),
-                                    Some("right") => Some("split_h".into()),
-                                    Some("tab") => Some("tab".into()),
-                                    Some("window") => Some("new_window".into()),
-                                    _ if down => Some("split_v".into()),
-                                    _ if left => Some("split_left".into()),
-                                    _ if up => Some("split_above".into()),
-                                    _ if right => Some("split_h".into()),
-                                    _ if tab => Some("tab".into()),
-                                    _ if window => Some("new_window".into()),
-                                    _ => None,
-                                }; // default: overlay
-                                let mode_count = type_id.is_some() as u8
-                                    + (!mcp.is_empty()) as u8
-                                    + cli_flag.is_some() as u8;
-                                if mode_count == 0 {
-                                    eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
-                                    cli::trace::exit(2);
-                                }
-                                if mode_count > 1 {
-                                    eprintln!(
-                                        "error: TYPE_ID, --mcp, and --cli are mutually exclusive"
-                                    );
-                                    cli::trace::exit(2);
-                                }
-                                if let Some(tid) = type_id {
-                                    // Prefix routing: cli:, mcp:, view:, or bare name
-                                    match cli::parse_prefix(&tid) {
-                                        cli::OpenPrefix::Cli(name) => {
-                                            log::info!("view_open:cli: prefix-routed cli:{name}");
-                                            cli::trace::exit(cli::open_cli_by_name(
-                                                &name,
-                                                layout.as_deref(),
-                                                from_pane_id,
-                                                None,
-                                            ));
-                                        }
-                                        cli::OpenPrefix::Mcp(name) => {
-                                            exit_if_feature_disabled(
-                                                crate::release::ReleaseFeature::McpClient,
-                                            );
-                                            log::info!("view_open:cli: prefix-routed mcp:{name}");
-                                            cli::trace::exit(cli::open_mcp_by_name(
-                                                &name,
-                                                layout.as_deref(),
-                                                from_pane_id,
-                                                None,
-                                            ));
-                                        }
-                                        cli::OpenPrefix::View(name) => {
-                                            log::info!("view_open:cli: prefix-routed view:{name}");
-                                            cli::trace::exit(cli::open_cli(
-                                                &name,
-                                                &extra_args,
-                                                layout.as_deref(),
-                                                from_pane_id,
-                                                None,
-                                            ));
-                                        }
-                                        cli::OpenPrefix::Bare(name) => {
-                                            log::info!("view_open:cli: opening plugin type_id={name}");
-                                            cli::trace::exit(cli::open_cli(
-                                                &name,
-                                                &extra_args,
-                                                layout.as_deref(),
-                                                from_pane_id,
-                                                None,
-                                            ));
-                                        }
+                        ViewCmd::List => cli::trace::exit(cli::view_list(json)),
+                        ViewCmd::Open {
+                            type_id,
+                            mcp,
+                            cli: cli_flag,
+                            down,
+                            left,
+                            up,
+                            right,
+                            tab,
+                            window,
+                            split,
+                            from: from_pane_id,
+                            extra_args,
+                        } => {
+                            let from_pane_id = resolve_opt_pane(from_pane_id.as_ref());
+                            let layout: Option<String> = match split.as_deref() {
+                                Some("down") => Some("split_v".into()),
+                                Some("left") => Some("split_left".into()),
+                                Some("up") => Some("split_above".into()),
+                                Some("right") => Some("split_h".into()),
+                                Some("tab") => Some("tab".into()),
+                                Some("window") => Some("new_window".into()),
+                                _ if down => Some("split_v".into()),
+                                _ if left => Some("split_left".into()),
+                                _ if up => Some("split_above".into()),
+                                _ if right => Some("split_h".into()),
+                                _ if tab => Some("tab".into()),
+                                _ if window => Some("new_window".into()),
+                                _ => None,
+                            }; // default: overlay
+                            let mode_count = type_id.is_some() as u8
+                                + (!mcp.is_empty()) as u8
+                                + cli_flag.is_some() as u8;
+                            if mode_count == 0 {
+                                eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
+                                cli::trace::exit(2);
+                            }
+                            if mode_count > 1 {
+                                eprintln!(
+                                    "error: TYPE_ID, --mcp, and --cli are mutually exclusive"
+                                );
+                                cli::trace::exit(2);
+                            }
+                            if let Some(tid) = type_id {
+                                // Prefix routing: cli:, mcp:, view:, or bare name
+                                match cli::parse_prefix(&tid) {
+                                    cli::OpenPrefix::Cli(name) => {
+                                        log::info!("view_open:cli: prefix-routed cli:{name}");
+                                        cli::trace::exit(cli::open_cli_by_name(
+                                            &name,
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                            None,
+                                        ));
                                     }
-                                } else if !mcp.is_empty() {
-                                    let title = cli::mcp_pane_title(&mcp);
-                                    log::info!("view_open:cli: launching mcp-renderer with server id {:?}, auto-title={title:?}", mcp);
-                                    cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
-                                        name: Some(title.as_str()),
-                                        layout: layout.as_deref(),
-                                        from_pane_id,
-                                        plugin: Some("mcp-renderer"),
-                                        mcp: &mcp,
-                                        ..Default::default()
-                                    }));
-                                } else {
-                                    let binary = cli_flag.unwrap();
-                                    log::info!("view_open:cli: --cli routing `{binary}` through unified resolver");
-                                    cli::trace::exit(cli::open_cli_by_name(
-                                        &binary,
-                                        layout.as_deref(),
-                                        from_pane_id,
-                                        None,
-                                    ));
-                                }
-                            }ViewCmd::Render {
-                                plugin,
-                                size,
-                                state,
-                                output,
-                                png,
-                            } => cli::trace::exit(cli::view_render(
-                                &plugin,
-                                &size,
-                                state.as_deref(),
-                                output.as_deref(),
-                                png,
-                            )),
-},
-Commands::Plugin { cmd } => {
-                        match cmd {
-                            
-                            PluginCmd::Install {
-                                spec_or_path,
-                                pack,
-                                refresh,
-                                version,
-                                yes,
-                            } => {
-                                if let Some(p) = pack {
-                                    log::info!("app_install:cli: pack={p} refresh={refresh}");
-                                    cli::trace::exit(cli::install_pack_cli(&p, refresh));
-                                }
-                                match spec_or_path {
-                                    None => {
-                                        log::info!("app_install:cli: workspace pack (no args)");
-                                        cli::trace::exit(cli::install_workspace_pack_cli());
+                                    cli::OpenPrefix::Mcp(name) => {
+                                        exit_if_feature_disabled(
+                                            crate::release::ReleaseFeature::McpClient,
+                                        );
+                                        log::info!("view_open:cli: prefix-routed mcp:{name}");
+                                        cli::trace::exit(cli::open_mcp_by_name(
+                                            &name,
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                            None,
+                                        ));
                                     }
-                                    Some(s) => match cli::plugin::classify_plugin_install_spec(&s) {
+                                    cli::OpenPrefix::View(name) => {
+                                        log::info!("view_open:cli: prefix-routed view:{name}");
+                                        cli::trace::exit(cli::open_cli(
+                                            &name,
+                                            &extra_args,
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                            None,
+                                        ));
+                                    }
+                                    cli::OpenPrefix::Bare(name) => {
+                                        log::info!("view_open:cli: opening plugin type_id={name}");
+                                        cli::trace::exit(cli::open_cli(
+                                            &name,
+                                            &extra_args,
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                            None,
+                                        ));
+                                    }
+                                }
+                            } else if !mcp.is_empty() {
+                                let title = cli::mcp_pane_title(&mcp);
+                                log::info!("view_open:cli: launching mcp-renderer with server id {:?}, auto-title={title:?}", mcp);
+                                cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
+                                    name: Some(title.as_str()),
+                                    layout: layout.as_deref(),
+                                    from_pane_id,
+                                    plugin: Some("mcp-renderer"),
+                                    mcp: &mcp,
+                                    ..Default::default()
+                                }));
+                            } else {
+                                let binary = cli_flag.unwrap();
+                                log::info!("view_open:cli: --cli routing `{binary}` through unified resolver");
+                                cli::trace::exit(cli::open_cli_by_name(
+                                    &binary,
+                                    layout.as_deref(),
+                                    from_pane_id,
+                                    None,
+                                ));
+                            }
+                        }
+                        ViewCmd::Render {
+                            plugin,
+                            size,
+                            state,
+                            output,
+                            png,
+                        } => cli::trace::exit(cli::view_render(
+                            &plugin,
+                            &size,
+                            state.as_deref(),
+                            output.as_deref(),
+                            png,
+                        )),
+                    },
+                    Commands::Plugin { cmd } => match cmd {
+                        PluginCmd::Install {
+                            spec_or_path,
+                            pack,
+                            refresh,
+                            version,
+                            yes,
+                        } => {
+                            if let Some(p) = pack {
+                                log::info!("app_install:cli: pack={p} refresh={refresh}");
+                                cli::trace::exit(cli::install_pack_cli(&p, refresh));
+                            }
+                            match spec_or_path {
+                                None => {
+                                    log::info!("app_install:cli: workspace pack (no args)");
+                                    cli::trace::exit(cli::install_workspace_pack_cli());
+                                }
+                                Some(s) => {
+                                    match cli::plugin::classify_plugin_install_spec(&s) {
                                         cli::plugin::PluginInstallSpecKind::Package => {
                                             log::info!(
                                                 "app_install:cli: package={s} version={version:?}"
@@ -1043,123 +1065,137 @@ Commands::Plugin { cmd } => {
                                             log::info!("app_install:cli: marketplace id={s} version={version:?}");
                                             cli::trace::exit(cli::install_cli(&s, yes));
                                         }
-                                    },
+                                    }
                                 }
-                            }
-                            PluginCmd::Init {
-                                name,
-                                adopt,
-                                wasm,
-                                lang,
-                                global,
-                                open,
-                                no_open,
-                                from: from_pane_id,
-                            } => {
-                                if adopt {
-                                    cli::trace::exit(cli::plugin_adopt(
-                                        name.as_deref().unwrap_or("."),
-                                    ));
-                                }
-                                let from_pane_id = resolve_opt_pane(from_pane_id.as_ref());
-                                cli::trace::exit(cli::plugin_init(
-                                    wasm.as_deref().or(name.as_deref()).unwrap_or_default(),
-                                    if wasm.is_some() { "wasm" } else { &lang },
-                                    global,
-                                    open && !no_open,
-                                    from_pane_id,
-                                ));
-                            }
-                            PluginCmd::Uninstall { id, yes } => {
-                                cli::trace::exit(cli::plugin_uninstall(&id, yes))
-                            }
-                            PluginCmd::List => cli::trace::exit(cli::plugin_list()),
-                            PluginCmd::Prune { dry_run } => {
-                                cli::trace::exit(cli::plugin_prune_cli(dry_run))
-                            }
-                            
-                            
-                            PluginCmd::Check {
-                                path,
-                                sizes,
-                                png_dir,
-                            } => {
-                                log::info!("plugin_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}");
-                                cli::trace::exit(cli::plugin_check_cli(
-                                    &path,
-                                    &sizes,
-                                    png_dir.as_deref(),
-                                ));
-                            }
-                            PluginCmd::Test { path, snapshot } => {
-                                log::info!("app_test:cli: path={path} snapshot={snapshot}");
-                                cli::trace::exit(cli::plugin_test_cli(&path, snapshot));
-                            }
-                            PluginCmd::Info { id } => cli::trace::exit(cli::plugin_info(&id)),
-                            PluginCmd::State { cmd } => match cmd {
-                                PluginStateCmd::Get { plugin, scope } => cli::trace::exit(
-                                    cli::plugin_state::get(&plugin, scope.as_deref()),
-                                ),
-                                PluginStateCmd::Set { plugin, file, scope } => cli::trace::exit(
-                                    cli::plugin_state::set(&plugin, file.as_deref(), scope.as_deref()),
-                                ),
-                            },
-                            PluginCmd::Validate { path } => {
-                                log::info!("app_validate:cli: path={path}");
-                                cli::trace::exit(cli::validate_cli(&path));
-                            }
-                            PluginCmd::Inspect { path } => {
-                                log::info!("app_inspect:cli: path={path}");
-                                cli::trace::exit(cli::plugin_inspect_cli(&path));
-                            }
-                            PluginCmd::Package { path, out } => {
-                                log::info!("app_package:cli: path={path} out={out:?}");
-                                cli::trace::exit(cli::plugin_package_cli(&path, out.as_deref()));
-                            }
-                            PluginCmd::Freeze { path } => {
-                                log::info!("app_freeze:cli: path={path}");
-                                cli::trace::exit(cli::freeze_cli(&path));
-                            }
-                            PluginCmd::Publish { path } => {
-                                cli::trace::exit(cli::plugin_publish_cli(&path));
-                            }
-                            PluginCmd::Browse => {
-                                cli::trace::exit(cli::plugin_browse_cli());
-                            }
-                            PluginCmd::Search { query } => {
-                                cli::trace::exit(cli::plugin_search_cli(&query));
-                            }
-                            PluginCmd::Update { id } => {
-                                log::info!("app_update:cli: id={id:?}");
-                                cli::trace::exit(cli::plugin_update_cli(id.as_deref()));
-                            }
-                            
-                            PluginCmd::Call {
-                                plugin_id,
-                                tool,
-                                input,
-                                pane,
-                                wait_approved,
-                            } => {
-                                let pane = resolve_opt_pane(pane.as_ref());
-                                cli::trace::exit(cli::plugin_call_cli(
-                                    &plugin_id, &tool, &input, json, pane, wait_approved,
-                                ))
-                            }
-                            PluginCmd::Tools { plugin, context } => {
-                                let context = resolve_opt_ctx(context.as_ref());
-                                cli::trace::exit(cli::plugin_tools_cli(
-                                    plugin.as_deref(),
-                                    context,
-                                    json,
-                                ))
                             }
                         }
+                        PluginCmd::Init {
+                            name,
+                            adopt,
+                            wasm,
+                            lang,
+                            global,
+                            open,
+                            no_open,
+                            from: from_pane_id,
+                        } => {
+                            if adopt {
+                                cli::trace::exit(cli::plugin_adopt(name.as_deref().unwrap_or(".")));
+                            }
+                            let from_pane_id = resolve_opt_pane(from_pane_id.as_ref());
+                            cli::trace::exit(cli::plugin_init(
+                                wasm.as_deref().or(name.as_deref()).unwrap_or_default(),
+                                if wasm.is_some() { "wasm" } else { &lang },
+                                global,
+                                open && !no_open,
+                                from_pane_id,
+                            ));
+                        }
+                        PluginCmd::Uninstall { id, yes } => {
+                            cli::trace::exit(cli::plugin_uninstall(&id, yes))
+                        }
+                        PluginCmd::List => cli::trace::exit(cli::plugin_list()),
+                        PluginCmd::Prune { dry_run } => {
+                            cli::trace::exit(cli::plugin_prune_cli(dry_run))
+                        }
+
+                        PluginCmd::Check {
+                            path,
+                            sizes,
+                            png_dir,
+                        } => {
+                            log::info!(
+                                "plugin_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}"
+                            );
+                            cli::trace::exit(cli::plugin_check_cli(
+                                &path,
+                                &sizes,
+                                png_dir.as_deref(),
+                            ));
+                        }
+                        PluginCmd::Test { path, snapshot } => {
+                            log::info!("app_test:cli: path={path} snapshot={snapshot}");
+                            cli::trace::exit(cli::plugin_test_cli(&path, snapshot));
+                        }
+                        PluginCmd::Info { id } => cli::trace::exit(cli::plugin_info(&id)),
+                        PluginCmd::State { cmd } => match cmd {
+                            PluginStateCmd::Get { plugin, scope } => {
+                                cli::trace::exit(cli::plugin_state::get(&plugin, scope.as_deref()))
+                            }
+                            PluginStateCmd::Set {
+                                plugin,
+                                file,
+                                scope,
+                            } => cli::trace::exit(cli::plugin_state::set(
+                                &plugin,
+                                file.as_deref(),
+                                scope.as_deref(),
+                            )),
+                        },
+                        PluginCmd::Validate { path } => {
+                            log::info!("app_validate:cli: path={path}");
+                            cli::trace::exit(cli::validate_cli(&path));
+                        }
+                        PluginCmd::Inspect { path } => {
+                            log::info!("app_inspect:cli: path={path}");
+                            cli::trace::exit(cli::plugin_inspect_cli(&path));
+                        }
+                        PluginCmd::Package { path, out } => {
+                            log::info!("app_package:cli: path={path} out={out:?}");
+                            cli::trace::exit(cli::plugin_package_cli(&path, out.as_deref()));
+                        }
+                        PluginCmd::Freeze { path } => {
+                            log::info!("app_freeze:cli: path={path}");
+                            cli::trace::exit(cli::freeze_cli(&path));
+                        }
+                        PluginCmd::Publish { path } => {
+                            cli::trace::exit(cli::plugin_publish_cli(&path));
+                        }
+                        PluginCmd::Browse => {
+                            cli::trace::exit(cli::plugin_browse_cli());
+                        }
+                        PluginCmd::Search { query } => {
+                            cli::trace::exit(cli::plugin_search_cli(&query));
+                        }
+                        PluginCmd::Update { id } => {
+                            log::info!("app_update:cli: id={id:?}");
+                            cli::trace::exit(cli::plugin_update_cli(id.as_deref()));
+                        }
+
+                        PluginCmd::Call {
+                            plugin_id,
+                            tool,
+                            input,
+                            pane,
+                            wait_approved,
+                        } => {
+                            let pane = resolve_opt_pane(pane.as_ref());
+                            cli::trace::exit(cli::plugin_call_cli(
+                                &plugin_id,
+                                &tool,
+                                &input,
+                                json,
+                                pane,
+                                wait_approved,
+                            ))
+                        }
+                        PluginCmd::Tools { plugin, context } => {
+                            let context = resolve_opt_ctx(context.as_ref());
+                            cli::trace::exit(cli::plugin_tools_cli(
+                                plugin.as_deref(),
+                                context,
+                                json,
+                            ))
+                        }
+                    },
+                    Commands::Uninstall {
+                        keep_data,
+                        delete_data,
+                        yes,
+                    } => cli::trace::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes)),
+                    Commands::Update { rollback } => {
+                        cli::trace::exit(cli::self_update_cli(rollback))
                     }
-                    Commands::Uninstall { keep_data, delete_data, yes } => {
-                        cli::trace::exit(cli::plexi_uninstall_cli(keep_data, delete_data, yes))
-                    }
-                    Commands::Update { rollback } => cli::trace::exit(cli::self_update_cli(rollback)),
                     Commands::Host { cmd } => match cmd {
                         HostCmd::Start {
                             layout,
@@ -1177,7 +1213,9 @@ Commands::Plugin { cmd } => {
                         HostCmd::Restart { yes } => {
                             cli::trace::exit(cli::host::host_restart_cli(yes, json))
                         }
-                        HostCmd::WorkspaceRollback { to_channel } => cli::trace::exit(cli::host_workspace_rollback_cli(&to_channel)),
+                        HostCmd::WorkspaceRollback { to_channel } => {
+                            cli::trace::exit(cli::host_workspace_rollback_cli(&to_channel))
+                        }
                         HostCmd::Stop => cli::trace::exit(cli::host_stop_cli()),
                         HostCmd::Log { message, source } => {
                             cli::trace::exit(cli::host_log_cli(&source, &message))
@@ -1187,9 +1225,7 @@ Commands::Plugin { cmd } => {
                             let pane = resolve_opt_pane(pane.as_ref());
                             cli::trace::exit(cli::host_screenshot_cli(pane, output.as_deref()))
                         }
-                        HostCmd::Key { key } => {
-                            cli::trace::exit(cli::host_key_cli(&key))
-                        }
+                        HostCmd::Key { key } => cli::trace::exit(cli::host_key_cli(&key)),
                     },
                     Commands::Notify { cmd, post } => {
                         // The caller's own identity, stamped by the pane env.
@@ -1303,15 +1339,18 @@ Commands::Plugin { cmd } => {
                     }
                     Commands::Pane { cmd } => match cmd {
                         PaneCmd::Action {
-                                pane_id,
-                                action,
-                                args,
-                            } => {
-                                let pane_id = resolve_pane(&pane_id);
-                                log::info!("pane_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
-                                cli::trace::exit(cli::pane_action_cli(pane_id, &action, &args));
-                            }
-PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
+                            pane_id,
+                            action,
+                            args,
+                        } => {
+                            let pane_id = resolve_pane(&pane_id);
+                            log::info!(
+                                "pane_action:cli: pane_id={pane_id} action={action:?} argc={}",
+                                args.len()
+                            );
+                            cli::trace::exit(cli::pane_action_cli(pane_id, &action, &args));
+                        }
+                        PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         PaneCmd::Name { first, second } => {
                             let (pane_id, name) = match second {
                                 Some(title) => {
@@ -1328,7 +1367,9 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                                 Some("current") => (None, true),
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
-                                    let id = target.resolve().unwrap_or_else(|code| cli::trace::exit(code));
+                                    let id = target
+                                        .resolve()
+                                        .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
                             };
@@ -1340,31 +1381,49 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                                 Some("current") => (None, true),
                                 Some(s) => {
                                     let target = cli::ContextTarget::from(s.to_string());
-                                    let id = target.resolve().unwrap_or_else(|code| cli::trace::exit(code));
+                                    let id = target
+                                        .resolve()
+                                        .unwrap_or_else(|code| cli::trace::exit(code));
                                     (Some(id), false)
                                 }
                             };
                             cli::trace::exit(cli::pane_tree_cli(context_id, current, json))
                         }
-                        PaneCmd::Focus { pane_id, back: _, forward } => {
+                        PaneCmd::Focus {
+                            pane_id,
+                            back: _,
+                            forward,
+                        } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
                             cli::trace::exit(match pane_id {
                                 Some(id) => cli::pane_focus_cli(id),
-                                None => cli::host_action_cli(serde_json::json!({"type":"focus_history", "forward":forward}), None),
+                                None => cli::host_action_cli(
+                                    serde_json::json!({"type":"focus_history", "forward":forward}),
+                                    None,
+                                ),
                             })
                         }
                         PaneCmd::Hide { ref pane_id } | PaneCmd::Reveal { ref pane_id } => {
                             let hidden = matches!(cmd, PaneCmd::Hide { .. });
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_visibility", "hidden":hidden}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Zoom { pane_id } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_zoom"}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Swap { pane_id, direction } => {
                             let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"pane_swap", "direction":direction}),
+                                Some(("pane_id", pane_id, "PLEXI_PANE_ID")),
+                            ))
                         }
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {
@@ -1399,7 +1458,13 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             operation_id,
                         } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane::pane_send_with_operation_cli(pane_id, &text, submit, paste, operation_id.as_deref()))
+                            cli::trace::exit(cli::pane::pane_send_with_operation_cli(
+                                pane_id,
+                                &text,
+                                submit,
+                                paste,
+                                operation_id.as_deref(),
+                            ))
                         }
                         PaneCmd::Command {
                             pane_id,
@@ -1438,9 +1503,13 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(match node {
-                                Some(node_id) => cli::pane_click_node_cli(pane_id, &node_id, &button),
+                                Some(node_id) => {
+                                    cli::pane_click_node_cli(pane_id, &node_id, &button)
+                                }
                                 None => match (x, y) {
-                                    (Some(x), Some(y)) => cli::pane_click_cli(pane_id, x, y, &button),
+                                    (Some(x), Some(y)) => {
+                                        cli::pane_click_cli(pane_id, x, y, &button)
+                                    }
                                     _ => {
                                         eprintln!(
                                                 "error: pane click requires either <x> <y> or --node <node_id>"
@@ -1491,7 +1560,11 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                                 plain,
                             ))
                         }
-                        PaneCmd::Wait { pane_id, until, timeout } => {
+                        PaneCmd::Wait {
+                            pane_id,
+                            until,
+                            timeout,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
                         }
@@ -1503,11 +1576,26 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_status_cli(pane_id))
                         }
-                        PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
+                        PaneCmd::Heartbeat {
+                            pane_id,
+                            every,
+                            text,
+                            while_idle_only,
+                            off,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
-                            cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
+                            cli::trace::exit(cli::pane_heartbeat_cli(
+                                pane_id,
+                                every.as_deref(),
+                                text.as_deref(),
+                                while_idle_only.then_some(true),
+                                off,
+                            ))
                         }
-                        PaneCmd::State { pane_id, stale_after } => {
+                        PaneCmd::State {
+                            pane_id,
+                            stale_after,
+                        } => {
                             let pane_id = resolve_pane(&pane_id);
                             cli::trace::exit(cli::pane_state_cli(pane_id, stale_after))
                         }
@@ -1535,10 +1623,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_read_cli(
-                                    &name,
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_read_cli(&name, resolved))
                             }
                             PaneSlotCmd::Wait {
                                 name,
@@ -1550,10 +1635,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
                                 cli::trace::exit(cli::pane_slot_wait_cli(
-                                    &name,
-                                    resolved,
-                                    &until,
-                                    timeout,
+                                    &name, resolved, &until, timeout,
                                 ))
                             }
                             PaneSlotCmd::List {
@@ -1562,9 +1644,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_list_cli(
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_list_cli(resolved))
                             }
                             PaneSlotCmd::Delete {
                                 name,
@@ -1573,10 +1653,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             } => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_slot_delete_cli(
-                                    &name,
-                                    resolved,
-                                ))
+                                cli::trace::exit(cli::pane_slot_delete_cli(&name, resolved))
                             }
                         },
                         PaneCmd::Message { cmd } => match cmd {
@@ -1587,9 +1664,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             } => {
                                 let pane_id = resolve_pane(&pane_id);
                                 cli::trace::exit(cli::pane_message_send_cli(
-                                    pane_id,
-                                    &payload,
-                                    submit,
+                                    pane_id, &payload, submit,
                                 ))
                             }
                             PaneMessageCmd::Recv {
@@ -1622,11 +1697,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             }) => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    wait,
-                                    timeout,
-                                ))
+                                cli::trace::exit(cli::pane_result_read_cli(resolved, wait, timeout))
                             }
                             Some(PaneResultCmd::Wait {
                                 pane_id,
@@ -1635,19 +1706,13 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             }) => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
-                                cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    true,
-                                    timeout,
-                                ))
+                                cli::trace::exit(cli::pane_result_read_cli(resolved, true, timeout))
                             }
                             None => {
                                 let target = pane_id.or(pane_id_flag);
                                 let resolved = resolve_opt_pane(target.as_ref());
                                 cli::trace::exit(cli::pane_result_read_cli(
-                                    resolved,
-                                    wait,
-                                    timeout,
+                                    resolved, wait, timeout,
                                 ));
                             }
                         },
@@ -1820,15 +1885,13 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                             ));
                         }
                     },
-                    Commands::Account { cmd } => {
-                        match cmd {
-                            AccountCmd::Status => cli::trace::exit(cli::account_status_cli()),
-                            AccountCmd::Login { email } => {
-                                cli::trace::exit(cli::account_login_cli(email.as_deref()))
-                            }
-                            AccountCmd::Logout => cli::trace::exit(cli::account_logout_cli()),
+                    Commands::Account { cmd } => match cmd {
+                        AccountCmd::Status => cli::trace::exit(cli::account_status_cli()),
+                        AccountCmd::Login { email } => {
+                            cli::trace::exit(cli::account_login_cli(email.as_deref()))
                         }
-                    }
+                        AccountCmd::Logout => cli::trace::exit(cli::account_logout_cli()),
+                    },
                     Commands::Registry { cmd } => match cmd {
                         RegistryCmd::Watch { cli: only } => {
                             cli::trace::exit(cli::registry::watch_cli(only.as_deref()));
@@ -1908,16 +1971,26 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         }
                         ContextCmd::Rename { name, context_id } => {
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_rename", "name":name}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_rename", "name":name}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
                         ContextCmd::Close { context_id } => {
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_close"}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_close"}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
-                        ContextCmd::Park { ref context_id } | ContextCmd::Unpark { ref context_id } => {
+                        ContextCmd::Park { ref context_id }
+                        | ContextCmd::Unpark { ref context_id } => {
                             let parked = matches!(cmd, ContextCmd::Park { .. });
                             let context_id = resolve_opt_ctx(context_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"context_park", "parked":parked}), Some(("context_id", context_id, "PLEXI_CONTEXT_ID"))))
+                            cli::trace::exit(cli::host_action_cli(
+                                serde_json::json!({"type":"context_park", "parked":parked}),
+                                Some(("context_id", context_id, "PLEXI_CONTEXT_ID")),
+                            ))
                         }
                         ContextCmd::List => cli::trace::exit(cli::context_list_cli()),
                     },
@@ -1949,7 +2022,10 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         cli::trace::exit(cli::setup::run_cli_setup(effective_modify, json));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
-                        ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"reload_config"}), None)),
+                        ConfigCmd::Reload => cli::trace::exit(cli::host_action_cli(
+                            serde_json::json!({"type":"reload_config"}),
+                            None,
+                        )),
                         ConfigCmd::Check { scope } => {
                             cli::trace::exit(cli::config_check(scope.scope()));
                         }
@@ -1972,9 +2048,7 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                     Commands::Note { cmd, text } => {
                         cli::trace::exit(cli::notes::note_cli(cmd, text))
                     }
-                    Commands::Notes { cmd } => {
-                        cli::trace::exit(cli::notes::notes_compat_cli(cmd))
-                    }
+                    Commands::Notes { cmd } => cli::trace::exit(cli::notes::notes_compat_cli(cmd)),
                     Commands::Debug { cmd } => match cmd {
                         DebugCmd::Session { cmd } => match cmd {
                             DebugSessionCmd::List => {
@@ -2108,7 +2182,11 @@ PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
     #[cfg(not(target_os = "macos"))]
     let activation_policy = "platform-default";
     #[cfg(target_os = "macos")]
-    let activate_ignoring_other_apps = if background { "false" } else { "bundle-default" };
+    let activate_ignoring_other_apps = if background {
+        "false"
+    } else {
+        "bundle-default"
+    };
     #[cfg(not(target_os = "macos"))]
     let activate_ignoring_other_apps = "not-applicable";
     log::info!(
@@ -2225,7 +2303,9 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
 /// Commands that must keep working when `[experiments]` is invalid: the ones
 /// that fix it, plus help.
 fn experiments_repair_command(args: &[String]) -> bool {
-    args.iter().skip(1).any(|a| matches!(a.as_str(), "--help" | "-h"))
+    args.iter()
+        .skip(1)
+        .any(|a| matches!(a.as_str(), "--help" | "-h"))
         || args
             .iter()
             .skip(1)
@@ -2315,8 +2395,10 @@ fn top_level_help_flag(args: &[String]) -> bool {
         })
         .map(|s| s.as_str())
         .collect();
-    matches!(filtered.first().copied(), Some("--help") | Some("-h") | Some("help"))
-        && filtered.len() == 1
+    matches!(
+        filtered.first().copied(),
+        Some("--help") | Some("-h") | Some("help")
+    ) && filtered.len() == 1
 }
 
 fn parse_profile_flag(args: &[String]) -> Option<String> {
@@ -2424,7 +2506,8 @@ mod cli_tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
+            let deadline =
+                Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(30));
             loop {
                 if child.try_wait().unwrap().is_some() {
                     break;
@@ -2519,7 +2602,10 @@ mod cli_tests {
             &["plugin", "list"],
             &["help"],
         ] {
-            assert!(!is_host_startup(&argv(cli)), "{cli:?} must not start a host");
+            assert!(
+                !is_host_startup(&argv(cli)),
+                "{cli:?} must not start a host"
+            );
         }
     }
 

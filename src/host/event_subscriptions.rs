@@ -24,13 +24,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
-use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest,
 };
-use crate::host::plugin_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
+use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline, SubscriptionRecord};
+use crate::protocol::{EventStreamDecl, PayloadMode, TriggerMode};
 
 pub fn plugin_subscriber_id(pane_id: u64) -> String {
     format!("app-pane:{pane_id}")
@@ -193,9 +193,7 @@ fn evaluate_targets(
     targets: &[String],
 ) -> Decision {
     let Some(workspace) = workspace_root else {
-        log::info!(
-            "event_subscriptions: deny actor={actor_id} — event grants require a workspace"
-        );
+        log::info!("event_subscriptions: deny actor={actor_id} — event grants require a workspace");
         return Decision::Deny;
     };
     let mut strictest = Decision::Allow;
@@ -584,7 +582,11 @@ impl HostSubscriptionService {
         &self,
         req: HostSubscribeRequest,
     ) -> Option<PendingEventConsent> {
-        if req.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        if req
+            .cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
             return None;
         }
         let (subscriber_type, subscriber_id) = match &req.subscriber_override {
@@ -614,7 +616,9 @@ impl HostSubscriptionService {
         let undeclared: Vec<String> = req
             .event_names
             .iter()
-            .filter(|n| !self.stream_is_declared(subscriber_context_id, &req.publisher_plugin_id, n))
+            .filter(|n| {
+                !self.stream_is_declared(subscriber_context_id, &req.publisher_plugin_id, n)
+            })
             .cloned()
             .collect();
         if !undeclared.is_empty() {
@@ -652,13 +656,22 @@ impl HostSubscriptionService {
                     req.resource_id,
                     GrantDuration::Session,
                 );
-                if req.reply.send(HostSubscribeReply::Ok {
-                    subscription_id,
-                    subscriber_type,
-                    subscriber_id: subscriber_id.clone(),
-                }).is_err() {
-                    self.timeline.lock().unwrap().clear_subscriber(subscriber_type, &subscriber_id);
-                    log::info!("event_subscriptions: disconnected before approval reply: {subscriber_id}");
+                if req
+                    .reply
+                    .send(HostSubscribeReply::Ok {
+                        subscription_id,
+                        subscriber_type,
+                        subscriber_id: subscriber_id.clone(),
+                    })
+                    .is_err()
+                {
+                    self.timeline
+                        .lock()
+                        .unwrap()
+                        .clear_subscriber(subscriber_type, &subscriber_id);
+                    log::info!(
+                        "event_subscriptions: disconnected before approval reply: {subscriber_id}"
+                    );
                 }
                 None
             }
@@ -706,7 +719,9 @@ impl HostSubscriptionService {
         choice: ConsentChoice,
         config_dir: &Path,
     ) {
-        if consent.is_cancelled() { return; }
+        if consent.is_cancelled() {
+            return;
+        }
         let PendingEventConsent {
             subscriber_type,
             subscriber_id,
@@ -1054,9 +1069,9 @@ impl HostSubscriptionService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{PluginEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource};
     use crate::host::plugin_timeline::EmittedEvent;
+    use crate::protocol::{EventStreamDecl, PluginEventActor};
 
     /// Fixed owning/viewer context for tests that don't exercise
     /// cross-context behavior (that's `plugin_timeline.rs`'s job) — keeps every

@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 use crossbeam_queue::ArrayQueue;
 use url::Url;
 
-use crate::app::view_trait::KeyDisposition;
 use crate::app::permissions::{PermissionState, PermissionStore};
-use crate::host::plugin_timeline::{PluginTimeline, EmittedEvent};
+use crate::app::view_trait::KeyDisposition;
+use crate::host::plugin_timeline::{EmittedEvent, PluginTimeline};
 use crate::host::services::{
     default_picker_service, FilePickOutcome, FilePickRequest, HttpResponse as HostHttpResponse,
     NetService, PickerService, UreqNetService,
@@ -27,25 +27,25 @@ use crate::host::services::{
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
 use crate::protocol::{
-    parse_enum, AiMessage as ProtocolAiMessage, PluginEventActor,
-    EventStreamDecl as ProtocolEventStreamDecl, ModelTier, TriggerMode,
+    parse_enum, AiMessage as ProtocolAiMessage, EventStreamDecl as ProtocolEventStreamDecl,
+    ModelTier, PluginEventActor, TriggerMode,
 };
 use crate::ui::theme::Colors;
 
+use super::wasm_render::RenderResult;
 use super::wasm_view::bindings::plexi::platform::types::{
-    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, PluginEventEvent, DeclareEventStreamsEffect,
+    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, DeclareEventStreamsEffect,
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
     EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
     FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
-    OpenFilePickerEffect, PipeMessageEvent, PipePayload, SubscribeEventStreamsEffect,
-    ToolCallEvent, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
-    UnsubscribeEventStreamsEffect,
+    OpenFilePickerEffect, PipeMessageEvent, PipePayload, PluginEventEvent,
+    SubscribeEventStreamsEffect, ToolCallEvent, ToolResultEffect, UiActionEvent,
+    UiValueChangeEvent, UnsubscribeEventStreamsEffect,
 };
 use super::wasm_view::{
     Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
     SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmView,
 };
-use super::wasm_render::RenderResult;
 
 /// A GPU surface the host allocated for the guest's `surface-node`.
 /// `width`/`height` are physical pixels (`logical × alloc_ppp`, stint 0527);
@@ -2650,10 +2650,7 @@ pub(crate) fn canonical_key_name(key: egui::Key) -> String {
 /// Resolve the canonical guest key name for a key event, accounting for
 /// shifted punctuation keys that `egui::Key` has no dedicated enum variant for
 /// (notably `Shift+8` → `"*"`).
-pub(crate) fn canonical_key_name_for_event(
-    key: egui::Key,
-    modifiers: egui::Modifiers,
-) -> String {
+pub(crate) fn canonical_key_name_for_event(key: egui::Key, modifiers: egui::Modifiers) -> String {
     if key == egui::Key::Num8
         && modifiers.shift
         && !modifiers.ctrl

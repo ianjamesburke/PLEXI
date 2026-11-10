@@ -35,9 +35,9 @@
 //! helpers, [`system_store`], and the re-exports every caller reaches through.
 
 mod file;
-pub(crate) mod manager;
 mod folder;
 mod folder_store;
+pub(crate) mod manager;
 mod pane_read;
 mod reconcile;
 mod resolver;
@@ -46,9 +46,9 @@ mod store;
 #[cfg(all(target_os = "macos", not(test)))]
 mod index;
 
-pub use store::{NonDestructiveStore, SecretStore};
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use store::keychain_call_lock;
+pub use store::{NonDestructiveStore, SecretStore};
 
 // Only test code outside this module names these. `SecretError` is named from
 // the macOS keychain-counting tests; every platform's tests name the in-memory
@@ -68,11 +68,11 @@ pub use folder::{
     SECRET_READ_TOOL,
 };
 pub use folder_store::backend_label;
-pub use pane_read::{read_pane_secret_with_posture, SecretScope};
 #[cfg(test)]
 pub use pane_read::read_pane_secret;
 #[cfg(test)]
 pub use pane_read::SECRET_GET_TOOL;
+pub use pane_read::{read_pane_secret_with_posture, SecretScope};
 pub use resolver::{
     resolve, resolve_terminal_env, resolve_with_source, ResolveOutcome, ResolveWithSourceOutcome,
     WorkspaceConfig, WorkspaceSecrets,

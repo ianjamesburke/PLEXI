@@ -10,8 +10,8 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Maximum saved-note payload admitted by the one-note proposal contract.
 pub const MAX_PROPOSAL_NOTE_BYTES: usize = 64 * 1024;
@@ -53,8 +53,8 @@ pub fn prepare_one_note_proposal_input(
     if tier_root_for_note(&canonical_path).is_none() {
         return Err(OneNoteInputError::PathOutsideTier);
     }
-    let bytes = std::fs::read(&canonical_path)
-        .map_err(|error| OneNoteInputError::Io(error.to_string()))?;
+    let bytes =
+        std::fs::read(&canonical_path).map_err(|error| OneNoteInputError::Io(error.to_string()))?;
     if bytes.len() > MAX_PROPOSAL_NOTE_BYTES {
         return Err(OneNoteInputError::Oversized { bytes: bytes.len() });
     }
@@ -1650,10 +1650,15 @@ mod tests {
         seed(&note_path, std::str::from_utf8(initial_bytes).unwrap());
 
         let intake = prepare_one_note_proposal_input(&note_path).unwrap();
-        assert_eq!(intake.canonical_path, std::fs::canonicalize(&note_path).unwrap());
+        assert_eq!(
+            intake.canonical_path,
+            std::fs::canonicalize(&note_path).unwrap()
+        );
         assert_eq!(intake.byte_size, initial_bytes.len());
         assert_eq!(intake.source_hash.len(), 64);
-        assert!(intake.payload.contains(std::str::from_utf8(initial_bytes).unwrap()));
+        assert!(intake
+            .payload
+            .contains(std::str::from_utf8(initial_bytes).unwrap()));
         assert!(intake.payload.contains(&intake.source_hash));
 
         // Attachments and outside files are rejected before their bytes enter a payload.

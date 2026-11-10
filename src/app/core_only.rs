@@ -1,6 +1,6 @@
 //! Startup-only plugin policy and inert restore views. No plugin factory runs here.
 use crate::app::view_trait::{View, ViewRenderContext};
-use crate::host::pane::{ViewPane, ViewRuntime, Pane};
+use crate::host::pane::{Pane, ViewPane, ViewRuntime};
 use crate::workspace::SavedPane;
 
 pub(crate) fn unavailable(plugin: &str) -> String {

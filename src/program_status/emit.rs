@@ -170,9 +170,6 @@ pub fn emit_agent_report(state: State, kind: Option<&str>, msg: Option<&str>) {
         return;
     };
     let bytes = encode_report(Some(&id), state, kind, APP, Some(&title), msg);
-    log::info!(
-        "program_status: emit id={id} state={}",
-        state.as_str()
-    );
+    log::info!("program_status: emit id={id} state={}", state.as_str());
     write_to_tty(&bytes);
 }

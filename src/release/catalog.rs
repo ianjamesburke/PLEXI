@@ -134,7 +134,10 @@ impl ReleaseFeature {
                 Sub(&["plugin", "browse"]),
                 Sub(&["plugin", "search"]),
             ],
-            Self::McpClient => &[Sub(&["events", "mcp-config"]), Arg(&["view", "open"], "mcp")],
+            Self::McpClient => &[
+                Sub(&["events", "mcp-config"]),
+                Arg(&["view", "open"], "mcp"),
+            ],
             Self::Routines => &[Sub(&["routine"])],
             Self::AgentMesh => &[
                 Sub(&["agent", "create"]),
@@ -149,10 +152,13 @@ impl ReleaseFeature {
                 Sub(&["agent", "team"]),
                 Sub(&["agent", "wait"]),
             ],
-            Self::CliOperations | Self::WasmApps | Self::PageGrid | Self::TreeAtlas | Self::Daw | Self::MediaIo | Self::Accessibility => {
-                &[]
-            }
+            Self::CliOperations
+            | Self::WasmApps
+            | Self::PageGrid
+            | Self::TreeAtlas
+            | Self::Daw
+            | Self::MediaIo
+            | Self::Accessibility => &[],
         }
     }
 }
-

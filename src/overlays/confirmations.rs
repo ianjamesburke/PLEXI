@@ -34,7 +34,11 @@ impl PlexiApp {
         let actions = [
             crate::ui::dialog::DialogAction::new(
                 "close",
-                if self.pending_quit { "Quit Plexi and stop them" } else { "Close" },
+                if self.pending_quit {
+                    "Quit Plexi and stop them"
+                } else {
+                    "Close"
+                },
                 crate::ui::button::ButtonKind::Danger,
             )
             .shortcut(crate::ui::dialog::DialogShortcut::new(
@@ -55,16 +59,25 @@ impl PlexiApp {
         ];
         let title = if self.pending_quit {
             let count = self.working_agent_count();
-            if count == 1 { "1 agent is working. Quit Plexi and stop them?".to_string() }
-            else { format!("{count} agents are working. Quit Plexi and stop them?") }
-        } else { "Close pane?".to_string() };
+            if count == 1 {
+                "1 agent is working. Quit Plexi and stop them?".to_string()
+            } else {
+                format!("{count} agents are working. Quit Plexi and stop them?")
+            }
+        } else {
+            "Close pane?".to_string()
+        };
         let response =
             crate::ui::dialog::ActionModal::new("confirm_close_overlay", &title, &actions)
                 .width(super::MODAL_WIDTH)
                 .show(ctx, &self.colors, |ui| {
                     crate::ui::typography::caption(
                         ui,
-                        if self.pending_quit { "Every pane process in this Plexi instance will be stopped." } else { "The running process will be terminated." },
+                        if self.pending_quit {
+                            "Every pane process in this Plexi instance will be stopped."
+                        } else {
+                            "The running process will be terminated."
+                        },
                         &self.colors,
                     );
                 });
@@ -399,9 +412,8 @@ impl PlexiApp {
                 );
             }
             store.save();
-            let monitor = crate::broker::gate::PermissionMonitor::for_profile(
-                &crate::config::config_dir(),
-            );
+            let monitor =
+                crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());
             for capability in &review.missing_capabilities {
                 monitor.grant_capability_id(
                     &review.plugin_id,
@@ -446,5 +458,4 @@ impl PlexiApp {
     ) -> crate::app::view_trait::KeyDisposition {
         crate::app::view_trait::KeyDisposition::Consumed
     }
-
 }

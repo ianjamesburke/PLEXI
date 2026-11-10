@@ -30,7 +30,6 @@ fn regression_authoritative_strip_model_matches_host() {
     let layout = h.app.active_strip_layout();
     assert_eq!(layout.panes.len(), 3);
     assert!(layout.panes.iter().all(|pane| pane.is_visible));
-
 }
 
 /// Stint 1039 baseline-red regression:
@@ -43,17 +42,14 @@ fn regression_authoritative_strip_model_matches_host() {
 /// (`swap_pane`) must exchange adjacent pane positions while keeping focus on the
 /// moved pane identity.
 
-
-
-
-
 #[test]
 fn custom_width_survives_focus_split_close_and_zoom() {
     let mut h = HostHarness::new();
     let first = h.add_test_pane();
     let second = h.add_test_pane();
     let context = h.app.router.active().context_id;
-    h.app.set_context_columns(context, vec![vec![first], vec![second]]);
+    h.app
+        .set_context_columns(context, vec![vec![first], vec![second]]);
     h.app.focus_pane_in_strip(second);
     h.run_frames(2);
     h.app.ensure_authoritative_strip(context).columns[0].width = ColumnWidth::CustomPixels(333.0);
@@ -61,7 +57,10 @@ fn custom_width_survives_focus_split_close_and_zoom() {
     h.app.focus_pane_in_strip(first);
     h.run_frames(2);
     h.app.focus_pane_in_strip(second);
-    let inserted = h.app.split_focused(false, None, false, false, None).expect("split");
+    let inserted = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split");
     h.run_frames(2);
     assert_eq!(h.app.focused_pane_id(), Some(inserted));
     h.app.close_focused();
@@ -72,7 +71,10 @@ fn custom_width_survives_focus_split_close_and_zoom() {
     h.app.toggle_pane_zoom();
     h.run_frames(2);
     let strip = h.app.strip_for_context(context);
-    assert_eq!(strip.columns[strip.find_column_for_pane(first).unwrap()].width, ColumnWidth::CustomPixels(333.0));
+    assert_eq!(
+        strip.columns[strip.find_column_for_pane(first).unwrap()].width,
+        ColumnWidth::CustomPixels(333.0)
+    );
 }
 
 #[test]
@@ -81,18 +83,29 @@ fn stack_shares_survive_split_and_close_by_pane_identity() {
     let first = h.add_test_pane();
     let second = h.add_test_pane();
     let context = h.app.router.active().context_id;
-    h.app.set_context_columns(context, vec![vec![first, second]]);
+    h.app
+        .set_context_columns(context, vec![vec![first, second]]);
     h.app.focus_pane_in_strip(second);
     h.run_frames(2);
     h.app.ensure_authoritative_strip(context).columns[0].heights = vec![2.0, 3.0];
     h.run_frames(2);
-    let inserted = h.app.split_focused(true, None, false, false, None).expect("split stack");
+    let inserted = h
+        .app
+        .split_focused(true, None, false, false, None)
+        .expect("split stack");
     h.run_frames(2);
     let strip = h.app.strip_for_context(context);
     for (pane, expected) in [(first, 2.0), (second, 3.0)] {
         let col = strip.find_column_for_pane(pane).unwrap();
-        let row = strip.columns[col].panes.iter().position(|id| *id == pane).unwrap();
-        assert_eq!(strip.columns[col].heights[row], expected, "share after split pane={pane}");
+        let row = strip.columns[col]
+            .panes
+            .iter()
+            .position(|id| *id == pane)
+            .unwrap();
+        assert_eq!(
+            strip.columns[col].heights[row], expected,
+            "share after split pane={pane}"
+        );
     }
     assert_eq!(h.app.focused_pane_id(), Some(inserted));
     h.app.close_focused();
@@ -100,8 +113,15 @@ fn stack_shares_survive_split_and_close_by_pane_identity() {
     let strip = h.app.strip_for_context(context);
     for (pane, expected) in [(first, 2.0), (second, 3.0)] {
         let col = strip.find_column_for_pane(pane).unwrap();
-        let row = strip.columns[col].panes.iter().position(|id| *id == pane).unwrap();
-        assert_eq!(strip.columns[col].heights[row], expected, "share after close pane={pane}");
+        let row = strip.columns[col]
+            .panes
+            .iter()
+            .position(|id| *id == pane)
+            .unwrap();
+        assert_eq!(
+            strip.columns[col].heights[row], expected,
+            "share after close pane={pane}"
+        );
     }
 }
 
@@ -112,9 +132,16 @@ fn saved_strip_restores_width_scroll_and_focus() {
     let second = h.add_test_pane();
     let context = h.app.router.active().context_id;
     for id in [first, second] {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap()
+            .manifest_id = "agents".into();
     }
-    h.app.set_context_columns(context, vec![vec![first], vec![second]]);
+    h.app
+        .set_context_columns(context, vec![vec![first], vec![second]]);
     h.app.focus_pane_in_strip(second);
     {
         let strip = h.app.ensure_authoritative_strip(context);
@@ -166,7 +193,12 @@ fn invalid_legacy_tree_is_rejected_without_replacing_original() {
     let window = &mut saved.windows[0];
     let root = window.tree.root().unwrap();
     let missing = window.tree.tiles.insert_pane(u64::MAX);
-    window.tree.root = Some(window.tree.tiles.insert_horizontal_tile(vec![root, missing]));
+    window.tree.root = Some(
+        window
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![root, missing]),
+    );
     let path = crate::workspace::workspace_path_in(&profile);
     let original = serde_json::to_vec(&saved).unwrap();
     std::fs::write(&path, &original).unwrap();
@@ -180,15 +212,24 @@ fn restored_strip_keeps_scroll_after_first_frame() {
     let panes = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap()
+            .manifest_id = "agents".into();
     }
-    h.app.set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
+    h.app
+        .set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
     h.app.focus_pane_in_strip(panes[1]);
     h.run_frames(3);
     let canvas = h.app.active_strip_layout().canvas_rect.width();
     {
         let strip = h.app.ensure_authoritative_strip(context);
-        for column in &mut strip.columns { column.width = ColumnWidth::CustomPixels(700.0); }
+        for column in &mut strip.columns {
+            column.width = ColumnWidth::CustomPixels(700.0);
+        }
         strip.scroll_offset_px = 450.0;
         strip.reference_width_px = Some(canvas);
     }
@@ -207,16 +248,23 @@ fn legacy_fixture_migrates_and_retains_later_v3_changes() {
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        let app = h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap();
+        let app = h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap();
         app.manifest_id = "agents".into();
         app.name = format!("rollback pane {id}");
     }
-    h.app.set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
+    h.app
+        .set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
     h.app.focus_pane_in_strip(panes[1]);
     let profile = h.profile_dir().to_path_buf();
     h.app.save_workspace_now();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     for pane in legacy["windows"][0]["panes"].as_array_mut().unwrap() {
         pane["app_state"] = serde_json::json!({"proof":"saved content reference"});
@@ -240,7 +288,11 @@ fn legacy_fixture_migrates_and_retains_later_v3_changes() {
         let destination = export.join("legacy");
         crate::workspace::export_v2_rollback(&profile, &destination).unwrap();
         std::fs::write(export.join("newer-v3.json"), &newer).unwrap();
-        std::fs::write(destination.join("identities.json"), serde_json::to_vec(&serde_json::json!({"context":context, "panes":panes})).unwrap()).unwrap();
+        std::fs::write(
+            destination.join("identities.json"),
+            serde_json::to_vec(&serde_json::json!({"context":context, "panes":panes})).unwrap(),
+        )
+        .unwrap();
     }
 }
 
@@ -249,12 +301,14 @@ fn legacy_workspace_converts_before_host_restoration() {
     let mut h = HostHarness::new();
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
-    h.app.set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
+    h.app
+        .set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
     h.app.focus_pane_in_strip(panes[1]);
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     legacy.as_object_mut().unwrap().remove("strips");
     legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -262,9 +316,19 @@ fn legacy_workspace_converts_before_host_restoration() {
     std::fs::write(&path, &original).unwrap();
     let migrated = crate::workspace::WorkspaceFile::load_from(&profile).expect("legacy workspace");
     assert_eq!(migrated.version, 3);
-    assert_eq!(migrated.strips[&context].columns.iter().flat_map(|column| column.panes.iter().copied()).collect::<Vec<_>>(), panes);
+    assert_eq!(
+        migrated.strips[&context]
+            .columns
+            .iter()
+            .flat_map(|column| column.panes.iter().copied())
+            .collect::<Vec<_>>(),
+        panes
+    );
     assert_eq!(migrated.strips[&context].focused_pane, Some(panes[1]));
-    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
 }
 
 #[test]
@@ -272,7 +336,8 @@ fn legacy_conversion_preserves_tree_widths_and_stack_shares() {
     let mut h = HostHarness::new();
     let panes = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
-    h.app.set_context_columns(context, vec![vec![panes[0], panes[1]], vec![panes[2]]]);
+    h.app
+        .set_context_columns(context, vec![vec![panes[0], panes[1]], vec![panes[2]]]);
     let tree = &mut h.app.windows[0].tree;
     let root = tree.root().unwrap();
     let (left, right) = match tree.tiles.get_mut(root).unwrap() {
@@ -298,7 +363,8 @@ fn legacy_conversion_preserves_tree_widths_and_stack_shares() {
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     legacy.as_object_mut().unwrap().remove("strips");
     legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -316,7 +382,8 @@ fn legacy_conversion_preserves_relative_column_shares() {
         let mut h = HostHarness::new();
         let panes = [h.add_test_pane(), h.add_test_pane()];
         let context = h.app.router.active().context_id;
-        h.app.set_context_columns(context, vec![vec![panes[0]], vec![panes[1]]]);
+        h.app
+            .set_context_columns(context, vec![vec![panes[0]], vec![panes[1]]]);
         let tree = &mut h.app.windows[0].tree;
         let root = tree.root().unwrap();
         match tree.tiles.get_mut(root).unwrap() {
@@ -330,7 +397,8 @@ fn legacy_conversion_preserves_relative_column_shares() {
         h.app.save_workspace_now();
         let profile = h.profile_dir().to_path_buf();
         let path = crate::workspace::workspace_path_in(&profile);
-        let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         legacy["version"] = 2.into();
         legacy.as_object_mut().unwrap().remove("strips");
         legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -347,13 +415,19 @@ fn restored_focus_receives_unaddressed_key_without_refocusing() {
     let mut h = HostHarness::new();
     h.add_focused_terminal();
     h.run_frames(2);
-    let focused = h.app.split_focused(false, None, false, false, None).expect("split terminal");
+    let focused = h
+        .app
+        .split_focused(false, None, false, false, None)
+        .expect("split terminal");
     h.run_frames(2);
     let profile = h.profile_dir().to_path_buf();
     h.app.save_workspace_now();
     let mut restored = HostHarness::from_profile_dir(profile);
     restored.run_frames(3);
-    assert_eq!(restored.app.host_input_owner(), crate::app::input_owner::InputOwner::Pane(focused));
+    assert_eq!(
+        restored.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(focused)
+    );
     restored.terminal_backend(focused).enable_input_tap();
     restored.press_key(egui::Key::Tab, egui::Modifiers::NONE);
     assert_eq!(restored.terminal_backend(focused).take_input_tap(), b"\t");
@@ -365,7 +439,13 @@ fn legacy_tab_conversion_retains_inactive_pane_and_active_identity() {
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap()
+            .manifest_id = "agents".into();
     }
     let window = &mut h.app.windows[0];
     let first = window.tree.tiles.find_pane(&panes[0]).unwrap();
@@ -375,7 +455,8 @@ fn legacy_tab_conversion_retains_inactive_pane_and_active_identity() {
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     legacy.as_object_mut().unwrap().remove("strips");
     legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -384,10 +465,19 @@ fn legacy_tab_conversion_retains_inactive_pane_and_active_identity() {
     let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
     assert_eq!(migrated.strips[&context].columns[0].panes, vec![panes[0]]);
     assert_eq!(migrated.windows[0].panes.len(), 2);
-    assert!(migrated.windows[0].tree.tiles.find_pane(&panes[1]).is_some());
-    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    assert!(migrated.windows[0]
+        .tree
+        .tiles
+        .find_pane(&panes[1])
+        .is_some());
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
     let restored = HostHarness::from_profile_dir(profile);
-    for pane in panes { assert!(restored.app.find_pane_in_any_window(pane).is_some()); }
+    for pane in panes {
+        assert!(restored.app.find_pane_in_any_window(pane).is_some());
+    }
 }
 
 #[test]
@@ -407,7 +497,8 @@ fn legacy_grid_conversion_reports_unsupported_and_preserves_file() {
     let mut h = HostHarness::new();
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
-    h.app.set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
+    h.app
+        .set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
@@ -415,7 +506,10 @@ fn legacy_grid_conversion_reports_unsupported_and_preserves_file() {
     legacy.version = 2;
     legacy.strips.clear();
     let tree = &mut legacy.windows[0].tree;
-    let children: Vec<_> = panes.iter().map(|pane| tree.tiles.find_pane(pane).unwrap()).collect();
+    let children: Vec<_> = panes
+        .iter()
+        .map(|pane| tree.tiles.find_pane(pane).unwrap())
+        .collect();
     tree.root = Some(tree.tiles.insert_grid_tile(children));
     let original = serde_json::to_vec(&legacy).unwrap();
     std::fs::write(&path, &original).unwrap();
@@ -430,18 +524,41 @@ fn legacy_portal_conversion_preserves_child_and_scope() {
     let child = h.add_test_pane();
     let parent_context = h.app.router.active().context_id;
     for id in [parent, child] {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0]
+            .panes
+            .get_mut(&id)
+            .unwrap()
+            .as_view_mut()
+            .unwrap()
+            .manifest_id = "agents".into();
     }
-    h.app.set_context_columns(parent_context, vec![vec![parent], vec![child]]);
-    let request = serde_json::from_value(serde_json::json!({"type":"push_pane_to_subcontext", "name":"child", "pane_id":child})).unwrap();
+    h.app
+        .set_context_columns(parent_context, vec![vec![parent], vec![child]]);
+    let request = serde_json::from_value(
+        serde_json::json!({"type":"push_pane_to_subcontext", "name":"child", "pane_id":child}),
+    )
+    .unwrap();
     h.inject_ipc(request);
     h.app.drain_pane_cmd_channel();
-    let child_context = h.app.windows.iter().find(|window| window.panes.contains_key(&child)).unwrap().context_id;
-    let portal = h.app.windows.iter().flat_map(|window| window.panes.iter()).find_map(|(&id, pane)| (pane.portal_target() == Some(child_context)).then_some(id)).unwrap();
+    let child_context = h
+        .app
+        .windows
+        .iter()
+        .find(|window| window.panes.contains_key(&child))
+        .unwrap()
+        .context_id;
+    let portal = h
+        .app
+        .windows
+        .iter()
+        .flat_map(|window| window.panes.iter())
+        .find_map(|(&id, pane)| (pane.portal_target() == Some(child_context)).then_some(id))
+        .unwrap();
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     legacy.as_object_mut().unwrap().remove("strips");
     legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -449,11 +566,30 @@ fn legacy_portal_conversion_preserves_child_and_scope() {
     std::fs::write(&path, &original).unwrap();
     let migrated = crate::workspace::WorkspaceFile::load_from(&profile).unwrap();
     assert!(migrated.windows.iter().any(|window| window.context_id == parent_context && window.panes.iter().any(|pane| pane.id == portal && matches!(pane.kind, crate::workspace::SavedPaneKind::Portal { context_id, .. } if context_id == child_context))));
-    assert!(migrated.windows.iter().any(|window| window.context_id == child_context && window.panes.iter().any(|pane| pane.id == child)));
-    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    assert!(migrated
+        .windows
+        .iter()
+        .any(|window| window.context_id == child_context
+            && window.panes.iter().any(|pane| pane.id == child)));
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
     let restored = HostHarness::from_profile_dir(profile);
-    assert!(restored.app.windows.iter().any(|window| window.context_id == parent_context && window.panes.get(&portal).is_some_and(|pane| pane.portal_target() == Some(child_context))));
-    assert!(restored.app.windows.iter().any(|window| window.context_id == child_context && window.panes.contains_key(&child)));
+    assert!(restored
+        .app
+        .windows
+        .iter()
+        .any(|window| window.context_id == parent_context
+            && window
+                .panes
+                .get(&portal)
+                .is_some_and(|pane| pane.portal_target() == Some(child_context))));
+    assert!(restored
+        .app
+        .windows
+        .iter()
+        .any(|window| window.context_id == child_context && window.panes.contains_key(&child)));
 }
 
 #[test]
@@ -466,7 +602,8 @@ fn legacy_zero_window_id_receives_stable_identity() {
     h.app.save_workspace_now();
     let profile = h.profile_dir().to_path_buf();
     let path = crate::workspace::workspace_path_in(&profile);
-    let mut legacy: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     legacy["version"] = 2.into();
     legacy.as_object_mut().unwrap().remove("strips");
     legacy.as_object_mut().unwrap().remove("conjoined_contexts");
@@ -478,7 +615,10 @@ fn legacy_zero_window_id_receives_stable_identity() {
     let window_id = migrated.windows[0].window_id;
     assert_ne!(window_id, 0);
     assert_eq!(migrated.context_active_window[&context], window_id);
-    assert_eq!(std::fs::read(path.with_extension("v2.rollback.json")).unwrap(), original);
+    assert_eq!(
+        std::fs::read(path.with_extension("v2.rollback.json")).unwrap(),
+        original
+    );
 }
 
 #[test]
@@ -533,7 +673,9 @@ fn legacy_deleted_context_active_window_is_migrated_without_losing_workspace() {
         original
     );
     let restored = HostHarness::from_profile_dir(profile);
-    assert!(restored.app.windows.iter().any(|window| {
-        window.context_id == context && window.panes.contains_key(&pane)
-    }));
+    assert!(restored
+        .app
+        .windows
+        .iter()
+        .any(|window| { window.context_id == context && window.panes.contains_key(&pane) }));
 }

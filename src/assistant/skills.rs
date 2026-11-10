@@ -134,7 +134,11 @@ impl SkillRegistry {
     /// description wording: a build-verb next to a build-noun anywhere in
     /// the prompt is a signal that should never miss for this one,
     /// high-value builtin skill.
-    pub fn plugin_build_fallback(&self, prompt: &str, enabled: &[String]) -> Option<&SkillDefinition> {
+    pub fn plugin_build_fallback(
+        &self,
+        prompt: &str,
+        enabled: &[String],
+    ) -> Option<&SkillDefinition> {
         if !looks_like_plugin_build_request(prompt) {
             return None;
         }
@@ -446,7 +450,9 @@ mod tests {
             "the build flow must still forbid terminals for build work"
         );
         assert!(
-            skill.instructions.contains("Never route around one via host.terminals.run"),
+            skill
+                .instructions
+                .contains("Never route around one via host.terminals.run"),
             "a scope refusal must be a final answer, not a cue to use a terminal"
         );
         assert_eq!(

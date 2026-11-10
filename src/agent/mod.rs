@@ -40,7 +40,7 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
     PermissionRequest, TargetType,
 };
-use crate::host::plugin_timeline::{PluginTimeline, EventDelivery};
+use crate::host::plugin_timeline::{EventDelivery, PluginTimeline};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
@@ -316,9 +316,15 @@ impl AgentDefinition {
                 deny: Vec::new(),
             }
         };
-        let can_call = settings.harness.as_ref().and_then(|h| h.can_call.clone())
+        let can_call = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_call.clone())
             .unwrap_or(settings.can_call);
-        let can_handoff = settings.harness.as_ref().and_then(|h| h.can_handoff.clone())
+        let can_handoff = settings
+            .harness
+            .as_ref()
+            .and_then(|h| h.can_handoff.clone())
             .unwrap_or(settings.can_handoff);
         for (field, roles) in [("can_call", &can_call), ("can_handoff", &can_handoff)] {
             for role in roles {
@@ -379,13 +385,21 @@ impl AgentDefinition {
                     flags.push(flag.clone());
                 }
                 if let Some(adapter) = crate::cli::agent::harness_adapter(&cli) {
-                    crate::cli::agent::validate_custom_harness_flags(adapter, &flags, model.as_deref())
-                        .map_err(|e| format!("settings.toml: [harness] {e}"))?;
+                    crate::cli::agent::validate_custom_harness_flags(
+                        adapter,
+                        &flags,
+                        model.as_deref(),
+                    )
+                    .map_err(|e| format!("settings.toml: [harness] {e}"))?;
                 }
                 if let Some(ref fb) = fallback {
                     if let Some(fb_adapter) = crate::cli::agent::harness_adapter(fb) {
-                        crate::cli::agent::validate_custom_harness_flags(fb_adapter, &flags, model.as_deref())
-                            .map_err(|e| format!("settings.toml: [harness] fallback '{fb}': {e}"))?;
+                        crate::cli::agent::validate_custom_harness_flags(
+                            fb_adapter,
+                            &flags,
+                            model.as_deref(),
+                        )
+                        .map_err(|e| format!("settings.toml: [harness] fallback '{fb}': {e}"))?;
                     }
                 }
                 Some(AgentHarnessConfig {
@@ -527,9 +541,16 @@ impl AgentCard {
         Self {
             name: definition.id.clone(),
             description: definition.description.clone(),
-            skills: definition.skills.iter().map(|name| AgentCardSkill {
-                id: name.clone(), name: name.clone(), description: name.clone(), tags: Vec::new(),
-            }).collect(),
+            skills: definition
+                .skills
+                .iter()
+                .map(|name| AgentCardSkill {
+                    id: name.clone(),
+                    name: name.clone(),
+                    description: name.clone(),
+                    tags: Vec::new(),
+                })
+                .collect(),
             capabilities: serde_json::json!({}),
             supported_interfaces: Vec::new(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -550,10 +571,7 @@ impl AgentRegistry {
         Self::load_with_optional_workspace(profile_dir, Some(workspace_root))
     }
 
-    pub fn load_with_optional_workspace(
-        profile_dir: &Path,
-        workspace_root: Option<&Path>,
-    ) -> Self {
+    pub fn load_with_optional_workspace(profile_dir: &Path, workspace_root: Option<&Path>) -> Self {
         let builtin_default = builtin_default_agent();
         let user_dir = profile_dir.join("agents");
         let user_agents = load_agents_dir(&user_dir, AgentSource::User);
@@ -830,11 +848,9 @@ fn definition_files_match(left: &Path, right: &Path) -> bool {
 }
 
 fn copy_tree_skipping_grants(src: &Path, dest: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dest).map_err(|error| {
-        format!("create {}: {error}", dest.display())
-    })?;
-    let entries = std::fs::read_dir(src)
-        .map_err(|error| format!("read {}: {error}", src.display()))?;
+    std::fs::create_dir_all(dest).map_err(|error| format!("create {}: {error}", dest.display()))?;
+    let entries =
+        std::fs::read_dir(src).map_err(|error| format!("read {}: {error}", src.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("read entry in {}: {error}", src.display()))?;
         let name = entry.file_name();
@@ -862,7 +878,10 @@ fn append_migration_receipt(canonical: &Path, name: &str) {
     let path = canonical.join(".migration-receipt");
     let prior = std::fs::read_to_string(&path).unwrap_or_default();
     let line = format!("migrated {name}\n");
-    if prior.lines().any(|existing| existing == format!("migrated {name}")) {
+    if prior
+        .lines()
+        .any(|existing| existing == format!("migrated {name}"))
+    {
         return;
     }
     let mut next = prior;
@@ -1511,7 +1530,10 @@ impl AgentHost {
 
         let request = AiBrokerRequest {
             plugin_id: format!("agent:{}", agent.def.id),
-            model_mode: match agent.def.default_tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
+            model_mode: match agent.def.default_tier {
+                ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow,
+                ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast,
+            },
             concrete_model: agent
                 .def
                 .model_routes
@@ -1756,7 +1778,10 @@ default = "ask"
 
         let issues = scan_agent_dirs(root.path());
         assert_eq!(issues.len(), 2, "{issues:?}");
-        let legacy_issue = issues.iter().find(|i| i.path == legacy).expect("legacy dir");
+        let legacy_issue = issues
+            .iter()
+            .find(|i| i.path == legacy)
+            .expect("legacy dir");
         assert!(
             legacy_issue.issue.describe().contains("head.json")
                 && legacy_issue.issue.describe().contains("agent.json"),
@@ -1767,7 +1792,10 @@ default = "ask"
             legacy.join("agent.json").is_file() && !legacy.join("head.json").exists(),
             "a rename that lands as a data migration"
         );
-        let pane_issue = issues.iter().find(|i| i.path == pane).expect("AGENT.md-only dir");
+        let pane_issue = issues
+            .iter()
+            .find(|i| i.path == pane)
+            .expect("AGENT.md-only dir");
         assert!(
             pane_issue.issue.describe().contains("settings.toml"),
             "{}",
@@ -1790,8 +1818,14 @@ default = "ask"
         let issues = scan_agent_dirs(root.path());
         let legacy_issue = issues.iter().find(|i| i.path == legacy).unwrap();
         let incomplete_issue = issues.iter().find(|i| i.path == incomplete).unwrap();
-        assert!(matches!(legacy_issue.issue, AgentDirIssue::LegacyAuthorityFilename { .. }));
-        assert!(matches!(incomplete_issue.issue, AgentDirIssue::MissingRequiredFile { .. }));
+        assert!(matches!(
+            legacy_issue.issue,
+            AgentDirIssue::LegacyAuthorityFilename { .. }
+        ));
+        assert!(matches!(
+            incomplete_issue.issue,
+            AgentDirIssue::MissingRequiredFile { .. }
+        ));
     }
 
     /// Stint 1036: a legitimate layout is not an error, so a complete
@@ -1822,8 +1856,13 @@ default = "ask"
     #[test]
     fn transcript_logging_never_emits_raw_turns_at_trace_level() {
         let source = include_str!("mod.rs");
-        let implementation = source.split("impl AgentRuntime {").nth(1).unwrap()
-            .split("fn transcript_info_log_message").next().unwrap();
+        let implementation = source
+            .split("impl AgentRuntime {")
+            .nth(1)
+            .unwrap()
+            .split("fn transcript_info_log_message")
+            .next()
+            .unwrap();
         assert!(!implementation.contains("log::trace!"));
     }
 
@@ -1837,42 +1876,105 @@ default = "ask"
             let _guard = crate::config::set_test_profile_dir(profile.clone());
             crate::platform::logging::init(log::LevelFilter::Trace, 30, false);
             let def = AgentDefinition::parse("prompt", "[agent]\nid='audit'\ndisplay_name='Audit'\ndefault_tier='medium'\n[permissions]\ndefault_posture='ask'\n").unwrap();
-            let mut runtime = AgentRuntime { def, subscription_ids: vec![], transcript: vec![], in_flight: 0 };
+            let mut runtime = AgentRuntime {
+                def,
+                subscription_ids: vec![],
+                transcript: vec![],
+                in_flight: 0,
+            };
             runtime.push_transcript("user", SENTINEL.to_string());
             let mut harness = crate::testing::HostHarness::new();
             let terminal = harness.add_focused_terminal();
-            let sender = harness.app.windows[0].panes.iter()
-                .find_map(|(&id, pane)| pane.as_view().map(|_| id)).unwrap();
-            harness.app.windows[0].panes.get_mut(&sender).unwrap().as_view_mut().unwrap().linked_pane_id = Some(terminal);
+            let sender = harness.app.windows[0]
+                .panes
+                .iter()
+                .find_map(|(&id, pane)| pane.as_view().map(|_| id))
+                .unwrap();
+            harness.app.windows[0]
+                .panes
+                .get_mut(&sender)
+                .unwrap()
+                .as_view_mut()
+                .unwrap()
+                .linked_pane_id = Some(terminal);
             harness.terminal_backend(terminal).enable_input_tap();
-            harness.app.dispatch_run_in_linked_terminal(sender, terminal, SENTINEL.to_string(), true);
-            assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
-            harness.app.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
-                generated_operation_id: false,
-                pane_id: terminal, text: SENTINEL.to_string(), submit: false, paste: false,
-                response_file: None, operation_id: None, peer_ancestry: None,
-            });
-            assert_eq!(harness.terminal_backend(terminal).take_input_tap(), SENTINEL.as_bytes());
+            harness.app.dispatch_run_in_linked_terminal(
+                sender,
+                terminal,
+                SENTINEL.to_string(),
+                true,
+            );
+            assert_eq!(
+                harness.terminal_backend(terminal).take_input_tap(),
+                format!("{SENTINEL}\n").as_bytes()
+            );
+            harness
+                .app
+                .handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
+                    generated_operation_id: false,
+                    pane_id: terminal,
+                    text: SENTINEL.to_string(),
+                    submit: false,
+                    paste: false,
+                    response_file: None,
+                    operation_id: None,
+                    peer_ancestry: None,
+                });
+            assert_eq!(
+                harness.terminal_backend(terminal).take_input_tap(),
+                SENTINEL.as_bytes()
+            );
             use crate::workspace::secrets::SecretStore;
             let workspace = tempfile::tempdir().unwrap();
-            let config = workspace.path().join(crate::config::workspace_channel_dir());
+            let config = workspace
+                .path()
+                .join(crate::config::workspace_channel_dir());
             std::fs::create_dir_all(&config).unwrap();
             std::fs::write(config.join("workspace.toml"), "id='audit'\n").unwrap();
-            std::fs::write(config.join("secrets.toml"), "fallback=true\n[terminal.env]\ninject=['SERVICE_TOKEN']\n").unwrap();
+            std::fs::write(
+                config.join("secrets.toml"),
+                "fallback=true\n[terminal.env]\ninject=['SERVICE_TOKEN']\n",
+            )
+            .unwrap();
             let store = crate::workspace::secrets::InMemoryKeychain::new();
             store.set("plexi:audit:SERVICE_TOKEN", SENTINEL).unwrap();
-            let injected = crate::workspace::secrets::resolve_terminal_env(workspace.path(), &store).unwrap();
-            assert_eq!(injected.get("SERVICE_TOKEN").map(|v| v.as_str()), Some(SENTINEL));
-            let mut env = std::collections::HashMap::from([("PLEXI_PERMISSION_MAC".to_string(), SENTINEL.to_string())]);
+            let injected =
+                crate::workspace::secrets::resolve_terminal_env(workspace.path(), &store).unwrap();
+            assert_eq!(
+                injected.get("SERVICE_TOKEN").map(|v| v.as_str()),
+                Some(SENTINEL)
+            );
+            let mut env = std::collections::HashMap::from([(
+                "PLEXI_PERMISSION_MAC".to_string(),
+                SENTINEL.to_string(),
+            )]);
             crate::broker::seal::scrub_pane_env(&mut env, true);
             assert!(!env.contains_key("PLEXI_PERMISSION_MAC"));
             crate::host::flight_recorder::adopt_session(&profile, "sess-sentinel");
-            crate::host::flight_recorder::record_in(&profile, "tool_call_requested", None, Some(42), None,
-                serde_json::json!({"input": {"text": SENTINEL}}));
-            crate::host::flight_recorder::record_in(&profile, "tool_call_completed", None, Some(42), None,
-                serde_json::json!({"output": {"value": SENTINEL}, "error": SENTINEL}));
-            crate::host::flight_recorder::record_in(&profile, "timeline_event", None, Some(42), None,
-                serde_json::json!({"summary": SENTINEL, "payload": {"text": SENTINEL}, "rollback_token": SENTINEL}));
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "tool_call_requested",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"input": {"text": SENTINEL}}),
+            );
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "tool_call_completed",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"output": {"value": SENTINEL}, "error": SENTINEL}),
+            );
+            crate::host::flight_recorder::record_in(
+                &profile,
+                "timeline_event",
+                None,
+                Some(42),
+                None,
+                serde_json::json!({"summary": SENTINEL, "payload": {"text": SENTINEL}, "rollback_token": SENTINEL}),
+            );
             for args in [
                 vec!["plexi", "pane", "send", "42", SENTINEL],
                 vec!["plexi", "pane", "submit", "42", SENTINEL],
@@ -1881,14 +1983,19 @@ default = "ask"
                 vec!["plexi", "pane", "new", "--env", &format!("KEY={SENTINEL}")],
             ] {
                 let argv: Vec<String> = args.into_iter().map(str::to_string).collect();
-                crate::host::flight_recorder::handle_cli_trace(&profile, &serde_json::json!({
-                    "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
-                    "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
-                })).unwrap();
+                crate::host::flight_recorder::handle_cli_trace(
+                    &profile,
+                    &serde_json::json!({
+                        "id": uuid::Uuid::new_v4().to_string(), "phase": "exit", "exit_code": 0,
+                        "pane_id": 42, "argv": crate::cli::trace::redact_argv(&argv, &[])
+                    }),
+                )
+                .unwrap();
             }
             log::logger().flush();
             let log = std::fs::read_to_string(profile.join("plexi.log")).unwrap();
-            let trace = std::fs::read_to_string(profile.join("sessions/sess-sentinel.jsonl")).unwrap();
+            let trace =
+                std::fs::read_to_string(profile.join("sessions/sess-sentinel.jsonl")).unwrap();
             assert!(!log.contains(SENTINEL), "sentinel leaked to log");
             assert!(!trace.contains(SENTINEL), "sentinel leaked to session");
             assert!(log.contains(&format!("len={}", SENTINEL.chars().count())));
@@ -1898,11 +2005,22 @@ default = "ask"
         }
         let profile = tempfile::tempdir().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "agent::tests::logging_sentinel_stays_out_of_log_and_session_trace", "--ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "agent::tests::logging_sentinel_stays_out_of_log_and_session_trace",
+                "--ignored",
+                "--nocapture",
+            ])
             .env(CHILD, profile.path())
             .env_remove("PLEXI_TRACE_CAPTURE_CONTENT")
-            .output().unwrap();
-        assert!(output.status.success(), "child failed: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -1914,7 +2032,10 @@ default = "ask"
             .unwrap_err();
         assert!(err.contains("invalid fallback 'script'"), "{err}");
         let err = AgentDefinition::parse("Run it.", &format!("{base}cli='bash'")).unwrap_err();
-        assert!(err.contains("expected one of: pi, claude, codex, agy, script"), "{err}");
+        assert!(
+            err.contains("expected one of: pi, claude, codex, agy, script"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2105,7 +2226,7 @@ default_tier = "low"
     /// reload. The profile monitor is the store `agents.list` admits against.
     #[test]
     fn reload_workspace_keeps_unsaved_scope_allows() {
-        use crate::broker::gate::{AdmitRequest, Admission, PermissionMonitor};
+        use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
         use crate::broker::{
             ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, TargetType,
         };
@@ -2113,11 +2234,8 @@ default_tier = "low"
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
-        let mut host = AgentHost::new_for_test(
-            timeline,
-            Arc::new(InertAiBroker),
-            ws.path().to_path_buf(),
-        );
+        let mut host =
+            AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), ws.path().to_path_buf());
         host.grants_dir = Some(profile.path().to_path_buf());
         host.monitor = PermissionMonitor::for_profile(profile.path());
         let binding = crate::broker::ExactBinding {
@@ -2185,26 +2303,27 @@ default_tier = "low"
         host.attach(AgentDefinition::parse("prose", SETTINGS).unwrap());
         assert_eq!(host.agents[0].in_flight, 0);
 
-        let delivery = |id: u64, actor: PluginEventActor, actor_id: &str, caused_by: Option<&str>| {
-            EventDelivery {
-                delivery_id: id,
-                subscription_id: "sub-1".to_string(),
-                subscriber_type: ActorType::Agent,
-                subscriber_id: "chess-opponent".to_string(),
-                trigger_mode: TriggerMode::Conversation,
-                plugin_id: "chess".to_string(),
-                event: "turn.ready".to_string(),
-                event_id: id,
-                resource_id: "game-1".to_string(),
-                actor,
-                actor_id: actor_id.to_string(),
-                caused_by: caused_by.map(str::to_string),
-                summary: Some("black to move".to_string()),
-                payload: None,
-                state_ref: None,
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-            }
-        };
+        let delivery =
+            |id: u64, actor: PluginEventActor, actor_id: &str, caused_by: Option<&str>| {
+                EventDelivery {
+                    delivery_id: id,
+                    subscription_id: "sub-1".to_string(),
+                    subscriber_type: ActorType::Agent,
+                    subscriber_id: "chess-opponent".to_string(),
+                    trigger_mode: TriggerMode::Conversation,
+                    plugin_id: "chess".to_string(),
+                    event: "turn.ready".to_string(),
+                    event_id: id,
+                    resource_id: "game-1".to_string(),
+                    actor,
+                    actor_id: actor_id.to_string(),
+                    caused_by: caused_by.map(str::to_string),
+                    summary: Some("black to move".to_string()),
+                    payload: None,
+                    state_ref: None,
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                }
+            };
 
         // Agent's own move (actor_id matches its caller identity): no turn.
         host.handle_deliveries(
@@ -2344,7 +2463,9 @@ enabled = ["before-turn"]
         let profile = tempfile::tempdir().unwrap();
         let empty = AgentRegistry::load(profile.path(), ws.path());
         assert!(empty.active("writer").is_none());
-        assert!(legacy_workspace_agents_dir(ws.path()).unwrap().starts_with(ws.path().join(".plexi-alpha")));
+        assert!(legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .starts_with(ws.path().join(".plexi-alpha")));
         assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
 
         let dir = workspace_agents_dir(ws.path()).join("writer");
@@ -2357,14 +2478,21 @@ enabled = ["before-turn"]
         write_definition(&decoy, "decoy", "not a workspace agent");
 
         let registry = AgentRegistry::load(profile.path(), ws.path());
-        let writer = registry.active("writer").expect("canonical definition loads");
+        let writer = registry
+            .active("writer")
+            .expect("canonical definition loads");
         assert_eq!(writer.source, AgentSource::Workspace);
         assert_eq!(writer.prompt, "fresh prompt");
         assert_eq!(writer.path.as_deref(), Some(dir.as_path()));
-        assert!(registry.active("decoy").is_none(), "root agents/ is not a tier");
+        assert!(
+            registry.active("decoy").is_none(),
+            "root agents/ is not a tier"
+        );
         assert!(!legacy_workspace_agents_dir(ws.path()).unwrap().exists());
         assert!(!writer.posture.allow.is_empty());
-        assert!(GrantStore::load_or_default(profile.path()).records().is_empty());
+        assert!(GrantStore::load_or_default(profile.path())
+            .records()
+            .is_empty());
     }
 
     #[test]
@@ -2372,12 +2500,16 @@ enabled = ["before-turn"]
         let _channel = crate::config::set_test_channel("alpha");
         let ws = tempfile::tempdir().unwrap();
         let profile = tempfile::tempdir().unwrap();
-        let legacy = legacy_workspace_agents_dir(ws.path()).unwrap().join("writer");
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
         write_definition(&legacy, "writer", "legacy prompt");
         std::fs::write(legacy.join("grants.toml"), "decision = \"allow\"\n").unwrap();
 
         let registry = AgentRegistry::load(profile.path(), ws.path());
-        let writer = registry.active("writer").expect("migrated definition loads");
+        let writer = registry
+            .active("writer")
+            .expect("migrated definition loads");
         assert_eq!(writer.prompt, "legacy prompt");
         assert_eq!(writer.source, AgentSource::Workspace);
         let canonical = workspace_agents_dir(ws.path()).join("writer");
@@ -2388,27 +2520,36 @@ enabled = ["before-turn"]
             !canonical.join("grants.toml").exists(),
             "a copied definition must not carry a grant file"
         );
-        assert!(!legacy.exists(), "legacy directory is removed after the copy");
-        let receipt = std::fs::read_to_string(
-            workspace_agents_dir(ws.path()).join(".migration-receipt"),
-        )
-        .unwrap();
+        assert!(
+            !legacy.exists(),
+            "legacy directory is removed after the copy"
+        );
+        let receipt =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
         assert_eq!(
-            receipt.lines().filter(|line| *line == "migrated writer").count(),
+            receipt
+                .lines()
+                .filter(|line| *line == "migrated writer")
+                .count(),
             1
         );
         assert!(
-            GrantStore::load_or_default(profile.path()).records().is_empty(),
+            GrantStore::load_or_default(profile.path())
+                .records()
+                .is_empty(),
             "settings allow lists and leftover grant files do not authorize"
         );
 
         let again = AgentRegistry::load(profile.path(), ws.path());
         assert_eq!(again.active("writer").unwrap().prompt, "legacy prompt");
-        let receipt_again = std::fs::read_to_string(
-            workspace_agents_dir(ws.path()).join(".migration-receipt"),
-        )
-        .unwrap();
-        assert_eq!(receipt, receipt_again, "a second load must not rewrite the receipt");
+        let receipt_again =
+            std::fs::read_to_string(workspace_agents_dir(ws.path()).join(".migration-receipt"))
+                .unwrap();
+        assert_eq!(
+            receipt, receipt_again,
+            "a second load must not rewrite the receipt"
+        );
     }
 
     #[test]
@@ -2416,7 +2557,9 @@ enabled = ["before-turn"]
         let _channel = crate::config::set_test_channel("alpha");
         let ws = tempfile::tempdir().unwrap();
         let profile = tempfile::tempdir().unwrap();
-        let legacy = legacy_workspace_agents_dir(ws.path()).unwrap().join("writer");
+        let legacy = legacy_workspace_agents_dir(ws.path())
+            .unwrap()
+            .join("writer");
         write_definition(&legacy, "writer", "legacy prompt");
         let canonical = workspace_agents_dir(ws.path()).join("writer");
         write_definition(&canonical, "writer", "canonical prompt");
@@ -2656,7 +2799,8 @@ display_name = "Tester"
 cli = "claude"
 args = ["--verbose"]
 "#;
-        let def_args = AgentDefinition::parse("Test.", toml_args).expect("valid args alias should parse");
+        let def_args =
+            AgentDefinition::parse("Test.", toml_args).expect("valid args alias should parse");
         assert_eq!(def_args.harness.unwrap().flags, vec!["--verbose"]);
 
         // non-array flags must fail deserialization
@@ -2695,7 +2839,10 @@ cli = "claude"
 flags = ["--dangerously-skip-permissions"]
 "#;
         let err = AgentDefinition::parse("Test.", toml_security).unwrap_err();
-        assert!(err.contains("reserved security override"), "error was: {err}");
+        assert!(
+            err.contains("reserved security override"),
+            "error was: {err}"
+        );
 
         // fallback harness flags validated against fallback CLI
         let toml_fallback_invalid = r#"

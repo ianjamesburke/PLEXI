@@ -167,7 +167,9 @@ impl PaneLaunchSpec {
         let target = match (type_id.as_str(), path.as_deref()) {
             ("terminal", None) => PaneLaunchTarget::Terminal,
             ("", Some(path)) => PaneLaunchTarget::Path(PathBuf::from(path)),
-            (type_id, None) if !type_id.is_empty() => PaneLaunchTarget::PluginId(type_id.to_string()),
+            (type_id, None) if !type_id.is_empty() => {
+                PaneLaunchTarget::PluginId(type_id.to_string())
+            }
             ("terminal", Some(_)) => {
                 return Err("spawn_pane cannot set both terminal and path target".to_string());
             }
@@ -346,10 +348,7 @@ mod tests {
             PaneLaunchSpec::from_spawn_pane(&agent_spawn("terminal", Some("c-large"), Some(1e308)))
                 .unwrap_err();
 
-        assert!(
-            err.contains("at most"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("at most"), "unexpected error: {err}");
     }
 
     #[test]
@@ -439,6 +438,9 @@ mod tests {
             *result_schema = Some(serde_json::json!({"type": "not_a_valid_type"}));
         }
         let err = PaneLaunchSpec::from_spawn_pane(&bad_request).unwrap_err();
-        assert!(err.contains("unknown JSON Schema type"), "unexpected error: {err}");
+        assert!(
+            err.contains("unknown JSON Schema type"),
+            "unexpected error: {err}"
+        );
     }
 }

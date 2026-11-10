@@ -1836,8 +1836,7 @@ pub(crate) struct TestProfileFallbackBaseGuard {
 impl Drop for TestProfileFallbackBaseGuard {
     fn drop(&mut self) {
         let token = self.token;
-        TEST_PROFILE_FALLBACK_BASE_OVERRIDE
-            .with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+        TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
     }
 }
 
@@ -1947,13 +1946,12 @@ pub fn experiments_from_path(
     if let Some(entries) = table.as_table_mut() {
         entries.remove("relay");
     }
-    let table: std::collections::BTreeMap<String, bool> =
-        table.try_into().map_err(|e| {
-            format!(
-                "[experiments] in {} must map names to true/false: {e}",
-                path.display()
-            )
-        })?;
+    let table: std::collections::BTreeMap<String, bool> = table.try_into().map_err(|e| {
+        format!(
+            "[experiments] in {} must map names to true/false: {e}",
+            path.display()
+        )
+    })?;
     crate::release::parse_experiments(&table).map_err(|e| format!("{}: {e}", path.display()))
 }
 

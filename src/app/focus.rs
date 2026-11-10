@@ -1295,7 +1295,10 @@ impl PlexiApp {
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let invalid = self.context_rename.as_ref().is_some_and(|edit| {
             self.router.active().context_id != edit.origin_id
-                || !self.router.iter().any(|c| c.context_id == edit.target_id && !c.parked)
+                || !self
+                    .router
+                    .iter()
+                    .any(|c| c.context_id == edit.target_id && !c.parked)
         });
         if invalid {
             self.cancel_context_rename("context changed or unavailable");

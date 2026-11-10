@@ -361,7 +361,7 @@ class PluginRuntime:
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
         self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])
-        # Host-provided launch args (plexi app open <id> -- <args>, scene
+        # Host-provided launch args (plexi view open <id> -- <args>, scene
         # `open` args). Under the CPython-in-WASM bridge the process argv
         # carries no app args, so the init event is their only route to
         # init(size, args); argv args stay authoritative for bare

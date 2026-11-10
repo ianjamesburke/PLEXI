@@ -125,23 +125,45 @@ pub struct PaneAgentState {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostRequest {
     /// Rename a context through the same commit handler as the desktop editor.
-    ContextRename { context_id: u64, name: String, response_file: String },
+    ContextRename {
+        context_id: u64,
+        name: String,
+        response_file: String,
+    },
     /// Close a context, honoring the desktop confirmation policy.
-    ContextClose { context_id: u64, response_file: String },
+    ContextClose {
+        context_id: u64,
+        response_file: String,
+    },
     /// Set a context's parked state.
-    ContextPark { context_id: u64, parked: bool, response_file: String },
+    ContextPark {
+        context_id: u64,
+        parked: bool,
+        response_file: String,
+    },
     /// Set pane visibility without changing its identity or focus.
-    PaneVisibility { pane_id: u64, hidden: bool, response_file: String },
+    PaneVisibility {
+        pane_id: u64,
+        hidden: bool,
+        response_file: String,
+    },
     /// Focus a pane and toggle its zoom, including portal navigation.
     PaneZoom { pane_id: u64, response_file: String },
     /// Focus a pane and swap it with its directional neighbor.
-    PaneSwap { pane_id: u64, direction: String, response_file: String },
+    PaneSwap {
+        pane_id: u64,
+        direction: String,
+        response_file: String,
+    },
     /// Read the active workspace layout without pane content.
     WorkspaceSnapshot { response_file: String },
     /// Reload the running host configuration from disk.
     ReloadConfig { response_file: String },
     /// Step through the host's pane focus history.
-    FocusHistory { forward: bool, response_file: String },
+    FocusHistory {
+        forward: bool,
+        response_file: String,
+    },
 
     /// Process-lifetime resource admission. Identity is stamped by the socket listener.
     ResourceLease {
@@ -779,7 +801,11 @@ pub enum HostRequest {
         #[serde(default)]
         ephemeral: bool,
         /// Parent master pane ID (`PLEXI_PARENT_PANE`), used for Tier 1 `Blocked` escalation.
-        #[serde(default, alias = "from_pane_id", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            alias = "from_pane_id",
+            skip_serializing_if = "Option::is_none"
+        )]
         parent_pane_id: Option<u64>,
         /// Optional display name for the spawned pane.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3197,7 +3223,8 @@ mod tests {
 
         // None should be omitted from serialised output.
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest =
+            serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             HostRequest::SpawnPane { workspace_root, .. } => {
                 assert!(
@@ -3231,7 +3258,8 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest =
+            serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             HostRequest::SpawnPane { name, .. } => {
                 assert!(name.is_none(), "absent name must deserialise to None");
@@ -3262,7 +3290,8 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest =
+            serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             HostRequest::SpawnPane { context_name, .. } => {
                 assert!(
@@ -3296,7 +3325,8 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest =
+            serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
             HostRequest::SpawnPane { worktree, .. } => {
                 assert!(
