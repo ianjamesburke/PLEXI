@@ -60,9 +60,28 @@ pub struct ViewState {
     /// A resize must not pull a reader back to an intentionally hidden caret.
     pub follow_caret: bool,
     /// A source-space request from opening a note or selecting a find result.
-    /// The widget resolves it only after the current layout is available.
-    pub pending_reveal: Option<Cursor>,
+    /// The widget resolves it only after the current layout is available,
+    /// before painting, so the frame that follows already shows the target.
+    pub pending_reveal: Option<Reveal>,
 }
+
+/// Source range the widget scrolls into view: a bare caret, or a whole find
+/// match whose start and end are both kept visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reveal {
+    pub start: Cursor,
+    pub end: Cursor,
+}
+
+impl Reveal {
+    pub fn caret(at: Cursor) -> Self {
+        Self { start: at, end: at }
+    }
+}
+
+/// Points kept between a revealed caret or find match and the horizontal
+/// viewport edge.
+pub const SCROLL_X_MARGIN: f32 = 8.0;
 
 impl Default for ViewState {
     fn default() -> Self {
@@ -270,7 +289,7 @@ impl ViewState {
     /// Adjusts `scroll_x` minimally so a caret at horizontal offset `x`
     /// (relative to the content origin) is visible, with a small margin.
     pub fn scroll_to_x(&mut self, x: f32) {
-        const MARGIN: f32 = 8.0;
+        const MARGIN: f32 = SCROLL_X_MARGIN;
         if self.viewport_width <= 0.0 {
             return;
         }

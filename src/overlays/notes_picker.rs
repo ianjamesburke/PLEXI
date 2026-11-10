@@ -1454,7 +1454,9 @@ mod tests {
             .expect("text editor");
         assert_eq!(
             editor.test_view().pending_reveal,
-            Some(crate::editor::cursor::Cursor::new(2, "third line".len()))
+            Some(crate::editor::view::Reveal::caret(
+                crate::editor::cursor::Cursor::new(2, "third line".len())
+            ))
         );
 
         let _ = std::fs::remove_dir_all(&profile);

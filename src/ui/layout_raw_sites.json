@@ -214,6 +214,34 @@
       "count": 1,
       "surface": "src/overlays/ui_gallery.rs::draw_button_sizes",
       "rationale": "The button matrix wraps complete kit actions by size class; the one-kit-gallery scene renders it in both themes."
+    },
+    {
+      "source": "src/ui/search_bar.rs",
+      "site": "show | f.layout_no_wrap(text.to_owned(), font_id.clone(), colors.text_dim)",
+      "count": 1,
+      "surface": "src/ui/search_bar.rs",
+      "rationale": "SearchBar places its icon, input, clear action and status badge from bounded::allocate rectangles; the editor find bar fixture asserts every control stays inside panes of 100 to 250 points."
+    },
+    {
+      "source": "src/ui/search_bar.rs",
+      "site": "show | ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::hover());",
+      "count": 1,
+      "surface": "src/ui/search_bar.rs",
+      "rationale": "SearchBar places its icon, input, clear action and status badge from bounded::allocate rectangles; the editor find bar fixture asserts every control stays inside panes of 100 to 250 points."
+    },
+    {
+      "source": "src/ui/search_bar.rs",
+      "site": "show | let icon_resp = ui.interact(icon_rect, self.id.with(\"icon\"), Sense::click());",
+      "count": 1,
+      "surface": "src/ui/search_bar.rs",
+      "rationale": "SearchBar places its icon, input, clear action and status badge from bounded::allocate rectangles; the editor find bar fixture asserts every control stays inside panes of 100 to 250 points."
+    },
+    {
+      "source": "src/ui/search_bar.rs",
+      "site": "show | let btn = ui.put(",
+      "count": 1,
+      "surface": "src/ui/search_bar.rs",
+      "rationale": "SearchBar places its icon, input, clear action and status badge from bounded::allocate rectangles; the editor find bar fixture asserts every control stays inside panes of 100 to 250 points."
     }
   ]
 }
