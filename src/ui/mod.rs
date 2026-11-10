@@ -11,6 +11,9 @@ pub mod focus;
 pub(crate) mod foreground;
 pub mod hints;
 pub mod labels;
+pub(crate) mod layout_report;
+#[cfg(test)]
+mod layout_guard_tests;
 pub mod list;
 pub mod markdown;
 pub mod overlay;

@@ -393,6 +393,7 @@ pub(crate) fn paint_card(
     base_fill: Color32,
     selected: bool,
 ) -> Rect {
+    let capture = crate::ui::layout_report::Capture::begin(painter, "card");
     let form = layout.form;
     let m = form.metrics();
     let state_color = spec.state.color(colors);
@@ -543,6 +544,7 @@ pub(crate) fn paint_card(
             ));
         }
     }
+    capture.finish(painter, rect, colors.terminal_bg, vec![], vec![]);
     badge_rect
 }
 

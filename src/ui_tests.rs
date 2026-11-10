@@ -601,6 +601,12 @@ mod tests {
                 let mut h = PlexiUiHarness::new_sized_scaled(1440.0 * scale, 1400.0 * scale, scale);
                 apply_fixture_theme(&mut h, theme);
                 h.run_steps(4);
+                h.with_app(|app| {
+                    let reports = crate::ui::layout_report::snapshot(&app.ctx);
+                    assert!(reports.iter().any(|r| r.surface == "card"));
+                    let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+                    assert!(errors.is_empty(), "{errors:?}");
+                });
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}"))).unwrap();
                 crate::app::card_gallery::FORCE.with(|f| f.set(false));
             }
@@ -6785,7 +6791,13 @@ open(out + ".done", "w").close()
                 for (index, (name, _)) in states.iter().enumerate() {
                     h.focus_pane(ids[index]).unwrap();
                     h.run_steps(3);
-                    h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.001));
+                    h.with_app(|app| {
+                        assert!((app.ctx.zoom_factor() - scale).abs() < 0.001);
+                        let reports = crate::ui::layout_report::snapshot(&app.ctx);
+                        assert!(reports.iter().any(|r| r.surface == "pane_header"));
+                        let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+                        assert!(errors.is_empty(), "{theme} {scale} {wide} {name}: {errors:?}");
+                    });
                     let path = evidence_png!(&format!("_{theme}_{scale}_{}_{name}", if wide { "wide" } else { "narrow" }));
                     h.save_screenshot(&path).unwrap();
                     println!("screenshot: {path}");

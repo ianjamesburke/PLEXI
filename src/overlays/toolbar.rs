@@ -3,6 +3,7 @@ use crate::ui::button;
 
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
+        let capture = crate::ui::layout_report::Capture::begin(ui.painter(), "titlebar");
         let row = ui.max_rect();
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("titlebar_row_rect"), row));
@@ -176,7 +177,8 @@ impl PlexiApp {
         }).inner;
 
         #[cfg(target_os = "macos")]
-        {
+        let capture = {
+            let mut capture = capture;
             let right = mailbox_rect.left() - ui.spacing().item_spacing.x;
             let available = (right - row.left()).max(0.0);
             let font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
@@ -201,6 +203,7 @@ impl PlexiApp {
                 right,
                 galley.size(),
             );
+            capture.text_slot("title", &galley, egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())));
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
             }
@@ -211,9 +214,13 @@ impl PlexiApp {
                 );
                 d.insert_temp(egui::Id::new("titlebar_visible_title"), visible);
             });
-        }
+            capture
+        };
         #[cfg(not(target_os = "macos"))]
         let _ = (row, mailbox_rect);
+        let safe = crate::platform::titlebar::logical_safe_area(ui.ctx());
+        let excluded = egui::Rect::from_min_size(ui.ctx().content_rect().min, safe);
+        capture.finish(ui.painter(), row, self.colors.bg_toolbar, vec![], vec![excluded]);
     }
 }
 

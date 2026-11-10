@@ -351,6 +351,14 @@ pub(crate) fn render_name_bar_and_tabs(
     ui: &mut egui::Ui,
     params: NameBarParams<'_>,
 ) -> Option<(TileId, TabBarAction)> {
+    // Ghosting belongs to pane content. Header state and control labels must
+    // retain their composited contrast even when the pane body is dimmed.
+    let body_opacity = ui.painter().opacity();
+    ui.set_opacity(1.0);
+    if body_opacity < 1.0 {
+        static LEGIBLE_HEADER: std::sync::Once = std::sync::Once::new();
+        LEGIBLE_HEADER.call_once(|| log::info!("ui: preserving header contrast while dimming pane content"));
+    }
     let NameBarParams {
         tile_id,
         pane_id,
@@ -394,6 +402,7 @@ pub(crate) fn render_name_bar_and_tabs(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
+        let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
         ui.advance_cursor_after_rect(bar_rect);
         let extent = header_pip_extent(ui.ctx(), agent_state);
         let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
@@ -405,6 +414,7 @@ pub(crate) fn render_name_bar_and_tabs(
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
+        layout.record_slots(&mut capture);
         let outside_badge_rect = layout.outside;
         let tabs_right = layout.text.right().max(bar_rect.left());
         let tabs_bar_rect = egui::Rect::from_min_max(
@@ -443,6 +453,7 @@ pub(crate) fn render_name_bar_and_tabs(
                 max_text_width,
                 crate::ui::text::Side::Trailing,
             );
+            capture.text_slot(format!("tab-{member_id}"), &galley, egui::Rect::from_min_max(egui::pos2(content_left, tab_rect.top()), tab_rect.max));
             let elided_str = galley.job.text.clone();
             if idx == group.active_idx {
                 let text_pos = egui::pos2(
@@ -473,6 +484,7 @@ pub(crate) fn render_name_bar_and_tabs(
 
         layout.paint(ui, &labels, *pane_id, colors.pane_header_bg());
 
+        capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
         ui.ctx().data_mut(|d| {
             d.insert_temp(
                 egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
@@ -493,6 +505,7 @@ pub(crate) fn render_name_bar_and_tabs(
             ui.cursor().min,
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
+        let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
         ui.advance_cursor_after_rect(bar_rect);
         let extent = header_pip_extent(ui.ctx(), agent_state);
         let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
@@ -524,6 +537,7 @@ pub(crate) fn render_name_bar_and_tabs(
             if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
 
+        layout.record_slots(&mut capture);
         let outside_badge_rect = layout.outside;
         layout.paint(ui, &labels, *pane_id, colors.pane_header_bg().blend(escalation_col.map(|c| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 28)).unwrap_or(egui::Color32::TRANSPARENT)));
 
@@ -555,6 +569,7 @@ pub(crate) fn render_name_bar_and_tabs(
                 avail_width,
                 crate::ui::text::Side::Trailing,
             );
+            capture.text_slot("title", &galley, layout.text);
             if !galley.is_empty() {
                 let title_col = if matches!(
                     agent_state,
@@ -575,6 +590,7 @@ pub(crate) fn render_name_bar_and_tabs(
             }
         }
 
+        capture.finish(ui.painter(), bar_rect, colors.pane_header_bg(), vec![], vec![]);
         ui.ctx().data_mut(|d| {
             d.insert_temp(
                 egui::Id::new(("terminal_tab_bar_layout", *pane_id)),
@@ -594,6 +610,7 @@ pub(crate) fn render_name_bar_and_tabs(
         });
     }
 
+    ui.set_opacity(body_opacity);
     tab_action
 }
 

@@ -67,6 +67,7 @@ impl<'a> ToastShell<'a> {
     ) -> egui::Response {
         let id = egui::Id::new(self.id).with("action");
         self.show(ctx, colors, |ui| {
+            let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "toast");
             let font = egui::FontId::proportional(style::TEXT_CAPTION);
             let width = ui.available_width();
             let padding = ui.spacing().button_padding;
@@ -127,6 +128,8 @@ impl<'a> ToastShell<'a> {
                 message_rect.width(),
                 crate::ui::text::Side::Trailing,
             );
+            capture.text_slot("message", &message_galley, message_rect);
+            capture.text_slot("action", &action_text, action_rect);
             ui.painter().galley(
                 egui::pos2(
                     message_rect.left(),
@@ -151,6 +154,19 @@ impl<'a> ToastShell<'a> {
             if let Some(error) = error {
                 toast_caption(ui, error, colors);
             }
+            capture.finish(
+                ui.painter(),
+                ui.min_rect(),
+                colors.bg_sidebar,
+                vec![crate::ui::layout_report::Action {
+                    id: "action".into(),
+                    name: label.into(),
+                    painted_label: label.into(),
+                    hit: response.rect,
+                    minimum: egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
+                }],
+                vec![],
+            );
             response
         })
         .inner

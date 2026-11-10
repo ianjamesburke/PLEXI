@@ -309,6 +309,14 @@ pub struct Scene {
     /// each other. Mutually exclusive with `size`.
     #[serde(default)]
     pub sizes: Option<Vec<[f32; 2]>>,
+    /// Headless matrix dimensions. Sizes remain physical; zoom and native
+    /// backing density are independent, as in the production viewport.
+    #[serde(default)]
+    pub scales: Vec<f32>,
+    #[serde(default)]
+    pub themes: Vec<String>,
+    #[serde(default)]
+    pub reduced_motion: Vec<bool>,
     /// When false, `scene_suite` skips this scene (run it via `just scene`).
     /// Use for scenes that spawn real app processes or need wall-clock time.
     #[serde(default = "default_true")]
@@ -609,6 +617,9 @@ pub struct AssertSpec {
     pub tree_contains: Option<String>,
     pub fit: Option<String>,
     pub aspect: Option<[f64; 2]>,
+    pub layout_valid: Option<bool>,
+    #[serde(default)]
+    pub layout_surfaces: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1040,6 +1051,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             );
         }
     };
+    let replay_source = raw.clone();
     let (raw, _tmp_guard) = match expand_scene_tmp(raw) {
         Ok(expanded) => expanded,
         Err(e) => return failed_report(scene_name, e),
@@ -1078,7 +1090,21 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         Ok(sizes) => sizes,
         Err(e) => return failed_report(scene_name, e),
     };
-    let is_matrix = size_matrix.len() > 1;
+    let scales = if scene.scales.is_empty() { vec![1.0] } else { scene.scales.clone() };
+    let themes = if scene.themes.is_empty() { vec!["plexi-dusk".to_string()] } else { scene.themes.clone() };
+    let motions = if scene.reduced_motion.is_empty() { vec![false] } else { scene.reduced_motion.clone() };
+    if scales.iter().any(|s| !s.is_finite() || !(0.6..=2.0).contains(s))
+        || themes.iter().any(|t| crate::ui::theme::preset_colors(t).is_none())
+        || size_matrix.iter().flatten().any(|s| !s.is_finite() || *s <= 0.0)
+    {
+        return failed_report(scene_name, SceneError::new("scene_parse", "invalid layout matrix dimensions"));
+    }
+    let styled = !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty();
+    let mut cases = Vec::new();
+    for size in &size_matrix { for scale in &scales { for theme in &themes { for motion in &motions {
+        cases.push((*size, *scale, theme.clone(), *motion));
+    }}}}
+    let is_matrix = cases.len() > 1 || styled;
 
     std::fs::create_dir_all(out_dir).ok();
 
@@ -1100,13 +1126,22 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
     let mut passed = true;
     let mut index = 0usize;
     let mut runner = None;
-    for size in &size_matrix {
-        let suffix = is_matrix.then(|| format!("-{}x{}", size[0] as i64, size[1] as i64));
+    for (size, scale, theme, reduced_motion) in &cases {
+        let suffix = is_matrix.then(|| if styled { format!("-{}x{}-s{scale}-{theme}-motion{}", size[0] as i64, size[1] as i64, !reduced_motion) } else { format!("-{}x{}", size[0] as i64, size[1] as i64) });
         let size_label = suffix
             .as_ref()
-            .map(|_| format!("[{}x{}] ", size[0] as i64, size[1] as i64))
+            .map(|suffix| format!("[{suffix}] "))
             .unwrap_or_default();
-        let mut h = PlexiUiHarness::new_sized(size[0], size[1]);
+        let mut h = PlexiUiHarness::new_sized_scaled(size[0], size[1], *scale);
+        if styled {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                app.ctx.global_style_mut(|s| s.animation_time = if *reduced_motion { 0.0 } else { 0.15 });
+            });
+        }
         h.step();
         let pass = runner.insert(HeadlessBackend {
             h,
@@ -1141,6 +1176,20 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                         pass.app_state(),
                         Some(pass),
                     );
+                    // Replay only the failing case and the prefix needed to reach it.
+                    if let Ok(mut replay) = toml::from_str::<toml::Value>(&replay_source) {
+                        if let Some(table) = replay.as_table_mut() {
+                            table.remove("sizes");
+                            table.insert("size".into(), toml::Value::try_from(size).expect("size"));
+                            table.insert("scales".into(), toml::Value::try_from(vec![scale]).expect("scale"));
+                            table.insert("themes".into(), toml::Value::try_from(vec![theme]).expect("theme"));
+                            table.insert("reduced_motion".into(), toml::Value::try_from(vec![reduced_motion]).expect("motion"));
+                            if let Some(steps) = table.get_mut("steps").and_then(toml::Value::as_array_mut) { steps.truncate((index - 1) % scene.steps.len() + 1); }
+                        }
+                        if let Ok(replay) = toml::to_string_pretty(&replay) {
+                            if let Err(error) = std::fs::write(Path::new(&bundle).join("replay.toml"), replay) { log::warn!("scene replay: {error}"); }
+                        }
+                    }
                     steps.push(StepResult {
                         index: index - 1,
                         step: label,
@@ -1233,6 +1282,9 @@ fn write_failure_bundle(
     let dir = out_dir.join(format!("{scene}.failure-{step}"));
     let _ = std::fs::create_dir_all(&dir);
     let screenshot = if let Some(runner) = headless.as_mut() {
+        let reports = runner.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+        let value: Vec<_> = reports.iter().map(|r| r.json()).collect();
+        if let Err(error) = std::fs::write(dir.join("layout.json"), serde_json::to_vec_pretty(&value).unwrap_or_default()) { log::warn!("scene layout report: {error}"); }
         let path = dir.join("screenshot.png");
         runner
             .h
@@ -2045,6 +2097,9 @@ impl LiveBackend {
     }
 
     fn check(&self, spec: &AssertSpec) -> Result<(), SceneError> {
+        if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
+            return Err(SceneError::new("unsupported_live_verb", "layout reports are not exposed by live host IPC"));
+        }
         if spec.sidebar.is_some() {
             return Err(SceneError::new(
                 "unsupported_live_assertion",
@@ -2341,6 +2396,9 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
             )
         }
     };
+    if !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty() {
+        return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "layout matrices require the headless backend; installed zoom/theme must be validated independently"));
+    }
     if scene.picker_script.is_some() {
         return live_failed_report(
             scene_name,
@@ -3406,6 +3464,16 @@ impl HeadlessBackend {
     }
 
     fn check(&mut self, spec: &AssertSpec) -> Result<(), SceneError> {
+        if spec.layout_valid.is_some() || !spec.layout_surfaces.is_empty() {
+            let reports = self.h.with_app(|app| crate::ui::layout_report::snapshot(&app.ctx));
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            if reports.is_empty() || spec.layout_surfaces.iter().any(|surface| !reports.iter().any(|r| &r.surface == surface)) {
+                return Err(SceneError::new("layout_missing", format!("required surfaces {:?}; recorded {:?}", spec.layout_surfaces, reports.iter().map(|r| &r.surface).collect::<Vec<_>>())));
+            }
+            if spec.layout_valid.is_some_and(|expected| expected != errors.is_empty()) {
+                return Err(SceneError::new("layout_failed", errors.join("; ")));
+            }
+        }
         let host = self.host_state();
         let mut failures = Vec::new();
         let mut expect = |name: &str, expected: String, actual: String| {
@@ -3795,6 +3863,36 @@ mod tests {
     }
 
     #[test]
+    fn layout_matrix_failure_has_minimal_replay_and_painted_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let scene = directory.path().join("layout-failure.toml");
+        std::fs::write(&scene, r#"
+size = [520.0, 800.0]
+scales = [1.0, 2.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+reduced_motion = [true, false]
+[[steps]]
+run_steps = 2
+[[steps]]
+assert = { layout_valid = true, layout_surfaces = ["deliberately-missing-surface"] }
+[[steps]]
+run_steps = 100
+"#).unwrap();
+        let report = run_scene(&scene, directory.path(), true);
+        assert!(!report.passed);
+        let bundle = Path::new(report.failure_bundle.as_ref().unwrap());
+        for file in ["layout.json", "screenshot.png", "replay.toml"] {
+            assert!(bundle.join(file).is_file(), "missing {file}");
+        }
+        let replay: Scene = toml::from_str(&std::fs::read_to_string(bundle.join("replay.toml")).unwrap()).unwrap();
+        assert_eq!(replay.steps.len(), 2);
+        assert_eq!(replay.scales, vec![1.0]);
+        let live = run_live_scene(&scene, directory.path(), true);
+        assert!(!live.passed);
+        assert_eq!(live.steps[0].error.as_ref().unwrap().code, "unsupported_live_verb");
+    }
+
+    #[test]
     fn tmp_placeholder_expands_to_fresh_dir_per_run() {
         let (unchanged, guard) = expand_scene_tmp("no placeholder".to_string()).unwrap();
         assert_eq!(unchanged, "no placeholder");
@@ -3828,6 +3926,7 @@ mod tests {
     fn geometry_fit_rejects_contain_for_committed_fill_canvas() {
         let tree = serde_json::json!({"semantic":{"nodes":[{"role":"canvas","value":"1280x720 fit=fill","canvas_commands":[]}]}});
         let spec = AssertSpec {
+            layout_valid: None, layout_surfaces: Vec::new(),
             fit: Some("contain".to_string()),
             ..Default::default()
         };

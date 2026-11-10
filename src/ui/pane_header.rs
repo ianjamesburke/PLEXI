@@ -146,6 +146,14 @@ impl PaneHeader {
         }
     }
 
+    pub fn record_slots(&self, capture: &mut super::layout_report::Capture) {
+        for item in &self.items {
+            if let Some(galley) = &item.galley {
+                capture.text_slot(item.id, galley, item.rect);
+            }
+        }
+    }
+
     pub fn paint(&self, ui: &mut egui::Ui, labels: &Labels<'_>, pane_id: u64, backdrop: Color32) {
         for item in &self.items {
             if let Some(galley) = &item.galley {
