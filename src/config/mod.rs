@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum ConfigDiagnostic {
+    WorkspaceGlobalOnly {
+        path: String,
+        key: String,
+    },
     ReadError {
         path: String,
         error: String,
@@ -53,7 +57,9 @@ impl ConfigDiagnostic {
             | Self::InvalidKeyBinding { .. }
             | Self::InvalidValue { .. } => true,
             Self::DeprecatedSection { error, .. } => *error,
-            Self::UnknownKey { .. } | Self::MisplacedTable { .. } => false,
+            Self::UnknownKey { .. }
+            | Self::MisplacedTable { .. }
+            | Self::WorkspaceGlobalOnly { .. } => false,
         }
     }
 
@@ -71,6 +77,10 @@ impl ConfigDiagnostic {
 impl std::fmt::Display for ConfigDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::WorkspaceGlobalOnly { path, key } => write!(
+                f,
+                "{path}: `{key}` is global-only and ignored in workspace config"
+            ),
             Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
             Self::ParseError { path, error } => write!(f, "{path}: {error}"),
             Self::InvalidKeyBinding { path, error } => write!(f, "{path}: {error}"),
@@ -762,6 +772,7 @@ fn check_unknown_keys(
 /// Keys: a-z, 0-9, enter, escape, tab, space, backspace, delete, up, down,
 ///   left, right, open_bracket, close_bracket, backslash, slash, comma,
 ///   period, equals, minus (and symbol aliases like "[", "]", "\\", etc.).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct KeybindingsConfig {
     pub quit: Option<String>,
@@ -933,6 +944,7 @@ impl KeybindingsConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
     pub config_version: Option<u32>,
@@ -992,6 +1004,7 @@ pub struct PlexiConfig {
 pub const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
 
 /// FAST/SLOW target overrides for pi-plexi.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct ModelModesConfig {
     /// FAST target override. Unset fields use the FAST defaults.
@@ -1001,6 +1014,7 @@ pub struct ModelModesConfig {
 }
 
 /// One pi-plexi target. Provider, model, and thinking can each be overridden independently.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct ModelModeConfig {
     /// Model registry provider. Must be non-empty and contain no whitespace.
@@ -1084,6 +1098,7 @@ impl ModelModesConfig {
 }
 
 /// CLI behavior configuration.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct CliConfig {
     /// Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress.
@@ -1096,6 +1111,7 @@ pub struct CliConfig {
 /// the official registry. `submit_url` and `account_backend` are intentionally
 /// unset by default: publishing and accounts fail closed until they are wired
 /// up.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct MarketplaceConfig {
     /// Override the catalog index URL. Default: official `plexiapp.com` index.
@@ -1122,6 +1138,7 @@ pub struct MarketplaceConfig {
 /// this desktop to cloud features. This section does not change that.
 /// The one flag here decides whether the retention job may also delete local
 /// ledger rows and assistant conversations.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct CloudConfig {
     /// When `true`, delete local `ai-ledger.jsonl` rows and assistant
@@ -1134,6 +1151,7 @@ pub struct CloudConfig {
 pub const DEFAULT_SOFT_GRANT_DAYS: u32 = 30;
 
 /// Permissions broker configuration (`[permissions]`).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct PermissionsConfig {
     /// Expiry window in days for soft grants (`--grant tool=allow:soft`). After this window, a soft grant reverts to `ask`. Default: 30.
@@ -1153,6 +1171,7 @@ impl PermissionsConfig {
 }
 
 /// Non-model AI settings (`ai.query` capability).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
     /// Per-app daily spend cap in USD. Default $1.00.
@@ -1197,6 +1216,7 @@ impl AiConfig {
 }
 
 /// Startup restoration policy for saved agent sessions (`[agents] restore_mode`).
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentRestoreMode {
@@ -1213,6 +1233,7 @@ pub enum AgentRestoreMode {
 
 /// Coding agent command templates for dispatch. Each field is a shell command template
 /// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct AgentsConfig {
     /// Raise silent macOS attention notifications while Plexi is unfocused (default true).
@@ -1269,6 +1290,7 @@ impl AgentsConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct NotificationsConfig {
     /// Master switch. If false, incoming notifications are silently dropped —
@@ -1290,6 +1312,7 @@ pub struct NotificationsConfig {
     pub sound: Option<String>,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct LogConfig {
     pub level: Option<String>,
@@ -1310,6 +1333,7 @@ impl LogConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct EffectsConfig {
     pub crt: Option<bool>,
@@ -1324,6 +1348,7 @@ pub struct EffectsConfig {
 /// readable terminal text.
 pub const DEFAULT_TERMINAL_MINIMUM_CONTRAST: f32 = 3.0;
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Default, Clone)]
 pub struct TerminalConfig {
     /// Minimum WCAG contrast ratio between each text cell's foreground and its
@@ -1365,6 +1390,7 @@ impl PlexiConfig {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AttentionStyle {
@@ -1375,6 +1401,7 @@ pub enum AttentionStyle {
     Loud,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AttentionDock {
@@ -1385,6 +1412,7 @@ pub enum AttentionDock {
     BounceUntilFocused,
 }
 
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone, Copy, PartialEq)]
 pub struct AttentionConfig {
     /// Attention style: off, subtle, normal (default), or loud.
@@ -1447,7 +1475,7 @@ fn theme_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
     Ok(value)
 }
 
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
     #[serde(default, deserialize_with = "theme_preset")]
@@ -1830,8 +1858,7 @@ pub(crate) struct TestProfileFallbackBaseGuard {
 impl Drop for TestProfileFallbackBaseGuard {
     fn drop(&mut self) {
         let token = self.token;
-        TEST_PROFILE_FALLBACK_BASE_OVERRIDE
-            .with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+        TEST_PROFILE_FALLBACK_BASE_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
     }
 }
 
@@ -1941,8 +1968,7 @@ pub fn experiments_from_path(
     if let Some(entries) = table.as_table_mut() {
         entries.remove("relay");
     }
-    let table: std::collections::BTreeMap<String, bool> =
-        table.try_into().map_err(|e| {
+    let table: std::collections::BTreeMap<String, bool> = table.try_into().map_err(|e| {
             format!(
                 "[experiments] in {} must map names to true/false: {e}",
                 path.display()
@@ -2203,10 +2229,17 @@ pub fn ensure_config_file() -> PathBuf {
 /// commented template written on first use. Global and workspace entries share
 /// the same editor handoff.
 pub fn ensure_workspace_config_file(workspace_root: &Path) -> PathBuf {
-    ensure_config_file_at(workspace_config_path(workspace_root))
+    ensure_config_file_at_with_template(
+        workspace_config_path(workspace_root),
+        "# Settings here override your global config for this repo.\n# Uncomment only the settings you want to override.\n#\n# font_size = 14.0\n#\n# [theme]\n# preset = \"plexi-dusk\"\n#\n# [terminal]\n# minimum_contrast = 3.0\n",
+    )
 }
 
 fn ensure_config_file_at(path: PathBuf) -> PathBuf {
+    ensure_config_file_at_with_template(path, CONFIG_TEMPLATE)
+}
+
+fn ensure_config_file_at_with_template(path: PathBuf, template: &str) -> PathBuf {
     if !path.exists() {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -2216,14 +2249,252 @@ fn ensure_config_file_at(path: PathBuf) -> PathBuf {
                 );
             }
         }
-        if let Err(e) = std::fs::write(&path, CONFIG_TEMPLATE) {
-            log::error!(
-                "ensure_config_file: could not write template to {}: {e}",
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                match file.write_all(template.as_bytes()) {
+                    Ok(()) => log::info!("config: created template at {}", path.display()),
+                    Err(e) => log::error!(
+                        "config: could not write template to {}: {e}",
                 path.display()
-            );
+                    ),
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => log::error!("config: could not create {}: {e}", path.display()),
         }
     }
     path
+}
+
+/// Workspace entries that override global configuration, including unset global entries.
+pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> Vec<(String, String)> {
+    fn read(path: &Path) -> Option<toml::Table> {
+        match std::fs::read_to_string(path) {
+            Ok(data) => match toml::from_str(&data) {
+                Ok(table) => Some(table),
+                Err(e) => { log::error!("config: cannot parse {}: {e}", path.display()); None }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                log::error!("config: cannot read {}: {e}", path.display());
+                None
+            }
+        }
+    }
+    fn same_binding(name: &str, global: &crate::host::keys::KeyBindings, effective: &crate::host::keys::KeyBindings) -> bool {
+        match name {
+            "quit" => global.quit == effective.quit,
+            "close_pane" => global.close_pane == effective.close_pane,
+            "toggle_command_palette" => global.toggle_command_palette == effective.toggle_command_palette,
+            "split_horizontal" => global.split_horizontal == effective.split_horizontal,
+            "split_vertical" => global.split_vertical == effective.split_vertical,
+            "split_right" => global.split_right == effective.split_right,
+            "split_down" => global.split_down == effective.split_down,
+            "swap_pane_left" => global.swap_pane_left == effective.swap_pane_left,
+            "swap_pane_down" => global.swap_pane_down == effective.swap_pane_down,
+            "swap_pane_up" => global.swap_pane_up == effective.swap_pane_up,
+            "swap_pane_right" => global.swap_pane_right == effective.swap_pane_right,
+            "send_pane_left" => global.send_pane_left == effective.send_pane_left,
+            "send_pane_down" => global.send_pane_down == effective.send_pane_down,
+            "send_pane_up" => global.send_pane_up == effective.send_pane_up,
+            "send_pane_right" => global.send_pane_right == effective.send_pane_right,
+            "navigate_left" => global.navigate_left == effective.navigate_left,
+            "navigate_down" => global.navigate_down == effective.navigate_down,
+            "navigate_up" => global.navigate_up == effective.navigate_up,
+            "navigate_right" => global.navigate_right == effective.navigate_right,
+            "select_pane_left" => global.select_pane_left == effective.select_pane_left,
+            "select_pane_down" => global.select_pane_down == effective.select_pane_down,
+            "select_pane_up" => global.select_pane_up == effective.select_pane_up,
+            "select_pane_right" => global.select_pane_right == effective.select_pane_right,
+            "new_tab" => global.new_tab == effective.new_tab,
+            "next_tab" => global.next_tab == effective.next_tab,
+            "prev_tab" => global.prev_tab == effective.prev_tab,
+            "next_context" => global.next_context == effective.next_context,
+            "prev_context" => global.prev_context == effective.prev_context,
+            "move_context_up" => global.move_context_up == effective.move_context_up,
+            "move_context_down" => global.move_context_down == effective.move_context_down,
+            "nav_back" => global.nav_back == effective.nav_back,
+            "focus_history_forward" => global.focus_history_forward == effective.focus_history_forward,
+            "toggle_sidebar" => global.toggle_sidebar == effective.toggle_sidebar,
+            "toggle_zoom" => global.toggle_zoom == effective.toggle_zoom,
+            "toggle_shortcuts" => global.toggle_shortcuts == effective.toggle_shortcuts,
+            "rename_context" => global.rename_context == effective.rename_context,
+            "rename_pane" => global.rename_pane == effective.rename_pane,
+            "new_context" => global.new_context == effective.new_context,
+            "new_page_right" => global.new_page_right == effective.new_page_right,
+            "toggle_minimap" => global.toggle_minimap == effective.toggle_minimap,
+            "scroll_up" => global.scroll_up == effective.scroll_up,
+            "scroll_down" => global.scroll_down == effective.scroll_down,
+            "increase_font_size" => global.increase_font_size == effective.increase_font_size,
+            "decrease_font_size" => global.decrease_font_size == effective.decrease_font_size,
+            "reset_font_size" => global.reset_font_size == effective.reset_font_size,
+            "ui_scale_up" => global.ui_scale_up == effective.ui_scale_up,
+            "ui_scale_down" => global.ui_scale_down == effective.ui_scale_down,
+            "ui_scale_reset" => global.ui_scale_reset == effective.ui_scale_reset,
+            "open_agents" => global.open_agents == effective.open_agents,
+            "next_blocked_agent" => global.next_blocked_agent == effective.next_blocked_agent,
+            "focus_approval" => global.focus_approval == effective.focus_approval,
+            "open_file_browser" => global.open_file_browser == effective.open_file_browser,
+            "open_quick_note" => global.open_quick_note == effective.open_quick_note,
+            "open_config" => global.open_config == effective.open_config,
+            "reload_config" => global.reload_config == effective.reload_config,
+            "open_secrets_manager" => global.open_secrets_manager == effective.open_secrets_manager,
+            "open_assistant" => global.open_assistant == effective.open_assistant,
+            "force_reload_app" => global.force_reload_app == effective.force_reload_app,
+            "toggle_attention_queue" => global.toggle_attention_queue == effective.toggle_attention_queue,
+            "zoom_in" => global.zoom_in == effective.zoom_in,
+            "open_scratchpad" => global.open_scratchpad == effective.open_scratchpad,
+            "push_to_subcontext" => global.push_to_subcontext == effective.push_to_subcontext,
+            "new_child_context" => global.new_child_context == effective.new_child_context,
+            "set_context_root_from_cwd" => global.set_context_root_from_cwd == effective.set_context_root_from_cwd,
+            "hide_pane" => global.hide_pane == effective.hide_pane,
+            "park_context" => global.park_context == effective.park_context,
+            "open_notes_picker" => global.open_notes_picker == effective.open_notes_picker,
+            "close_context" => global.close_context == effective.close_context,
+            _ => false,
+        }
+    }
+    fn visit(
+        prefix: &str,
+        workspace: &toml::Table,
+        global: Option<&toml::Table>,
+        saved_key: Option<&str>,
+        ignored: &[String],
+        out: &mut Vec<(String, String)>,
+    ) {
+        for (key, value) in workspace {
+            let name = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if (name == "ai.client" && value.as_str().is_some_and(|v| v.trim().is_empty()))
+                || (name == "notifications.sound" && value.as_str() == Some("") && global.and_then(|table| table.get(key)).is_none())
+                || ignored.iter().any(|ignored| name == *ignored || name.starts_with(&format!("{ignored}."))) {
+                continue;
+            }
+            let old = global.and_then(|table| table.get(key));
+            if let Some(table) = value.as_table() {
+                visit(&name, table, old.and_then(toml::Value::as_table), saved_key, ignored, out);
+            } else if saved_key == Some(name.as_str()) || old.is_none_or(|previous| previous != value) {
+                let shown = value
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| value.to_string());
+                out.push((name, shown));
+            }
+        }
+    }
+    let workspace_path = workspace_config_path(root);
+    let Some(mut workspace) = read(&workspace_path) else {
+        return Vec::new();
+    };
+    let mut ignored: Vec<String> = validate_from_path(&workspace_path).into_iter().filter_map(|diag| match diag {
+        ConfigDiagnostic::InvalidValue { key, .. } => Some(key),
+        ConfigDiagnostic::UnknownKey { table, key, .. } => Some(if table.is_empty() { key } else { format!("{table}.{key}") }),
+        ConfigDiagnostic::MisplacedTable { table, .. } => Some(table),
+        ConfigDiagnostic::DeprecatedSection { section, .. } => Some(section),
+        _ => None,
+    }).chain(["effects.crt".to_owned()]).collect();
+    for key in [
+        "focus_history_depth",
+        "cli",
+        "file_handlers",
+        "config_version",
+        "experiments",
+        "marketplace",
+    ] {
+        workspace.remove(key);
+    }
+    let global_config = PlexiConfig::load_from_path(&config_path()).unwrap_or_default();
+    let workspace_config = PlexiConfig::load_from_path(&workspace_path).unwrap_or_default();
+    let global_bindings = crate::host::keys::build_key_bindings(global_config.keybindings.as_ref());
+    if global_config.theme.as_ref().and_then(|theme| theme.preset.as_ref()).is_some() {
+        ignored.push("theme_preset".to_owned());
+    }
+    let resolved_global_theme = crate::ui::theme::resolve_theme_config(&global_config);
+    let mut merged_config = global_config;
+    merged_config.overlay(workspace_config);
+    let effective_bindings = crate::host::keys::build_key_bindings(merged_config.keybindings.as_ref());
+    if let Some(bindings) = workspace.get("keybindings").and_then(toml::Value::as_table) {
+        for key in bindings.keys() {
+            if same_binding(key, &global_bindings, &effective_bindings) {
+                ignored.push(format!("keybindings.{key}"));
+            }
+        }
+    }
+    let mut global = read(&config_path()).unwrap_or_default();
+    global.entry("font_size").or_insert(toml::Value::Float(crate::ui::theme::FONT_SIZE as f64));
+    global.entry("ui_scale").or_insert(toml::Value::Float(crate::app::ui_scale::UI_SCALE_DEFAULT as f64));
+    for (key, default) in [
+        ("confirm_quit", true), ("confirm_close", false),
+        ("confirm_context_close", true), ("osc_pane_title", PlexiConfig::default().osc_pane_title_enabled()),
+    ] { global.entry(key).or_insert(toml::Value::Boolean(default)); }
+    let ai_defaults = AiConfig::default();
+    for (section, key, default) in [
+        ("attention", "style", toml::Value::String("normal".to_owned())),
+        ("attention", "intensity", toml::Value::Float(1.0)),
+        ("attention", "dock", toml::Value::String("badge".to_owned())),
+        ("theme", "state_preset", toml::Value::String("okabe-ito".to_owned())),
+        ("theme", "pip_dim", toml::Value::Float(0.72)),
+        ("log", "level", toml::Value::String("info".to_owned())),
+        ("log", "retention_days", toml::Value::Integer(30)),
+        ("agents", "os_notifications", toml::Value::Boolean(true)),
+        ("agents", "stalled_after_secs", toml::Value::Integer(120)),
+        ("agents", "stale_failure_hours", toml::Value::Integer(crate::agent::fleet::DEFAULT_STALE_FAILURE_HOURS as i64)),
+        ("agents", "palette_agent_results", toml::Value::Boolean(false)),
+        ("agents", "restore_mode", toml::Value::String("lazy".to_owned())),
+        ("agents", "standby_scrollback_lines", toml::Value::Integer(PlexiConfig::default().standby_scrollback_lines() as i64)),
+        ("effects", "ghost", toml::Value::Boolean(true)),
+        ("effects", "ghost_opacity", toml::Value::Float(EffectsConfig::default().unfocused_opacity().unwrap_or(0.75) as f64)),
+        ("notifications", "enabled", toml::Value::Boolean(true)),
+        ("notifications", "focus_mode", toml::Value::Boolean(false)),
+        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_app_daily_usd())),
+        ("ai", "global_daily_usd", toml::Value::Float(ai_defaults.effective_global_daily_usd())),
+        ("terminal", "minimum_contrast", toml::Value::Float(DEFAULT_TERMINAL_MINIMUM_CONTRAST as f64)),
+        ("permissions", "soft_grant_days", toml::Value::Integer(DEFAULT_SOFT_GRANT_DAYS as i64)),
+        ("cloud", "retain_local_history", toml::Value::Boolean(CloudConfig::default().retain_local_history())),
+    ] {
+        let section = global.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(table) = section.as_table_mut() { table.entry(key).or_insert(default); }
+    }
+    global.entry("pane_gap").or_insert(toml::Value::Float(4.0));
+    global.entry("pane_corner_radius").or_insert(toml::Value::Integer(crate::ui::style::RADIUS_PANE.nw as i64));
+    global.entry("pane_title_font_size").or_insert(toml::Value::Float(12.0));
+    let modes = PlexiConfig::default().resolved_model_modes();
+    for (mode, resolved) in [("fast", modes.fast), ("slow", modes.slow)] {
+        let models = global.entry("models").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(models) = models.as_table_mut() {
+            let mode = models.entry(mode).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let Some(mode) = mode.as_table_mut() {
+                mode.entry("provider").or_insert(toml::Value::String(resolved.provider));
+                mode.entry("model").or_insert(toml::Value::String(resolved.model));
+                mode.entry("thinking").or_insert(toml::Value::String(resolved.thinking));
+            }
+        }
+    }
+    let legacy_preset = global.get("theme_preset").and_then(toml::Value::as_str)
+        .unwrap_or(crate::ui::theme::DEFAULT_PRESET).to_owned();
+    global.entry("theme_preset").or_insert(toml::Value::String(legacy_preset.clone()));
+    let theme = global.entry("theme").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    if let Some(theme) = theme.as_table_mut() {
+        theme.entry("preset").or_insert(toml::Value::String(legacy_preset));
+        match toml::Value::try_from(resolved_global_theme) {
+            Ok(toml::Value::Table(resolved)) => {
+                for (key, value) in resolved { theme.entry(key).or_insert(value); }
+            }
+            Ok(_) => log::error!("config: resolved theme did not serialize as a table"),
+            Err(error) => log::error!("config: could not serialize resolved theme: {error}"),
+        }
+    }
+    let mut result = Vec::new();
+    visit("", &workspace, Some(&global), saved_key, &ignored, &mut result);
+    result
 }
 
 /// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
@@ -3259,6 +3530,190 @@ mod tests {
         let path = dir.path().join("nonexistent.toml");
         let diags = validate_from_path(&path);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_common_implicit_defaults() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "ui_scale = 1.0\nconfirm_quit = true\nconfirm_close = false\nconfirm_context_close = true\nosc_pane_title = true\n[effects]\nghost = true\nghost_opacity = 0.75\n[notifications]\nenabled = true\nfocus_mode = false\n[ai]\nper_app_daily_usd = 1.0\nglobal_daily_usd = 10.0\n[terminal]\nminimum_contrast = 3.0\n[permissions]\nsoft_grant_days = 30\n[cloud]\nretain_local_history = false\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "ui_scale = 1.5\n[terminal]\nminimum_contrast = 4.0\n[permissions]\nsoft_grant_days = 10\n[cloud]\nretain_local_history = true\n").unwrap();
+        let keys: Vec<_> = workspace_config_shadows(workspace.path(), None).into_iter().map(|(key, _)| key).collect();
+        for key in ["ui_scale", "terminal.minimum_contrast", "permissions.soft_grant_days", "cloud.retain_local_history"] { assert!(keys.contains(&key.to_owned()), "missing {key}: {keys:?}"); }
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_model_defaults() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let defaults = PlexiConfig::default().resolved_model_modes();
+        let text = format!("[models.fast]\nprovider = \"{}\"\nmodel = \"{}\"\nthinking = \"{}\"\n", defaults.fast.provider, defaults.fast.model, defaults.fast.thinking);
+        std::fs::write(&path, text).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[models.fast]\nmodel = \"another-model\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "models.fast.model"));
+    }
+
+    #[test]
+    fn workspace_legacy_theme_preset_does_not_override_global_theme_table() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "theme_preset = \"plexi-night\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_preset_theme_colors() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let accent = crate::ui::theme::preset_colors("plexi-dusk").unwrap().accent.unwrap();
+        std::fs::write(&path, format!("[theme]\naccent = \"{accent}\"\n")).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[theme]\naccent = \"#010203\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "theme.accent"));
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_resolved_default_keybindings() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+alt+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "keybindings.quit"));
+    }
+
+    #[test]
+    fn workspace_shadow_detector_ignores_unapplied_keys() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "unknown_key = 42\n[theme]\npreset = \"not-a-preset\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+    }
+
+    #[test]
+    fn workspace_overlay_preserves_other_global_fields_in_each_section() {
+        let mut global = String::from(r#"
+font_size = 15.0
+ui_scale = 1.2
+[attention]
+style = "loud"
+intensity = 0.7
+dock = "badge"
+[effects]
+ghost = true
+ghost_opacity = 0.6
+[terminal]
+minimum_contrast = 4.0
+[log]
+level = "debug"
+retention_days = 7
+[notifications]
+enabled = true
+focus_mode = true
+sound = "ding.wav"
+[ai]
+per_app_daily_usd = 2.0
+global_daily_usd = 5.0
+client = "team"
+[models.fast]
+provider = "vendor"
+model = "model"
+thinking = "high"
+[models.slow]
+provider = "vendor"
+model = "other"
+thinking = "low"
+[agents]
+os_notifications = true
+stalled_after_secs = 60
+stale_failure_hours = 5
+palette_agent_results = true
+low = "one"
+medium = "two"
+high = "three"
+restore_mode = "eager"
+standby_scrollback_lines = 42
+[marketplace]
+registry_url = "https://example.com"
+cdn_url = "https://example.com/cdn"
+submit_url = "https://example.com/submit"
+account_backend = "none"
+account_url = "https://example.com/account"
+account_email = "test@example.com"
+[cloud]
+retain_local_history = true
+[permissions]
+soft_grant_days = 9
+[keys]
+"cmd+1" = "run:first"
+"cmd+2" = "run:second"
+[theme]
+"#);
+        for key in KNOWN_THEME {
+            if *key == "pip_dim" {
+                global.push_str("pip_dim = 0.5\n");
+            } else {
+                let value = match *key { "preset" => "plexi-night", "state_preset" => "mono", _ => "#123456" };
+                global.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+        }
+        global.push_str("[keybindings]\n");
+        for key in KNOWN_KEYBINDINGS { global.push_str(&format!("{key} = \"cmd+f\"\n")); }
+        let original: PlexiConfig = toml::from_str(&global).unwrap();
+        let cases = [
+            ("[attention]\nstyle = \"off\"", vec!["attention", "style"]),
+            ("[theme]\npreset = \"plexi-dawn\"", vec!["theme", "preset"]),
+            ("[effects]\nghost = false", vec!["effects", "ghost"]),
+            ("[terminal]\nminimum_contrast = 2.0", vec!["terminal", "minimum_contrast"]),
+            ("[log]\nlevel = \"info\"", vec!["log", "level"]),
+            ("[notifications]\nenabled = false", vec!["notifications", "enabled"]),
+            ("[ai]\nclient = \"personal\"", vec!["ai", "client"]),
+            ("[models.fast]\nprovider = \"other\"", vec!["models", "fast", "provider"]),
+            ("[keybindings]\nquit = \"cmd+q\"", vec!["keybindings", "quit"]),
+            ("[keys]\n\"cmd+1\" = \"run:other\"", vec!["keys", "cmd+1"]),
+            ("[agents]\nlow = \"other\"", vec!["agents", "low"]),
+            ("[marketplace]\ncdn_url = \"https://other.example\"", vec!["marketplace", "cdn_url"]),
+            ("[cloud]\nretain_local_history = false", vec!["cloud", "retain_local_history"]),
+            ("[permissions]\nsoft_grant_days = 10", vec!["permissions", "soft_grant_days"]),
+        ];
+        for (text, path) in cases {
+            let incoming: PlexiConfig = toml::from_str(text).unwrap();
+            let incoming_json = serde_json::to_value(&incoming).unwrap();
+            let mut expected = serde_json::to_value(&original).unwrap();
+            let mut input_value = &incoming_json;
+            let mut expected_value = &mut expected;
+            for key in &path { input_value = &input_value[*key]; expected_value = &mut expected_value[*key]; }
+            *expected_value = input_value.clone();
+            let mut actual = original.clone();
+            actual.overlay(incoming);
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected, "overlay {text}");
+        }
     }
 
     #[test]

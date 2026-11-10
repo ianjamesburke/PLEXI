@@ -187,10 +187,11 @@ struct PaletteFocusTarget {
 }
 
 /// Palette commands either dispatch the canonical host key action or perform
-/// the palette-only workspace-scoped config handoff.
+/// the palette-only scoped config handoffs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PaletteCommand {
     Host(crate::host::keys::Action),
+    OpenGlobalConfig,
     OpenWorkspaceConfig,
     StatePreset(&'static str),
     /// Open the effective `commands.toml` (workspace if in a workspace, else
@@ -268,16 +269,16 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
-        name: "Open global config",
+        command: PaletteCommand::OpenGlobalConfig,
+        name: "Open config: everywhere",
         description: "Edit the channel-wide Plexi config file",
-        search_text: "open global config settings preferences config.toml configuration channel",
+        search_text: "open config: everywhere global settings preferences config.toml configuration channel",
     },
     PaletteCommandEntry {
         command: PaletteCommand::OpenWorkspaceConfig,
-        name: "Open workspace config",
+        name: "Open config: this repo",
         description: "Edit config for the active workspace scope",
-        search_text: "open workspace config settings preferences config.toml configuration scoped project local",
+        search_text: "open config: this repo workspace settings preferences config.toml configuration scoped project local",
     },
     PaletteCommandEntry {
         command: PaletteCommand::EditCommands,
@@ -671,11 +672,18 @@ fn palette_pips_for_context(
         focused_idx,
         hidden_indices,
         activities,
-        static_health_pips: pane_ids.iter().enumerate().filter_map(|(idx, pane_id)| {
-            windows.iter().filter(|w| w.context_id == ctx_id)
+        static_health_pips: pane_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, pane_id)| {
+                windows
+                    .iter()
+                    .filter(|w| w.context_id == ctx_id)
                 .find_map(|w| w.panes.get(pane_id))
-                .is_some_and(|pane| pane.static_health_pip()).then_some(idx)
-        }).collect(),
+                    .is_some_and(|pane| pane.static_health_pip())
+                    .then_some(idx)
+            })
+            .collect(),
     })
 }
 
@@ -781,7 +789,11 @@ fn palette_pane_rows_for_context(
                         Vec::new()
                     },
                     activities: vec![pane.effective_activity().cloned()],
-                    static_health_pips: if pane.static_health_pip() { vec![0] } else { Vec::new() },
+                    static_health_pips: if pane.static_health_pip() {
+                        vec![0]
+                    } else {
+                        Vec::new()
+                    },
                 },
                 recency_rank: pane_recency_rank(
                     host_active_window_id,
@@ -952,7 +964,8 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::FocusApproval) => bindings.focus_approval,
         PaletteCommand::Host(Action::OpenAgents) => bindings.open_agents,
         PaletteCommand::Host(Action::OpenSecretsManager) => bindings.open_secrets_manager,
-        PaletteCommand::Host(Action::OpenConfig) => bindings.open_config,
+        // Cmd+, opens the chooser rather than this global-only action.
+        PaletteCommand::Host(Action::OpenConfig) => return None,
         PaletteCommand::Host(Action::ReloadConfig) => bindings.reload_config,
         PaletteCommand::Host(Action::OpenNotesPicker) => bindings.open_notes_picker,
         PaletteCommand::Host(Action::OpenFileBrowser) => bindings.open_file_browser,
@@ -983,7 +996,8 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::UiScaleUp) => bindings.ui_scale_up,
         PaletteCommand::Host(Action::UiScaleDown) => bindings.ui_scale_down,
         PaletteCommand::Host(Action::UiScaleReset) => bindings.ui_scale_reset,
-        PaletteCommand::OpenWorkspaceConfig
+        PaletteCommand::OpenGlobalConfig
+        | PaletteCommand::OpenWorkspaceConfig
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
         | PaletteCommand::OpenAttention
@@ -1387,9 +1401,19 @@ impl PlexiApp {
         entries.extend(
             PALETTE_COMMANDS
                 .iter()
+                .filter(|entry| {
+                    entry.command != PaletteCommand::OpenWorkspaceConfig
+                        || self.palette_config_workspace_root.is_some()
+                })
                 .map(|entry| PaletteEntry::Command {
                     command: entry.command.clone(),
-                    name: entry.name,
+                    name: if entry.command == PaletteCommand::OpenWorkspaceConfig
+                        && !self.palette_workspace_config_exists
+                    {
+                        "Open config: this repo (not created yet)"
+                    } else {
+                        entry.name
+                    },
                     description: entry.description,
                     search_text: entry.search_text,
                 })
@@ -1947,13 +1971,25 @@ impl PlexiApp {
                 match result {
                     Ok(()) => {
                         log::info!("settings: state preset={preset}");
-                        self.reload_config();
+                        self.reload_config_after_global_save("theme.state_preset");
                     }
                     Err(error) => log::error!("settings: state preset failed: {error}"),
                 }
             }
+            PaletteCommand::OpenGlobalConfig => {
+                let path = crate::config::ensure_config_file();
+                log::info!("palette: opening global config at {}", path.display());
+                self.open_config_in_editor(path);
+            }
             PaletteCommand::OpenWorkspaceConfig => {
-                let root = self.router.active().root.clone();
+                let Some(root) = self
+                    .palette_config_workspace_root
+                    .clone()
+                    .or_else(|| self.active_config_workspace_root())
+                else {
+                    log::warn!("palette: workspace config requested outside a workspace");
+                    return;
+                };
                 log::info!("palette: opening workspace config at {}", root.display());
                 let path = crate::config::ensure_workspace_config_file(&root);
                 self.open_config_in_editor(path);
@@ -1983,6 +2019,16 @@ impl PlexiApp {
                 Err(error) => log::error!("palette: SetupCli failed: {error}"),
             },
         }
+    }
+
+    pub(crate) fn active_config_workspace_root(&self) -> Option<std::path::PathBuf> {
+        // A workspace root is the context's own root directory; the channel dir
+        // is created on first open. A root whose repo config would be the global
+        // file (HOME) is not a repo.
+        let root = &self.router.active().root;
+        (root.is_dir()
+            && crate::config::workspace_config_path(root) != crate::config::config_path())
+        .then(|| root.clone())
     }
 
     pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
@@ -2217,7 +2263,10 @@ impl PlexiApp {
                 match command.status() {
                     Ok(status) => status.code().unwrap_or(1),
                     Err(e) => {
-                        log::error!("user_command: shell step failed command_chars={} error={e}", rendered.chars().count());
+                        log::error!(
+                            "user_command: shell step failed command_chars={} error={e}",
+                            rendered.chars().count()
+                        );
                         1
                     }
                 }
@@ -2260,7 +2309,11 @@ impl PlexiApp {
         let cli = match Cli::try_parse_from(argv) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("user_command: invalid CLI step argc={} error_kind={:?}", argv.len(), e.kind());
+                log::warn!(
+                    "user_command: invalid CLI step argc={} error_kind={:?}",
+                    argv.len(),
+                    e.kind()
+                );
                 return 2;
             }
         };
@@ -2820,7 +2873,7 @@ mod tests {
         assert_eq!(
             palette_command_matches("config"),
             vec![
-                PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                PaletteCommand::OpenGlobalConfig,
                 PaletteCommand::OpenWorkspaceConfig,
                 PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
             ]
@@ -2889,12 +2942,17 @@ mod tests {
         );
 
         // A user override renders the override, not the default chord.
-        bindings.open_file_browser =
-            (egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::F);
+        bindings.open_file_browser = (
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::F,
+        );
         let overridden = palette_host_binding(&bindings, &command)
             .expect("overridden binding must still render a label");
         assert_eq!(overridden, bindings.open_file_browser);
-        assert_eq!(shortcut_label(overridden), shortcut_label(bindings.open_file_browser));
+        assert_eq!(
+            shortcut_label(overridden),
+            shortcut_label(bindings.open_file_browser)
+        );
     }
 
     #[test]
@@ -2941,7 +2999,8 @@ mod tests {
                         "needs attention is a palette-only entry with no host chord"
                     );
                 }
-                PaletteCommand::OpenWorkspaceConfig
+                PaletteCommand::OpenGlobalConfig
+                | PaletteCommand::OpenWorkspaceConfig
                 | PaletteCommand::EditCommands
                 | PaletteCommand::SwitchCommandsScope
                 | PaletteCommand::SetupCli
@@ -2952,7 +3011,13 @@ mod tests {
                         "workspace config / edit commands are palette-only handoffs with no host chord"
                     );
                 }
-                PaletteCommand::Host(Action::NavBackApp | Action::FocusHistoryForward | Action::NextContext | Action::PrevContext) => {
+                PaletteCommand::Host(
+                    Action::OpenConfig
+                    | Action::NavBackApp
+                    | Action::FocusHistoryForward
+                    | Action::NextContext
+                    | Action::PrevContext,
+                ) => {
                     assert!(palette_host_binding(&bindings, &entry.command).is_none());
                 }
                 PaletteCommand::Host(action) => {
@@ -4249,6 +4314,152 @@ mod tests {
             search.contains("chad"),
             "renamed pane title must appear in palette search_text; got: {search:?}"
         );
+    }
+
+    #[test]
+    fn palette_global_state_preset_save_reports_only_its_workspace_override() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root.path().to_path_buf(), None);
+        std::fs::write(crate::config::config_path(), "[theme]\nstate_preset = \"mono\"\n").unwrap();
+        let path = crate::config::workspace_config_path(root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[theme]\nstate_preset = \"mono\"\n").unwrap();
+        h.app.run_palette_command(PaletteCommand::StatePreset("mono"));
+        let notice = &h.app.config_notice.as_ref().expect("workspace key shadows global save").0;
+        assert!(notice.contains("Saved globally") && notice.contains("theme.state_preset") && notice.contains("mono"), "{notice}");
+        std::fs::write(path, "[theme]\npreset = \"plexi-night\"\n").unwrap();
+        h.app.run_palette_command(PaletteCommand::StatePreset("default"));
+        assert!(h.app.config_notice.is_none());
+    }
+
+    #[test]
+    fn palette_reload_config_workspace_theme_shadows_global_and_reports_it() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root.path().to_path_buf(), None);
+        std::fs::write(
+            crate::config::config_path(),
+            "[theme]\npreset = \"plexi-dusk\"\n",
+        )
+        .unwrap();
+        let path = crate::config::workspace_config_path(root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "[theme]\npreset = \"plexi-night\"\n").unwrap();
+        h.app.run_palette_command(PaletteCommand::Host(
+            crate::host::keys::Action::ReloadConfig,
+        ));
+        let notice = &h
+            .app
+            .config_notice
+            .as_ref()
+            .expect("reload must report shadow")
+            .0;
+        assert!(
+            notice.contains("theme.preset") && notice.contains("plexi-night"),
+            "{notice}"
+        );
+        // An omitted global preset still has an effective default.
+        std::fs::write(crate::config::config_path(), "").unwrap();
+        h.app.config_notice = None;
+        h.app.run_palette_command(PaletteCommand::Host(crate::host::keys::Action::ReloadConfig));
+        assert!(h.app.config_notice.as_ref().is_some_and(|(text, _)| text.contains("theme.preset")), "implicit global default must be compared");
+    }
+
+    #[test]
+    fn reload_reports_workspace_font_override_of_implicit_global_default() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root.path().to_path_buf(), None);
+        std::fs::write(crate::config::config_path(), "").unwrap();
+        let path = crate::config::workspace_config_path(root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "font_size = 19.0\n").unwrap();
+        h.app.reload_config_for_workspace(Some(root.path()));
+        assert!(h.app.config_notice.as_ref().is_some_and(|(text, _)| text.contains("font_size") && text.contains("19")));
+        std::fs::write(path, "font_size = 14.0\n").unwrap();
+        h.app.reload_config_for_workspace(Some(root.path()));
+        assert!(h.app.config_notice.is_none(), "equal effective values should not produce a shadow notice");
+    }
+
+    #[test]
+    fn repo_config_row_opens_the_active_context_config_not_nested_pane_repo() {
+        let mut h = crate::testing::HostHarness::new();
+        let outer = tempfile::tempdir().unwrap();
+        h.app.set_context_root(outer.path().to_path_buf(), None);
+        let nested = outer.path().join("nested");
+        std::fs::create_dir_all(nested.join(crate::config::workspace_channel_dir())).unwrap();
+        let pane = h.add_test_pane();
+        h.app.windows[0].panes.get_mut(&pane).unwrap().as_app_mut().unwrap().workspace_root = nested.clone();
+        h.focus_pane(pane);
+        h.press_key(egui::Key::Comma, egui::Modifiers::COMMAND);
+        let active_path = crate::config::workspace_config_path(outer.path());
+        let nested_path = crate::config::workspace_config_path(&nested);
+        assert!(!active_path.exists() && !nested_path.exists(), "viewing the chooser must not create a file");
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        assert!(active_path.exists(), "the row must open the file used by active-context reload");
+        assert!(!nested_path.exists(), "a nested pane repo must not receive a config the host will not load");
+    }
+
+    #[test]
+    fn repo_config_row_creates_template_in_plain_repo_without_channel_dir() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root.path().to_path_buf(), None);
+        let channel_dir = root.path().join(crate::config::workspace_channel_dir());
+        let _ = std::fs::remove_dir_all(&channel_dir);
+        assert!(!channel_dir.exists());
+        assert_eq!(h.app.active_config_workspace_root().as_deref(), Some(root.path()));
+        let before = crate::config::PlexiConfig::load_with_workspace(Some(root.path()));
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        let path = crate::config::workspace_config_path(root.path());
+        assert!(path.exists(), "choosing the row must create the template");
+        let after = crate::config::PlexiConfig::load_with_workspace(Some(root.path()));
+        assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
+    }
+
+    #[test]
+    fn repo_config_row_hidden_when_workspace_path_is_the_global_config() {
+        let mut h = crate::testing::HostHarness::new();
+        let home = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(home.path().join(crate::config::workspace_channel_dir()));
+        h.app.set_context_root(home.path().to_path_buf(), None);
+        assert_eq!(crate::config::workspace_config_path(home.path()), crate::config::config_path());
+        assert!(h.app.active_config_workspace_root().is_none());
+        let global_before = std::fs::read(crate::config::config_path()).ok();
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        assert_eq!(std::fs::read(crate::config::config_path()).ok(), global_before, "must not create or rewrite the global file as a repo config");
+    }
+
+    #[test]
+    fn palette_workspace_config_open_preserves_global_effective_theme() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        let root = h.app.windows[0]
+            .panes
+            .get(&pane)
+            .unwrap()
+            .as_app()
+            .unwrap()
+            .workspace_root
+            .clone();
+        std::fs::create_dir_all(root.join(crate::config::workspace_channel_dir())).unwrap();
+        std::fs::write(
+            crate::config::config_path(),
+            "[theme]\npreset = \"plexi-night\"\n",
+        )
+        .unwrap();
+        let before = crate::config::PlexiConfig::load_with_workspace(Some(&root));
+        h.app
+            .run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        let path = crate::config::workspace_config_path(&root);
+        let first = std::fs::read_to_string(&path).unwrap();
+        let after = crate::config::PlexiConfig::load_with_workspace(Some(&root));
+        assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
+        h.app
+            .run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        assert_eq!(first, std::fs::read_to_string(path).unwrap());
     }
 
     #[test]

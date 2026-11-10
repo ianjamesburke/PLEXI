@@ -924,6 +924,17 @@ impl PlexiApp {
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
+        self.reload_config_inner(active_workspace, true);
+    }
+
+    pub(crate) fn reload_config_after_global_save(&mut self, key: &str) {
+        let root = self.router.active().root.clone();
+        self.reload_config_inner(Some(&root), false);
+        self.config_notice = None;
+        self.report_config_shadows(&root, Some(key), "Saved globally");
+    }
+
+    fn reload_config_inner(&mut self, active_workspace: Option<&Path>, report_shadows: bool) {
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
         if let Some(root) = active_workspace {
             let project_path = root
@@ -1048,12 +1059,65 @@ impl PlexiApp {
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
+        if report_shadows {
+            self.config_notice = None;
+            if let Some(root) = active_workspace {
+                self.report_config_shadows(root, None, "Reloaded");
+            }
+        }
         log::info!(
             "Configuration reloaded from disk. active_workspace={}",
             active_workspace
                 .map(|root| root.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string())
         );
+    }
+
+    pub(crate) fn report_config_shadows(&mut self, root: &Path, only: Option<&str>, prefix: &str) {
+        self.config_notice = None;
+        let shadows: Vec<_> = crate::config::workspace_config_shadows(root, only)
+            .into_iter()
+            .filter(|(key, _)| only.is_none_or(|wanted| key == wanted))
+            .collect();
+        if shadows.is_empty() {
+            return;
+        }
+        log::info!(
+            "config: workspace overrides {}",
+            shadows
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let summary = shadows
+            .iter()
+            .take(3)
+            .map(|(key, value)| format!("{key} ({value})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.config_notice = Some((
+            format!("{prefix}. This repo overrides {summary}."),
+            std::time::Instant::now(),
+        ));
+    }
+
+    pub(crate) fn draw_config_notice(&self, ctx: &egui::Context) {
+        if let Some((message, at)) = &self.config_notice {
+            let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                crate::ui::toast::ToastShell::bottom("config_notice").show(
+                    ctx,
+                    &self.colors,
+                    |ui| {
+                        crate::ui::toast::toast_caption(ui, message, &self.colors);
+                    },
+                );
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
+        }
     }
 
     /// Push the current host `Colors` to every running app as a `Theme` event.
@@ -1297,7 +1361,10 @@ impl PlexiApp {
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let invalid = self.context_rename.as_ref().is_some_and(|edit| {
             self.router.active().context_id != edit.origin_id
-                || !self.router.iter().any(|c| c.context_id == edit.target_id && !c.parked)
+                || !self
+                    .router
+                    .iter()
+                    .any(|c| c.context_id == edit.target_id && !c.parked)
         });
         if invalid {
             self.cancel_context_rename("context changed or unavailable");

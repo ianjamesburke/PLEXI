@@ -7211,6 +7211,37 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn config_chooser_offers_not_created_repo_row_for_plain_repo() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().to_path_buf();
+        assert!(!root.join(crate::config::workspace_channel_dir()).exists(), "plain repo has no channel dir");
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
+        });
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Open config: this repo (not created yet)").is_some());
+    }
+
+    #[test]
+    fn config_chooser_omits_repo_row_outside_workspace() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().join("does-not-exist");
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
+        });
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Open config: everywhere").is_some());
+        assert!(h.harness().query_by_label("Open config: this repo (not created yet)").is_none());
+        assert!(h.harness().query_by_label("Open config: this repo").is_none());
+    }
+
+    #[test]
     fn screenshot_notes_delete_toast_themes() {
         for scale in [1.0, 2.0] {
             let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, scale);
@@ -7284,7 +7315,13 @@ open(out + ".done", "w").close()
                 h.run_steps(2);
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_quit")))
                     .unwrap();
-                h.with_app_mut(|app| app.quit_press_count = 0);
+                h.with_app_mut(|app| {
+                    app.quit_press_count = 0;
+                    app.config_notice = Some(("Reloaded. This repo overrides theme.preset (plexi-night).".into(), std::time::Instant::now()));
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_config_notice"))).unwrap();
+                h.with_app_mut(|app| app.config_notice = None);
             }
         }
     }

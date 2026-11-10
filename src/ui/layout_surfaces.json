@@ -356,6 +356,15 @@
     {
       "id": "src/ui/typography.rs",
       "gap": "Unresolved: typography has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/app/focus.rs::draw_config_notice",
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_notes_delete_toast_themes"
+      },
+      "states": "configuration shadow notice; Dusk/Dawn; zoom 1/2",
+      "minimum": "Show notice text without actions in the toast shell"
     }
   ]
 }
