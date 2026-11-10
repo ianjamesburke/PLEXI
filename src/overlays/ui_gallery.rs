@@ -244,6 +244,11 @@ pub(crate) enum KitSpecimen {
         size: crate::ui::button::ButtonSize,
         label: &'static str,
     },
+    GalleryButton {
+        kind: ButtonKind,
+        label: &'static str,
+        min_width: f32,
+    },
     Choice,
     Icon,
     Toolbar,
@@ -287,6 +292,16 @@ impl KitSpecimen {
                 KitButton::new(label, colors)
                     .kind(kind)
                     .size(size)
+                    .selected(selected),
+            ),
+            Self::GalleryButton {
+                kind,
+                label,
+                min_width,
+            } => ui.add(
+                KitButton::new(label, colors)
+                    .kind(kind)
+                    .min_width(min_width)
                     .selected(selected),
             ),
             Self::Choice => choice_button(ui, choice_label, "⌘Enter", selected, colors),
@@ -399,6 +414,7 @@ impl KitSpecimen {
         matches!(
             self,
             Self::Button { .. }
+                | Self::GalleryButton { .. }
                 | Self::Choice
                 | Self::Icon
                 | Self::Toolbar
@@ -427,6 +443,31 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             .map(move |(kind, label)| KitSpecimen::Button { kind, size, label })
         })
         .chain([
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Ghost,
+                label: "Full width",
+                min_width: 0.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Primary,
+                label: "Install",
+                min_width: 88.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Secondary,
+                label: "Cancel",
+                min_width: 88.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Danger,
+                label: "Deny forever",
+                min_width: 116.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Primary,
+                label: "Open text-entry modal",
+                min_width: 180.0,
+            },
             KitSpecimen::Choice,
             KitSpecimen::Icon,
             KitSpecimen::Toolbar,
@@ -471,7 +512,9 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
             for specimen in kit_specimens().filter(|specimen| matches!(specimen, KitSpecimen::Button { size: specimen_size, .. } if *specimen_size == size)) {
                 specimen.show(ui, colors, false, "", "");
             }
-            ui.add_enabled(false, KitButton::new("Disabled", colors).size(size));
+            ui.add_enabled_ui(false, |ui| {
+                KitSpecimen::Button { kind: ButtonKind::Primary, size, label: "Disabled" }.show(ui, colors, false, "", "");
+            });
         });
     }
 }
@@ -498,13 +541,13 @@ impl PlexiApp {
                 let previous = preview.mode;
                 ui.horizontal_wrapped(|ui| {
                     for mode in UiGalleryDataMode::ALL {
-                        if ui
-                            .add(
-                                KitButton::new(mode.label(), &colors)
-                                    .kind(ButtonKind::Ghost)
-                                    .selected(preview.mode == mode),
-                            )
-                            .clicked()
+                        if (KitSpecimen::GalleryButton {
+                            kind: ButtonKind::Ghost,
+                            label: mode.label(),
+                            min_width: 0.0,
+                        })
+                        .show(ui, &colors, preview.mode == mode, "", "")
+                        .clicked()
                         {
                             preview.mode = mode;
                         }
@@ -512,13 +555,13 @@ impl PlexiApp {
                 });
                 ui.horizontal(|ui| {
                     for (narrow, label) in [(false, "Full width"), (true, "Narrow 320px")] {
-                        if ui
-                            .add(
-                                KitButton::new(label, &colors)
-                                    .kind(ButtonKind::Ghost)
-                                    .selected(preview.narrow == narrow),
-                            )
-                            .clicked()
+                        if (KitSpecimen::GalleryButton {
+                            kind: ButtonKind::Ghost,
+                            label,
+                            min_width: 0.0,
+                        })
+                        .show(ui, &colors, preview.narrow == narrow, "", "")
+                        .clicked()
                         {
                             preview.narrow = narrow;
                         }
@@ -575,17 +618,18 @@ impl PlexiApp {
 
                         chrome_section(ui, "Trust and confirmations", &colors, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                ui.add(KitButton::new("Install", &colors).min_width(88.0));
-                                ui.add(
-                                    KitButton::new("Cancel", &colors)
-                                        .kind(ButtonKind::Secondary)
-                                        .min_width(88.0),
-                                );
-                                ui.add(
-                                    KitButton::new("Deny forever", &colors)
-                                        .kind(ButtonKind::Danger)
-                                        .min_width(116.0),
-                                );
+                                for (label, kind, min_width) in [
+                                    ("Install", ButtonKind::Primary, 88.0),
+                                    ("Cancel", ButtonKind::Secondary, 88.0),
+                                    ("Deny forever", ButtonKind::Danger, 116.0),
+                                ] {
+                                    KitSpecimen::GalleryButton {
+                                        kind,
+                                        label,
+                                        min_width,
+                                    }
+                                    .show(ui, &colors, false, "", "");
+                                }
                             });
                             KitSpecimen::TrustHints.show(ui, &colors, false, "", "");
                             for (index, specimen) in [
@@ -643,12 +687,13 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Modal patterns", &colors, |ui| {
-                            if ui
-                                .add(
-                                    KitButton::new("Open text-entry modal", &colors)
-                                        .min_width(180.0),
-                                )
-                                .clicked()
+                            if (KitSpecimen::GalleryButton {
+                                kind: ButtonKind::Primary,
+                                label: "Open text-entry modal",
+                                min_width: 180.0,
+                            })
+                            .show(ui, &colors, false, "", "")
+                            .clicked()
                             {
                                 self.ui_gallery_show_text_modal = true;
                                 log::info!("ui_gallery: opened text-entry modal demo");
@@ -658,34 +703,30 @@ impl PlexiApp {
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
                             draw_button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
-                                ui.add(
-                                    KitButton::new(
+                                for (label, kind, min_width) in [
+                                    (
                                         data.names.first().copied().unwrap_or(""),
-                                        &colors,
-                                    )
-                                    .min_width(80.0),
-                                );
-                                ui.add(
-                                    KitButton::new("Secondary", &colors)
-                                        .kind(ButtonKind::Secondary)
-                                        .min_width(92.0),
-                                );
-                                ui.add(
-                                    KitButton::new("Danger", &colors)
-                                        .kind(ButtonKind::Danger)
-                                        .min_width(80.0),
-                                );
-                                ui.add(
-                                    KitButton::new("Accent", &colors)
-                                        .kind(ButtonKind::Accent)
-                                        .min_width(80.0),
-                                );
+                                        ButtonKind::Primary,
+                                        80.0,
+                                    ),
+                                    ("Secondary", ButtonKind::Secondary, 92.0),
+                                    ("Danger", ButtonKind::Danger, 80.0),
+                                    ("Accent", ButtonKind::Accent, 80.0),
+                                ] {
+                                    KitSpecimen::GalleryButton {
+                                        kind,
+                                        label,
+                                        min_width,
+                                    }
+                                    .show(ui, &colors, false, "", "");
+                                }
                                 ui.add_enabled_ui(false, |ui| {
-                                    ui.add(
-                                        KitButton::new("Disabled", &colors)
-                                            .kind(ButtonKind::Secondary)
-                                            .min_width(80.0),
-                                    );
+                                    KitSpecimen::GalleryButton {
+                                        kind: ButtonKind::Secondary,
+                                        label: "Disabled",
+                                        min_width: 80.0,
+                                    }
+                                    .show(ui, &colors, false, "", "");
                                 });
                             });
                             KitSpecimen::Choice.show(ui, &colors, false, data.detail, "");
