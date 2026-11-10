@@ -319,12 +319,17 @@ impl PlexiApp {
                                     );
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
-                                        let confirm_btn = crate::ui::button::KitButton::new(format!("Restart to v{latest}"), &self.colors).kind(crate::ui::button::ButtonKind::Accent).size(crate::ui::button::ButtonSize::Sm);
+                                        let restart_label = format!("Restart to v{latest}");
+                                        let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Accent)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(confirm_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                             self.update_quit_pending = true;
                                         }
-                                        let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors).kind(crate::ui::button::ButtonKind::Ghost).size(crate::ui::button::ButtonSize::Sm);
+                                        let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Ghost)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(cancel_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                         }
@@ -340,7 +345,9 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors).kind(crate::ui::button::ButtonKind::Accent).size(crate::ui::button::ButtonSize::Sm);
+                                            let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
+                                                .kind(crate::ui::button::ButtonKind::Accent)
+                                                .size(crate::ui::button::ButtonSize::Sm);
                                             if ui.add(btn).clicked() {
                                                 self.update_confirm_prompt = true;
                                             }
@@ -442,13 +449,7 @@ impl PlexiApp {
                 if show_browse {
                     ui.add_space(style::SPACE_SM);
                     ui.horizontal(|ui| {
-                        if crate::ui::button::chrome_button(
-                            ui,
-                            "Browse\u{2026}",
-                            crate::ui::button::ButtonKind::Primary,
-                            &self.colors,
-                            80.0,
-                        )
+                        if ui.add(crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors).min_width(80.0))
                         .clicked()
                         {
                             browse_clicked = true;

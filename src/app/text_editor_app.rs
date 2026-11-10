@@ -668,12 +668,10 @@ impl TextEditorApp {
         );
         ui.horizontal(|ui| {
             if view.status == "pending" && view.conflict.is_none() {
-                let accept = crate::ui::button::chrome_button(
-                    ui,
-                    "Accept",
-                    crate::ui::button::ButtonKind::Accent,
-                    colors,
-                    72.0,
+                let accept = ui.add(
+                    crate::ui::button::KitButton::new("Accept", colors)
+                        .kind(crate::ui::button::ButtonKind::Accent)
+                        .min_width(72.0),
                 );
                 // Pointer only. `clicked()` also reports keyboard activation,
                 // and `pane key` must not accept a change set.
@@ -682,12 +680,10 @@ impl TextEditorApp {
                 }
             }
             if view.status == "pending" || view.status == "stale" {
-                let reject = crate::ui::button::chrome_button(
-                    ui,
-                    "Reject",
-                    crate::ui::button::ButtonKind::Danger,
-                    colors,
-                    72.0,
+                let reject = ui.add(
+                    crate::ui::button::KitButton::new("Reject", colors)
+                        .kind(crate::ui::button::ButtonKind::Danger)
+                        .min_width(72.0),
                 );
                 if reject.clicked_by(egui::PointerButton::Primary) {
                     self.reject_visible_change();
@@ -1052,6 +1048,7 @@ impl TextEditorApp {
                     .color(colors.warning),
             );
             for (label, key) in choices {
+                #[expect(clippy::disallowed_methods, reason = "stint 1209 migrates the editor find bar to the kit")]
                 if ui.button(*label).clicked_by(egui::PointerButton::Primary) {
                     chosen = Some(*key);
                 }
@@ -1928,6 +1925,7 @@ fn paint_editor_header(
                     .color(save_color),
             );
             if let Some(switch_label) = chrome.commands_switch_label {
+                #[expect(clippy::disallowed_methods, reason = "stint 1209 migrates the editor find bar to the kit")]
                 let btn = ui.add(
                     egui::Button::new(
                         egui::RichText::new(switch_label)
@@ -2163,6 +2161,7 @@ impl App for TextEditorApp {
         log::info!("notes_editor: font_size reset -> {}", self.font_size);
     }
 
+    #[expect(clippy::disallowed_methods, reason = "stint 1209 migrates the editor find bar to the kit")]
     fn ui(
         &mut self,
         ui: &mut egui::Ui,

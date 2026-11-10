@@ -192,8 +192,10 @@ impl<'a> SearchBar<'a> {
                 if has_clear {
                     let btn = ui.add(
                         crate::ui::button::KitButton::new("\u{00d7}", colors)
-                            .size(crate::ui::button::ButtonSize::Sm)
-                            .frameless(),
+                            .kind(crate::ui::button::ButtonKind::Ghost)
+                            .compact()
+                            .text_size(self.font_size + 2.0)
+                            .text_color(colors.text_dim),
                     );
                     let synthetic = self
                         .pending_click

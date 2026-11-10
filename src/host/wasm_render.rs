@@ -720,7 +720,10 @@ fn render_button_node(
 ) {
     use crate::ui::button::{ButtonKind, KitButton};
     let kind = match b.style {
-        ButtonStyle::Primary => ButtonKind::Primary,
+        // The SDK encodes selected state for Checkbox/Toggle/Radio/Segmented/Tabs
+        // as primary vs secondary (sdk/python/plexi_sdk/ui.py), so plugin Primary
+        // stays visibly distinct from Secondary: the kit's Accent emphasis.
+        ButtonStyle::Primary => ButtonKind::Accent,
         ButtonStyle::Secondary => ButtonKind::Secondary,
         ButtonStyle::Danger => ButtonKind::Danger,
         ButtonStyle::Ghost => ButtonKind::Ghost,
@@ -730,7 +733,8 @@ fn render_button_node(
         !b.disabled,
         KitButton::new(&b.label, colors)
             .kind(kind)
-            .min_size(min_size),
+            .min_size(min_size)
+            .wrap_mode(egui::TextWrapMode::Wrap),
     );
     if response.clicked() || synthetic_click {
         out.actions.push(b.on_click.clone());
@@ -3152,31 +3156,36 @@ mod tests {
             "nested Card must paint dark inset bg_darkest surface"
         );
 
-        // Plugin buttons use the same Primary/Secondary fills as host kit buttons.
-        let button_rect = |label: &str| {
-            let center = output
-                .shapes
-                .iter()
-                .find_map(|s| match &s.shape {
-                    egui::Shape::Text(text) if text.galley.job.text == label => {
-                        Some(text.visual_bounding_rect().center())
-                    }
-                    _ => None,
-                })
-                .expect("button label");
-            rects
-                .iter()
-                .filter(|r| r.fill == colors.bg_active && r.rect.contains(center))
-                .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
-                .expect("kit button rect")
-        };
-        let zero_btn = button_rect("0");
-        let primary_btns = [button_rect("+"), button_rect("=")];
-        assert_eq!(
-            primary_btns.len(),
-            2,
-            "expected '+' and '=' primary buttons"
+        // Secondary buttons must NOT use bg_active (which would blend into the outer
+        // Card): find the '0' button's own background rect and compare it to the Card.
+        let zero_center = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "0" => {
+                    Some(text.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("'0' button label");
+        let zero_btn = rects
+            .iter()
+            .filter(|r| r.rect.contains(zero_center) && r.rect.width() > 100.0)
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .expect("double-wide '0' button rect");
+        assert_ne!(
+            zero_btn.fill, colors.bg_active,
+            "Secondary must not use the bg_active Card fill"
         );
+        assert_ne!(
+            zero_btn.fill, colors.accent,
+            "Secondary must stay distinct from Primary"
+        );
+        let primary_btns: Vec<_> = rects
+            .iter()
+            .filter(|r| r.fill == colors.accent && (r.rect.height() - KEYPAD_BUTTON_H).abs() < 1.0)
+            .collect();
+        assert_eq!(primary_btns.len(), 2, "expected '+' and '=' primary buttons");
         assert!(
             (primary_btns[0].rect.left() - primary_btns[1].rect.left()).abs() < 1.0,
             "'=' button in 3-button bottom row must align with '+' in column 4"

@@ -107,7 +107,7 @@ impl App for ImageViewerApp {
             } else {
                 ButtonKind::Secondary
             };
-            if button::chrome_button_sized(ui, "Fit", fit_kind, colors, 48.0, style::BUTTON_H_MD)
+            if ui.add(button::KitButton::new("Fit", colors).kind(fit_kind).min_width(48.0))
                 .clicked()
             {
                 self.fit_to_view = true;
@@ -119,7 +119,7 @@ impl App for ImageViewerApp {
             } else {
                 ButtonKind::Secondary
             };
-            if button::chrome_button_sized(ui, "100%", one_kind, colors, 52.0, style::BUTTON_H_MD)
+            if ui.add(button::KitButton::new("100%", colors).kind(one_kind).min_width(52.0))
                 .clicked()
             {
                 self.fit_to_view = false;

@@ -232,6 +232,7 @@ pub struct ListRow<'a> {
     selected: bool,
     danger_trailing: bool,
     dense: bool,
+    body_color: Option<Color32>,
 }
 
 impl<'a> ListRow<'a> {
@@ -246,7 +247,15 @@ impl<'a> ListRow<'a> {
             selected: false,
             danger_trailing: false,
             dense: false,
+            body_color: None,
         }
+    }
+
+    /// Preferred colour for the primary line (a state colour). It is still
+    /// contrast-corrected against the painted row surface.
+    pub fn body_color(mut self, color: Color32) -> Self {
+        self.body_color = Some(color);
+        self
     }
 
     /// Single-line row at `LIST_ROW_DENSE_H` for data-dense listings.
@@ -394,6 +403,11 @@ impl<'a> ListRow<'a> {
         readable.bg_sidebar = background;
         readable.text_primary =
             surface.foreground(colors.text_primary, super::foreground::Role::SmallText);
+        let mut body_colors = readable;
+        if let Some(color) = self.body_color {
+            body_colors.text_primary =
+                surface.foreground(color, super::foreground::Role::SmallText);
+        }
         readable.text_dim = surface.foreground(colors.text_dim, super::foreground::Role::SmallText);
         let mut actions = Vec::new();
         let mut trailing_clicked = false;
@@ -451,7 +465,7 @@ impl<'a> ListRow<'a> {
             let metrics = draw_text_block(
                 ui,
                 &self,
-                &readable,
+                &body_colors,
                 lanes.text.left(),
                 primary_rect.center().y,
                 title.text.width(),
@@ -972,6 +986,52 @@ fn draw_pips(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_color_paints_the_primary_line_in_the_requested_state_colour() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let paint = |body: Option<Color32>| {
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            let mut row = ListRow::new("Planner state").dense();
+                            if let Some(color) = body {
+                                row = row.body_color(color);
+                            }
+                            row.show(ui, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "Planner state" => {
+                        Some(t.override_text_color.unwrap_or(t.fallback_color))
+                    }
+                    _ => None,
+                })
+                .expect("row body")
+        };
+        let plain = paint(None);
+        let stated = paint(Some(colors.danger));
+        assert_ne!(plain, stated, "state colour must reach the painted body");
+        let surface = crate::ui::foreground::Surface::over(colors.bg_sidebar, colors.bg_sidebar);
+        assert_eq!(
+            stated,
+            surface.foreground(colors.danger, crate::ui::foreground::Role::SmallText),
+            "state colour is contrast-corrected against the row surface"
+        );
+    }
 
     fn collect_chip_shapes(
         shape: &egui::Shape,

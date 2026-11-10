@@ -60,9 +60,20 @@ impl PlexiApp {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if compact {
                     let (overflow, _) = button::overflow_menu(ui, "…", &self.colors, |ui| {
-                        if crate::ui::button::menu_item(ui, "Keyboard shortcuts", &self.colors).clicked() { self.show_shortcuts = !self.show_shortcuts; ui.close(); }
-                        if crate::ui::button::menu_item(ui, "Changelog", &self.colors).clicked() { self.show_changelog = !self.show_changelog; ui.close(); }
-                        if host_ui_gallery_available() && crate::ui::button::menu_item(ui, "Host UI gallery", &self.colors).clicked() { self.show_ui_gallery = !self.show_ui_gallery; ui.close(); }
+                        if button::menu_item(ui, "Keyboard shortcuts", &self.colors).clicked() {
+                            self.show_shortcuts = !self.show_shortcuts;
+                            ui.close();
+                        }
+                        if button::menu_item(ui, "Changelog", &self.colors).clicked() {
+                            self.show_changelog = !self.show_changelog;
+                            ui.close();
+                        }
+                        if host_ui_gallery_available()
+                            && button::menu_item(ui, "Host UI gallery", &self.colors).clicked()
+                        {
+                            self.show_ui_gallery = !self.show_ui_gallery;
+                            ui.close();
+                        }
                     });
                     overflow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toolbar actions"));
                     record_toolbar_rect(ui, "overflow", overflow.rect);
@@ -70,9 +81,7 @@ impl PlexiApp {
                 if !compact && host_ui_gallery_available() {
                     let gallery = button::toolbar_button(
                         ui,
-                        RichText::new("UI")
-                            .size(style::TEXT_CAPTION)
-                            .color(self.colors.text_dim),
+                        button::KitButton::new("UI", &self.colors).text_color(self.colors.text_dim),
                         "Host UI gallery",
                     );
                     record_toolbar_rect(ui, "gallery", gallery.rect);
@@ -96,21 +105,21 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                let version_label = if self.update_available.is_some() {
-                    RichText::new(format!("\u{2191} v{}", self.display_version))
-                        .size(10.0)
-                        .color(self.colors.accent)
+                let (version_label, version_color) = if self.update_available.is_some() {
+                    (format!("\u{2191} v{}", self.display_version), self.colors.accent)
                 } else {
-                    RichText::new(format!("v{}", self.display_version))
-                        .size(10.0)
-                        .color(self.colors.text_dim)
+                    (format!("v{}", self.display_version), self.colors.text_dim)
                 };
                 let hover_text = if self.update_available.is_some() {
                     "Update available — click to open changelog"
                 } else {
                     "Changelog"
                 };
-                let version = button::toolbar_button(ui, version_label, hover_text);
+                let version = button::toolbar_button(
+                    ui,
+                    button::KitButton::new(&version_label, &self.colors).text_size(10.0).text_color(version_color),
+                    hover_text,
+                );
                 record_toolbar_rect(ui, "version", version.rect);
                 if version.clicked() {
                     self.show_changelog = !self.show_changelog;
@@ -148,9 +157,7 @@ impl PlexiApp {
 
                 let mailbox = button::toolbar_button(
                     ui,
-                    RichText::new(label)
-                        .size(style::TEXT_CAPTION)
-                        .color(color),
+                    button::KitButton::new(&label, &self.colors).text_color(color),
                     hover_text,
                 );
                 record_toolbar_rect(ui, "attention_mailbox", mailbox.rect);
@@ -200,11 +207,7 @@ impl PlexiApp {
                 right,
                 galley.size(),
             );
-            capture.text_slot(
-                "title",
-                &galley,
-                egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())),
-            );
+            capture.text_slot("title", &galley, egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())));
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
             }
@@ -221,13 +224,7 @@ impl PlexiApp {
         let _ = (row, mailbox_rect);
         let safe = crate::platform::titlebar::logical_safe_area(ui.ctx());
         let excluded = egui::Rect::from_min_size(ui.ctx().content_rect().min, safe);
-        capture.finish(
-            ui.painter(),
-            row,
-            self.colors.bg_toolbar,
-            vec![],
-            vec![excluded],
-        );
+        capture.finish(ui.painter(), row, self.colors.bg_toolbar, vec![], vec![excluded]);
     }
 }
 

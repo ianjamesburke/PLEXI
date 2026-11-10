@@ -113,9 +113,9 @@ pub fn render(
                 // Back arrow button — ‹ (single angle quotation mark, U+2039)
                 let back_btn = button::toolbar_button(
                     ui,
-                    RichText::new("‹")
-                        .size(style::TEXT_BODY + 2.0)
-                        .color(colors.accent),
+                    button::KitButton::new("‹", colors)
+                        .text_size(style::TEXT_BODY + 2.0)
+                        .text_color(colors.accent),
                     "Back",
                 );
                 if back_btn.clicked() {

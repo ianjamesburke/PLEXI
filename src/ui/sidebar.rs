@@ -392,7 +392,14 @@ impl PlexiApp {
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
-                if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
+                let add = button::toolbar_button(
+                    ui,
+                    button::KitButton::new("+", &self.colors)
+                        .text_color(self.colors.text_dim)
+                        .surface(self.colors.bg_sidebar),
+                    "New context",
+                );
+                if add.clicked() {
                     add_clicked = true;
                 }
             });

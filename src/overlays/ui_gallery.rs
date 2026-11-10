@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{choice_button, chrome_button, icon_button, toolbar_button, ButtonKind},
+    button::{ButtonKind, KitButton, choice_button, icon_button, toolbar_button},
     code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::chrome_section,
@@ -8,11 +8,11 @@ use crate::ui::{
     overlay::ModalShell,
     shortcuts::key_chip,
     surface::{
-        color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
-        trust_decision_panel, TrustTone,
+        TrustTone, color_swatch, compact_copyable_command, copyable_command, empty_state_panel,
+        status_chip, trust_decision_panel,
     },
     text_field::{TextArea, TextField},
-    toast::{toast_caption, ProgressDots},
+    toast::{ProgressDots, toast_caption},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -165,9 +165,10 @@ pub(crate) fn gallery_rows(
     }
 }
 
-/// Shared gallery content, also rendered by the scene fixture through the host.
-pub(crate) fn button_sizes(ui: &mut egui::Ui, colors: &Colors) {
-    use crate::ui::button::{ButtonSize, KitButton};
+/// Every kind at every size class, plus the disabled state. Rendered by the
+/// gallery and by the `one-kit-gallery` scene fixture.
+pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
+    use crate::ui::button::ButtonSize;
     for (size, caption) in [
         (ButtonSize::Sm, "Sm · 28"),
         (ButtonSize::Md, "Md · 32 (default)"),
@@ -184,7 +185,6 @@ pub(crate) fn button_sizes(ui: &mut egui::Ui, colors: &Colors) {
             ] {
                 ui.add(KitButton::new(label, colors).kind(kind).size(size));
             }
-            ui.add(KitButton::new("Frameless", colors).size(size).frameless());
             ui.add_enabled(false, KitButton::new("Disabled", colors).size(size));
         });
     }
@@ -275,15 +275,9 @@ impl PlexiApp {
 
                         chrome_section(ui, "Trust and confirmations", &colors, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                chrome_button(ui, "Install", ButtonKind::Primary, &colors, 88.0);
-                                chrome_button(ui, "Cancel", ButtonKind::Secondary, &colors, 88.0);
-                                chrome_button(
-                                    ui,
-                                    "Deny forever",
-                                    ButtonKind::Danger,
-                                    &colors,
-                                    116.0,
-                                );
+                                ui.add(KitButton::new("Install", &colors).min_width(88.0));
+                                ui.add(KitButton::new("Cancel", &colors).kind(ButtonKind::Secondary).min_width(88.0));
+                                ui.add(KitButton::new("Deny forever", &colors).kind(ButtonKind::Danger).min_width(116.0));
                             });
                             let hints = [
                                 HintGroup::new(&["Enter"], "confirm"),
@@ -388,13 +382,7 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Modal patterns", &colors, |ui| {
-                            if chrome_button(
-                                ui,
-                                "Open text-entry modal",
-                                ButtonKind::Primary,
-                                &colors,
-                                180.0,
-                            )
+                            if ui.add(KitButton::new("Open text-entry modal", &colors).min_width(180.0))
                             .clicked()
                             {
                                 self.ui_gallery_show_text_modal = true;
@@ -403,32 +391,14 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
-                            button_sizes(ui, &colors);
+                            draw_button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
-                                chrome_button(
-                                    ui,
-                                    data.names.first().copied().unwrap_or(""),
-                                    ButtonKind::Primary,
-                                    &colors,
-                                    80.0,
-                                );
-                                chrome_button(
-                                    ui,
-                                    "Secondary",
-                                    ButtonKind::Secondary,
-                                    &colors,
-                                    92.0,
-                                );
-                                chrome_button(ui, "Danger", ButtonKind::Danger, &colors, 80.0);
-                                chrome_button(ui, "Accent", ButtonKind::Accent, &colors, 80.0);
+                                ui.add(KitButton::new(data.names.first().copied().unwrap_or(""), &colors).min_width(80.0));
+                                ui.add(KitButton::new("Secondary", &colors).kind(ButtonKind::Secondary).min_width(92.0));
+                                ui.add(KitButton::new("Danger", &colors).kind(ButtonKind::Danger).min_width(80.0));
+                                ui.add(KitButton::new("Accent", &colors).kind(ButtonKind::Accent).min_width(80.0));
                                 ui.add_enabled_ui(false, |ui| {
-                                    chrome_button(
-                                        ui,
-                                        "Disabled",
-                                        ButtonKind::Secondary,
-                                        &colors,
-                                        80.0,
-                                    );
+                                    ui.add(KitButton::new("Disabled", &colors).kind(ButtonKind::Secondary).min_width(80.0));
                                 });
                             });
                             choice_button(ui, data.detail, "⌘Enter", false, &colors);
@@ -437,9 +407,7 @@ impl PlexiApp {
                                 icon_button(ui, "+", "Icon button", &colors);
                                 toolbar_button(
                                     ui,
-                                    RichText::new("Toolbar")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
+                                    KitButton::new("Toolbar", &colors).text_color(colors.text_dim),
                                     "Toolbar button",
                                 );
                             });

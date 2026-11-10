@@ -93,7 +93,12 @@ impl crate::app::app_trait::App for ButtonGalleryFixture {
         ctx: &crate::app::app_trait::AppRenderContext<'_>,
         _: Option<crate::host::pane::PendingPaneClick>,
     ) {
-        crate::overlays::ui_gallery::button_sizes(ui, ctx.colors);
+        // Padded so captions and the first column are never flush with the pane edge.
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(crate::ui::style::SPACE_XL as i8))
+            .show(ui, |ui| {
+                crate::overlays::ui_gallery::draw_button_sizes(ui, ctx.colors);
+            });
     }
 }
 
@@ -2385,6 +2390,102 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
     }
 
+    /// Sample the pixel one point inside the left edge of `rect`, away from the label.
+    fn edge_pixel(image: &image::RgbaImage, rect: egui::Rect) -> image::Rgba<u8> {
+        *image.get_pixel(rect.left() as u32 + 3, rect.center().y as u32)
+    }
+
+    /// Hover `rect` and render the frame.
+    fn render_hovering(h: &mut PlexiUiHarness, rect: egui::Rect) -> image::RgbaImage {
+        h.harness().input_mut().events.push(egui::Event::PointerMoved(rect.center()));
+        h.run_steps(2);
+        h.render().expect("render hovered menu")
+    }
+
+    /// Stint 1211: kit menu items keep egui's hover highlight (a Ghost button
+    /// is transparent at rest and paints the theme hover fill). Covers the
+    /// sidebar context menu and the toolbar overflow menu in both themes.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_context_and_overflow_menu_hover_states() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let apply_theme = |h: &mut PlexiUiHarness| {
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                });
+            };
+
+            // Sidebar context menu: secondary click on the first context row.
+            let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+            apply_theme(&mut h);
+            h.with_app_mut(|app| app.sidebar_visible = true);
+            h.run_steps(4);
+            let name = h.with_app(|app| app.router.get(0).name.to_string());
+            // The context name also labels the title bar; the sidebar row is the leftmost match.
+            let row = h
+                .harness()
+                .get_all_by_label(&name)
+                .map(|node| node.rect())
+                .min_by(|a, b| a.left().total_cmp(&b.left()))
+                .expect("sidebar context row");
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(row.center()),
+                    egui::Event::PointerButton {
+                        pos: row.center(),
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.step();
+            }
+            h.run_steps(3);
+            let rename = h.harness().get_by_label("Rename").rect();
+            let description = h.harness().get_by_label("Edit Description").rect();
+            let at_rest = h.render().expect("render context menu");
+            let rest_pixel = edge_pixel(&at_rest, rename);
+            h.save_screenshot(&evidence_png!(format!("_context_rest_{theme}"))).unwrap();
+            let hovered = render_hovering(&mut h, rename);
+            h.save_screenshot(&evidence_png!(format!("_context_hover_{theme}"))).unwrap();
+            assert_ne!(edge_pixel(&hovered, rename), rest_pixel, "{theme}: hovered context item must be highlighted");
+            assert_eq!(edge_pixel(&hovered, description), edge_pixel(&at_rest, description), "{theme}: only the hovered item is highlighted");
+
+            // Toolbar overflow menu: compact titlebar.
+            // 300 points minus the 110pt native safe area is narrower than the
+            // full toolbar, so the titlebar is compact. Zoom stays 1.0 so points are pixels.
+            let mut h = PlexiUiHarness::new_sized(300.0, 600.0);
+            apply_theme(&mut h);
+            h.with_app_mut(|app| app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0))));
+            h.run_steps(3);
+            let trigger = h.harness().get_by_label("Toolbar actions").rect();
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(trigger.center()),
+                    egui::Event::PointerButton {
+                        pos: trigger.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.step();
+            }
+            h.run_steps(2);
+            let shortcuts = h.harness().get_by_label("Keyboard shortcuts").rect();
+            let changelog = h.harness().get_by_label("Changelog").rect();
+            let at_rest = h.render().expect("render overflow menu");
+            h.save_screenshot(&evidence_png!(format!("_overflow_rest_{theme}"))).unwrap();
+            let hovered = render_hovering(&mut h, changelog);
+            h.save_screenshot(&evidence_png!(format!("_overflow_hover_{theme}"))).unwrap();
+            assert_ne!(edge_pixel(&hovered, changelog), edge_pixel(&at_rest, changelog), "{theme}: hovered overflow item must be highlighted");
+            assert_eq!(edge_pixel(&hovered, shortcuts), edge_pixel(&at_rest, shortcuts), "{theme}: only the hovered item is highlighted");
+        }
+    }
+
     /// The attention chip in the path bar keeps its own slot: at every UI
     /// scale and window width it stays inside the viewport and never
     /// intersects the toolbar controls, version label, or the pane header's
@@ -2650,14 +2751,13 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 .ctx()
                 .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
             let clicked = match self.kind {
-                0 => crate::ui::button::chrome_button(
-                    ui,
-                    "Confirm changes",
-                    crate::ui::button::ButtonKind::Accent,
-                    ctx.colors,
-                    160.0,
-                )
-                .clicked(),
+                0 => ui
+                    .add(
+                        crate::ui::button::KitButton::new("Confirm changes", ctx.colors)
+                            .kind(crate::ui::button::ButtonKind::Accent)
+                            .min_width(160.0),
+                    )
+                    .clicked(),
                 1 => {
                     crate::ui::button::choice_button(ui, "Keep this version", "1", true, ctx.colors)
                         .clicked()
@@ -2972,7 +3072,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     /// Stint 0750 evidence: the file-browser rename modal's action pair now
-    /// renders through `chrome_button` (`Primary` / `Secondary`) at
+    /// renders through `KitButton` (`Primary` / `Secondary`) at
     /// `BUTTON_H_MD`, instead of the bare `ui.button` it used to emit inside
     /// an otherwise correct `ModalShell`. Review artifact:
     /// /tmp/plexi-0750-file-browser-rename-modal.png.
@@ -5659,13 +5759,7 @@ open(out + ".done", "w").close()
                         ui.set_width(width);
                         let response = match kind {
                             0 => button::choice_button(ui, data.detail, "⌘Enter", false, &colors),
-                            1 => button::chrome_button(
-                                ui,
-                                data.detail,
-                                button::ButtonKind::Primary,
-                                &colors,
-                                80.0,
-                            ),
+                            1 => ui.add(button::KitButton::new(data.detail, &colors).min_width(80.0)),
                             2 => surface::copyable_command(
                                 ui,
                                 egui::Id::new("copy"),

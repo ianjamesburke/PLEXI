@@ -459,9 +459,11 @@ impl App for McpRendererApp {
         );
         ui.horizontal(|ui| {
             for (i, label) in ["Tools", "Resources", "Prompts"].into_iter().enumerate() {
-                if crate::ui::button::selectable_button(ui, self.tab == i, label, ctx.colors)
-                    .clicked()
-                {
+                let tab = crate::ui::button::KitButton::new(label, ctx.colors)
+                    .kind(crate::ui::button::ButtonKind::Ghost)
+                    .size(crate::ui::button::ButtonSize::Sm)
+                    .selected(self.tab == i);
+                if ui.add(tab).clicked() {
                     self.tab = i;
                     self.selected = 0;
                     self.form = false;

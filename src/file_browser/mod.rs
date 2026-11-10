@@ -2329,25 +2329,23 @@ impl FileBrowserApp {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_pending_operation();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Move to Trash",
-                        crate::ui::button::ButtonKind::Danger,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Move to Trash", colors)
+                                .kind(crate::ui::button::ButtonKind::Danger)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         if let Err(err) = self.confirm_pending_operation() {
                             self.error = Some(err);
@@ -2396,24 +2394,17 @@ impl FileBrowserApp {
                 }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_rename_modal();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Rename",
-                        crate::ui::button::ButtonKind::Primary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
+                    if ui.add(crate::ui::button::KitButton::new("Rename", colors).min_width(style::BUTTON_MIN_W_MODAL))
                     .clicked()
                     {
                         self.confirm_rename_modal();
@@ -2647,8 +2638,15 @@ impl FileBrowserApp {
                 } else {
                     colors.text_primary
                 };
+                // Monospace at the browser font size; the current (last) segment
+                // is emphasised with the accent colour.
                 let btn = ui.add(
-                    crate::ui::button::KitButton::new(egui::RichText::new(display_label).color(text_color), colors).size(crate::ui::button::ButtonSize::Sm).frameless(),
+                    crate::ui::button::KitButton::new(&display_label, colors)
+                        .kind(crate::ui::button::ButtonKind::Ghost)
+                        .compact()
+                        .text_size(font_size)
+                        .monospace()
+                        .text_color(text_color),
                 );
                 let synthetic_click =
                     pending_click.is_some_and(|click| click.targets_id(btn.id));
@@ -2666,7 +2664,8 @@ impl FileBrowserApp {
                 // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(
-                    crate::ui::button::KitButton::new("View \u{2304}", colors).size(crate::ui::button::ButtonSize::Sm),
+                    crate::ui::button::KitButton::new("View \u{2304}", colors)
+                        .size(crate::ui::button::ButtonSize::Sm),
                 );
                 let synthetic_open =
                     pending_click.is_some_and(|click| click.targets_id(menu_button.id));
@@ -2882,7 +2881,11 @@ impl FileBrowserApp {
                     }
 
                     let close_btn = ui.add(
-                        crate::ui::button::KitButton::new("\u{00d7}", colors).size(crate::ui::button::ButtonSize::Sm).frameless(),
+                        crate::ui::button::KitButton::new("\u{00d7}", colors)
+                            .kind(crate::ui::button::ButtonKind::Ghost)
+                            .compact()
+                            .text_size(self.font_size)
+                            .text_color(colors.text_dim),
                     );
                     let synthetic_close =
                         pending_click.is_some_and(|c| c.targets_id(close_btn.id));

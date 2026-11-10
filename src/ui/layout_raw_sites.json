@@ -209,18 +209,11 @@
       "rationale": "The quit toast uses a content-sized row for its caption and progress dots; the registered toast fixture renders the quit state."
     },
     {
-      "source": "src/ui/button.rs",
-      "site": "ui | let label = self.label.text().to_owned();",
-      "count": 1,
-      "surface": "src/ui/button.rs",
-      "rationale": "WidgetText.text reads the label for unified font, contrast and accessibility; it is not a painter call."
-    },
-    {
       "source": "src/overlays/ui_gallery.rs",
-      "site": "button_sizes | ui.horizontal_wrapped(|ui| {",
+      "site": "draw_button_sizes | ui.horizontal_wrapped(|ui| {",
       "count": 1,
-      "surface": "src/overlays/ui_gallery.rs::draw_ui_gallery",
-      "rationale": "The shared gallery fixture wraps complete kit actions by size class; both themes exercise it."
+      "surface": "src/overlays/ui_gallery.rs::draw_button_sizes",
+      "rationale": "The button matrix wraps complete kit actions by size class; the one-kit-gallery scene renders it in both themes."
     }
   ]
 }

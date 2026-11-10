@@ -6,7 +6,7 @@
 
 Host overlays should use these instead of raw egui layout wherever a primitive exists:
 
-- Buttons use `button::KitButton` (default Primary/Md), `ButtonKind` and `ButtonSize`. Use `menu_item` for context/overflow commands and the frameless variant for text/glyph controls. Toasts and plugins use the same kit paint and contrast path. `just check-ui-layout` rejects raw button calls throughout `src/`; `button_raw_sites.json` is the shrinking text-editor exception owned by stint 1209.
+- Buttons: `button::KitButton` is the one button (default `Primary`/`Md`; `ButtonKind`, `ButtonSize`). Every host, toast and plugin button is painted by it; plugin Primary maps to `Accent`. Labels are `&str`; request `text_size`/`text_color`/`monospace` explicitly. `Ghost` is transparent at rest with the theme hover fill (menu items via `menu_item`, glyphs via `toolbar_button`, which is Ghost + `compact`). `selected(true)` promotes Primary/Secondary/Ghost to Accent (`effective_kind`). Raw egui buttons are banned by clippy `disallowed-methods` in `clippy.toml` (CI `rust-host.yml` clippy job and `just clippy`/`just pr-candidate`); only `KitButton::ui` and the stint 1209 text editor `#[expect]`s construct one.
 - `overlay::ModalShell` for modal frame, scrim, title, body, scroll body, and dismissal.
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.
