@@ -3,6 +3,8 @@ Stint: none yet
 
 # Agents API and one permission gate (P1–P5)
 
+Phone and relay passages describe deferred design ideas. The former phone client and relay were removed from V1; a future plugin requires a separate design and qualification.
+
 ## Purpose and product story
 
 Plexi lets Ian talk with several team leads at once, queue work that runs without
@@ -104,7 +106,6 @@ or live test. Negative findings are bounded to the inspected implementations.
 | E14 | `src/editor/transaction.rs:72` `Transaction`; `src/editor/history.rs:24` `EditHistory`; `src/app/text_editor_app.rs:1000` `impl App` | Grouped editor transactions exist without actor/run/op tags. The inspected builtin App implementation has no `ExposeTools` or `ToolCall` handling. |
 | E15 | `src/app/assistant_host_tools.rs:465` file edit routing; `:1229` `edit_scoped_file` | Assistant editing reaches a direct filesystem string replacement/write, outside editor history and without expected revision. |
 | E16 | `src/media/video.rs:119` `VideoDecoder`; `:212` non-macOS implementation; `:694` `MockVideoDecoder`; `src/app/video_player_app.rs:27` `new` | Existing player uses the decoder service. Production non-macOS open returns `NotImplemented`; a procedural mock exists for tests. |
-| E17 | `clients/phone-web/server.py:232` `HostStore`; `:253` CLI call; `:216` cancel; `:404` flags; `:412` token policy | Host mode invokes Assistant send; receipts are in memory, cancel changes phone state only, and host mode requires a bearer even on loopback. |
 | E18 | `src/testing/mod.rs:160` `HostHarness`; `:194` `new`; `:411` `hidden_frame`; `:544` `inject_ipc`; `:639` `wait_for_app_event` | Harness provides the production host seam, isolated profile and hidden-frame/event observation helpers. |
 | E19 | `src/cli/agent.rs:793` `registerPlexiHostMcp`; `website/railway.json:1` | Pi registers the host MCP endpoint from its pane environment. Railway configuration exists for the website; this is not a phone relay. |
 | E20 | `src/cli/args.rs:273` Assistant `Send`; `:570` App `Open`; `:631` App `Install`; `:883` App `Call`; `:897` Host `Start`; `:956` Host `Screenshot`; `:1087` Pane `List`; `src/mcp_http.rs:38` route | Existing command spellings and `/mcp` endpoint used in the P1 demonstration below. |
@@ -428,7 +429,7 @@ addressing with durable IDs and revokes superseded pane-only credentials.
 
 ### Exit gate: live VM demonstration
 
-**Human e4 → phone requests Black reply → one host approval → attributed e7e5
+**Human e4 → CLI requests Black reply → one host approval → attributed e7e5
 on the same board; ungranted MCP/CLI mutation is refused, and a human correction
 before a pending commit produces a stale-state result.**
 
@@ -438,7 +439,7 @@ spec. Use an isolated VM user/profile and an explicit installed PR channel.
 profile isolation. Record platform, build SHA, channel, fixture, and actor IDs.
 A qualified graphical Linux VM can prove Chess; P5 real playback needs macOS.
 
-Existing command syntax, verified by E20 and E17 (replace `NNN` and paths):
+Existing command syntax, verified by E20 (replace `NNN` and paths):
 
 ```sh
 # Run only during implementation validation, on a disposable VM.
@@ -457,20 +458,15 @@ plexi-pr-NNN app open chess
 plexi-pr-NNN app open assistant
 plexi-pr-NNN pane list
 plexi-pr-NNN app call chess chess.state
-uv run --python 3.11 clients/phone-web/server.py \
-  --backend host --plexi-bin plexi-pr-NNN --lan --port 8788
 ```
 
 Fixture setup uses host-authenticated human interaction/consent for install/open
 and observation; it must not grant the negative-test callers mutation rights.
-The phone server's printed LAN URL supplies its prototype bearer. The URL is
-sensitive fixture material and must be redacted from evidence. The current
-server has no pane-selector flag; isolate a single Assistant in this P1 fixture.
-P2 replaces that constraint with agent/conversation addressing.
+
 
 1. On the board, the human plays `e2e4`; observe the actual board and record the
    game ID and resulting revision from `chess.state`.
-2. Open the phone page with `--backend host`; submit “For this game, play exactly
+2. Use `assistant send` to submit “For this game, play exactly
    e7e5 as Black once at the current revision.” The deterministic provider
    fixture scripts this tool call. Also run a bounded real-provider variant;
    it must play the requested legal move, not merely describe it.
@@ -509,7 +505,7 @@ The doubled `chess__chess.play` follows `<app_id>__<declared_tool>`; confirm it 
 Expected P1 output is `permission_required` or `permission_denied`, with no move.
 Do not approve these negative probes. Discard/expire their pending requests.
 
-Existing targeted CLI intake can diagnose the phone path independently:
+Existing targeted CLI intake:
 
 ```sh
 plexi-pr-NNN assistant send --pane-id ASSISTANT_PANE \
@@ -520,8 +516,7 @@ plexi-pr-NNN host stop
 ```
 
 `ASSISTANT_PANE` is the numeric pane from discovery; choose a fresh request ID
-for independent fixtures. Do not submit both phone and CLI turns as if they
-were one operation. P1's resumable pending-request observation and approval API
+for independent fixtures. P1's resumable pending-request observation and approval API
 are new: proposed `plexi agent request show ID` / `resolve ID --decision …`
 spellings belong to P2. P1 must expose a sanctioned observation seam for its
 pending IDs; no existing grant CLI is assumed. Desktop approval is required

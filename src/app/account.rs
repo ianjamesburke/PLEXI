@@ -5,8 +5,8 @@
 //!
 //! An account is optional. Local use — installing and running apps, the
 //! assistant, the ledger, retention — never reads one and never creates one.
-//! A session only links this desktop to relay and cloud features: publishing,
-//! buying a paid app, the Plexi AI subscription, and a relay link. See
+//! A session only links this desktop to cloud features: publishing,
+//! buying a paid app, and the Plexi AI subscription. See
 //! `docs/marketplace-hosted.md`.
 //!
 //! This module is that link. Two providers exist, chosen by

@@ -332,7 +332,7 @@ fn assistant_send_reports_when_its_own_turn_hits_a_permission_prompt() {
         .unwrap()
         .prompt_line();
     assert!(
-        prompt.contains("requested from a phone/CLI turn"),
+        prompt.contains("requested from a CLI turn"),
         "{prompt}"
     );
 

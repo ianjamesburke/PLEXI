@@ -303,11 +303,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AssistantCmd,
     },
-    /// Pair a phone through the Plexi relay and deliver its messages to this desktop.
-    Relay {
-        #[command(subcommand)]
-        cmd: RelayCmd,
-    },
     /// Show every registered agent and its runs. Cancel finishes an active run.
     ///
     /// The rows come from the agents API agent records and runs. `open` shows
@@ -470,7 +465,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Optional account that links this desktop to relay and cloud features.
+    /// Optional account that links this desktop to cloud features.
     ///
     /// Free apps install without an account. Login requires the accounts backend
     /// enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails
@@ -520,7 +515,7 @@ pub enum Commands {
     /// List everything waiting on you.
     ///
     /// One host record covers click approvals, agent questions, and blocked
-    /// runs. The desktop badge and the phone page read that record.
+    /// runs. The desktop badge reads that record.
     /// `resolve --approve` on a click approval is refused. `--deny` still denies.
     #[command(name = "needs-you")]
     NeedsYou {
@@ -763,7 +758,7 @@ pub enum AssistantCmd {
         /// Target context id or name.
         #[arg(long)]
         context_id: Option<ContextTarget>,
-        /// Caller-owned conversation. A phone session passes one stable id.
+        /// Caller-owned conversation identifier.
         /// Omit to start a new conversation that is not the desktop transcript.
         #[arg(long, conflicts_with = "desktop")]
         conversation: Option<String>,
@@ -796,38 +791,6 @@ pub enum AssistantCmd {
         #[command(subcommand)]
         cmd: AssistantPermissionCmd,
     },
-}
-
-#[derive(Subcommand)]
-pub enum RelayCmd {
-    /// Connect outbound to a phone relay and forward paired messages to the Assistant.
-    Connect {
-        /// Relay websocket URL (`ws://` locally, `wss://` in production).
-        #[arg(long)]
-        url: Option<String>,
-    },
-    /// Confirm a phone that redeemed the pairing code shown by `relay connect`.
-    Confirm {
-        /// Pairing id. Omit to confirm the phone currently waiting.
-        pairing_id: Option<String>,
-    },
-    /// Revoke a paired phone. It must pair again and be confirmed.
-    Revoke {
-        /// Device id printed when the phone was confirmed.
-        device_id: String,
-    },
-    /// Start a pairing code for another phone. Phones already paired stay paired.
-    Pair,
-    /// Remember the relay URL and connect it from the host on startup.
-    Enable {
-        /// Relay websocket URL (`ws://` locally, `wss://` in production).
-        #[arg(long)]
-        url: Option<String>,
-    },
-    /// Stop connecting to the relay when the host starts.
-    Disable,
-    /// Print the desktop's relay status.
-    Status,
 }
 
 #[derive(Subcommand)]
@@ -1031,10 +994,6 @@ pub enum NeedsYouCmd {
         /// Deny the item.
         #[arg(long, conflicts_with = "approve", required_unless_present = "approve")]
         deny: bool,
-        /// Accepted so a paired phone can call resolve. The host still refuses
-        /// an approval. Only a desktop Allow once click grants.
-        #[arg(long)]
-        from_phone: bool,
     },
 }
 

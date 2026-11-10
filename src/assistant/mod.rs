@@ -109,8 +109,8 @@ const ASSISTANT_ACTOR_ID: &str = "assistant";
 /// (stint 1035).
 pub const ASSISTANT_AGENT_PROMPT: &str = include_str!("AGENT.md");
 
-/// Shown on the desktop permission sheet when the ask came from a phone or CLI turn.
-const PHONE_TURN_SOURCE: &str = "phone/CLI";
+/// Shown on the desktop permission sheet when the ask came from a CLI turn.
+const EXTERNAL_TURN_SOURCE: &str = "CLI";
 
 /// Outcome of one completed Assistant turn, sent back from the worker thread.
 struct TurnOutcome {
@@ -129,7 +129,7 @@ struct ExternalWait {
     conversation_id: String,
 }
 
-/// Isolated phone/CLI turn that opened the desktop permission sheet.
+/// Isolated external turn that opened the desktop permission sheet.
 struct IsolatedPermissionOwner {
     turn_id: String,
     conversation_id: String,
@@ -691,12 +691,12 @@ pub struct AssistantApp {
     side_in_flight: Option<String>,
     /// Conversation id of `side_in_flight`.
     side_conversation: Option<String>,
-    /// Phone/CLI turn that owns the open permission sheet, when the desktop
+    /// External turn that owns the open permission sheet, when the desktop
     /// conversation did not open it.
     permission_owner: Option<IsolatedPermissionOwner>,
     /// Turn ids a caller was told are `waiting_for_permission`.
     outcome_interest: HashSet<String>,
-    /// The host-tool handler was entered from an isolated phone/CLI turn.
+    /// The host-tool handler was entered from an isolated external turn.
     host_call_from_isolated: bool,
     external_outcomes: HashMap<String, serde_json::Value>,
     side_queue: VecDeque<QueuedIsolated>,
@@ -1037,7 +1037,6 @@ impl AssistantApp {
                 AssistantEffect::ResumeConversation(selector) => {
                     self.cmd_resume_conversation(&selector)
                 }
-                AssistantEffect::ResumePhoneConversation => self.cmd_resume_phone(),
                 AssistantEffect::ShowHistory => self.cmd_show_history(),
                 AssistantEffect::RewindConversation(selector) => {
                     self.cmd_rewind_conversation(&selector)
@@ -1807,7 +1806,7 @@ impl AssistantApp {
                     Decision::Ask => {
                         log::info!("assistant: permission sheet shown for stream '{target}'");
                         if from_isolated {
-                            self.open_phone_permission_sheet(
+                            self.open_external_permission_sheet(
                                 HOST_TOOL_SUBSCRIBE,
                                 &target,
                                 "",
@@ -2434,24 +2433,6 @@ impl AssistantApp {
         }
     }
 
-    /// A pairing click confirms the phone. Deny leaves the code unpaired.
-    /// The code itself is not logged.
-    fn resolve_relay_pairing(&mut self, choice: PermissionChoice, pending: &model::PendingPermission) {
-        let allow = !matches!(choice, PermissionChoice::Deny);
-        let outcome = if allow {
-            crate::cli::relay::confirm_pairing_from_desktop(None)
-        } else {
-            0
-        };
-        log::info!("relay: pairing sheet decision allow={allow} outcome={outcome}");
-        if allow && outcome != 0 {
-            return;
-        }
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .clear_pairing_code(&pending.pending_request_id);
-        self.commit_permission_sheet(choice, "relay.pair");
-    }
-
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
     pub(crate) fn resolve_permission(&mut self, choice: PermissionChoice) {
@@ -2465,10 +2446,6 @@ impl AssistantApp {
         let Some(pending) = self.model.pending_permission.clone() else {
             return;
         };
-        if pending.tool == "relay.pair" {
-            self.resolve_relay_pairing(choice, &pending);
-            return;
-        }
         let is_host_tool = pending.tool.starts_with("host.");
         let target = if is_host_tool {
             pending.tool.clone()
@@ -4109,30 +4086,7 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
-    fn cmd_resume_phone(&mut self) {
-        match self.store.newest_phone_conversation() {
-            Ok(Some(id)) => {
-                log::info!("assistant: opening phone conversation {id}");
-                self.cmd_resume_conversation(&id);
-            }
-            Ok(None) => {
-                log::info!("assistant: no phone conversation to open");
-                let effects = self
-                    .model
-                    .push_error("No phone conversation yet.".to_string());
-                self.execute_effects(effects);
-            }
-            Err(error) => {
-                log::error!("assistant: phone conversation lookup failed: {error}");
-                let effects = self
-                    .model
-                    .push_error(format!("Could not open the phone conversation: {error}"));
-                self.execute_effects(effects);
-            }
-        }
-    }
-
-    /// Clear the sheet. A phone/CLI denial is recorded on that conversation,
+    /// Clear the sheet. A external denial is recorded on that conversation,
     /// not on the desktop transcript.
     fn commit_permission_sheet(&mut self, choice: PermissionChoice, tool: &str) {
         let owner = self.permission_owner.take();
@@ -4143,10 +4097,10 @@ impl AssistantApp {
         }
     }
 
-    /// Show the desktop permission sheet for a phone or CLI turn. The same
+    /// Show the desktop permission sheet for a CLI turn. The same
     /// gate fields the desktop sheet uses stay on the request; `source` only
     /// marks whose transcript a denial belongs to.
-    fn open_phone_permission_sheet(
+    fn open_external_permission_sheet(
         &mut self,
         tool: &str,
         input_summary: &str,
@@ -4157,7 +4111,7 @@ impl AssistantApp {
         let turn_id = self.side_in_flight.clone().unwrap_or_default();
         let conversation_id = self.side_conversation.clone().unwrap_or_default();
         log::info!(
-            "assistant: permission sheet for phone/CLI turn '{tool}' turn_id={turn_id} conversation_id={conversation_id} pending={pending_request_id}"
+            "assistant: permission sheet for external turn '{tool}' turn_id={turn_id} conversation_id={conversation_id} pending={pending_request_id}"
         );
         self.model.permission_requested_scoped(
             tool,
@@ -4167,7 +4121,7 @@ impl AssistantApp {
             pending_request_id,
         );
         if let Some(pending) = self.model.pending_permission.as_mut() {
-            pending.source = Some(PHONE_TURN_SOURCE.to_string());
+            pending.source = Some(EXTERNAL_TURN_SOURCE.to_string());
         }
         if !turn_id.is_empty() {
             self.permission_owner = Some(IsolatedPermissionOwner {
@@ -4180,7 +4134,7 @@ impl AssistantApp {
     fn append_isolated_deny(&mut self, owner: &IsolatedPermissionOwner, tool: &str) {
         let text = format!("{tool} — denied by user");
         log::info!(
-            "assistant: phone/CLI deny row conversation_id={} turn_id={} tool={tool}",
+            "assistant: external deny row conversation_id={} turn_id={} tool={tool}",
             owner.conversation_id, owner.turn_id
         );
         if !self.side_transcripts.contains_key(&owner.conversation_id) {
@@ -4191,12 +4145,12 @@ impl AssistantApp {
         let turns = self
             .side_transcripts
             .get_mut(&owner.conversation_id)
-            .expect("phone conversation inserted");
+            .expect("external conversation inserted");
         turns.push(model::Turn::tool(text, model::ToolStatus::Failed));
         let snapshot = turns.clone();
         if let Err(error) = self.store.write_turns(&owner.conversation_id, &snapshot) {
             log::error!(
-                "assistant: failed to persist phone/CLI deny row conversation_id={}: {error}",
+                "assistant: failed to persist external deny row conversation_id={}: {error}",
                 owner.conversation_id
             );
         }
@@ -4332,7 +4286,7 @@ impl AssistantApp {
     fn release_external_waiters_for_turn(&mut self, turn_id: &str) {
         self.note_permission_wait(turn_id);
         // Leave the waiter registered so the finished turn overwrites this
-        // file with the outcome. The first write is the fast phone ack.
+        // file with the outcome. The first write is the fast acknowledgement.
         let Some(waiters) = self.external_replies.get(turn_id) else {
             return;
         };
@@ -4536,7 +4490,7 @@ impl AssistantApp {
                     && self.pending_reply.is_none()
                     && self.pending_subscribe.is_none()
                 {
-                    self.open_phone_permission_sheet(
+                    self.open_external_permission_sheet(
                         &tool,
                         &summarize_input(&input_json),
                         &actor_id,
@@ -4635,43 +4589,6 @@ impl App for AssistantApp {
             .as_ref()
             .map(|pending| pending.pending_request_id.clone())
             .filter(|id| !id.is_empty())
-    }
-
-    fn offer_relay_pairing(&mut self, code: &str, fingerprint: &str) -> bool {
-        if let Some(pending) = &self.model.pending_permission {
-            if pending.tool != "relay.pair" {
-                return false;
-            }
-            if pending.pending_request_id == code {
-                return false;
-            }
-        }
-        self.model.permission_requested_scoped(
-            "relay.pair",
-            fingerprint,
-            "phone",
-            "",
-            code,
-        );
-        if let Some(pending) = self.model.pending_permission.as_mut() {
-            pending.source = Some(PHONE_TURN_SOURCE.to_string());
-        }
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .track_pairing_code(code);
-        log::info!("relay: pairing confirmation sheet opened");
-        true
-    }
-
-    fn clear_relay_pairing_sheet(&mut self) {
-        let Some(pending) = self.model.pending_permission.clone() else {
-            return;
-        };
-        if pending.tool != "relay.pair" {
-            return;
-        }
-        self.model.pending_permission = None;
-        crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
-            .clear_pairing_code(&pending.pending_request_id);
     }
 
     fn submit_external_turn(

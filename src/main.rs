@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 // `delete_context` drops windows on a worker thread. Proving `Window: Send`
-// walks the wgpu resource graph, and the combined phone + ledger assistant
+// walks the wgpu resource graph, and the combined external-turn + ledger assistant
 // state overflows rustc's default recursion limit in test builds.
 #![recursion_limit = "256"]
 // Ship-time panic-path protection. `todo!()` / `unimplemented!()` compile clean
@@ -308,7 +308,7 @@ fn main() -> eframe::Result {
         ChangesCmd, CliSetupCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
         DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
         NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
-        RegistryCmd, RelayCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
+        RegistryCmd, RoutineCmd, SecretCmd, SkillCmd, WorkspaceCmd,
     };
     let args = cli::args::normalize_config_scope_aliases(args);
 
@@ -475,12 +475,10 @@ fn main() -> eframe::Result {
                             id,
                             approve,
                             deny,
-                            from_phone: _,
                         } => {
                             // Approve of a click approval is refused in the host. Deny
                             // still settles. Questions and blocked runs settle
-                            // from here and do not mint a grant. The phone flag
-                            // does not change that.
+                            // from here and do not mint a grant.
                             cli::trace::exit(cli::needs_you_cli(
                                 "resolve",
                                 Some(&id),
@@ -533,23 +531,6 @@ fn main() -> eframe::Result {
                         PermissionsCmd::Allow { id } => {
                             cli::trace::exit(cli::permissions_cli("allow", Some(&id), true))
                         }
-                    },
-                    Commands::Relay { cmd } => match cmd {
-                        RelayCmd::Connect { url } => {
-                            cli::trace::exit(cli::relay::relay_connect_cli(url))
-                        }
-                        RelayCmd::Confirm { pairing_id } => {
-                            cli::trace::exit(cli::relay::relay_confirm_cli(pairing_id))
-                        }
-                        RelayCmd::Revoke { device_id } => {
-                            cli::trace::exit(cli::relay::relay_revoke_cli(&device_id))
-                        }
-                        RelayCmd::Pair => cli::trace::exit(cli::relay::relay_pair_cli()),
-                        RelayCmd::Enable { url } => {
-                            cli::trace::exit(cli::relay::relay_enable_cli(url))
-                        }
-                        RelayCmd::Disable => cli::trace::exit(cli::relay::relay_disable_cli()),
-                        RelayCmd::Status => cli::trace::exit(cli::relay::relay_status_cli()),
                     },
                     Commands::CommandView { cmd, follow } => {
                         if follow && cmd.is_some() {

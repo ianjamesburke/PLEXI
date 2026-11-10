@@ -330,11 +330,7 @@ impl AssistantStore {
             {
                 continue;
             }
-            let title = if id.starts_with("phone-") {
-                "Phone".to_string()
-            } else {
-                history.name.unwrap_or(title)
-            };
+            let title = history.name.unwrap_or(title);
             items.push(ConversationSummary {
                 id: id.to_string(),
                 title,
@@ -349,15 +345,6 @@ impl AssistantStore {
                 .then_with(|| b.id.cmp(&a.id))
         });
         Ok(items)
-    }
-
-    /// The phone relay's conversation, newest first. Desktop `/phone` opens it.
-    pub fn newest_phone_conversation(&self) -> Result<Option<String>, String> {
-        Ok(self
-            .list_conversations()?
-            .into_iter()
-            .find(|item| item.id.starts_with("phone-"))
-            .map(|item| item.id))
     }
 
     pub fn load_history(&self, id: &str) -> Result<ConversationHistory, String> {

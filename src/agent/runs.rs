@@ -2046,7 +2046,7 @@ mod tests {
             "expected deny AuditFact in monitor().audit_records(), got: {audit_rows:?}"
         );
 
-        // 2. The refusal appears in `plexi needs-you list --json` (`list_needs_you` / `needs_you_phone_items`).
+        // 2. The refusal appears in `plexi needs-you list --json` (`list_needs_you`).
         let items = monitor().list_needs_you();
         let entry = items
             .iter()
@@ -2061,7 +2061,7 @@ mod tests {
         assert_eq!(entry_json["parent_run"], parent_run);
         assert_eq!(entry_json["pane_id"], 42);
 
-        // 3. Click-only approval rule from 0788: socket / phone cannot approve.
+        // 3. Click-only approval rule from 0788: socket cannot approve.
         assert!(monitor()
             .resolve_needs_you_from(&needs_you_id, true, ResolveSurface::Socket)
             .is_err());

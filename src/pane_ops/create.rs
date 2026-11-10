@@ -2971,8 +2971,7 @@ impl PlexiApp {
     }
 
     /// Reuse an Assistant in `context_id` (or the active window's context), or
-    /// insert a hidden one that is not in the tile tree. Phone, relay, and
-    /// CLI sends call this when they did not name a pane, so `assistant send`
+    /// insert a hidden one that is not in the tile tree. CLI sends call this when they did not name a pane, so `assistant send`
     /// works without `app open assistant`. A caller that names a missing pane
     /// must not land here — that stays `assistant_pane_not_found`.
     ///

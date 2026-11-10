@@ -55,7 +55,6 @@ const PLEXI_SUBCOMMANDS: &[&str] = &[
     "command-view",
     "changes",
     "account",
-    "relay",
     "demo",
     "doctor",
     "routine",

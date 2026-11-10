@@ -2,8 +2,6 @@
 //!
 //! Always deleted when older than the window: dated log archives. Local ledger
 //! rows and assistant conversations are deleted only when the user opts in.
-//! Relay registry rows and queued envelopes are the relay process's job; see
-//! the module docs in [`super`].
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

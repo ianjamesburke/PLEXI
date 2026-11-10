@@ -150,7 +150,7 @@ skill install
 # cli: `cli setup` installs the launcher; `doctor` tells users to run it
 cli
 cli setup
-# needs-you: permission and question flow; the phone web client shells out to it
+# needs-you: permission and question flow
 needs-you
 needs-you answer
 needs-you ask

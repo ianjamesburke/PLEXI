@@ -1646,8 +1646,6 @@ impl PlexiApp {
             event_subscribe_mailbox.clone(),
             event_publish_mailbox,
         );
-        let relay_start = crate::cli::relay::start_host_relay();
-        log::info!("relay: host start outcome={relay_start:?}");
         let host_subscriptions = crate::host::event_subscriptions::HostSubscriptionService::new(
             &profile_dir,
             crate::host::app_timeline::global(),
@@ -3468,59 +3466,6 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
     }
 }
 
-impl PlexiApp {
-    /// Open the assistant sheet for a phone that redeemed a pairing code.
-    /// Returns true when a sheet was newly opened and the window should paint.
-    fn present_relay_pairing_sheet(&mut self) -> bool {
-        let Some((code, fingerprint)) = crate::cli::relay::pairing_prompt() else {
-            for window in &mut self.windows {
-                for pane in window.panes.values_mut() {
-                    if let Some(app) = pane.as_app_mut() {
-                        app.runtime.clear_relay_pairing_sheet();
-                    }
-                }
-            }
-            return false;
-        };
-        let mut opened = false;
-        for window in &mut self.windows {
-            let visible: Vec<u64> = window
-                .panes
-                .iter()
-                .filter(|(id, pane)| {
-                    !pane.is_hidden()
-                        && window.tree.tiles.iter().any(
-                            |(_, tile)| matches!(tile, egui_tiles::Tile::Pane(pid) if pid == *id),
-                        )
-                })
-                .map(|(id, _)| *id)
-                .collect();
-            let targets: Vec<u64> = if visible.is_empty() {
-                window.panes.keys().copied().collect()
-            } else {
-                visible
-            };
-            for id in targets {
-                let Some(pane) = window.panes.get_mut(&id) else {
-                    continue;
-                };
-                let Some(app) = pane.as_app_mut() else {
-                    continue;
-                };
-                if app.runtime.offer_relay_pairing(&code, &fingerprint) {
-                    log::info!("relay: pairing sheet offered pane_id={id}");
-                    opened = true;
-                    break;
-                }
-            }
-            if opened {
-                break;
-            }
-        }
-        opened
-    }
-}
-
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.synthetic_input_frame = false;
@@ -3609,9 +3554,6 @@ impl eframe::App for PlexiApp {
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
-        if self.present_relay_pairing_sheet() {
-            ctx.request_repaint();
-        }
 
         // File watching/reload is core app servicing, including for an
         // occluded host. Keep it independent of change-set preview.

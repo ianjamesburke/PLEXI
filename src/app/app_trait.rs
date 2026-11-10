@@ -221,7 +221,7 @@ pub enum AppCommand {
 /// Apps live inside `Pane::App` runtimes.
 /// Routing and ledger tags for one external Assistant turn.
 ///
-/// `conversation_id` keeps a phone turn off the desktop transcript.
+/// `conversation_id` keeps an external turn off the desktop transcript.
 /// `join_desktop` opts into that transcript. `client` and `kind` are the
 /// ledger tags from `assistant send --client/--kind`.
 pub struct ExternalTurnOpts {
@@ -377,16 +377,6 @@ pub trait App: Send {
     fn semantic_state(&self) -> Option<serde_json::Value> {
         None
     }
-
-    /// Show the desktop sheet that confirms a phone pairing code.
-    /// Returns true only when this call newly opened the sheet.
-    /// A tool sheet that is already open is left alone.
-    fn offer_relay_pairing(&mut self, _code: &str, _fingerprint: &str) -> bool {
-        false
-    }
-
-    /// Drop a pairing sheet once the code is no longer waiting.
-    fn clear_relay_pairing_sheet(&mut self) {}
 
     /// Submit a text turn through a builtin app's normal interactive path.
     /// Only the host Assistant implements this; the response path is owned by

@@ -193,7 +193,7 @@ fn assistant_resolve(h: &mut HostHarness, assistant: u64, reply: &Path, choice: 
     serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap()
 }
 
-/// The phone ack writes `waiting_for_permission` as soon as the sheet opens.
+/// The external-turn acknowledgement writes `waiting_for_permission` as soon as the sheet opens.
 /// The same file is replaced when the turn finishes.
 fn reply_is_terminal(reply: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(reply) else {
@@ -824,11 +824,11 @@ fn app_call_rejects_forged_or_missing_identity() {
     let mismatched = socket_call(&mut h, Some(pane), None, &[pid], input.clone());
     assert_eq!(mismatched["error_code"], "permission_denied", "{mismatched}");
 
-    let session = monitor().issue_credential(None, ctx, &workspace, "session:phone");
+    let session = monitor().issue_credential(None, ctx, &workspace, "session:client");
     let asked = socket_call(&mut h, None, Some(&session), &[], input.clone());
     assert_eq!(asked["error_code"], "permission_required", "{asked}");
     let pending = monitor().show_pending(asked["pending_request_id"].as_str().unwrap()).unwrap();
-    assert_eq!(pending.actor_id, "session:phone");
+    assert_eq!(pending.actor_id, "session:client");
     assert_ne!(pending.actor_id, "user");
     assert_eq!(commits_for(start, "forged-op"), 0);
     log::info!("permission_gate: forged identities denied");

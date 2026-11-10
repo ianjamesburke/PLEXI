@@ -2397,9 +2397,9 @@ pub struct AssistantSendRoute<'a> {
 
 /// Submit one turn, or poll `--status-for`, and return the host JSON envelope.
 ///
-/// `conversation` selects the phone relay's own conversation. `join_desktop`
+/// `conversation` selects a caller-owned conversation. `join_desktop`
 /// opts into the desktop transcript. `status_for` reads a turn that already
-/// returned `waiting_for_permission` and does not submit a prompt. A phone
+/// returned `waiting_for_permission` and does not submit a prompt. A caller
 /// turn never carries a grant; the desktop permission gate still admits tools.
 pub fn assistant_send_result(
     text: Option<&str>,

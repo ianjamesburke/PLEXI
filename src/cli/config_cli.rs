@@ -303,6 +303,16 @@ pub fn config_check_report(
     }
 
     let mut diags = Vec::new();
+    if !matches!(scope, ConfigScope::Workspace) {
+        let legacy = crate::config::config_dir().join("relay.toml");
+        if legacy.exists() {
+            diags.push(crate::config::ConfigDiagnostic::InvalidValue {
+                path: legacy.display().to_string(),
+                key: "relay".into(),
+                error: "was removed; delete this file".into(),
+            });
+        }
+    }
     let mut file_lines = Vec::new();
     let mut total_files = 0usize;
     let mut total_commands = 0usize;
@@ -974,6 +984,31 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn config_check_reports_removed_relay_without_disabling_other_experiments() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(
+            crate::config::config_path(),
+            "[experiments]\nrelay = true\nledger = true\n",
+        )
+        .unwrap();
+        std::fs::write(
+            profile.path().join("relay.toml"),
+            "enabled = true\nurl = 'wss://example.com'\n",
+        )
+        .unwrap();
+        let (report, code) = config_check_report(ConfigScope::Global, None).unwrap();
+        assert_eq!(code, 1);
+        assert!(report.contains("experiments.relay was removed"), "{report}");
+        assert!(
+            report.contains("relay.toml") && report.contains("was removed"),
+            "{report}"
+        );
+        let enabled = crate::config::load_global_experiments().unwrap();
+        assert!(enabled.contains(&crate::release::ReleaseFeature::Ledger));
     }
 
     #[test]

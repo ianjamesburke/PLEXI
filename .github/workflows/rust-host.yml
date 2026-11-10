@@ -32,9 +32,7 @@ jobs:
         # CPython-WASI integration test, whose sha256-verified bundle the setup
         # action restores from the Actions cache (fetching it in its own step on
         # a miss, so a network failure is attributed to the fetch, not the test).
-        # Phone seal tests shell out to phone_crypto.py, which imports cryptography.
         run: |
-          PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
           # Closed-stdout regression drives the real CLI, never a libtest child.
           cargo build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
@@ -84,9 +82,7 @@ jobs:
           cache-key: linux-host
           cpython-bundle: 'true'
       - name: Build and test host
-        # Phone seal tests shell out to phone_crypto.py, which imports cryptography.
         run: |
-          python3 -m pip install --user -r services/relay/requirements-phone-crypto.txt
           cargo build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
