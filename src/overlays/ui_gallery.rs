@@ -166,10 +166,22 @@ pub(crate) fn gallery_rows(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct KitSpecimen {
-    pub(crate) kind: ButtonKind,
-    pub(crate) size: crate::ui::button::ButtonSize,
-    pub(crate) label: &'static str,
+pub(crate) enum KitSpecimen {
+    Button { kind: ButtonKind, size: crate::ui::button::ButtonSize, label: &'static str },
+    Choice,
+    Icon,
+    Toolbar,
+}
+
+impl KitSpecimen {
+    pub(crate) fn show(self, ui: &mut egui::Ui, colors: &Colors, selected: bool, choice_label: &str) -> egui::Response {
+        match self {
+            Self::Button { kind, size, label } => ui.add(KitButton::new(label, colors).kind(kind).size(size).selected(selected)),
+            Self::Choice => choice_button(ui, choice_label, "⌘Enter", selected, colors),
+            Self::Icon => icon_button(ui, "+", "Icon button", colors),
+            Self::Toolbar => toolbar_button(ui, KitButton::new("Toolbar", colors).text_color(colors.text_dim), "Toolbar button"),
+        }
+    }
 }
 
 pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
@@ -181,8 +193,8 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             (ButtonKind::Accent, "Accent"),
             (ButtonKind::Danger, "Danger"),
             (ButtonKind::Ghost, "Ghost"),
-        ].into_iter().map(move |(kind, label)| KitSpecimen { kind, size, label })
-    })
+        ].into_iter().map(move |(kind, label)| KitSpecimen::Button { kind, size, label })
+    }).chain([KitSpecimen::Choice, KitSpecimen::Icon, KitSpecimen::Toolbar])
 }
 
 /// Every kind at every size class, plus the disabled state. Rendered by the
@@ -196,8 +208,8 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
     ] {
         crate::ui::typography::caption(ui, caption, colors);
         ui.horizontal_wrapped(|ui| {
-            for specimen in kit_specimens().filter(|specimen| specimen.size == size) {
-                ui.add(KitButton::new(specimen.label, colors).kind(specimen.kind).size(specimen.size));
+            for specimen in kit_specimens().filter(|specimen| matches!(specimen, KitSpecimen::Button { size: specimen_size, .. } if *specimen_size == size)) {
+                specimen.show(ui, colors, false, "");
             }
             ui.add_enabled(false, KitButton::new("Disabled", colors).size(size));
         });
@@ -420,15 +432,11 @@ impl PlexiApp {
                                     ui.add(KitButton::new("Disabled", &colors).kind(ButtonKind::Secondary).min_width(80.0));
                                 });
                             });
-                            choice_button(ui, data.detail, "⌘Enter", false, &colors);
+                            KitSpecimen::Choice.show(ui, &colors, false, data.detail);
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
-                                icon_button(ui, "+", "Icon button", &colors);
-                                toolbar_button(
-                                    ui,
-                                    KitButton::new("Toolbar", &colors).text_color(colors.text_dim),
-                                    "Toolbar button",
-                                );
+                                KitSpecimen::Icon.show(ui, &colors, false, "");
+                                KitSpecimen::Toolbar.show(ui, &colors, false, "");
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal_wrapped(|ui| {
