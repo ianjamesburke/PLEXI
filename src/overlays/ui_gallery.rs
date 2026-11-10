@@ -165,6 +165,26 @@ pub(crate) fn gallery_rows(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct KitSpecimen {
+    pub(crate) kind: ButtonKind,
+    pub(crate) size: crate::ui::button::ButtonSize,
+    pub(crate) label: &'static str,
+}
+
+pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
+    use crate::ui::button::ButtonSize;
+    [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg].into_iter().flat_map(|size| {
+        [
+            (ButtonKind::Primary, "Primary"),
+            (ButtonKind::Secondary, "Secondary"),
+            (ButtonKind::Accent, "Accent"),
+            (ButtonKind::Danger, "Danger"),
+            (ButtonKind::Ghost, "Ghost"),
+        ].into_iter().map(move |(kind, label)| KitSpecimen { kind, size, label })
+    })
+}
+
 /// Every kind at every size class, plus the disabled state. Rendered by the
 /// gallery and by the `one-kit-gallery` scene fixture.
 pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
@@ -176,14 +196,8 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
     ] {
         crate::ui::typography::caption(ui, caption, colors);
         ui.horizontal_wrapped(|ui| {
-            for (kind, label) in [
-                (ButtonKind::Primary, "Primary"),
-                (ButtonKind::Secondary, "Secondary"),
-                (ButtonKind::Accent, "Accent"),
-                (ButtonKind::Danger, "Danger"),
-                (ButtonKind::Ghost, "Ghost"),
-            ] {
-                ui.add(KitButton::new(label, colors).kind(kind).size(size));
+            for specimen in kit_specimens().filter(|specimen| specimen.size == size) {
+                ui.add(KitButton::new(specimen.label, colors).kind(specimen.kind).size(specimen.size));
             }
             ui.add_enabled(false, KitButton::new("Disabled", colors).size(size));
         });
