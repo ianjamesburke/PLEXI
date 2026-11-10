@@ -4,17 +4,10 @@ set -euo pipefail
 tag="${1:?release tag required}"
 dist="${2:?artifact directory required}"
 assets=()
-platforms=(macos-arm64 linux-x64 windows-x64)
 alpha_only=false
-if [[ "$tag" == *-alpha.* ]]; then
-  alpha_only=true
-  platforms=(macos-arm64)
-  # Linux alpha packaging is opportunistic: a failed optional runner must not
-  # block the Mac dogfood release, while a successful leg is published.
-  [[ ! -f "$dist/plexi-linux-x64-alpha.tar.gz" ]] || platforms+=(linux-x64)
-else
-  [[ ! -f "$dist/plexi-macos-x64.tar.gz" ]] || platforms+=(macos-x64)
-fi
+[[ "$tag" != *-alpha.* ]] || alpha_only=true
+platforms=(macos-arm64 linux-x64)
+if [[ "$alpha_only" == false ]]; then platforms+=(windows-x64 macos-x64); fi
 for platform in "${platforms[@]}"; do
   ext=tar.gz; exe=''
   if [[ "$platform" == windows-* ]]; then ext=zip; exe=.exe; fi
@@ -22,15 +15,28 @@ for platform in "${platforms[@]}"; do
   if [[ "$alpha_only" == true ]]; then
     names=("plexi-$platform-alpha.$ext" "plexi-installer-$platform$exe")
   fi
+  valid=true
   for name in "${names[@]}"; do
-    [[ -s "$dist/$name" && -s "$dist/$name.sha256" ]] || { echo "Required artifact missing: $name or checksum" >&2; exit 1; }
-    if command -v sha256sum >/dev/null 2>&1; then
-      (cd "$dist" && sha256sum --check "$name.sha256")
-    else
-      (cd "$dist" && shasum -a 256 --check "$name.sha256")
+    if [[ ! -s "$dist/$name" || ! -s "$dist/$name.sha256" ]]; then
+      echo "Missing artifact for $platform: $name or checksum" >&2
+      valid=false
+      break
     fi
-    assets+=("$dist/$name" "$dist/$name.sha256")
+    if command -v sha256sum >/dev/null 2>&1; then
+      if ! (cd "$dist" && sha256sum --check "$name.sha256"); then valid=false; break; fi
+    else
+      if ! (cd "$dist" && shasum -a 256 --check "$name.sha256"); then valid=false; break; fi
+    fi
   done
+  if [[ "$valid" == false ]]; then
+    if [[ "$platform" == macos-arm64 ]]; then
+      echo "Required platform $platform failed artifact verification" >&2
+      exit 1
+    fi
+    echo "Skipping optional platform $platform: incomplete or invalid artifacts" >&2
+    continue
+  fi
+  for name in "${names[@]}"; do assets+=("$dist/$name" "$dist/$name.sha256"); done
 done
 existing="$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
 if [[ "$existing" == false ]]; then echo "Published release $tag is immutable. Cut a new version." >&2; exit 1; fi
