@@ -402,3 +402,57 @@ pub fn build_search_hit_job(
 
     job
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The clear glyph scales with the bar's font size (+2) and stays dim.
+    #[test]
+    fn clear_glyph_scales_with_font_size_and_stays_dim() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let glyph = |font_size: f32| {
+            let mut output = None;
+            for frame in 0..2 {
+                let mut query = String::from("abc");
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            SearchBar::new("clear_glyph_test", "Search")
+                                .font_size(font_size)
+                                .show(ui, &mut query, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .find_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "\u{00d7}" => {
+                        let section = &t.galley.job.sections[0];
+                        Some((
+                            section.format.font_id.size,
+                            t.override_text_color.unwrap_or(section.format.color),
+                        ))
+                    }
+                    _ => None,
+                })
+                .expect("clear glyph")
+        };
+        let (small, color) = glyph(12.0);
+        let (large, _) = glyph(20.0);
+        assert_eq!(small, 14.0);
+        assert_eq!(large, 22.0);
+        assert_ne!(
+            color, colors.text_primary,
+            "glyph stays dim, not primary text"
+        );
+    }
+}

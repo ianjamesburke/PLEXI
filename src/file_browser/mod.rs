@@ -2633,21 +2633,7 @@ impl FileBrowserApp {
                 } else {
                     label.clone()
                 };
-                let text_color = if is_last {
-                    colors.accent
-                } else {
-                    colors.text_primary
-                };
-                // Monospace at the browser font size; the current (last) segment
-                // is emphasised with the accent colour.
-                let btn = ui.add(
-                    crate::ui::button::KitButton::new(&display_label, colors)
-                        .kind(crate::ui::button::ButtonKind::Ghost)
-                        .compact()
-                        .text_size(font_size)
-                        .monospace()
-                        .text_color(text_color),
-                );
+                let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
                 let synthetic_click =
                     pending_click.is_some_and(|click| click.targets_id(btn.id));
                 if btn.clicked() || synthetic_click {
@@ -3813,9 +3799,78 @@ impl App for FileBrowserApp {
     }
 }
 
+/// One breadcrumb segment: a compact Ghost kit button in monospace at the
+/// browser font size. The current (last) segment is emphasised with the accent
+/// colour, the others use the primary text colour.
+fn breadcrumb_segment(
+    ui: &mut egui::Ui,
+    label: &str,
+    is_last: bool,
+    font_size: f32,
+    colors: &crate::ui::theme::Colors,
+) -> egui::Response {
+    let text_color = if is_last {
+        colors.accent
+    } else {
+        colors.text_primary
+    };
+    ui.add(
+        crate::ui::button::KitButton::new(label, colors)
+            .kind(crate::ui::button::ButtonKind::Ghost)
+            .compact()
+            .text_size(font_size)
+            .monospace()
+            .text_color(text_color),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Breadcrumb segments keep monospace, the browser font size and the
+    /// current-segment emphasis that the raw button used to paint.
+    #[test]
+    fn breadcrumb_segment_keeps_monospace_size_and_current_emphasis() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let paint = |label: &str, is_last: bool| {
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            breadcrumb_segment(ui, label, is_last, 19.0, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .find_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == label => {
+                        let section = &t.galley.job.sections[0];
+                        Some((
+                            section.format.font_id.clone(),
+                            t.override_text_color.unwrap_or(section.format.color),
+                        ))
+                    }
+                    _ => None,
+                })
+                .expect("segment label")
+        };
+        let (font, current) = paint("src", true);
+        let (_, parent) = paint("src", false);
+        assert_eq!(font.size, 19.0, "browser font size");
+        assert_eq!(font.family, egui::FontFamily::Monospace, "monospace");
+        assert_ne!(current, parent, "current segment is emphasised");
+    }
     use egui::{Event, Key, Modifiers, RawInput};
     use helpers::SortDescriptor;
 
