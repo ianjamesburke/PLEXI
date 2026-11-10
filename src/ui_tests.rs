@@ -2207,6 +2207,23 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         });
     }
 
+    #[test]
+    fn native_buttons_safe_area_respects_scale_and_geometry() {
+        let mut h = PlexiUiHarness::new_sized_scaled(700.0, 600.0, 0.8);
+        h.with_app_mut(|app| {
+            app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0)));
+        });
+        h.run_steps(3);
+        let (screen, color) = h.with_app(|app| (app.ctx.content_rect(), app.colors.bg_toolbar));
+        let height = h.harness().output().shapes.iter().find_map(|shape| {
+            match &shape.shape {
+                egui::Shape::Rect(r) if r.fill == color && (r.rect.width() - screen.width()).abs() < 1.0 && (r.rect.top() - screen.top()).abs() < 1.0 => Some(r.rect.height()),
+                _ => None,
+            }
+        }).expect("toolbar background");
+        assert!(height >= 32.0 / 0.8, "toolbar clips native buttons: logical height {height}");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn titlebar_title_never_overlaps_toolbar_at_any_scale_or_width() {
