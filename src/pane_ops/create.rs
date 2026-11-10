@@ -4,7 +4,7 @@
 //! WASM app runtime wiring, builtin app wiring, single-pane tree creation for new
 //! contexts, and the launch helpers called from the command palette and
 //! AppRequest routing. The actual tile-tree mutation is delegated to
-//! [`PlexiApp::split_with_new_pane`] in [`super::layout`].
+//! [`PlexiApp::split_with_new_pane_at`] in [`super::layout`].
 
 use crate::app::app_trait::App;
 use crate::app::PlexiApp;
