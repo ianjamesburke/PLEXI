@@ -1580,8 +1580,9 @@ pub enum AppCmd {
     /// Read or replace a file-backed app's state document.
     ///
     /// Only apps that declare a `[state]` section are addressable. The state
-    /// path is resolved from the manifest and the calling context — callers
-    /// never pass a path, and there is no flag to address another context.
+    /// path uses the pane's current host context. Outside a pane, context scope
+    /// uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error.
+    /// Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
     State {
         #[command(subcommand)]
         cmd: AppStateCmd,
@@ -2678,13 +2679,13 @@ pub enum ContextCmd {
         #[arg(long, value_name = "PANE_ID")]
         from: Option<PaneTarget>,
     },
-    /// Switch the current pane to a context at the given path.
+    /// Focus the context at this folder, or create it. Defaults to the caller's cwd.
     Open { path: Option<String> },
-    /// Change the root folder for the active context.
+    /// Change the caller's context root (active context outside a pane); unknown ids fail.
     SetRoot { path: Option<String> },
     /// Print the id and name of the current pane's context as JSON.
     Current,
-    /// Set the description for the active context
+    /// Set the caller's context description (active context outside a pane).
     Describe {
         /// Description text
         text: String,

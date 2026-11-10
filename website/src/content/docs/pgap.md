@@ -1051,6 +1051,7 @@ Focus existing context by root, or create one. Sent by `plexi context open`.
 
 | Field | Type | Required |
 |-------|------|----------|
+| `response_file` | `string?` | no |
 | `root` | `string` | yes |
 
 ### `set_context_root`
@@ -1060,6 +1061,7 @@ Set/update the root of a context. Sent by `plexi context set-root`. `context_id`
 | Field | Type | Required |
 |-------|------|----------|
 | `context_id` | `integer?` | no |
+| `response_file` | `string?` | no |
 | `root` | `string` | yes |
 
 ### `set_context_description`
@@ -1070,6 +1072,7 @@ Set/update the description of a context. Sent by `plexi context describe`. `cont
 |-------|------|----------|
 | `context_id` | `integer?` | no |
 | `description` | `string` | yes |
+| `response_file` | `string?` | no |
 
 ### `zoom_into_context`
 

@@ -1897,19 +1897,56 @@ impl PlexiApp {
         self.mark_workspace_dirty();
     }
 
-    /// Resolve an optional context id to a router index. Falls back to the
-    /// active context (with a warning) when the id is absent or unknown.
-    pub(crate) fn resolve_context_idx(&self, context_id: Option<u64>, op: &str) -> usize {
+    /// An omitted target uses the active context; an unknown explicit target fails closed.
+    pub(crate) fn resolve_context_idx(
+        &self,
+        context_id: Option<u64>,
+        op: &str,
+    ) -> Result<usize, String> {
         match context_id {
-            Some(cid) => match self.router.position(|c| c.context_id == cid) {
-                Some(idx) => idx,
-                None => {
-                    log::warn!("{op}: context_id={cid} not found — falling back to active context");
-                    self.router.active_idx()
-                }
-            },
-            None => self.router.active_idx(),
+            Some(cid) => self
+                .router
+                .position(|c| c.context_id == cid)
+                .ok_or_else(|| {
+                    let error = format!("context {cid} not found");
+                    log::info!("{op}: rejected: {error}");
+                    error
+                }),
+            None => Ok(self.router.active_idx()),
         }
+    }
+
+    /// Explicit folder navigation, independent of terminal cwd observations.
+    pub(crate) fn open_context_root(&mut self, root: &std::path::Path) -> Result<u64, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| format!("open context {}: {error}", root.display()))?;
+        if !root.is_dir() {
+            return Err(format!(
+                "context root {} is not a directory",
+                root.display()
+            ));
+        }
+        let existing = self
+            .router
+            .position(|context| context.root.canonicalize().is_ok_and(|path| path == root));
+        if let Some(index) = existing {
+            // Explicit open means this context, even if it has a revealed child.
+            self.switch_workspace_target(index, false);
+        } else {
+            let count = self.router.len();
+            self.new_context_at_path(root.clone());
+            if self.router.len() == count {
+                return Err(format!("could not create context at {}", root.display()));
+            }
+        }
+        let id = self.router.active().context_id;
+        log::info!(
+            "context_open: context_id={id} root={} created={}",
+            root.display(),
+            existing.is_none()
+        );
+        Ok(id)
     }
 
     /// Set the `root` of a context. `context_id` targets a specific context
@@ -1921,7 +1958,10 @@ impl PlexiApp {
     /// name is reconciled to the new root's basename exactly once, in one
     /// place, rather than in each caller.
     pub(crate) fn set_context_root(&mut self, root: PathBuf, context_id: Option<u64>) {
-        let idx = self.resolve_context_idx(context_id, "set_context_root");
+        let idx = match self.resolve_context_idx(context_id, "set_context_root") {
+            Ok(idx) => idx,
+            Err(_) => return,
+        };
         auto_init_workspace(&root);
         let context_id = self.router.get(idx).context_id;
         let old_root = self.router.get(idx).root.clone();

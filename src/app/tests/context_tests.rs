@@ -3588,19 +3588,8 @@ fn write_registry_wasm_app(root: &std::path::Path, id: &str) {
     std::fs::copy(counter_wasm_fixture(), app_dir.join("counter.wasm")).expect("copy fixture");
 }
 
-/// The falsifying regression test for the stint 0724 bug: before Phase B,
-/// `PlexiApp` held exactly one `AppRegistry`, refreshed only when the
-/// *active* context transitioned (`apply_context_transition_effects`). A
-/// launch redirected at a DIFFERENT context — via the sanctioned
-/// `active_window`-redirect convention `pane_ops::dispatch` already uses for
-/// an explicit target (never by mutating `router.active()`) — never
-/// triggered that refresh, so it resolved against whichever registry the
-/// last real transition happened to load. An app installed only in another
-/// context's root was invisible there no matter how the launch was routed.
-///
-/// `RegistryViews::view_for_context` fixes this structurally: every launch
-/// resolves its OWN target context's root at the point of use, independent
-/// of transition history.
+/// A launch into an inactive context must resolve its own registry without
+/// changing active state or depending on a context transition.
 #[test]
 fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
     let _experiments =
@@ -3664,12 +3653,20 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
         "a not-found app's error must say so, got {err_from_a:?}"
     );
 
-    // Redirect `active_window` to context B's window — the sanctioned
-    // explicit-target convention (mirrors `pane_ops::dispatch`'s spawn_pane
-    // handling of `from_pane_id`), never a real context switch. Context A
-    // remains the router's active context throughout.
-    app.active_window = win_b_idx;
-    let result_from_b = app.launch_app_by_id_with_layout(app_id, None, &[], None);
+    // Resolve ownership explicitly while context A stays active.
+    let result_from_b = app.launch_app_by_id_with_layout_at(
+        crate::pane_ops::create::IdAppLaunchOptions {
+            target_win: win_b_idx,
+            bypass_on_launch: false,
+            follow_file_browser_cwd: false,
+        },
+        app_id,
+        None,
+        &[],
+        None,
+    );
+    assert_eq!(app.active_window, 0);
+    assert_eq!(app.router.active().context_id, ctx_a_id);
     assert!(
         result_from_b.is_ok(),
         "launching into context B's window must resolve context B's OWN \
@@ -4375,5 +4372,187 @@ fn breadcrumb_deleted_ancestor_rejects_without_focus_or_history_changes() {
     let before = (h.app.active_window, h.app.router.depth_stack.clone());
     assert!(!h.app.navigate_context_ancestor(child, root));
     assert_eq!(h.app.router.active().context_id, child);
-    assert_eq!(before, (h.app.active_window, h.app.router.depth_stack.clone()));
+    assert_eq!(
+        before,
+        (h.app.active_window, h.app.router.depth_stack.clone())
+    );
+}
+
+// Explicit CLI operations must acknowledge the context they actually targeted.
+fn context_target_request(
+    h: &mut crate::testing::HostHarness,
+    mut payload: serde_json::Value,
+) -> Option<serde_json::Value> {
+    let file = h.profile_dir().join("context-target-reply.json");
+    let _ = std::fs::remove_file(&file);
+    payload["response_file"] = serde_json::json!(file);
+    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+        payload.as_object_mut().unwrap().remove("response_file");
+        serde_json::from_value(payload).unwrap()
+    });
+    h.inject_ipc(request);
+    h.app.drain_pane_cmd_channel();
+    std::fs::read_to_string(file)
+        .ok()
+        .map(|s| serde_json::from_str(&s).unwrap())
+}
+
+#[test]
+fn context_targets_open_existing_acknowledges_and_selects_requested_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    for (root, id) in [(b.path(), b_id), (a.as_path(), a_id)] {
+        let reply = context_target_request(
+            &mut h,
+            serde_json::json!({"type":"focus_context", "root":root}),
+        );
+        assert_eq!(h.app.router.active().context_id, id);
+        assert_eq!(reply.unwrap()["context_id"], id);
+        assert_eq!(h.app.router.len(), 2);
+    }
+}
+
+#[test]
+#[ignore = "requires-pty: context open seeds a terminal"]
+fn context_targets_open_new_acknowledges_created_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"focus_context", "root":root.path()}),
+    );
+    assert_eq!(
+        h.app.router.active().root,
+        root.path().canonicalize().unwrap()
+    );
+    assert_eq!(
+        reply.unwrap()["context_id"],
+        h.app.router.active().context_id
+    );
+    assert_eq!(h.app.router.len(), 2);
+}
+
+#[test]
+fn context_targets_invalid_id_never_changes_active_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().root.clone();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"set_context_root", "root":root.path(), "context_id":u64::MAX}),
+    );
+    assert_eq!(h.app.router.active().root, before);
+    assert!(reply.unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+    assert!(!root.path().join(".plexi").exists());
+}
+
+#[test]
+fn context_targets_background_id_open_uses_owning_root() {
+    let _experiments =
+        crate::release::set_test_experiments(&[crate::release::ReleaseFeature::WasmApps]);
+    let mut h = crate::testing::HostHarness::new();
+    let caller_a = h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    let caller_b = h.app.host.alloc_pane_id();
+    let mut tiles = egui_tiles::Tiles::default();
+    let tile = tiles.insert_pane(caller_b);
+    h.app.windows.push(Window {
+        name: "B".into(),
+        path: b.path().to_path_buf(),
+        tree: egui_tiles::Tree::new("B", tile, tiles),
+        panes: [(caller_b, test_app_pane(caller_b))].into_iter().collect(),
+        focused_pane: Some(tile),
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: b_id + 1,
+        context_id: b_id,
+    });
+    // Install a global runtime fixture, with no workspace_root to mask the default.
+    let global = tempfile::tempdir().unwrap();
+    let id = "context-target-runtime";
+    let app_dir = global.path().join(id);
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("manifest.toml"), format!(
+        "schema_version = 1\n[app]\nid = \"{id}\"\ntype = \"wasm\"\nname = \"Scope fixture\"\nversion = \"0.0.1\"\nentry = \"counter.wasm\"\n"
+    )).unwrap();
+    std::fs::copy(counter_wasm_fixture(), app_dir.join("counter.wasm")).unwrap();
+    h.app.registries = crate::app::registry_views::RegistryViews::new_with_global(global.path());
+    for (owner, visible, caller, expected, wrong) in [
+        (0, 1, caller_a, a.as_path(), b.path()),
+        (1, 0, caller_b, b.path(), a.as_path()),
+    ] {
+        h.app.router.set_active(visible);
+        h.app.active_window = visible;
+        let visible_focus = h.app.windows[visible].focused_pane;
+        for app in ["agents", id] {
+            let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":app, "from_pane_id":caller, "no_focus":true, "args":[]})).unwrap();
+            assert!(reply.get("error").is_none(), "{reply}");
+            let pane = h.app.windows[owner]
+                .panes
+                .get(&reply["pane_id"].as_u64().unwrap())
+                .unwrap()
+                .as_app()
+                .unwrap();
+            assert_eq!(pane.workspace_root, expected);
+            assert_ne!(pane.workspace_root, wrong);
+            assert_eq!(h.app.active_window, visible);
+            assert_eq!(h.app.router.active_idx(), visible);
+            assert_eq!(h.app.windows[visible].focused_pane, visible_focus);
+        }
+        // Explicit cwd remains an override of the owning context default.
+        let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "from_pane_id":caller, "cwd":wrong, "no_focus":true, "args":[]})).unwrap();
+        assert_eq!(
+            h.app.windows[owner]
+                .panes
+                .get(&reply["pane_id"].as_u64().unwrap())
+                .unwrap()
+                .as_app()
+                .unwrap()
+                .workspace_root,
+            wrong
+        );
+    }
+}
+
+#[test]
+fn context_targets_invalid_description_id_is_acknowledged_without_fallback() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().description.clone();
+    let reply = context_target_request(
+        &mut h,
+        serde_json::json!({"type":"set_context_description", "description":"wrong target", "context_id":u64::MAX}),
+    );
+    assert_eq!(h.app.router.active().description, before);
+    assert!(reply.unwrap()["error"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+}
+
+#[test]
+fn context_targets_invalid_app_context_never_spawns_in_active() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let count = h.app.windows[0].panes.len();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
+    assert_eq!(h.app.windows[0].panes.len(), count);
+    assert!(reply["error"].as_str().unwrap().contains("not found"));
 }

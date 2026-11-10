@@ -1327,7 +1327,11 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
-    FocusContext { root: std::path::PathBuf },
+    FocusContext {
+        root: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
     /// Set/update the root of a context. Sent by `plexi context set-root`.
     /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
     /// absent, the active context is used.
@@ -1335,6 +1339,8 @@ pub enum AppRequest {
         root: std::path::PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
     /// Set/update the description of a context. Sent by `plexi context describe`.
     /// `context_id` targets the caller's context (PLEXI_CONTEXT_ID); when
@@ -1343,6 +1349,8 @@ pub enum AppRequest {
         description: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
     /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
     ZoomIntoContext {
@@ -3671,6 +3679,7 @@ mod tests {
             AppRequest::SetContextDescription {
                 description,
                 context_id,
+                ..
             } => {
                 assert_eq!(description, "Main project workspace");
                 assert_eq!(*context_id, None, "context_id defaults to None");

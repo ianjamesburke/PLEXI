@@ -255,3 +255,15 @@ A restart restores the saved workspace. From a pane of the host being restarted,
 `--yes` confirms that the pane will close; a detached coordinator completes the
 restart. From another host or terminal, restart waits and prints the new pid and
 pane count (`--json` is supported).
+
+### Choose a context folder
+
+Use `plexi context open /path/to/project` to focus the context for that folder,
+or create one if needed. The reply identifies the selected context; the calling
+pane stays in its original context. An app opened from a pane uses that pane's
+owning context even while another context is visible.
+
+`plexi context set-root /path/to/project` changes the caller's shared context
+root. `plexi app state get <app> --scope context` then uses the current host root,
+even from a shell whose launch-time environment still names the old folder.
+Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.

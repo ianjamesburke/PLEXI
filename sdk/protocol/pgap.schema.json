@@ -3622,6 +3622,12 @@
           "additionalProperties": false,
           "description": "Focus existing context by root, or create one. Sent by `plexi context open`.",
           "properties": {
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "root": {
               "type": "string"
             },
@@ -3645,6 +3651,12 @@
               "minimum": 0,
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "response_file": {
+              "type": [
+                "string",
                 "null"
               ]
             },
@@ -3676,6 +3688,12 @@
             },
             "description": {
               "type": "string"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "set_context_description",

@@ -380,7 +380,8 @@ fn split_with_new_pane_pushes_focus_history() {
         numerator: 1.0,
         denominator: 1.0,
     };
-    let new_tile = app.split_with_new_pane(new_pane_id, true, share, false, false);
+    let new_tile =
+        app.split_with_new_pane_at(app.active_window, new_pane_id, true, share, false, false);
     assert!(new_tile.is_some(), "split_with_new_pane should succeed");
 
     // Focus should now be on the new tile.
