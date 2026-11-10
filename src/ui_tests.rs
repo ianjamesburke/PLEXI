@@ -7089,6 +7089,22 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn config_chooser_omits_repo_row_outside_workspace() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
+        });
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Open config: everywhere").is_some());
+        assert!(h.harness().query_by_label("Open config: this repo (not created yet)").is_none());
+        assert!(h.harness().query_by_label("Open config: this repo").is_none());
+    }
+
+    #[test]
     fn screenshot_notes_delete_toast_themes() {
         for scale in [1.0, 2.0] {
             let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, scale);
