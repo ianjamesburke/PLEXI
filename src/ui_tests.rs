@@ -595,12 +595,42 @@ mod tests {
 
     #[test]
     fn screenshot_card_gallery_all_states_and_surfaces() {
-        crate::app::card_gallery::FORCE.with(|f| f.set(true));
-        let mut h = PlexiUiHarness::new_sized(1440.0, 1400.0);
-        h.run_steps(4);
-        let path = evidence_png!();
-        h.save_screenshot(&path).unwrap();
-        assert!(std::path::Path::new(&path).exists());
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                crate::app::card_gallery::FORCE.with(|f| f.set(true));
+                let mut h = PlexiUiHarness::new_sized_scaled(1440.0 * scale, 1400.0 * scale, scale);
+                apply_fixture_theme(&mut h, theme);
+                h.run_steps(4);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}"))).unwrap();
+                crate::app::card_gallery::FORCE.with(|f| f.set(false));
+            }
+        }
+    }
+
+    fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
+        h.with_app_mut(|app| {
+            let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+            app.colors = crate::ui::theme::Colors::from_config(&cfg);
+            app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+            crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+        });
+    }
+
+    #[test]
+    fn screenshot_foreground_buttons_and_badges() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 1000.0, scale);
+                apply_fixture_theme(&mut h, theme);
+                h.with_app_mut(|app| app.show_ui_gallery = true);
+                h.run_steps(4);
+                for section in ["Buttons and chips", "Sidebar rows"] {
+                    h.harness().get_by_label(section).scroll_to_me();
+                    h.run_steps(4);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_{section}"))).unwrap();
+                }
+            }
+        }
     }
 
     /// Scale for the `screenshot_ui_scale_*` tests (run at 0.6 / 1.0 / 2.0).

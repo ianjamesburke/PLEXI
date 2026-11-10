@@ -471,7 +471,7 @@ pub(crate) fn render_name_bar_and_tabs(
             tab_action = Some((group.container_tile, action));
         }
 
-        layout.paint(ui, &labels, *pane_id);
+        layout.paint(ui, &labels, *pane_id, colors.pane_header_bg());
 
         ui.ctx().data_mut(|d| {
             d.insert_temp(
@@ -525,7 +525,7 @@ pub(crate) fn render_name_bar_and_tabs(
         }
 
         let outside_badge_rect = layout.outside;
-        layout.paint(ui, &labels, *pane_id);
+        layout.paint(ui, &labels, *pane_id, colors.pane_header_bg().blend(escalation_col.map(|c| egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 28)).unwrap_or(egui::Color32::TRANSPARENT)));
 
         let title_text = if has_name {
             Some(pane_names[pane_id].as_str())

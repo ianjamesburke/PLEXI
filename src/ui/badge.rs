@@ -39,11 +39,13 @@ pub(crate) fn paint_badge(
     galley: Arc<Galley>,
     fill: Color32,
     fg: Color32,
+    backdrop: Color32,
 ) {
+    let surface = crate::ui::foreground::Surface::over(backdrop, fill);
+    let fg = surface.foreground(fg, crate::ui::foreground::Role::SmallText);
     painter.rect_filled(rect, style::RADIUS_BADGE, fill);
     let text_size = galley.size();
-    crate::ui::snap::galley_snapped(
-        painter,
+    painter.galley_with_override_text_color(
         Pos2::new(
             rect.center().x - text_size.x / 2.0,
             rect.center().y - text_size.y / 2.0,
@@ -55,11 +57,16 @@ pub(crate) fn paint_badge(
 
 /// Allocate and paint a badge inline in the current layout. The label color
 /// is whichever of the theme's foregrounds reads legibly on `fill`.
-pub(crate) fn badge(ui: &mut egui::Ui, text: &str, fill: Color32, colors: &Colors) -> egui::Response {
+pub(crate) fn badge(
+    ui: &mut egui::Ui,
+    text: &str,
+    fill: Color32,
+    colors: &Colors,
+) -> egui::Response {
     let fg = colors.text_on(fill);
     let galley = badge_galley(ui, text, fg);
     let size = badge_size(galley.size());
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    paint_badge(ui.painter(), rect, galley, fill, fg);
+    paint_badge(ui.painter(), rect, galley, fill, fg, colors.bg_sidebar);
     response
 }

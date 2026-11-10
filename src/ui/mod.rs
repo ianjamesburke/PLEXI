@@ -8,6 +8,7 @@ pub mod code_viewer;
 pub mod dialog;
 pub mod embedded_bar;
 pub mod focus;
+pub(crate) mod foreground;
 pub mod hints;
 pub mod labels;
 pub mod list;

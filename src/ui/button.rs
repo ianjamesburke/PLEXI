@@ -113,7 +113,11 @@ fn chrome_button_visuals(
             ButtonKind::Primary => colors.text_primary,
         }
     };
-    ChromeButtonVisuals { fill, text }
+    let surface = crate::ui::foreground::Surface::over(colors.bg_sidebar, fill);
+    ChromeButtonVisuals {
+        fill: surface.fill,
+        text: surface.foreground(text, crate::ui::foreground::Role::SmallText),
+    }
 }
 
 pub(crate) fn toolbar_button(
@@ -207,6 +211,9 @@ pub(crate) fn choice_button(
         crate::ui::text::Side::Trailing,
     );
     let painter = ui.painter();
+    let surface = crate::ui::foreground::Surface::over(colors.bg_sidebar, actual_bg);
+    let fg = surface.foreground(fg, crate::ui::foreground::Role::SmallText);
+    let hint_color = surface.foreground(hint_color, crate::ui::foreground::Role::SmallText);
     painter.rect_filled(rect, style::RADIUS_MD, actual_bg);
     crate::ui::snap::galley_snapped(painter, rect.center() - label.size() / 2.0, label, fg);
     if !shortcut_hint.is_empty() {
@@ -322,5 +329,78 @@ pub(crate) fn tactile_button(
             }
         });
     }
+    // Egui applies disabled/hover tints while creating shapes. Resolve after
+    // that paint step (and press interpolation), against the emitted fill.
+    ui.ctx().graphics_mut(|graphics| {
+        if let Some(list) = graphics.get_mut(layer) {
+            let end = list.all_entries().len();
+            let mut fill = ui.visuals().panel_fill;
+            for entry in list.all_entries().skip(start) {
+                if let egui::Shape::Rect(rect) = &entry.shape {
+                    if rect.rect.contains(response.rect.center()) {
+                        fill = fill.blend(rect.fill);
+                    }
+                }
+            }
+            let surface = crate::ui::foreground::Surface::over(Color32::BLACK, fill);
+            for index in start..end {
+                list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                    if let egui::Shape::Text(text) = &mut entry.shape {
+                        let preferred = text
+                            .override_text_color
+                            .or_else(|| {
+                                text.galley
+                                    .job
+                                    .sections
+                                    .first()
+                                    .map(|s| s.format.color)
+                                    .filter(|c| *c != Color32::PLACEHOLDER)
+                            })
+                            .unwrap_or(text.fallback_color);
+                        text.override_text_color = Some(
+                            surface.foreground(preferred, crate::ui::foreground::Role::SmallText),
+                        );
+                    }
+                });
+            }
+        }
+    });
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chrome_button_small_text_meets_contrast_in_every_state() {
+        for name in crate::ui::theme::preset_names() {
+            let colors = Colors::from_config(&crate::ui::theme::preset_colors(name).unwrap());
+            for kind in [
+                ButtonKind::Primary,
+                ButtonKind::Secondary,
+                ButtonKind::Accent,
+                ButtonKind::Danger,
+            ] {
+                for disabled in [false, true] {
+                    for down in [false, true] {
+                        let visuals = chrome_button_visuals(
+                            kind,
+                            &colors,
+                            ChromeButtonState { disabled, down },
+                        );
+                        let fill = colors.bg_sidebar.blend(visuals.fill);
+                        let ratio = crate::ui::theme::contrast(
+                            crate::ui::theme::luminance(fill),
+                            crate::ui::theme::luminance(fill.blend(visuals.text)),
+                        );
+                        assert!(
+                            ratio >= 4.5,
+                            "{name}: disabled={disabled} down={down} contrast={ratio}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

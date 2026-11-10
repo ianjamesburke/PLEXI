@@ -146,7 +146,7 @@ impl PaneHeader {
         }
     }
 
-    pub fn paint(&self, ui: &mut egui::Ui, labels: &Labels<'_>, pane_id: u64) {
+    pub fn paint(&self, ui: &mut egui::Ui, labels: &Labels<'_>, pane_id: u64, backdrop: Color32) {
         for item in &self.items {
             if let Some(galley) = &item.galley {
                 let alpha = if item.id == "outside" { 28 } else { 36 };
@@ -161,6 +161,7 @@ impl PaneHeader {
                         alpha,
                     ),
                     item.color,
+                    backdrop,
                 );
                 if item.id == "outside" {
                     ui.interact(
