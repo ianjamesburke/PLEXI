@@ -3641,6 +3641,69 @@ mod tests {
     }
 
     #[test]
+    fn find_navigation_keeps_each_match_visible_on_both_axes() {
+        let line = format!("{}abcdefgh{}abcdefgh\n", "x".repeat(80), "x".repeat(80));
+        let text = format!("{line}{}{line}", "other\n".repeat(20));
+        let mut h = find_regression_harness(&text);
+        h.set_size(egui::vec2(180.0, 140.0));
+        h.run();
+        for backwards in [false, false, false, false, true, true, true, true] {
+            let modifiers = if backwards {
+                egui::Modifiers::SHIFT
+            } else {
+                egui::Modifiers::NONE
+            };
+            let input = crate::app::input_router::PlexiInput::synthetic(
+                vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                modifiers,
+            );
+            assert!(matches!(
+                h.state_mut().handle_key(&input),
+                KeyDisposition::Consumed
+            ));
+            h.run();
+            let app = h.state();
+            let bar = app.find_bar.as_ref().unwrap();
+            let (start, end) = bar.matches[bar.current];
+            assert_eq!(app.doc.selected_text(), "abcdefgh");
+            let start = movement::char_to_cursor(app.doc.buffer(), start);
+            let end = movement::char_to_cursor(app.doc.buffer(), end);
+            let line = movement::line_text(app.doc.buffer(), start.line);
+            let font = egui::FontId::monospace(app.font_size);
+            let measure = |column: usize| {
+                h.ctx.fonts_mut(|fonts| {
+                    fonts
+                        .layout_no_wrap(
+                            line.chars().take(column).collect(),
+                            font.clone(),
+                            egui::Color32::WHITE,
+                        )
+                        .size()
+                        .x
+                })
+            };
+            let left = measure(start.column);
+            let right = measure(end.column);
+            assert!(
+                left >= app.view.scroll_x && right <= app.view.scroll_x + app.view.viewport_width,
+                "match {start:?}..{end:?} outside horizontal viewport {}..{}",
+                app.view.scroll_x,
+                app.view.scroll_x + app.view.viewport_width
+            );
+            assert!(app
+                .view
+                .cursor_visible(start, app.doc.buffer().line_count()));
+            assert!(app.view.cursor_visible(end, app.doc.buffer().line_count()));
+        }
+    }
+
+    #[test]
     fn replace_current_and_replace_all_route_through_document() {
         let dir = unique_temp_dir("notes-replace");
         std::fs::create_dir_all(&dir).unwrap();
