@@ -1,4 +1,12 @@
 disallowed-methods = [
+    { path = "egui::Ui::selectable_value", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::Ui::checkbox", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::Ui::radio", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::Ui::radio_value", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::ComboBox::new", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::ComboBox::from_label", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::ComboBox::from_id_source", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
+    { path = "egui::ComboBox::from_id_salt", reason = "use a kit control; legacy sites are explicitly baselined until migrated" },
     { path = "egui::Response::request_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). Register a text surface in crate::ui::focus (register/claim) instead; only src/app/input_owner.rs may touch egui focus." },
     { path = "egui::Response::surrender_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). The reconciler in src/app/input_owner.rs owns all surrenders." },
     { path = "egui::Memory::request_focus", reason = "egui focus is a projection of the host InputOwner (stint 0429). Register a text surface in crate::ui::focus (register/claim) instead; only src/app/input_owner.rs may touch egui focus." },
