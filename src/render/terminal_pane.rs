@@ -956,6 +956,22 @@ mod tests {
     }
 
     #[test]
+    fn pane_chrome_error_chip_collapses_to_failed_glyph() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(55.0, TAB_BAR_HEIGHT))), |ui| {
+                render_name_bar_and_tabs(ui, NameBarParams {
+                    tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
+                    pane_agent_state: None, is_error: true, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
+                });
+            });
+        });
+        let lines = output.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. })).count();
+        assert!(lines >= 5, "the leading and collapsed failed icons must both be crosses; got {lines} line segments");
+    }
+
+    #[test]
     fn narrow_wrapped_standby_banner_keeps_enter_hint_visible() {
         let content = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 88.0));
         // A realistic long pane name + cwd wraps to four terminal lines at this width.
