@@ -663,6 +663,7 @@ mod tests {
                 &crate::config::workspace_channel_dir(),
             )
             .unwrap();
+            assert!(matches!(manager::workspace_target(root.path()).unwrap(), Some(SecretTarget::Workspace { .. })));
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
@@ -682,6 +683,7 @@ mod tests {
                 );
             });
             h.run_steps(4);
+            h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-before.png")).unwrap();
             h.harness().get_by_label("Workspace").click();
             h.run_steps(3);
             let global = h.harness().get_by_label("Global").rect();
