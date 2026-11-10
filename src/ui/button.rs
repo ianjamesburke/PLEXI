@@ -859,6 +859,71 @@ mod tests {
     }
 
     #[test]
+    fn approved_button_fills_cover_all_kinds() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        for (kind, rest, hover, pressed) in [
+            (
+                ButtonKind::Primary,
+                colors.bg_active,
+                colors.bg_active.lerp_to_gamma(colors.text_primary, 0.06),
+                colors.bg_active.lerp_to_gamma(colors.text_primary, 0.12),
+            ),
+            (
+                ButtonKind::Secondary,
+                Color32::TRANSPARENT,
+                colors.bg_hover,
+                colors.bg_active,
+            ),
+            (
+                ButtonKind::Ghost,
+                Color32::TRANSPARENT,
+                colors.bg_hover,
+                colors.bg_active,
+            ),
+            (
+                ButtonKind::Accent,
+                colors.accent,
+                colors.accent.lerp_to_gamma(Color32::WHITE, 0.08),
+                colors.accent.gamma_multiply(0.9),
+            ),
+            (
+                ButtonKind::Danger,
+                colors.danger,
+                colors.danger.lerp_to_gamma(Color32::WHITE, 0.08),
+                colors.danger.gamma_multiply(0.9),
+            ),
+        ] {
+            let (normal, rect) = render(3, None, |ui| {
+                ui.add(KitButton::new("Action", &colors).kind(kind))
+            });
+            let (hovered, _) = render(3, Some(rect.center()), |ui| {
+                ui.add(KitButton::new("Action", &colors).kind(kind))
+            });
+            assert_eq!(
+                fills_at(&normal, rect.center()).last(),
+                Some(&rest),
+                "{kind:?} rest"
+            );
+            assert_eq!(
+                fills_at(&hovered, rect.center()).last(),
+                Some(&hover),
+                "{kind:?} hover"
+            );
+            let down = chrome_button_visuals(
+                kind,
+                &colors,
+                ChromeButtonState {
+                    disabled: false,
+                    down: true,
+                },
+                colors.bg_sidebar,
+                None,
+            );
+            assert_eq!(down.fill, pressed, "{kind:?} pressed");
+        }
+    }
+
+    #[test]
     fn disabled_accent_is_forty_percent_of_rest_paint() {
         let colors = crate::testing::HostHarness::new().app.colors;
         let (rest, rect) = render(3, None, |ui| {
