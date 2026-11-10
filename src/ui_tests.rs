@@ -618,7 +618,7 @@ mod tests {
             let cfg = crate::ui::theme::preset_colors(theme).unwrap();
             app.colors = crate::ui::theme::Colors::from_config(&cfg);
             app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-            crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
         });
     }
 
@@ -2345,7 +2345,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
                     app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                     app.router.get_mut(0).name = "attention demo".to_string().into();
                     app.windows[app.active_window].panes.get_mut(&id).unwrap().as_app_mut().unwrap().name = "needs_you".into();
                     app.enqueue_ask("titlebar-fixture", id, "Review the pending request", 1_000, Vec::new());
@@ -6883,7 +6883,7 @@ open(out + ".done", "w").close()
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
                     app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                     app.config.attention = Some(AttentionConfig { style: Some(AttentionStyle::Subtle), ..Default::default() });
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors, theme == "plexi-night");
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 });
                 h.run_steps(3);
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{preset}"))).unwrap();
@@ -6901,7 +6901,7 @@ open(out + ".done", "w").close()
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                 app.config.attention = Some(AttentionConfig { style:Some(style),intensity:Some(intensity),..Default::default() });
-                crate::ui::theme::setup_style(&app.ctx,&app.colors,true);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
             });
             h.run_steps(3);
             h.save_screenshot(&evidence_png!(&format!("_{name}"))).unwrap();
@@ -6948,11 +6948,7 @@ open(out + ".done", "w").close()
                         &cfg,
                         crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
                     );
-                    crate::ui::theme::setup_style(
-                        &app.ctx,
-                        &app.colors,
-                        !crate::ui::theme::is_light_preset(theme),
-                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                     app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
                         path: path.clone(),
                         title: title.into(),
@@ -7117,11 +7113,7 @@ open(out + ".done", "w").close()
                         &cfg,
                         crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
                     );
-                    crate::ui::theme::setup_style(
-                        &app.ctx,
-                        &app.colors,
-                        !crate::ui::theme::is_light_preset(theme),
-                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 });
                 h.run_steps(3);
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}")))
@@ -7152,6 +7144,62 @@ open(out + ".done", "w").close()
                     .unwrap();
                 h.with_app_mut(|app| app.quit_press_count = 0);
             }
+        }
+    }
+
+    struct AppContrastFixture;
+
+    impl crate::app::app_trait::App for AppContrastFixture {
+        fn type_id(&self) -> &'static str {
+            "app_contrast_fixture"
+        }
+        fn display_name(&self) -> String {
+            "Stint Board".into()
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn ui(
+            &mut self,
+            ui: &mut egui::Ui,
+            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            _: Option<crate::host::pane::PendingPaneClick>,
+        ) {
+            // Serialized from the unchanged Stint board build_view at f46a711,
+            // using synthetic walkthrough tasks; no CLI operations or user data.
+            let tree = crate::host::wasm_python::decode_ui_tree(include_str!(
+                "../tests/fixtures/stint-board-ui.json"
+            ))
+            .unwrap();
+            crate::host::wasm_render::render_ui_tree_with_surface(ui, &tree, ctx.colors, None, None, 0);
+        }
+    }
+
+    #[test]
+    fn screenshot_app_contrast_stint_board() {
+        for theme in ["plexi-dawn", "plexi-night", "light-overrides"] {
+            let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.0);
+            let pane_id = add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                let mut cfg = crate::ui::theme::preset_colors(if theme == "light-overrides" {
+                    "plexi-night"
+                } else {
+                    theme
+                })
+                .unwrap();
+                if theme == "light-overrides" {
+                    cfg.terminal_bg = Some("#e3e3f0".into());
+                    cfg.bg_active = Some("#b0b0d0".into());
+                }
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                if let Some(Pane::App(pane)) = app.windows[app.active_window].panes.get_mut(&pane_id) {
+                    pane.runtime = AppRuntime::Builtin(Box::new(AppContrastFixture));
+                }
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
+                .unwrap();
         }
     }
 
@@ -7191,7 +7239,7 @@ open(out + ".done", "w").close()
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
             });
             h.run_steps(5);
             h.save_screenshot(&evidence_png!(&format!("_{theme}"))).unwrap();
@@ -7229,7 +7277,7 @@ open(out + ".done", "w").close()
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
             });
             h.run_steps(5);
             h.save_screenshot(&evidence_png!(&format!("_{theme}"))).unwrap();
@@ -7535,7 +7583,7 @@ open(out + ".done", "w").close()
                 .expect("catppuccin latte preset must exist");
             app.colors = crate::ui::theme::Colors::from_config(&cfg);
             app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-            crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
             app.show_command_palette = true;
             app.sync_command_palette_focus();
         });
@@ -10078,7 +10126,7 @@ open(out + ".done", "w").close()
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
             });
             for selected in 0..4 {
                 h.with_app_mut(|app| app.attention_queue.selected_idx = selected);
@@ -10551,11 +10599,7 @@ open(out + ".done", "w").close()
                         &cfg,
                         crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
                     );
-                    crate::ui::theme::setup_style(
-                        &app.ctx,
-                        &app.colors,
-                        !crate::ui::theme::is_light_preset(theme),
-                    );
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
                     if state == "asks" {
                         let pid = app.host.alloc_pane_id();
                         app.enqueue_ask(

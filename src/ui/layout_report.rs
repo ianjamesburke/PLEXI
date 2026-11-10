@@ -405,7 +405,7 @@ mod tests {
             let colors = crate::ui::theme::Colors::from_config(
                 &crate::ui::theme::preset_colors(theme).unwrap(),
             );
-            crate::ui::theme::setup_style(&ctx, &colors, !crate::ui::theme::is_light_preset(theme));
+            crate::ui::theme::setup_style(&ctx, &colors);
             for enabled in [true, false] {
                 let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
                     for kind in [

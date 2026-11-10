@@ -1,0 +1,682 @@
+{
+  "root": 0,
+  "nodes": [
+    {
+      "id": 0,
+      "key": "0",
+      "data": {
+        "type": "Column",
+        "children": [
+          1,
+          2,
+          3,
+          23,
+          51
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 1,
+      "key": "0/0",
+      "data": {
+        "type": "AppBar",
+        "title": "Stint Board",
+        "subtitle": "stint 0.4.1 | 5 tasks"
+      }
+    },
+    {
+      "id": 2,
+      "key": "0/1",
+      "data": {
+        "type": "text",
+        "text": "/ to search",
+        "size": 13.0,
+        "bold": false,
+        "italic": false,
+        "monospace": false,
+        "truncate": false,
+        "align": "left",
+        "color": "muted",
+        "tone": "hint"
+      }
+    },
+    {
+      "id": 3,
+      "key": "0/2",
+      "data": {
+        "type": "Row",
+        "children": [
+          4,
+          8,
+          11,
+          14,
+          17,
+          20
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 4,
+      "key": "0/2/0",
+      "data": {
+        "type": "Column",
+        "children": [
+          5,
+          6,
+          7
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 5,
+      "key": "0/2/0/0",
+      "data": {
+        "type": "text",
+        "text": "P0 (2)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 6,
+      "key": "0/2/0/1",
+      "data": {
+        "type": "Button",
+        "label": "0002 Walkthroug\u2026",
+        "on_click": "pick:0002",
+        "style": "primary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 7,
+      "key": "0/2/0/2",
+      "data": {
+        "type": "Button",
+        "label": "0005 Walkthroug\u2026",
+        "on_click": "pick:0005",
+        "style": "ghost",
+        "disabled": false
+      }
+    },
+    {
+      "id": 8,
+      "key": "0/2/1",
+      "data": {
+        "type": "Column",
+        "children": [
+          9,
+          10
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 9,
+      "key": "0/2/1/0",
+      "data": {
+        "type": "text",
+        "text": "P1 (1)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 10,
+      "key": "0/2/1/1",
+      "data": {
+        "type": "Button",
+        "label": "0001 Walkthroug\u2026",
+        "on_click": "pick:0001",
+        "style": "ghost",
+        "disabled": false
+      }
+    },
+    {
+      "id": 11,
+      "key": "0/2/2",
+      "data": {
+        "type": "Column",
+        "children": [
+          12,
+          13
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 12,
+      "key": "0/2/2/0",
+      "data": {
+        "type": "text",
+        "text": "P2 (1)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 13,
+      "key": "0/2/2/1",
+      "data": {
+        "type": "Button",
+        "label": "0003 Walkthroug\u2026",
+        "on_click": "pick:0003",
+        "style": "ghost",
+        "disabled": false
+      }
+    },
+    {
+      "id": 14,
+      "key": "0/2/3",
+      "data": {
+        "type": "Column",
+        "children": [
+          15,
+          16
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 15,
+      "key": "0/2/3/0",
+      "data": {
+        "type": "text",
+        "text": "P3 (1)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 16,
+      "key": "0/2/3/1",
+      "data": {
+        "type": "Button",
+        "label": "0004 Walkthroug\u2026",
+        "on_click": "pick:0004",
+        "style": "ghost",
+        "disabled": false
+      }
+    },
+    {
+      "id": 17,
+      "key": "0/2/4",
+      "data": {
+        "type": "Column",
+        "children": [
+          18,
+          19
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 18,
+      "key": "0/2/4/0",
+      "data": {
+        "type": "text",
+        "text": "P4 (0)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 19,
+      "key": "0/2/4/1",
+      "data": {
+        "type": "text",
+        "text": "No tasks",
+        "size": 13.0,
+        "bold": false,
+        "italic": false,
+        "monospace": false,
+        "truncate": false,
+        "align": "left",
+        "color": "muted",
+        "tone": "hint"
+      }
+    },
+    {
+      "id": 20,
+      "key": "0/2/5",
+      "data": {
+        "type": "Column",
+        "children": [
+          21,
+          22
+        ],
+        "align": "start",
+        "grow": true,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 21,
+      "key": "0/2/5/0",
+      "data": {
+        "type": "text",
+        "text": "Unset (0)",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 22,
+      "key": "0/2/5/1",
+      "data": {
+        "type": "text",
+        "text": "No tasks",
+        "size": 13.0,
+        "bold": false,
+        "italic": false,
+        "monospace": false,
+        "truncate": false,
+        "align": "left",
+        "color": "muted",
+        "tone": "hint"
+      }
+    },
+    {
+      "id": 23,
+      "key": "0/3",
+      "data": {
+        "type": "Column",
+        "children": [
+          24,
+          25,
+          41,
+          47
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 24,
+      "key": "0/3/0",
+      "data": {
+        "type": "text",
+        "text": "Walkthrough task 2",
+        "size": 15.0,
+        "bold": true,
+        "truncate": true,
+        "align": "left"
+      }
+    },
+    {
+      "id": 25,
+      "key": "0/3/1",
+      "data": {
+        "type": "Column",
+        "children": [
+          26,
+          29,
+          32,
+          35,
+          38
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 26,
+      "key": "0/3/1/0",
+      "data": {
+        "type": "Row",
+        "children": [
+          27,
+          28
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 27,
+      "key": "0/3/1/0/0",
+      "data": {
+        "type": "text",
+        "text": "id:",
+        "bold": true
+      }
+    },
+    {
+      "id": 28,
+      "key": "0/3/1/0/1",
+      "data": {
+        "type": "text",
+        "text": "0002"
+      }
+    },
+    {
+      "id": 29,
+      "key": "0/3/1/1",
+      "data": {
+        "type": "Row",
+        "children": [
+          30,
+          31
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 30,
+      "key": "0/3/1/1/0",
+      "data": {
+        "type": "text",
+        "text": "status:",
+        "bold": true
+      }
+    },
+    {
+      "id": 31,
+      "key": "0/3/1/1/1",
+      "data": {
+        "type": "text",
+        "text": "ready"
+      }
+    },
+    {
+      "id": 32,
+      "key": "0/3/1/2",
+      "data": {
+        "type": "Row",
+        "children": [
+          33,
+          34
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 33,
+      "key": "0/3/1/2/0",
+      "data": {
+        "type": "text",
+        "text": "priority:",
+        "bold": true
+      }
+    },
+    {
+      "id": 34,
+      "key": "0/3/1/2/1",
+      "data": {
+        "type": "text",
+        "text": "p0"
+      }
+    },
+    {
+      "id": 35,
+      "key": "0/3/1/3",
+      "data": {
+        "type": "Row",
+        "children": [
+          36,
+          37
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 36,
+      "key": "0/3/1/3/0",
+      "data": {
+        "type": "text",
+        "text": "size:",
+        "bold": true
+      }
+    },
+    {
+      "id": 37,
+      "key": "0/3/1/3/1",
+      "data": {
+        "type": "text",
+        "text": "s"
+      }
+    },
+    {
+      "id": 38,
+      "key": "0/3/1/4",
+      "data": {
+        "type": "Row",
+        "children": [
+          39,
+          40
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 39,
+      "key": "0/3/1/4/0",
+      "data": {
+        "type": "text",
+        "text": "area:",
+        "bold": true
+      }
+    },
+    {
+      "id": 40,
+      "key": "0/3/1/4/1",
+      "data": {
+        "type": "text",
+        "text": "ui"
+      }
+    },
+    {
+      "id": 41,
+      "key": "0/3/2",
+      "data": {
+        "type": "Row",
+        "children": [
+          42,
+          43,
+          44,
+          45,
+          46
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 8.0
+      }
+    },
+    {
+      "id": 42,
+      "key": "0/3/2/0",
+      "data": {
+        "type": "Button",
+        "label": "p0",
+        "on_click": "prio:p0",
+        "style": "primary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 43,
+      "key": "0/3/2/1",
+      "data": {
+        "type": "Button",
+        "label": "p1",
+        "on_click": "prio:p1",
+        "style": "secondary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 44,
+      "key": "0/3/2/2",
+      "data": {
+        "type": "Button",
+        "label": "p2",
+        "on_click": "prio:p2",
+        "style": "secondary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 45,
+      "key": "0/3/2/3",
+      "data": {
+        "type": "Button",
+        "label": "p3",
+        "on_click": "prio:p3",
+        "style": "secondary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 46,
+      "key": "0/3/2/4",
+      "data": {
+        "type": "Button",
+        "label": "p4",
+        "on_click": "prio:p4",
+        "style": "secondary",
+        "disabled": false
+      }
+    },
+    {
+      "id": 47,
+      "key": "0/3/3",
+      "data": {
+        "type": "Scroll",
+        "child": 48,
+        "horizontal": false
+      }
+    },
+    {
+      "id": 48,
+      "key": "0/3/3/0",
+      "data": {
+        "type": "Column",
+        "children": [
+          49,
+          50
+        ],
+        "align": "start",
+        "grow": false,
+        "gap": 4.0
+      }
+    },
+    {
+      "id": 49,
+      "key": "0/3/3/0/0",
+      "data": {
+        "type": "text",
+        "text": "Walkthrough",
+        "size": 13.0,
+        "bold": true,
+        "italic": false,
+        "monospace": false,
+        "truncate": false,
+        "align": "left",
+        "color": "accent"
+      }
+    },
+    {
+      "id": 50,
+      "key": "0/3/3/0/1",
+      "data": {
+        "type": "text",
+        "text": "Review the default app controls on the resolved theme.",
+        "size": 13.0,
+        "bold": false,
+        "italic": false,
+        "monospace": false,
+        "truncate": false,
+        "align": "left"
+      }
+    },
+    {
+      "id": 51,
+      "key": "0/4",
+      "data": {
+        "type": "Pinned",
+        "edge": "bottom",
+        "child": 52
+      }
+    },
+    {
+      "id": 52,
+      "key": "0/4/child",
+      "data": {
+        "type": "FooterKeys",
+        "entries": [
+          {
+            "keys": [
+              "hjkl"
+            ],
+            "description": "move"
+          },
+          {
+            "keys": [
+              "0-4"
+            ],
+            "description": "set priority"
+          },
+          {
+            "keys": [
+              "R"
+            ],
+            "description": "retry/refresh"
+          },
+          {
+            "keys": [
+              "/"
+            ],
+            "description": "search"
+          },
+          {
+            "keys": [
+              "E"
+            ],
+            "description": "re-enable edits"
+          }
+        ],
+        "divider": true
+      }
+    }
+  ]
+}

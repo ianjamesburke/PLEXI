@@ -1138,7 +1138,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 app.ctx.global_style_mut(|s| s.animation_time = if *reduced_motion { 0.0 } else { 0.15 });
             });
         }

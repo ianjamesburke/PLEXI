@@ -106,6 +106,11 @@ pub struct Colors {
 }
 
 impl Colors {
+    /// Egui and window mode follow the resolved app backdrop, including overrides.
+    pub fn is_dark(&self) -> bool {
+        luminance(self.terminal_bg) < 0.179
+    }
+
     /// Readable foreground for text drawn on `fill` (accent buttons, danger
     /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
     /// has the higher WCAG contrast ratio against the fill; if neither
@@ -453,7 +458,8 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// Returns true for presets with a light background — used to flip egui's dark_mode flag.
+/// Nominal preset classification used by palette tests; runtime uses resolved colors.
+#[cfg(test)]
 pub fn is_light_preset(name: &str) -> bool {
     matches!(
         canonical_preset_name(name),
@@ -1127,8 +1133,9 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 /// egui widget the host still renders (buttons, combos, menus, scroll areas,
 /// text edits) inherits the Plexi look from here instead of stock egui — this
 /// is the single place where the default-egui appearance is retired.
-pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
+pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
     use crate::ui::style as tokens;
+    let dark_mode = colors.is_dark();
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.global_style()).clone();
     style.visuals = if dark_mode {
@@ -1588,7 +1595,7 @@ mod tests {
     fn setup_style_locks_theme_against_os_system_theme_override() {
         let ctx = egui::Context::default();
         let colors = Colors::from_config(&ThemeConfig::default());
-        setup_style(&ctx, &colors, true);
+        setup_style(&ctx, &colors);
 
         let _ = ctx.run_ui(
             egui::RawInput {
