@@ -1372,7 +1372,7 @@ mod tests {
         std::fs::write(old.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n").unwrap();
         std::fs::write(
             old.join("main.py"),
-            "from plexi_sdk.ui import AppBar\ndef view():\n    return AppBar('Legacy')\n",
+            "from plexi_sdk.ui import AppBar\nmetadata = dict(actor='app')\ndef view():\n    return AppBar('Legacy')\n",
         )
         .unwrap();
         let global = profile.path().join("plugins");
@@ -1391,6 +1391,9 @@ mod tests {
         assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py"))
             .unwrap()
             .contains("SurfaceHeader"));
+        assert!(std::fs::read_to_string(plugin.plugin_dir.join("main.py"))
+            .unwrap()
+            .contains("actor='plugin'"));
         assert!(profile
             .path()
             .join("migration-plugin-v2/apps/legacy/main.py")
@@ -2569,7 +2572,7 @@ default = true
             }
         }
 
-        let repo_root = std::env::var_os("PLEXI_APP_IMPORT_ROOT")
+        let repo_root = std::env::var_os("PLEXI_PLUGIN_IMPORT_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
         let apps_root = repo_root.join("apps");

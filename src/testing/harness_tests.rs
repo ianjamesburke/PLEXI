@@ -1067,6 +1067,15 @@ fn write_restore_fixture_plugin(parent: &std::path::Path, plugin_id: &str) -> st
 /// same state paths.
 #[test]
 fn plugin_rename_044_installed_layout_restores_live_python_view() {
+    assert_legacy_plugin_layout_restores(3);
+}
+
+#[test]
+fn plugin_rename_044_v2_layout_and_package_migrate_together() {
+    assert_legacy_plugin_layout_restores(2);
+}
+
+fn assert_legacy_plugin_layout_restores(layout_version: u32) {
     let mut harness = HostHarness::new();
     let profile = harness.profile_dir().to_path_buf();
     let old = profile.join("apps");
@@ -1088,6 +1097,12 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
         .runtime
         .state_paths();
     harness.app.save_workspace_now();
+    let layout_path = crate::workspace::workspace_path_in(&profile);
+    let mut layout: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&layout_path).unwrap()).unwrap();
+    layout["version"] = serde_json::json!(layout_version);
+    let legacy_layout = serde_json::to_vec_pretty(&layout).unwrap();
+    std::fs::write(&layout_path, &legacy_layout).unwrap();
     // Produce the exact old package and serialized launch shape. The disk
     // layout keys intentionally retain their 0.4.4 spelling.
     std::fs::write(plugin_dir.join("manifest.toml"),
@@ -1103,6 +1118,12 @@ fn plugin_rename_044_installed_layout_restores_live_python_view() {
     assert!(profile
         .join("migration-plugin-v2/apps/legacy/manifest.toml")
         .is_file());
+    if layout_version == 2 {
+        assert_eq!(
+            std::fs::read(layout_path.with_extension("v2.rollback.json")).unwrap(),
+            legacy_layout
+        );
+    }
 }
 
 #[test]

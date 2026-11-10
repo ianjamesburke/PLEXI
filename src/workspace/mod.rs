@@ -476,7 +476,7 @@ impl WorkspaceFile {
 
     pub fn load_from(profile_dir: &Path) -> Option<Self> {
         let path = workspace_path_in(profile_dir);
-        let data = match std::fs::read_to_string(&path) {
+        let mut data = match std::fs::read_to_string(&path) {
             Ok(data) => data,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
             Err(error) => {
@@ -520,6 +520,16 @@ impl WorkspaceFile {
                     return None;
                 }
             }
+            // A following plugin-path migration must compare against the bytes
+            // this v2 migration just saved, not the pre-migration input. Keep
+            // the compare-and-save guard so an intervening writer still wins.
+            data = match serde_json::to_string_pretty(&ws) {
+                Ok(data) => data,
+                Err(error) => {
+                    log::error!("workspace migration: cannot encode migrated layout: {error}");
+                    return None;
+                }
+            };
         }
         let mut migrated = false;
         if let Err(error) = crate::app::plugin_migration::migrate(profile_dir) {

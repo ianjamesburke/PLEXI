@@ -26,8 +26,21 @@ for root, dirs, files in os.walk(target, followlinks=False):
         with tokenize.open(path) as stream:
             text = stream.read()
             encoding = stream.encoding
-        ast.parse(text, filename=str(path))
+        tree = ast.parse(text, filename=str(path))
         lines = text.splitlines(keepends=True)
+        actors = set()
+        for node in ast.walk(tree):
+            values = []
+            if isinstance(node, ast.Call):
+                values = [keyword.value for keyword in node.keywords if keyword.arg == "actor"]
+            elif isinstance(node, ast.Dict):
+                values = [value for key, value in zip(node.keys, node.values)
+                          if isinstance(key, ast.Constant) and key.value == "actor"]
+            for value in values:
+                if isinstance(value, ast.Constant) and value.value == "app":
+                    # AST columns count UTF-8 bytes; tokenize columns count characters.
+                    column = len(lines[value.lineno - 1].encode()[:value.col_offset].decode())
+                    actors.add((value.lineno, column))
         offsets = [0]
         for line in lines:
             offsets.append(offsets[-1] + len(line))
@@ -41,8 +54,10 @@ for root, dirs, files in os.walk(target, followlinks=False):
                     value = ast.literal_eval(token.string)
                 except (ValueError, SyntaxError):
                     continue
-                if isinstance(value, str) and value in {"app_id", "app_event", "AppBar", "app_bar", "pgap/3"}:
-                    replacement = repr({"app_id": "plugin_id", "app_event": "plugin_event", "AppBar": "SurfaceHeader", "app_bar": "surface_header", "pgap/3": "pgap/4"}[value])
+                if token.start in actors:
+                    replacement = repr("plugin")
+                elif isinstance(value, str) and value in {"app_id", "app_event", "AppBar", "app_bar", "pgap/3", "spawn.app"}:
+                    replacement = repr({"app_id": "plugin_id", "app_event": "plugin_event", "AppBar": "SurfaceHeader", "app_bar": "surface_header", "pgap/3": "pgap/4", "spawn.app": "spawn.plugin"}[value])
             if replacement != token.string:
                 start = offsets[token.start[0] - 1] + token.start[1]
                 end = offsets[token.end[0] - 1] + token.end[1]
