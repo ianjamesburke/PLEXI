@@ -227,6 +227,52 @@ fn popup_row_and_menu_item_state_matrix() {
 }
 
 #[test]
+fn gallery_controls_state_matrix() {
+    let colors = crate::testing::HostHarness::new().app.colors;
+    assert_state_stable(|ui, state| {
+        crate::ui::button::choice_button(
+            ui,
+            "Choice",
+            "Enter",
+            matches!(state, MatrixState::Selected),
+            &colors,
+        )
+    });
+    assert_state_stable(|ui, _| crate::ui::button::icon_button(ui, "+", "Add", &colors));
+    assert_state_stable(|ui, _| {
+        crate::ui::button::toolbar_button(ui, KitButton::new("Toolbar", &colors), "Toolbar")
+    });
+    let mut text = String::from("Example");
+    assert_state_stable(|ui, _| {
+        crate::ui::text_field::TextField::singleline(egui::Id::new("matrix_text"), "Text")
+            .show(ui, &mut text, &colors)
+    });
+    let mut multiline = String::from("Example");
+    assert_state_stable(|ui, _| {
+        crate::ui::text_field::TextArea::multiline(egui::Id::new("matrix_area"), "Text")
+            .rows(3)
+            .show(ui, &mut multiline, &colors)
+    });
+    assert_state_stable(|ui, state| {
+        crate::ui::sidebar_row::SidebarRow {
+            ancestry: Vec::new(),
+            is_active: matches!(state, MatrixState::Selected),
+            is_dragging: false,
+            any_dragging: false,
+            action_enabled: true,
+            ctx_name: "Workspace".into(),
+            ctx_index: Some(1),
+            badge_count: 0,
+            subtitle: None,
+            draggable: false,
+            pane_dots: None,
+        }
+        .show(ui, egui::Id::new("matrix_sidebar"), &colors)
+        .1
+    });
+}
+
+#[test]
 #[should_panic(expected = "state=Selected")]
 fn state_guard_rejects_size_changing_control() {
     assert_state_stable(|ui, state| {
