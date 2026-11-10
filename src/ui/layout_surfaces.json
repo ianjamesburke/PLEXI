@@ -297,7 +297,12 @@
     },
     {
       "id": "src/ui/search_bar.rs",
-      "gap": "Unresolved: search_bar has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/app/text_editor_app.rs",
+        "test": "find_bar_and_header_stay_inside_pane_at_every_size"
+      },
+      "states": "SearchBar as embedded in the editor find bar: query with one match, panes 100/140/180/250 wide; count degrades full, compact, hidden; Explorer wiring is covered by file_browser tests, not by this fixture",
+      "minimum": "Clear is a required slot; icon and input yield last; the status badge is optional and hides before the input drops under its minimum"
     },
     {
       "id": "src/ui/shortcuts.rs",
