@@ -9414,6 +9414,39 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn screenshot_attention_queue_all_states_themes() {
+        use crate::app::attention_queue::{QueueBar, QueueCategory, QueueSource};
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.with_app_mut(|app| {
+            app.attention_queue.synthetic_items = [QueueCategory::Ask, QueueCategory::Failed, QueueCategory::Done, QueueCategory::Notice]
+                .into_iter().enumerate().map(|(i, category)| QueueBar {
+                    id: format!("fixture-{i}"), category, pane_id: i as u64 + 1,
+                    pane_name: format!("Agent {category:?}"), context_id: 0,
+                    context_path: "workspace / agent".into(),
+                    summary: format!("{category:?}: Review the latest agent result and decide what to do next"),
+                    command_text: String::new(), options: vec![], created_at_ms: i as u64,
+                    locked: false, source: QueueSource::Synthetic { id: format!("fixture-{i}") },
+                }).collect();
+            app.sync_attention_queue();
+            app.attention_queue.open = true;
+        });
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+            });
+            for selected in 0..4 {
+                h.with_app_mut(|app| app.attention_queue.selected_idx = selected);
+                h.run_steps(4);
+                h.with_app(|app| assert_eq!(app.attention_queue.items.len(), 4));
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{selected}"))).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn screenshot_attention_queue_realistic_asks_and_results() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
         let monitor = crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir());

@@ -239,7 +239,7 @@ impl Colors {
             bg_sidebar: parse_hex_or(&cfg.bg_sidebar, Color32::from_rgb(0x16, 0x16, 0x1e)),
             bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x16, 0x16, 0x1e)),
             terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x1a, 0x1b, 0x26)),
-            tile_bg: Color32::from_rgb(0x20, 0x23, 0x32),
+            tile_bg: bg_hover,
             code_bg: Color32::from_rgb(0x13, 0x14, 0x1c),
             bg_hover,
             bg_elevated: bg_hover,
