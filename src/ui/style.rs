@@ -223,6 +223,9 @@ pub const BUTTON_MIN_W_MODAL: f32 = 88.0;
 pub const MENU_MIN_W: f32 = 200.0; // Readable popup options.
 pub const BUTTON_H_LG: f32 = 40.0; // Prominent actions.
 pub const BUTTON_H_CHOICE: f32 = 52.0; // Choice rows.
+pub const BUTTON_PAD_X_SM: f32 = 10.0;
+pub const BUTTON_PAD_X_MD: f32 = 12.0;
+pub const BUTTON_PAD_X_LG: f32 = 16.0;
 
 // ── List rows ──────────────────────────────────────────────────────────────
 // 48 gives a two-line row (12pt medium + 11pt secondary) ~8px of air inside
