@@ -1403,7 +1403,7 @@ impl PlexiApp {
                 .iter()
                 .filter(|entry| {
                     entry.command != PaletteCommand::OpenWorkspaceConfig
-                        || self.palette_workspace_root.is_some()
+                        || self.palette_config_workspace_root.is_some()
                 })
                 .map(|entry| PaletteEntry::Command {
                     command: entry.command.clone(),
@@ -1983,9 +1983,9 @@ impl PlexiApp {
             }
             PaletteCommand::OpenWorkspaceConfig => {
                 let Some(root) = self
-                    .palette_workspace_root
+                    .palette_config_workspace_root
                     .clone()
-                    .or_else(|| self.effective_commands_workspace_root())
+                    .or_else(|| self.active_config_workspace_root())
                 else {
                     log::warn!("palette: workspace config requested outside a workspace");
                     return;
@@ -2019,6 +2019,11 @@ impl PlexiApp {
                 Err(error) => log::error!("palette: SetupCli failed: {error}"),
             },
         }
+    }
+
+    pub(crate) fn active_config_workspace_root(&self) -> Option<std::path::PathBuf> {
+        let root = &self.router.active().root;
+        root.join(crate::config::workspace_channel_dir()).is_dir().then(|| root.clone())
     }
 
     pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
@@ -4370,6 +4375,25 @@ mod tests {
         std::fs::write(path, "font_size = 14.0\n").unwrap();
         h.app.reload_config_for_workspace(Some(root.path()));
         assert!(h.app.config_notice.is_none(), "equal effective values should not produce a shadow notice");
+    }
+
+    #[test]
+    fn repo_config_row_opens_the_active_context_config_not_nested_pane_repo() {
+        let mut h = crate::testing::HostHarness::new();
+        let outer = tempfile::tempdir().unwrap();
+        h.app.set_context_root(outer.path().to_path_buf(), None);
+        let nested = outer.path().join("nested");
+        std::fs::create_dir_all(nested.join(crate::config::workspace_channel_dir())).unwrap();
+        let pane = h.add_test_pane();
+        h.app.windows[0].panes.get_mut(&pane).unwrap().as_app_mut().unwrap().workspace_root = nested.clone();
+        h.focus_pane(pane);
+        h.press_key(egui::Key::Comma, egui::Modifiers::COMMAND);
+        let active_path = crate::config::workspace_config_path(outer.path());
+        let nested_path = crate::config::workspace_config_path(&nested);
+        assert!(!active_path.exists() && !nested_path.exists(), "viewing the chooser must not create a file");
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        assert!(active_path.exists(), "the row must open the file used by active-context reload");
+        assert!(!nested_path.exists(), "a nested pane repo must not receive a config the host will not load");
     }
 
     #[test]

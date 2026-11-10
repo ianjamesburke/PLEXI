@@ -334,6 +334,7 @@ pub struct PlexiApp {
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
     pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
+    pub(crate) palette_config_workspace_root: Option<std::path::PathBuf>,
     pub(crate) palette_workspace_config_exists: bool,
     /// Notes loaded at palette-open time, cleared on close.
     pub(crate) palette_notes: Vec<crate::notes::NotePickerEntry>,
@@ -1767,6 +1768,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     palette_selected_key: None,
                     palette_workspace_root: None,
+                    palette_config_workspace_root: None,
                     palette_workspace_config_exists: false,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
@@ -2048,6 +2050,7 @@ impl PlexiApp {
             palette_selected: 0,
             palette_selected_key: None,
             palette_workspace_root: None,
+            palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
@@ -3021,6 +3024,7 @@ impl PlexiApp {
             palette_selected: 0,
             palette_selected_key: None,
             palette_workspace_root: None,
+            palette_config_workspace_root: None,
             palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
@@ -4538,7 +4542,8 @@ impl PlexiApp {
                     // to avoid filesystem traversal in the egui hot path.
                     self.palette_workspace_root = None;
                     self.palette_workspace_root = self.effective_commands_workspace_root();
-                    self.palette_workspace_config_exists = self.palette_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
+                    self.palette_config_workspace_root = self.active_config_workspace_root();
+                self.palette_workspace_config_exists = self.palette_config_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
                     log::info!(
                         "palette: opened, focused workspace = {:?}",
                         self.palette_workspace_root
@@ -4681,7 +4686,8 @@ impl PlexiApp {
             Action::OpenConfig => {
                 self.palette_workspace_root = None;
                 self.palette_workspace_root = self.effective_commands_workspace_root();
-                self.palette_workspace_config_exists = self.palette_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
+                self.palette_config_workspace_root = self.active_config_workspace_root();
+                self.palette_workspace_config_exists = self.palette_config_workspace_root.as_deref().is_some_and(|root| crate::config::workspace_config_path(root).exists());
                 self.palette_query = "open config:".to_owned();
                 self.palette_selected = 0;
                 self.palette_selected_key = None;

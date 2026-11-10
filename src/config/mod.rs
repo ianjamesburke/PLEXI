@@ -2231,7 +2231,7 @@ pub fn ensure_config_file() -> PathBuf {
 pub fn ensure_workspace_config_file(workspace_root: &Path) -> PathBuf {
     ensure_config_file_at_with_template(
         workspace_config_path(workspace_root),
-        "# Settings here override your global config for this repo.\n# Uncomment only the settings you want to override.\n#\n# [theme]\n# preset = \"plexi-dusk\"\n",
+        "# Settings here override your global config for this repo.\n# Uncomment only the settings you want to override.\n#\n# font_size = 14.0\n#\n# [theme]\n# preset = \"plexi-dusk\"\n#\n# [terminal]\n# minimum_contrast = 3.0\n",
     )
 }
 
