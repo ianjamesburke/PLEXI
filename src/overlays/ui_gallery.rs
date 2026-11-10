@@ -140,9 +140,30 @@ pub(crate) fn gallery_rows(
     colors: &crate::ui::theme::Colors,
 ) {
     for (index, name) in data.names.iter().enumerate() {
-        ListRow::new(name)
-            .secondary(data.detail)
-            .chip("app")
+        gallery_row(ui, data, colors, name, index, false, index == 1);
+    }
+    for name in data.names {
+        gallery_row(ui, data, colors, name, 0, true, false);
+    }
+}
+
+fn gallery_row(
+    ui: &mut egui::Ui,
+    data: &GalleryFixture,
+    colors: &Colors,
+    name: &str,
+    index: usize,
+    dense: bool,
+    selected: bool,
+) -> egui::Response {
+    let row = ListRow::new(name)
+        .chip("app")
+        .trailing_action(if index == 2 { "Delete" } else { "Open" })
+        .selected(selected);
+    let row = if dense {
+        row.dense()
+    } else {
+        row.secondary(data.detail)
             .metadata_chips(data.tags)
             .pane_pips(ListRowPips {
                 count: data.pips,
@@ -151,18 +172,9 @@ pub(crate) fn gallery_rows(
                 activities: vec![],
                 static_health_pips: vec![],
             })
-            .trailing_action(if index == 2 { "Delete" } else { "Open" })
-            .selected(index == 1)
             .danger_trailing(index == 2)
-            .show(ui, colors);
-    }
-    for name in data.names {
-        ListRow::new(name)
-            .dense()
-            .chip("app")
-            .trailing_action("Open")
-            .show(ui, colors);
-    }
+    };
+    row.show(ui, colors).response()
 }
 
 #[derive(Clone, Copy)]
@@ -194,6 +206,8 @@ pub(crate) enum KitSpecimen {
     Hints,
     TrustHints,
     ToastCaption,
+    Row,
+    DenseRow,
 }
 
 impl KitSpecimen {
@@ -258,6 +272,24 @@ impl KitSpecimen {
             Self::StatusChip => status_chip(ui, choice_label, colors),
             Self::Badge => crate::ui::badge::badge(ui, choice_label, colors.bg_active, colors),
             Self::EmptyState => empty_state_panel(ui, choice_label, Some(detail), colors),
+            Self::Row => gallery_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                false,
+                selected,
+            ),
+            Self::DenseRow => gallery_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                true,
+                selected,
+            ),
             Self::SwatchToolbar => color_swatch(ui, "toolbar", colors.bg_toolbar, colors),
             Self::SwatchActive => color_swatch(ui, "active", colors.bg_active, colors),
             Self::SwatchAccent => color_swatch(ui, "accent", colors.accent, colors),
@@ -286,7 +318,12 @@ impl KitSpecimen {
     pub(crate) fn interactive(self) -> bool {
         matches!(
             self,
-            Self::Button { .. } | Self::Choice | Self::Icon | Self::Toolbar
+            Self::Button { .. }
+                | Self::Choice
+                | Self::Icon
+                | Self::Toolbar
+                | Self::Row
+                | Self::DenseRow
         )
     }
 }
@@ -329,6 +366,8 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             KitSpecimen::Hints,
             KitSpecimen::TrustHints,
             KitSpecimen::ToastCaption,
+            KitSpecimen::Row,
+            KitSpecimen::DenseRow,
         ])
 }
 
