@@ -6799,53 +6799,159 @@ open(out + ".done", "w").close()
     /// browser, a terminal printing every ANSI color plus dim text, and agent
     /// panes in several states. Review evidence for the theme family (stint 1186).
     #[test]
-    fn screenshot_notes_delete_toast_themes() {
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        let root = h.workspace_root().to_path_buf();
-        let removed = root.join("meeting.md");
-        let kept = root.join("plans.md");
-        std::fs::write(&removed, "Meeting notes\nReview the release checklist.").unwrap();
-        std::fs::write(&kept, "Plans\nFinish the review.").unwrap();
-        add_focused_pane(&mut h);
-        h.with_app_mut(|app| {
-            app.notes_picker_entries = vec![
-                crate::notes::NotePickerEntry {
-                    path: removed.clone(),
-                    title: "Meeting notes".into(),
-                    preview: "Review the release checklist.".into(),
-                    search_text: "meeting".into(),
-                    tier_label: None,
-                },
-                crate::notes::NotePickerEntry {
-                    path: kept.clone(),
-                    title: "Plans".into(),
-                    preview: "Finish the review.".into(),
-                    search_text: "plans".into(),
-                    tier_label: None,
-                },
-            ];
-            app.push_focus_layer(crate::app::FocusKind::NotesPicker);
-            assert!(app.notes_picker_delete_entry(0));
-            // Keep this explicit fixture while the unrelated background index settles.
-            app.notes_picker_shown_paths.clear();
-        });
-        for theme in ["plexi-dusk", "plexi-dawn"] {
+    fn bounded_toast_long_title_keeps_named_undo() {
+        for keyboard in [false, true] {
+            let mut h = PlexiUiHarness::new_sized_scaled(520.0, 600.0, 2.0);
+            let path = h.workspace_root().join("long-note.md");
+            std::fs::write(&path, "original bytes").unwrap();
             h.with_app_mut(|app| {
-                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
-                app.colors = crate::ui::theme::Colors::from_config(&cfg);
-                app.theme = crate::ui::theme::terminal_theme(
-                    &cfg,
-                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
-                );
-                crate::ui::theme::setup_style(
-                    &app.ctx,
-                    &app.colors,
-                    !crate::ui::theme::is_light_preset(theme),
-                );
+                app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+                    path: path.clone(),
+                    title: "Release review with an adversarially long note title ".repeat(20),
+                    preview: String::new(),
+                    search_text: String::new(),
+                    tier_label: None,
+                }];
+                app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                assert!(app.notes_picker_delete_entry(0));
+                app.notes_picker_shown_paths.clear();
             });
             h.run_steps(3);
-            h.save_screenshot(&evidence_png!(&format!("_{theme}")))
-                .unwrap();
+            let screen = h.with_app(|app| app.ctx.content_rect());
+            let painted_undo =
+                h.harness()
+                    .output()
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.text() == "Undo" => {
+                            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                        }
+                        _ => None,
+                    });
+            assert!(
+                painted_undo.is_some_and(|rect| screen.contains_rect(rect)),
+                "Undo must actually paint its full label inside the viewport: {painted_undo:?}"
+            );
+            assert!(!path.exists());
+            if keyboard {
+                h.harness()
+                    .key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+            } else {
+                assert!(h.harness().query_by_label("Undo").is_some());
+                let rect = h.with_app(|app| {
+                    app.ctx
+                        .data(|data| {
+                            data.get_temp::<egui::Rect>(egui::Id::new("notes_delete_undo_rect"))
+                        })
+                        .unwrap()
+                });
+                for pressed in [true, false] {
+                    h.harness().input_mut().events.extend([
+                        egui::Event::PointerMoved(rect.center()),
+                        egui::Event::PointerButton {
+                            pos: rect.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                    h.step();
+                }
+            }
+            h.run_steps(3);
+            assert!(path.exists(), "Undo activation failed: keyboard={keyboard}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes");
+            h.with_app(|app| {
+                assert!(
+                    app.notes_picker_notice
+                        .as_ref()
+                        .is_some_and(|(text, _)| text.starts_with("Restored:"))
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn screenshot_notes_delete_toast_themes() {
+        for scale in [1.0, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, scale);
+            let root = h.workspace_root().to_path_buf();
+            let removed = root.join("meeting.md");
+            let kept = root.join("plans.md");
+            std::fs::write(&removed, "Meeting notes\nReview the release checklist.").unwrap();
+            std::fs::write(&kept, "Plans\nFinish the review.").unwrap();
+            add_focused_pane(&mut h);
+            h.with_app_mut(|app| {
+                app.notes_picker_entries = vec![
+                    crate::notes::NotePickerEntry {
+                        path: removed.clone(),
+                        title: "Meeting notes — release review /workspaces/project/very-long-unbroken-identifier 👩🏽‍💻 ".repeat(8),
+                        preview: "Review the release checklist.".into(),
+                        search_text: "meeting".into(),
+                        tier_label: None,
+                    },
+                    crate::notes::NotePickerEntry {
+                        path: kept.clone(),
+                        title: "Plans".into(),
+                        preview: "Finish the review.".into(),
+                        search_text: "plans".into(),
+                        tier_label: None,
+                    },
+                ];
+                app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                assert!(app.notes_picker_delete_entry(0));
+                // Keep this explicit fixture while the unrelated background index settles.
+                app.notes_picker_shown_paths.clear();
+            });
+            for theme in ["plexi-dusk", "plexi-dawn"] {
+                h.with_app_mut(|app| {
+                    if app.notes_picker_undo.is_none() {
+                        assert!(app.notes_picker_delete_entry(0));
+                        app.notes_picker_shown_paths.clear();
+                    }
+                    app.notes_picker_status = None;
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(
+                        &app.ctx,
+                        &app.colors,
+                        !crate::ui::theme::is_light_preset(theme),
+                    );
+                });
+                h.run_steps(3);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_status = Some(format!(
+                        "Can't undo: {}",
+                        "recovery path unavailable /very/long/path ".repeat(12)
+                    ))
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_error")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_undo_delete();
+                    app.notes_picker_shown_paths.clear();
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_restored")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_notice = None;
+                    app.quit_press_count = 1;
+                    app.quit_last_press = None;
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_quit")))
+                    .unwrap();
+                h.with_app_mut(|app| app.quit_press_count = 0);
+            }
         }
     }
 

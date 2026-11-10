@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod app_chrome;
 pub mod badge;
+pub(crate) mod bounded;
 pub mod button;
 pub mod card_block;
 pub mod code_viewer;

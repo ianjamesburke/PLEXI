@@ -197,6 +197,7 @@ pub const CAMERA_EASE_MS: u64 = 120;
 pub const GALLERY_NARROW_W: f32 = 320.0;
 
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
+pub const TOAST_MAX_WIDTH: f32 = 480.0;
 pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTES_PICKER: f32 = 1040.0; // Notes picker — list left, wrapped preview right.
 pub const NOTES_PICKER_LIST_FRACTION: f32 = 0.5; // Share of the notes picker given to the list half.
