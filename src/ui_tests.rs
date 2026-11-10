@@ -7284,7 +7284,13 @@ open(out + ".done", "w").close()
                 h.run_steps(2);
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_quit")))
                     .unwrap();
-                h.with_app_mut(|app| app.quit_press_count = 0);
+                h.with_app_mut(|app| {
+                    app.quit_press_count = 0;
+                    app.config_notice = Some(("Reloaded. This repo overrides theme.preset (plexi-night).".into(), std::time::Instant::now()));
+                });
+                h.run_steps(2);
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_config_notice"))).unwrap();
+                h.with_app_mut(|app| app.config_notice = None);
             }
         }
     }
