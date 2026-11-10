@@ -168,7 +168,7 @@ impl Capability {
             Self::NetHttp => "net.http",
             Self::SecretsGet => "secrets.get",
             Self::PipeOpen => "pipe.open",
-            Self::SpawnView => "spawn.app",
+            Self::SpawnView => "spawn.plugin",
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::GpuRender => "gpu.render",
@@ -340,7 +340,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "net.http" => Ok(Self::NetHttp),
             "secrets.get" => Ok(Self::SecretsGet),
             "pipe.open" => Ok(Self::PipeOpen),
-            "spawn.app" => Ok(Self::SpawnView),
+            "spawn.plugin" => Ok(Self::SpawnView),
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
             "gpu.render" => Ok(Self::GpuRender),
@@ -945,7 +945,7 @@ pub fn wasm_capability_requires_consent(capability_id: &str) -> bool {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
-        || capability_id == "spawn.app"
+        || capability_id == "spawn.plugin"
         || capability_id == "clipboard.read"
         || capability_id == "clipboard.write"
         || capability_id == "notify"
@@ -966,7 +966,7 @@ pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
         || capability_id.starts_with("audio:record:")
         || capability_id == "spawn-child"
         || capability_id.starts_with("spawn-child:")
-        || capability_id == "spawn.app"
+        || capability_id == "spawn.plugin"
         || capability_id == "clipboard.read"
         || capability_id == "clipboard.write"
         || capability_id == "notify"
@@ -1002,7 +1002,7 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
         "Capture microphone audio"
     } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
         "Spawn a child process"
-    } else if capability_id == "spawn.app" {
+    } else if capability_id == "spawn.plugin" {
         "Open another plugin in a pane"
     } else if capability_id == "clipboard.read" {
         "Read text from the clipboard"
@@ -1759,7 +1759,7 @@ mod tests {
             "net:fetch:api.github.com",
             "audio:record",
             "spawn-child",
-            "spawn.app",
+            "spawn.plugin",
             "clipboard.read",
             "clipboard.write",
             "notify",

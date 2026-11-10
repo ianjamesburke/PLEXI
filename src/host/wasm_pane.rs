@@ -1173,7 +1173,7 @@ impl WasmPane {
                 |err| InputEvent::NotifyResult(Err(err)),
             ),
             Effect::Spawn(req) => self.queue_host_effect(
-                "spawn.app",
+                "spawn.plugin",
                 WasmHostEffect::Spawn {
                     plugin_id: req.plugin_id,
                     layout: req.layout,
@@ -1333,7 +1333,7 @@ impl WasmPane {
             self.access.grant_net_host(host);
         } else if matches!(
             capability_id,
-            "clipboard.read" | "clipboard.write" | "notify" | "spawn.app"
+            "clipboard.read" | "clipboard.write" | "notify" | "spawn.plugin"
         ) {
             log::info!("wasm capability: session grant enabled {capability_id}");
         } else {
@@ -2888,7 +2888,7 @@ mod tests {
     fn notify_and_spawn_round_trip_through_live_host_effect_queue() {
         let mut p = pane(0.0);
         grant_capability(&mut p, "notify");
-        grant_capability(&mut p, "spawn.app");
+        grant_capability(&mut p, "spawn.plugin");
 
         p.exec(
             Effect::Notify(NotificationEffect {

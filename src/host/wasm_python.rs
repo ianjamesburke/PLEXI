@@ -6899,7 +6899,7 @@ mod tests {
         };
         assert_eq!(
             required(serde_json::json!({"type": "spawn_view", "plugin_id": "x"})),
-            Some("spawn.app")
+            Some("spawn.plugin")
         );
         assert_eq!(
             required(
@@ -6923,9 +6923,9 @@ mod tests {
 
     #[test]
     fn python_bridge_gate_is_manifest_membership() {
-        assert!(!manifest_declares(&[], "spawn.app"));
-        assert!(manifest_declares(&["spawn.app".to_string()], "spawn.app"));
-        assert!(!manifest_declares(&["spawn.app".to_string()], "notify"));
+        assert!(!manifest_declares(&[], "spawn.plugin"));
+        assert!(manifest_declares(&["spawn.plugin".to_string()], "spawn.plugin"));
+        assert!(!manifest_declares(&["spawn.plugin".to_string()], "notify"));
     }
 
     #[test]

@@ -184,6 +184,16 @@ fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
         .remove("app")
         .ok_or("legacy manifest is missing [app]")?;
     let identity = plugin.as_table_mut().ok_or("[app] must be a table")?;
+    if let Some(capabilities) = identity.get_mut("capabilities")
+        .and_then(|value| value.get_mut("capabilities"))
+        .and_then(toml::Value::as_array_mut)
+    {
+        for capability in capabilities {
+            if capability.as_str() == Some("spawn.app") {
+                *capability = toml::Value::String("spawn.plugin".into());
+            }
+        }
+    }
     let id = identity
         .get("id")
         .and_then(toml::Value::as_str)
