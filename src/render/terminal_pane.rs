@@ -922,13 +922,24 @@ mod tests {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
                     render_name_bar_and_tabs(ui, NameBarParams {
                         tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
-                        pane_agent_state: Some(&state), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
+                        pane_agent_state: Some(&state), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
                     });
                 });
             });
             let badge = output.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None });
             if let Some(rect) = badge {
                 assert!(rect.left() >= TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0 && rect.right() <= width, "status badge overlaps the state icon or escapes header at width {width}: {rect:?}");
+            }
+            let title = last_rendered_tab_bar_layout(&ctx, 7).and_then(|layout| layout.label_rect);
+            let provenance: Option<egui::Rect> = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64))));
+            if let (Some(title), Some(badge)) = (title, badge) {
+                assert!(!title.intersects(badge), "title and state chip overlap at width {width}");
+            }
+            if let (Some(title), Some(icon)) = (title, provenance) {
+                assert!(!title.intersects(icon), "title and provenance icon overlap at width {width}");
+            }
+            if let (Some(badge), Some(icon)) = (badge, provenance) {
+                assert!(!badge.intersects(icon), "state chip and provenance icon overlap at width {width}");
             }
             if width == 400.0 { assert!(badge.is_some(), "wide header retains the full chip"); }
             if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
