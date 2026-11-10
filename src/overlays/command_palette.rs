@@ -187,10 +187,11 @@ struct PaletteFocusTarget {
 }
 
 /// Palette commands either dispatch the canonical host key action or perform
-/// the palette-only workspace-scoped config handoff.
+/// the palette-only scoped config handoffs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PaletteCommand {
     Host(crate::host::keys::Action),
+    OpenGlobalConfig,
     OpenWorkspaceConfig,
     StatePreset(&'static str),
     /// Open the effective `commands.toml` (workspace if in a workspace, else
@@ -268,7 +269,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
-        command: PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+        command: PaletteCommand::OpenGlobalConfig,
         name: "Open config: everywhere",
         description: "Edit the channel-wide Plexi config file",
         search_text: "open config: everywhere global settings preferences config.toml configuration channel",
@@ -995,7 +996,8 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::UiScaleUp) => bindings.ui_scale_up,
         PaletteCommand::Host(Action::UiScaleDown) => bindings.ui_scale_down,
         PaletteCommand::Host(Action::UiScaleReset) => bindings.ui_scale_reset,
-        PaletteCommand::OpenWorkspaceConfig
+        PaletteCommand::OpenGlobalConfig
+        | PaletteCommand::OpenWorkspaceConfig
         | PaletteCommand::EditCommands
         | PaletteCommand::SwitchCommandsScope
         | PaletteCommand::OpenAttention
@@ -1974,6 +1976,11 @@ impl PlexiApp {
                     Err(error) => log::error!("settings: state preset failed: {error}"),
                 }
             }
+            PaletteCommand::OpenGlobalConfig => {
+                let path = crate::config::ensure_config_file();
+                log::info!("palette: opening global config at {}", path.display());
+                self.open_config_in_editor(path);
+            }
             PaletteCommand::OpenWorkspaceConfig => {
                 let Some(root) = self
                     .palette_workspace_root
@@ -2029,13 +2036,8 @@ impl PlexiApp {
 
     fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
         log::info!("palette: executing host binding {action:?}");
-        if action == crate::host::keys::Action::OpenConfig {
-            let path = crate::config::ensure_config_file();
-            self.open_config_in_editor(path);
-        } else {
-            let ctx = self.ctx.clone();
-            self.dispatch_host_action(action, &ctx);
-        }
+        let ctx = self.ctx.clone();
+        self.dispatch_host_action(action, &ctx);
     }
 
     /// Execute a user-authored command. Stepped commands (`steps = [...]`) or
@@ -2861,7 +2863,7 @@ mod tests {
         assert_eq!(
             palette_command_matches("config"),
             vec![
-                PaletteCommand::Host(crate::host::keys::Action::OpenConfig),
+                PaletteCommand::OpenGlobalConfig,
                 PaletteCommand::OpenWorkspaceConfig,
                 PaletteCommand::Host(crate::host::keys::Action::ReloadConfig),
             ]
@@ -2987,7 +2989,8 @@ mod tests {
                         "needs attention is a palette-only entry with no host chord"
                     );
                 }
-                PaletteCommand::OpenWorkspaceConfig
+                PaletteCommand::OpenGlobalConfig
+                | PaletteCommand::OpenWorkspaceConfig
                 | PaletteCommand::EditCommands
                 | PaletteCommand::SwitchCommandsScope
                 | PaletteCommand::SetupCli
