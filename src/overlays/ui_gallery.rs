@@ -216,11 +216,11 @@ fn gallery_text_field(
     id: egui::Id,
     hint: &str,
     buffer: &mut String,
-    logged: bool,
+    log_name: Option<&'static str>,
 ) -> egui::Response {
     let field = TextField::singleline(id, hint);
-    let field = if logged {
-        field.log_name("ui_gallery")
+    let field = if let Some(name) = log_name {
+        field.log_name(name)
     } else {
         field
     };
@@ -382,7 +382,7 @@ impl KitSpecimen {
                 egui::Id::new("host_ui_gallery_text_normal"),
                 "Normal text field",
                 &mut choice_label.to_owned(),
-                false,
+                None,
             ),
             Self::TextArea => gallery_text_area(ui, colors, &mut choice_label.to_owned()),
             Self::SwatchToolbar => color_swatch(ui, "toolbar", colors.bg_toolbar, colors),
@@ -669,7 +669,7 @@ impl PlexiApp {
                                 egui::Id::new("host_ui_gallery_text_normal"),
                                 "Normal text field",
                                 &mut self.ui_gallery_normal_buf,
-                                false,
+                                None,
                             );
                             ui.add_space(style::SPACE_SM);
                             // Focus follows clicks; a hardcoded focus demo would fight the user.
@@ -679,7 +679,7 @@ impl PlexiApp {
                                 egui::Id::new("host_ui_gallery_text_focused"),
                                 "Click to focus — accent ring + cursor",
                                 &mut self.ui_gallery_focused_buf,
-                                true,
+                                Some("ui_gallery"),
                             );
                             ui.add_space(style::SPACE_SM);
                             let mut multiline_demo = data.code.to_owned();
@@ -781,12 +781,14 @@ impl PlexiApp {
                 .width(style::MODAL_WIDTH_MD)
                 .escape(true)
                 .show(ctx, &colors, |ui| {
-                    TextField::singleline(
+                    gallery_text_field(
+                        ui,
+                        &colors,
                         egui::Id::new("host_ui_gallery_modal_field"),
                         "Type something...",
-                    )
-                    .log_name("ui_gallery_modal")
-                    .show(ui, &mut self.ui_gallery_modal_buf, &colors);
+                        &mut self.ui_gallery_modal_buf,
+                        Some("ui_gallery_modal"),
+                    );
                     let hints = [
                         HintGroup::new(&["\u{23ce}"], "save"),
                         HintGroup::new(&["esc"], "dismiss"),
