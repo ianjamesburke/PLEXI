@@ -2207,6 +2207,24 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         });
     }
 
+    #[test]
+    fn titlebar_title_never_overlaps_toolbar_at_any_scale_or_width() {
+        for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
+            for width in [400.0_f32, 700.0, 1000.0, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.run_steps(3);
+                h.with_app(|app| {
+                    let get = |name| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(name)));
+                    let title = get("titlebar_title_rect").expect("title geometry must be published");
+                    for name in ["help", "version", "attention_mailbox"] {
+                        let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))).expect("toolbar item");
+                        assert!(!title.intersects(item), "scale {scale}, width {width}: title {title:?} overlaps {name} {item:?}");
+                    }
+                });
+            }
+        }
+    }
+
     /// The attention chip in the path bar keeps its own slot: at every UI
     /// scale and window width it stays inside the viewport and never
     /// intersects the toolbar controls, version label, or the pane header's
