@@ -871,6 +871,26 @@ mod tests {
     }
 
     #[test]
+    fn stretched_button_uses_resulting_height_class_font() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        for (height, expected) in [
+            (style::BUTTON_H_SM, style::TEXT_CAPTION),
+            (style::BUTTON_H_MD, style::TEXT_CONTROL),
+            (style::BUTTON_H_LG, style::TEXT_BODY),
+        ] {
+            let (output, rect) = render(3, None, |ui| {
+                ui.add(
+                    KitButton::new("Action", &colors)
+                        .size(ButtonSize::Sm)
+                        .min_size(egui::vec2(80.0, height)),
+                )
+            });
+            assert_eq!(rect.height(), height);
+            assert_eq!(label_shape(&output, "Action").0.size, expected);
+        }
+    }
+
+    #[test]
     fn approved_button_fills_cover_all_kinds() {
         let colors = crate::testing::HostHarness::new().app.colors;
         for (kind, rest, hover, pressed) in [
