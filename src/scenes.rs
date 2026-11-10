@@ -406,6 +406,8 @@ pub enum Step {
     Close { close: String },
     /// Toggle the host sidebar.
     Sidebar { sidebar: bool },
+    /// Make the isolated harness workspace the active context (headless only).
+    SeedWorkspace { seed_workspace: bool },
     /// Seed one message notification through the real host modal render path.
     /// Headless-only: live scenes must create notifications through an app.
     SeedNotification {
@@ -2036,6 +2038,9 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "sidebar mutation has no sanctioned live CLI/IPC command",
             )),
+            Step::SeedWorkspace { .. } => Err(SceneError::new(
+                "unsupported_live_verb", "seed_workspace is headless-only",
+            )),
             Step::SeedNotification { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "seed_notification is headless-only; live scenes must notify through an app",
@@ -2551,6 +2556,7 @@ fn step_label(step: &Step) -> String {
         Step::Focus { focus } => format!("focus {focus}"),
         Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
+        Step::SeedWorkspace { seed_workspace } => format!("seed_workspace {seed_workspace}"),
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
@@ -2931,6 +2937,19 @@ impl HeadlessBackend {
                 let v = *sidebar;
                 self.h.with_app_mut(|app| app.sidebar_visible = v);
                 self.h.step();
+                Ok(None)
+            }
+            Step::SeedWorkspace { seed_workspace } => {
+                if *seed_workspace {
+                    let root = self.h.workspace_root().to_path_buf();
+                    std::fs::create_dir_all(root.join(crate::config::workspace_channel_dir()))
+                        .map_err(|error| SceneError::new("seed_workspace", error.to_string()))?;
+                    self.h.with_app_mut(|app| {
+                        app.router.get_mut(app.router.active_idx()).root = root.clone();
+                        app.windows[app.active_window].path = root;
+                    });
+                    self.h.step();
+                }
                 Ok(None)
             }
             Step::SeedNotification { seed_notification } => {

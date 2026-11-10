@@ -6,13 +6,14 @@ pub mod app_trait;
 pub(crate) mod approval_keyboard;
 pub(crate) mod assistant_host_tools;
 pub mod attention_queue;
-pub(crate) mod card_gallery;
 pub mod audio_player_app;
 pub(crate) mod canvas_bindings;
+pub(crate) mod card_gallery;
 mod cli_actions;
 pub mod cli_operation;
 pub mod command_view_app;
 mod conjoined;
+pub(crate) mod debounce;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
@@ -22,12 +23,12 @@ pub(crate) mod focus_journal;
 pub mod host_mcp;
 pub mod host_version;
 pub mod http;
-pub(crate) mod install_swap;
 pub mod image_viewer_app;
 pub(crate) mod input_owner;
 pub(crate) mod input_router;
-pub(crate) mod launch_spec;
+pub(crate) mod install_swap;
 mod launch_notices;
+pub(crate) mod launch_spec;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -50,7 +51,6 @@ pub mod secrets_app;
 mod sync;
 mod team;
 pub mod text_editor_app;
-pub(crate) mod debounce;
 pub(crate) mod ui_mailbox;
 pub(crate) mod ui_scale;
 pub mod video_player_app;
@@ -334,6 +334,7 @@ pub struct PlexiApp {
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
     pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
+    pub(crate) palette_workspace_config_exists: bool,
     /// Notes loaded at palette-open time, cleared on close.
     pub(crate) palette_notes: Vec<crate::notes::NotePickerEntry>,
     /// User commands (`commands.toml` + global scripts) resolved at palette-open
@@ -407,6 +408,7 @@ pub struct PlexiApp {
     pub(crate) notes_picker_undo: Option<crate::overlays::notes_picker::DeletedNote>,
     pub(crate) notes_trash: Box<dyn crate::overlays::notes_picker::NotesTrash>,
     pub(crate) notes_picker_notice: Option<(String, std::time::Instant)>,
+    pub(crate) config_notice: Option<(String, std::time::Instant)>,
     /// Notes picker: inline status/error message shown in the fixed status slot.
     pub(crate) notes_picker_status: Option<String>,
     /// Notes picker: last text sent to the clipboard (Cmd+C / Cmd+X).
@@ -743,11 +745,15 @@ pub(crate) trait SocketAckWriter: std::io::Write {
     fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
         None
     }
-    fn requires_reply_stream(&self) -> bool { false }
+    fn requires_reply_stream(&self) -> bool {
+        false
+    }
 }
 
 impl SocketAckWriter for crate::platform::ipc::IpcStream {
-    fn requires_reply_stream(&self) -> bool { true }
+    fn requires_reply_stream(&self) -> bool {
+        true
+    }
     fn clone_reply_stream(&self) -> Option<crate::platform::ipc::IpcStream> {
         self.try_clone().ok()
     }
@@ -1685,7 +1691,9 @@ impl PlexiApp {
                     theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
                     colors,
                     default_font_size,
-                    ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+                    ui_scale: config
+                        .ui_scale
+                        .map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
                     ui_scale_persist_at: None,
                     ctx: cc.egui_ctx.clone(),
                     router: restored.router,
@@ -1759,6 +1767,7 @@ impl PlexiApp {
                     palette_selected: 0,
                     palette_selected_key: None,
                     palette_workspace_root: None,
+                    palette_workspace_config_exists: false,
                     palette_notes: Vec::new(),
                     palette_commands: Vec::new(),
                     palette_scroll_reset: false,
@@ -1788,6 +1797,7 @@ impl PlexiApp {
                     notes_picker_undo: None,
                     notes_trash: crate::overlays::notes_picker::default_notes_trash(),
                     notes_picker_notice: None,
+                    config_notice: None,
                     notes_picker_status: None,
                     notes_picker_last_copied: None,
                     notes_picker_copy_unsent: false,
@@ -1940,7 +1950,9 @@ impl PlexiApp {
             theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
             colors,
             default_font_size,
-            ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+            ui_scale: config
+                .ui_scale
+                .map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
             ui_scale_persist_at: None,
             ctx: cc.egui_ctx.clone(),
             router: crate::workspace::router::WorkspaceRouter::new(
@@ -2036,6 +2048,7 @@ impl PlexiApp {
             palette_selected: 0,
             palette_selected_key: None,
             palette_workspace_root: None,
+            palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_scroll_reset: false,
@@ -2065,6 +2078,7 @@ impl PlexiApp {
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_picker_notice: None,
+            config_notice: None,
             notes_picker_status: None,
             notes_picker_last_copied: None,
             notes_picker_copy_unsent: false,
@@ -2910,7 +2924,9 @@ impl PlexiApp {
             theme: theme::terminal_theme(&theme_cfg, config.terminal_minimum_contrast()),
             colors,
             default_font_size: config.font_size.unwrap_or(theme::FONT_SIZE),
-            ui_scale: config.ui_scale.map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
+            ui_scale: config
+                .ui_scale
+                .map_or(ui_scale::UI_SCALE_DEFAULT, ui_scale::clamp_scale),
             ui_scale_persist_at: None,
             ctx,
             router: crate::workspace::router::WorkspaceRouter::new(
@@ -3005,6 +3021,7 @@ impl PlexiApp {
             palette_selected: 0,
             palette_selected_key: None,
             palette_workspace_root: None,
+            palette_workspace_config_exists: false,
             palette_notes: Vec::new(),
             palette_commands: Vec::new(),
             palette_scroll_reset: false,
@@ -3038,6 +3055,7 @@ impl PlexiApp {
             notes_picker_undo: None,
             notes_trash: crate::overlays::notes_picker::default_notes_trash(),
             notes_picker_notice: None,
+            config_notice: None,
             notes_picker_status: None,
             notes_picker_last_copied: None,
             notes_picker_copy_unsent: false,
@@ -3372,7 +3390,10 @@ impl PlexiApp {
 
     pub(crate) fn cancel_context_rename(&mut self, reason: &str) {
         if let Some(edit) = self.context_rename.take() {
-            log::info!("context_rename: cancelled context_id={} reason={reason}", edit.target_id);
+            log::info!(
+                "context_rename: cancelled context_id={} reason={reason}",
+                edit.target_id
+            );
             self.sync_context_rename_focus();
         }
     }
@@ -3818,7 +3839,8 @@ impl eframe::App for PlexiApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if self.quit_coordinator.blocks_input() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             return;
         }
         let _sheet_frame = SheetButtonFrame::begin();
@@ -4030,15 +4052,26 @@ impl eframe::App for PlexiApp {
                 self.show_shortcuts,
             ));
         }
-        if self.host.pane_selection(self.windows[self.active_window].window_id).is_some() {
+        if self
+            .host
+            .pane_selection(self.windows[self.active_window].window_id)
+            .is_some()
+        {
             poll_actions_result.extend(keys::poll_actions(
                 &mut router_input,
                 &[keys::BindingEntry {
-                    modifiers: egui::Modifiers::NONE, key: egui::Key::Escape,
-                    exact: true, no_repeat: true, context: keys::BindingContext::Normal,
+                    modifiers: egui::Modifiers::NONE,
+                    key: egui::Key::Escape,
+                    exact: true,
+                    no_repeat: true,
+                    context: keys::BindingContext::Normal,
                     action: Action::CancelPaneSelection,
                 }],
-                &mut self.claimed_host_key_releases, false, keyboard_capture_active, overlay_open, self.show_shortcuts,
+                &mut self.claimed_host_key_releases,
+                false,
+                keyboard_capture_active,
+                overlay_open,
+                self.show_shortcuts,
             ));
         }
         // Route bare-key contracts on Plexi-owned surfaces (Decision Overlay,
@@ -4185,10 +4218,14 @@ impl eframe::App for PlexiApp {
                 Action::SplitHorizontal | Action::SplitVertical => {
                     let vertical = matches!(action, Action::SplitVertical);
                     if let Some(tile) = self.windows[self.active_window].zoomed_pane {
-                        if let Some(egui_tiles::Tile::Pane(pane)) = self.windows[self.active_window].tree.tiles.get(tile) {
+                        if let Some(egui_tiles::Tile::Pane(pane)) =
+                            self.windows[self.active_window].tree.tiles.get(tile)
+                        {
                             let pane = *pane;
                             if self.wrap_panes_to_subcontext(&[pane], pane, None) {
-                                log::info!("wrap_panes: zoomed split pane={pane} vertical={vertical}");
+                                log::info!(
+                                    "wrap_panes: zoomed split pane={pane} vertical={vertical}"
+                                );
                                 self.split_focused(vertical, None, false, false, None);
                             }
                         }
@@ -4210,10 +4247,12 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SelectPane(dir) => self.extend_pane_selection(dir),
                 Action::CancelPaneSelection => {
-                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
+                    self.host
+                        .clear_pane_selection(self.windows[self.active_window].window_id);
                 }
                 Action::Navigate(dir) => {
-                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
+                    self.host
+                        .clear_pane_selection(self.windows[self.active_window].window_id);
                     let old_active_window = self.active_window;
                     let old_focus = self.windows[self.active_window].focused_pane;
                     let old_window_id = self.windows[self.active_window].window_id;
@@ -4376,6 +4415,10 @@ impl eframe::App for PlexiApp {
                         // to avoid filesystem traversal in the egui hot path.
                         self.palette_workspace_root = None;
                         self.palette_workspace_root = self.effective_commands_workspace_root();
+                        self.palette_workspace_config_exists =
+                            self.palette_workspace_root.as_deref().is_some_and(|root| {
+                                crate::config::workspace_config_path(root).exists()
+                            });
                         log::info!(
                             "palette: opened, focused workspace = {:?}",
                             self.palette_workspace_root
@@ -4517,8 +4560,23 @@ impl eframe::App for PlexiApp {
                     self.open_quick_note_modal();
                 }
                 Action::OpenConfig => {
-                    let path = crate::config::ensure_config_file();
-                    self.open_config_in_editor(path);
+                    self.palette_workspace_root = None;
+                    self.palette_workspace_root = self.effective_commands_workspace_root();
+                    self.palette_workspace_config_exists = self
+                        .palette_workspace_root
+                        .as_deref()
+                        .is_some_and(|root| crate::config::workspace_config_path(root).exists());
+                    self.palette_query = "open config:".to_owned();
+                    self.palette_selected = 0;
+                    self.palette_selected_key = None;
+                    self.palette_scroll_reset = true;
+                    self.palette_notes.clear();
+                    self.palette_commands.clear();
+                    self.show_command_palette = true;
+                    log::info!(
+                        "palette: opened config chooser workspace={:?}",
+                        self.palette_workspace_root
+                    );
                 }
                 Action::ReloadConfig => {
                     self.reload_config();
@@ -4682,7 +4740,9 @@ impl eframe::App for PlexiApp {
         }
         self.begin_quit_cleanup();
         quit::exit_host(
-            self.quit_coordinator.reason.unwrap_or(quit::ExitReason::WindowClosed),
+            self.quit_coordinator
+                .reason
+                .unwrap_or(quit::ExitReason::WindowClosed),
         );
     }
 }
@@ -4748,9 +4808,7 @@ impl PlexiApp {
     ) -> Option<crate::spatial::tiling::PaneId> {
         // 1. Ghost marker if it matches this context and pane is alive.
         if let Some(ghost) = &self.zoom.ghost {
-            if ghost.context_id == ctx_id
-                && self.find_pane_in_any_window(ghost.pane_id).is_some()
-            {
+            if ghost.context_id == ctx_id && self.find_pane_in_any_window(ghost.pane_id).is_some() {
                 self.zoom.context_last_pane.insert(ctx_id, ghost.pane_id);
                 return Some(ghost.pane_id);
             }
@@ -4784,11 +4842,7 @@ impl PlexiApp {
         None
     }
 
-    fn apply_pane_font_size_delta(
-        &mut self,
-        pane_id: crate::spatial::tiling::PaneId,
-        delta: f32,
-    ) {
+    fn apply_pane_font_size_delta(&mut self, pane_id: crate::spatial::tiling::PaneId, delta: f32) {
         if let Some((win_idx, _)) = self.find_pane_in_any_window(pane_id) {
             if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                 if let Some(t) = pane.as_terminal_mut() {
@@ -4801,9 +4855,7 @@ impl PlexiApp {
                 } else if let Some(a) = pane.as_app_mut() {
                     if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
                         app.adjust_font_size(delta);
-                        log::info!(
-                            "pane font size: pane_id={pane_id} builtin app delta={delta}"
-                        );
+                        log::info!("pane font size: pane_id={pane_id} builtin app delta={delta}");
                     }
                 }
             }
@@ -5683,7 +5735,11 @@ pub(crate) fn restore_workspace(
                 saved_pane.kind,
                 crate::workspace::SavedPaneKind::Portal { .. }
             ) {
-                if let crate::workspace::SavedPaneKind::Portal { context_id, reveal_after_close } = &saved_pane.kind {
+                if let crate::workspace::SavedPaneKind::Portal {
+                    context_id,
+                    reveal_after_close,
+                } = &saved_pane.kind
+                {
                     pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
                         pane_id: saved_pane.id,
                         target_context_id: *context_id,
@@ -5828,7 +5884,8 @@ pub(crate) fn restore_workspace(
                         .then(|| {
                             effective_session.as_ref().and_then(|session| {
                                 crate::cli::AgentHarness::parse(&session.harness).map(|harness| {
-                                    let flags = crate::cli::agent::resolved_session_harness_flags_in(
+                                    let flags =
+                                        crate::cli::agent::resolved_session_harness_flags_in(
                                         session.config_name.as_deref(),
                                         harness,
                                         collaborators.profile_dir,
