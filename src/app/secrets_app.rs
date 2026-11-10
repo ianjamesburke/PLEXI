@@ -290,6 +290,7 @@ impl SecretsApp {
                     SecretTarget::Folder(_) => "Folder",
                 })
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(style::MENU_MIN_W);
                     let mut options = vec![(SecretTarget::Global, "Global")];
                     if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
                         options.push((target, "Workspace"));

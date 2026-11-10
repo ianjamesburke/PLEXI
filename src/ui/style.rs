@@ -241,6 +241,7 @@ pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 /// label ("OK") still reads as a button rather than as a chip, and that the
 /// two sit as a matched pair regardless of label length.
 pub const BUTTON_MIN_W_MODAL: f32 = 88.0;
+pub const MENU_MIN_W: f32 = 200.0; // Readable popup options.
 pub const BUTTON_H_LG: f32 = 40.0; // Prominent actions.
 pub const BUTTON_H_CHOICE: f32 = 52.0; // Choice rows.
 
