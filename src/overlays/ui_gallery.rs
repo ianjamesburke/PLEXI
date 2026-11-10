@@ -177,6 +177,66 @@ fn gallery_row(
     row.show(ui, colors).response()
 }
 
+fn gallery_sidebar_row(
+    ui: &mut egui::Ui,
+    data: &GalleryFixture,
+    colors: &Colors,
+    name: &str,
+    index: usize,
+    selected: bool,
+) -> egui::Response {
+    crate::ui::sidebar_row::SidebarRow {
+        ancestry: Vec::new(),
+        is_active: selected,
+        is_dragging: false,
+        any_dragging: false,
+        action_enabled: true,
+        ctx_name: name.to_owned(),
+        ctx_index: Some(index),
+        badge_count: data.count,
+        subtitle: Some(data.command.to_owned()),
+        draggable: false,
+        pane_dots: Some(crate::ui::sidebar_row::PaneDots {
+            route_idx: None,
+            count: data.pips,
+            focused_idx: Some(0),
+            hidden_set: Default::default(),
+            activities: vec![],
+            static_health_pips: Default::default(),
+            windows: vec![],
+        }),
+    }
+    .show(ui, egui::Id::new(("gallery_sidebar", index)), colors)
+    .1
+}
+
+fn gallery_text_field(
+    ui: &mut egui::Ui,
+    colors: &Colors,
+    id: egui::Id,
+    hint: &str,
+    buffer: &mut String,
+    logged: bool,
+) -> egui::Response {
+    let field = TextField::singleline(id, hint);
+    let field = if logged {
+        field.log_name("ui_gallery")
+    } else {
+        field
+    };
+    field.show(ui, buffer, colors)
+}
+
+fn gallery_text_area(ui: &mut egui::Ui, colors: &Colors, buffer: &mut String) -> egui::Response {
+    TextArea::multiline(
+        egui::Id::new("host_ui_gallery_text_area"),
+        "Multiline text area",
+    )
+    .rows(3)
+    .log_name("ui_gallery")
+    .show(ui, buffer, colors)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum KitSpecimen {
     Button {
@@ -208,6 +268,9 @@ pub(crate) enum KitSpecimen {
     ToastCaption,
     Row,
     DenseRow,
+    SidebarRow,
+    TextField,
+    TextArea,
 }
 
 impl KitSpecimen {
@@ -290,6 +353,23 @@ impl KitSpecimen {
                 true,
                 selected,
             ),
+            Self::SidebarRow => gallery_sidebar_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                selected,
+            ),
+            Self::TextField => gallery_text_field(
+                ui,
+                colors,
+                egui::Id::new("host_ui_gallery_text_normal"),
+                "Normal text field",
+                &mut choice_label.to_owned(),
+                false,
+            ),
+            Self::TextArea => gallery_text_area(ui, colors, &mut choice_label.to_owned()),
             Self::SwatchToolbar => color_swatch(ui, "toolbar", colors.bg_toolbar, colors),
             Self::SwatchActive => color_swatch(ui, "active", colors.bg_active, colors),
             Self::SwatchAccent => color_swatch(ui, "accent", colors.accent, colors),
@@ -324,6 +404,9 @@ impl KitSpecimen {
                 | Self::Toolbar
                 | Self::Row
                 | Self::DenseRow
+                | Self::SidebarRow
+                | Self::TextField
+                | Self::TextArea
         )
     }
 }
@@ -368,6 +451,9 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             KitSpecimen::ToastCaption,
             KitSpecimen::Row,
             KitSpecimen::DenseRow,
+            KitSpecimen::SidebarRow,
+            KitSpecimen::TextField,
+            KitSpecimen::TextArea,
         ])
 }
 
@@ -528,70 +614,32 @@ impl PlexiApp {
                         });
                         chrome_section(ui, "Sidebar rows", &colors, |ui| {
                             for (index, name) in data.names.iter().enumerate() {
-                                crate::ui::sidebar_row::SidebarRow {
-                                    ancestry: Vec::new(),
-                                    is_active: index == 1,
-                                    is_dragging: false,
-                                    any_dragging: false,
-                                    action_enabled: true,
-                                    ctx_name: (*name).to_owned(),
-                                    ctx_index: Some(index),
-                                    badge_count: data.count,
-                                    subtitle: Some(data.command.to_owned()),
-                                    draggable: false,
-                                    pane_dots: Some(crate::ui::sidebar_row::PaneDots {
-                                        route_idx: None,
-                                        count: data.pips,
-                                        focused_idx: Some(0),
-                                        hidden_set: Default::default(),
-                                        activities: vec![],
-                                        static_health_pips: Default::default(),
-                                        windows: vec![],
-                                    }),
-                                }
-                                .show(
-                                    ui,
-                                    egui::Id::new(("gallery_sidebar", index)),
-                                    &colors,
-                                );
+                                gallery_sidebar_row(ui, &data, &colors, name, index, index == 1);
                             }
                         });
 
                         chrome_section(ui, "Text fields", &colors, |ui| {
-                            TextField::singleline(
+                            gallery_text_field(
+                                ui,
+                                &colors,
                                 egui::Id::new("host_ui_gallery_text_normal"),
                                 "Normal text field",
-                            )
-                            .show(
-                                ui,
                                 &mut self.ui_gallery_normal_buf,
-                                &colors,
+                                false,
                             );
                             ui.add_space(style::SPACE_SM);
-                            // No `.focused(true)` here — a hardcoded focus
-                            // demo fights the user's clicks (two fields
-                            // re-stealing focus from each other every frame).
-                            // Focus follows clicks; the focused style shows on
-                            // whichever field the user activates.
-                            TextField::singleline(
+                            // Focus follows clicks; a hardcoded focus demo would fight the user.
+                            gallery_text_field(
+                                ui,
+                                &colors,
                                 egui::Id::new("host_ui_gallery_text_focused"),
                                 "Click to focus — accent ring + cursor",
-                            )
-                            .log_name("ui_gallery")
-                            .show(
-                                ui,
                                 &mut self.ui_gallery_focused_buf,
-                                &colors,
+                                true,
                             );
                             ui.add_space(style::SPACE_SM);
                             let mut multiline_demo = data.code.to_owned();
-                            TextArea::multiline(
-                                egui::Id::new("host_ui_gallery_text_area"),
-                                "Multiline text area",
-                            )
-                            .rows(3)
-                            .log_name("ui_gallery")
-                            .show(ui, &mut multiline_demo, &colors);
+                            gallery_text_area(ui, &colors, &mut multiline_demo);
                         });
 
                         chrome_section(ui, "Modal patterns", &colors, |ui| {
