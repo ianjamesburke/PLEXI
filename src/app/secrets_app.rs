@@ -684,7 +684,15 @@ mod tests {
             });
             h.run_steps(4);
             h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-before.png")).unwrap();
-            h.harness().get_by_label("Workspace").click();
+            // The stock ComboBox does not expose its selected text as an accessibility node.
+            let selector = egui::pos2(70.0, 255.0);
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(selector),
+                    egui::Event::PointerButton { pos: selector, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ]);
+                h.step();
+            }
             h.run_steps(3);
             let global = h.harness().get_by_label("Global").rect();
             let workspace = h
