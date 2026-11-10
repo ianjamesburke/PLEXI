@@ -14,6 +14,10 @@ on:
         description: Run package/signing acceptance without publishing a release
         type: boolean
         default: false
+      verify_stable:
+        description: Exercise the stable package path when verify_only is true
+        type: boolean
+        default: false
       signing_only:
         description: Check only signing credentials on a disposable Mac runner; never publish
         type: boolean
@@ -24,7 +28,7 @@ concurrency:
 jobs:
   signing:
     if: ${{ inputs.signing_only }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
@@ -37,10 +41,10 @@ jobs:
       - name: Import the persistent signing identity
         timeout-minutes: 2
         env:
-          PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
-          PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
-          PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
-        run: bash scripts/setup-alpha-release-signing.sh
+          PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+          PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+          PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+        run: bash scripts/setup-release-signing.sh
       - name: Sign and verify a changed executable
         run: |
           cp /usr/bin/true "$RUNNER_TEMP/signing-probe"
@@ -58,17 +62,17 @@ jobs:
       - name: Remove temporary signing trust and Keychain
         if: always()
         run: |
-          bash scripts/setup-alpha-release-signing.sh --cleanup
+          bash scripts/setup-release-signing.sh --cleanup
   packages:
     if: ${{ !inputs.signing_only }}
     uses: ./.github/workflows/distribution.yml
     with:
       ref: ${{ inputs.tag || github.ref }}
-      tag: ${{ inputs.verify_only && 'v0.0.0-alpha.0' || inputs.tag || github.ref_name }}
+      tag: ${{ inputs.verify_only && (inputs.verify_stable && 'v0.0.0' || 'v0.0.0-alpha.0') || inputs.tag || github.ref_name }}
     secrets:
-      PLEXI_ALPHA_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
-      PLEXI_ALPHA_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
-      PLEXI_ALPHA_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+      PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
+      PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
+      PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
   publish:
     if: ${{ !inputs.verify_only && !inputs.signing_only }}
     needs: packages
