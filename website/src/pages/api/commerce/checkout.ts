@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { getProduct, startAppCheckout } from '../../../server/commerce';
+import { getProduct, startPluginCheckout } from '../../../server/commerce';
 import { salesEnabled, siteUrl } from '../../../server/env';
 import { json, parseJsonBody, requireAccount } from '../../../server/http';
 
@@ -21,16 +21,16 @@ export const POST: APIRoute = async ({ request, cookies }) => {
 
     const body = await parseJsonBody(request);
     if (body instanceof Response) return body;
-    const appId = typeof body.app_id === 'string' ? body.app_id.trim() : '';
-    if (!appId) return json({ error: 'app_id is required' }, 400);
+    const pluginId = typeof body.plugin_id === 'string' ? body.plugin_id.trim() : '';
+    if (!pluginId) return json({ error: 'plugin_id is required' }, 400);
 
-    const product = await getProduct(appId);
-    if (!product) return json({ error: `no paid product for app '${appId}'` }, 404);
+    const product = await getProduct(pluginId);
+    if (!product) return json({ error: `no paid product for plugin '${pluginId}'` }, 404);
 
-    const successUrl = `${siteUrl()}/account?purchased=${encodeURIComponent(appId)}`;
-    const started = await startAppCheckout(auth.account, product, successUrl);
+    const successUrl = `${siteUrl()}/account?purchased=${encodeURIComponent(pluginId)}`;
+    const started = await startPluginCheckout(auth.account, product, successUrl);
     console.info(
-      `[api/commerce/checkout] checkout created app_id=${appId} account_id=${auth.account.id} purchase_id=${started.purchaseId}`,
+      `[api/commerce/checkout] checkout created plugin_id=${pluginId} account_id=${auth.account.id} purchase_id=${started.purchaseId}`,
     );
     return json(
       {

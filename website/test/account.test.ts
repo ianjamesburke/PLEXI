@@ -144,8 +144,8 @@ describe('account deletion', () => {
     const account = await getOrCreateAccount('doomed@example.com');
     const { token } = await issueBearerToken(account.id);
     await getPool().query(
-      `INSERT INTO purchases (account_id, app_id, amount_cents, currency)
-       VALUES ($1, 'demo.app', 1000, 'usd')`,
+      `INSERT INTO purchases (account_id, plugin_id, amount_cents, currency)
+       VALUES ($1, 'demo.plugin', 1000, 'usd')`,
       [account.id],
     );
 
@@ -158,7 +158,7 @@ describe('account deletion', () => {
     expect(await resolveBearer(token)).toBeNull();
     // Purchase survives, anonymized.
     const purchase = await getPool().query(
-      `SELECT account_id FROM purchases WHERE app_id = 'demo.app'`,
+      `SELECT account_id FROM purchases WHERE plugin_id = 'demo.plugin'`,
     );
     expect(purchase.rowCount).toBe(1);
     expect(purchase.rows[0].account_id).toBeNull();

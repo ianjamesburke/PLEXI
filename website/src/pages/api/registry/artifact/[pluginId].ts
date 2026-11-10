@@ -3,7 +3,7 @@ import {
   getProduct,
   hasEntitlement,
   paymentRequiredEnvelope,
-  startAppCheckout,
+  startPluginCheckout,
 } from '../../../../server/commerce';
 import { salesEnabled, siteUrl } from '../../../../server/env';
 import { getArtifact } from '../../../../server/storage';
@@ -24,36 +24,36 @@ export const prerender = false;
  * Registry METADATA stays free (marketplace-hosted.md §1); only the bytes gate.
  */
 export const GET: APIRoute = async ({ request, cookies, params }) => {
-  const appId = params.appId ?? '';
+  const pluginId = params.pluginId ?? '';
   try {
-    if (!appId) return json({ error: 'app id is required' }, 400);
+    if (!pluginId) return json({ error: 'plugin id is required' }, 400);
 
-    const product = await getProduct(appId);
+    const product = await getProduct(pluginId);
     // Not a paid app → this gated route does not serve it. Free artifacts are
     // static files; a 404 keeps the paid/free split unambiguous.
-    if (!product) return json({ error: `no paid product for app '${appId}'` }, 404);
+    if (!product) return json({ error: `no paid product for plugin '${pluginId}'` }, 404);
 
     const auth = await requireAccount(request, cookies);
     if (auth instanceof Response) return auth;
 
-    if (await hasEntitlement(auth.account.id, appId)) {
+    if (await hasEntitlement(auth.account.id, pluginId)) {
       if (!product.artifactKey) {
-        console.error(`[api/registry/artifact] entitled but no artifact_key app_id=${appId}`);
+        console.error(`[api/registry/artifact] entitled but no artifact_key plugin_id=${pluginId}`);
         return json({ error: 'artifact not available' }, 404);
       }
       const artifact = await getArtifact(product.artifactKey);
       if (!artifact) {
         console.error(
-          `[api/registry/artifact] artifact_key missing in storage app_id=${appId} key=${product.artifactKey}`,
+          `[api/registry/artifact] artifact_key missing in storage plugin_id=${pluginId} key=${product.artifactKey}`,
         );
         return json({ error: 'artifact not available' }, 404);
       }
       console.info(
-        `[api/registry/artifact] streaming paid artifact app_id=${appId} account_id=${auth.account.id}`,
+        `[api/registry/artifact] streaming paid artifact plugin_id=${pluginId} account_id=${auth.account.id}`,
       );
       const responseHeaders: Record<string, string> = {
         'content-type': artifact.contentType,
-        'content-disposition': `attachment; filename="${appId}.plexipkg"`,
+        'content-disposition': `attachment; filename="${pluginId}.plexipkg"`,
         'cache-control': 'private, no-store',
       };
       if (artifact.contentLength !== undefined) {
@@ -65,21 +65,21 @@ export const GET: APIRoute = async ({ request, cookies, params }) => {
     // No entitlement. If sales are live, mint a checkout so the client can buy;
     // otherwise the envelope has no purchasable option yet.
     if (!salesEnabled()) {
-      console.info(`[api/registry/artifact] payment required, sales disabled app_id=${appId}`);
+      console.info(`[api/registry/artifact] payment required, sales disabled plugin_id=${pluginId}`);
       return json(
         { reason: 'purchase_required', price: `${(product.priceCents / 100).toFixed(2)} ${product.currency.toUpperCase()}`, options: [] },
         402,
       );
     }
 
-    const successUrl = `${siteUrl()}/account?purchased=${encodeURIComponent(appId)}`;
-    const started = await startAppCheckout(auth.account, product, successUrl);
+    const successUrl = `${siteUrl()}/account?purchased=${encodeURIComponent(pluginId)}`;
+    const started = await startPluginCheckout(auth.account, product, successUrl);
     console.info(
-      `[api/registry/artifact] payment required app_id=${appId} account_id=${auth.account.id} purchase_id=${started.purchaseId}`,
+      `[api/registry/artifact] payment required plugin_id=${pluginId} account_id=${auth.account.id} purchase_id=${started.purchaseId}`,
     );
     return json(paymentRequiredEnvelope(product, started.checkoutUrl, started.purchaseId), 402);
   } catch (err) {
-    console.error(`[api/registry/artifact] failed app_id=${appId}:`, err);
+    console.error(`[api/registry/artifact] failed plugin_id=${pluginId}:`, err);
     return json({ error: 'server error' }, 500);
   }
 };

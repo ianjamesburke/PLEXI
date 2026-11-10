@@ -19,7 +19,7 @@
 import { Polar } from '@polar-sh/sdk';
 import type { PresentmentCurrency } from '@polar-sh/sdk/models/components/presentmentcurrency.js';
 import { requireEnv, readEnv } from './env';
-import { getProduct, upsertAppProduct } from './commerce';
+import { getProduct, upsertPluginProduct } from './commerce';
 
 /** Metadata key marking the single recurring Plexi AI Pro subscription product. */
 export const AI_PRO_ROLE = 'ai_pro';
@@ -143,8 +143,8 @@ function client(): ProductClient {
 }
 
 /** Input describing a first-party paid app to provision. */
-export interface AppProductInput {
-  appId: string;
+export interface PluginProductInput {
+  pluginId: string;
   /** Display name shown on the Polar checkout page. */
   name: string;
   priceCents: number;
@@ -165,15 +165,15 @@ export interface EnsuredProduct {
  * existing product and update the row. The `product_id` is written once and
  * never changes. Free apps are never passed here — the caller enforces a price.
  */
-export async function ensureAppProduct(input: AppProductInput): Promise<EnsuredProduct> {
+export async function ensurePluginProduct(input: PluginProductInput): Promise<EnsuredProduct> {
   if (!Number.isInteger(input.priceCents) || input.priceCents <= 0) {
     throw new Error(
-      `ensureAppProduct: price_cents must be a positive integer (free apps are not registered); got ${input.priceCents}`,
+      `ensurePluginProduct: price_cents must be a positive integer (free plugins are not registered); got ${input.priceCents}`,
     );
   }
   const currency = input.currency.toLowerCase();
-  const metadata = { app_id: input.appId, plexi_kind: 'app' };
-  const existing = await getProduct(input.appId);
+  const metadata = { plugin_id: input.pluginId, plexi_kind: 'plugin' };
+  const existing = await getProduct(input.pluginId);
 
   if (existing) {
     const updated = await client().update({
@@ -183,15 +183,15 @@ export async function ensureAppProduct(input: AppProductInput): Promise<EnsuredP
       currency,
       metadata,
     });
-    await upsertAppProduct({
-      appId: input.appId,
+    await upsertPluginProduct({
+      pluginId: input.pluginId,
       polarProductId: updated.id,
       priceCents: input.priceCents,
       currency,
       publisher: input.publisher,
     });
     console.info(
-      `[products] app product updated app_id=${input.appId} product_id=${updated.id} price_cents=${input.priceCents}`,
+      `[products] plugin product updated plugin_id=${input.pluginId} product_id=${updated.id} price_cents=${input.priceCents}`,
     );
     return { productId: updated.id, created: false };
   }
@@ -203,15 +203,15 @@ export async function ensureAppProduct(input: AppProductInput): Promise<EnsuredP
     recurringInterval: null,
     metadata,
   });
-  await upsertAppProduct({
-    appId: input.appId,
+  await upsertPluginProduct({
+    pluginId: input.pluginId,
     polarProductId: created.id,
     priceCents: input.priceCents,
     currency,
     publisher: input.publisher,
   });
   console.info(
-    `[products] app product created app_id=${input.appId} product_id=${created.id} price_cents=${input.priceCents}`,
+    `[products] plugin product created plugin_id=${input.pluginId} product_id=${created.id} price_cents=${input.priceCents}`,
   );
   return { productId: created.id, created: true };
 }

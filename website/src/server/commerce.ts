@@ -8,8 +8,8 @@ import { getClient, query } from './db';
 import { createCheckout, publisherPayoutCents } from './polar';
 
 /** A paid app's Polar product mapping and catalog price. */
-export interface AppProduct {
-  appId: string;
+export interface PluginProduct {
+  pluginId: string;
   polarProductId: string;
   priceCents: number;
   currency: string;
@@ -19,23 +19,23 @@ export interface AppProduct {
 }
 
 /** Look up a paid app's product row. Absent → the app is free (or unknown). */
-export async function getProduct(appId: string): Promise<AppProduct | null> {
+export async function getProduct(pluginId: string): Promise<PluginProduct | null> {
   const res = await query<{
-    app_id: string;
+    plugin_id: string;
     polar_product_id: string;
     price_cents: number;
     currency: string;
     publisher: string;
     artifact_key: string | null;
   }>(
-    `SELECT app_id, polar_product_id, price_cents, currency, publisher, artifact_key
-     FROM app_products WHERE app_id = $1`,
-    [appId],
+    `SELECT plugin_id, polar_product_id, price_cents, currency, publisher, artifact_key
+     FROM plugin_products WHERE plugin_id = $1`,
+    [pluginId],
   );
   if (res.rowCount === 0) return null;
   const r = res.rows[0];
   return {
-    appId: r.app_id,
+    pluginId: r.plugin_id,
     polarProductId: r.polar_product_id,
     priceCents: r.price_cents,
     currency: r.currency,
@@ -46,7 +46,7 @@ export async function getProduct(appId: string): Promise<AppProduct | null> {
 
 /** The Polar product mapping to persist for a first-party paid app (stint 0355). */
 export interface AppProductUpsert {
-  appId: string;
+  pluginId: string;
   polarProductId: string;
   priceCents: number;
   currency: string;
@@ -59,20 +59,20 @@ export interface AppProductUpsert {
  * updated in place on later runs (a price change is an update, never a new row);
  * `artifact_key` is left untouched — the publish flow (stint 0344) owns it.
  */
-export async function upsertAppProduct(row: AppProductUpsert): Promise<void> {
+export async function upsertPluginProduct(row: AppProductUpsert): Promise<void> {
   await query(
-    `INSERT INTO app_products (app_id, polar_product_id, price_cents, currency, publisher)
+    `INSERT INTO plugin_products (plugin_id, polar_product_id, price_cents, currency, publisher)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (app_id) DO UPDATE
+     ON CONFLICT (plugin_id) DO UPDATE
        SET polar_product_id = EXCLUDED.polar_product_id,
            price_cents      = EXCLUDED.price_cents,
            currency         = EXCLUDED.currency,
            publisher        = EXCLUDED.publisher,
            updated_at       = now()`,
-    [row.appId, row.polarProductId, row.priceCents, row.currency, row.publisher],
+    [row.pluginId, row.polarProductId, row.priceCents, row.currency, row.publisher],
   );
   console.info(
-    `[commerce] app_products upserted app_id=${row.appId} product_id=${row.polarProductId} price_cents=${row.priceCents}`,
+    `[commerce] plugin_products upserted plugin_id=${row.pluginId} product_id=${row.polarProductId} price_cents=${row.priceCents}`,
   );
 }
 
@@ -100,7 +100,7 @@ export interface PaymentRequiredEnvelope {
 }
 
 export function paymentRequiredEnvelope(
-  product: AppProduct,
+  product: PluginProduct,
   checkoutUrl: string,
   purchaseId: string,
 ): PaymentRequiredEnvelope {
@@ -117,18 +117,18 @@ export function paymentRequiredEnvelope(
  */
 export async function createPendingPurchase(
   accountId: string,
-  product: AppProduct,
+  product: PluginProduct,
 ): Promise<string> {
   const res = await query<{ id: string }>(
     `INSERT INTO purchases
-       (account_id, app_id, publisher, amount_cents, currency, status)
+       (account_id, plugin_id, publisher, amount_cents, currency, status)
      VALUES ($1, $2, $3, $4, $5, 'pending')
      RETURNING id`,
-    [accountId, product.appId, product.publisher, product.priceCents, product.currency],
+    [accountId, product.pluginId, product.publisher, product.priceCents, product.currency],
   );
   const id = res.rows[0].id;
   console.info(
-    `[commerce] pending purchase created purchase_id=${id} app_id=${product.appId} account_id=${accountId}`,
+    `[commerce] pending purchase created purchase_id=${id} plugin_id=${product.pluginId} account_id=${accountId}`,
   );
   return id;
 }
@@ -154,9 +154,9 @@ export interface StartedCheckout {
  * gated-download 402 path so a "buy" button and a denied download mint checkouts
  * identically.
  */
-export async function startAppCheckout(
+export async function startPluginCheckout(
   account: { id: string; email: string },
-  product: AppProduct,
+  product: PluginProduct,
   successUrl: string,
 ): Promise<StartedCheckout> {
   const purchaseId = await createPendingPurchase(account.id, product);
@@ -167,14 +167,14 @@ export async function startAppCheckout(
     externalCustomerId: account.id,
     metadata: {
       purchase_id: purchaseId,
-      app_id: product.appId,
+      plugin_id: product.pluginId,
       account_id: account.id,
       publisher: product.publisher,
     },
   });
   await setPurchaseCheckoutId(purchaseId, session.checkoutId);
   console.info(
-    `[commerce] checkout started purchase_id=${purchaseId} app_id=${product.appId} checkout_id=${session.checkoutId}`,
+    `[commerce] checkout started purchase_id=${purchaseId} plugin_id=${product.pluginId} checkout_id=${session.checkoutId}`,
   );
   return { checkoutUrl: session.url, purchaseId };
 }
@@ -184,7 +184,7 @@ export interface PaidOrder {
   polarOrderId: string;
   purchaseId: string | null;
   accountId: string | null;
-  appId: string | null;
+  pluginId: string | null;
   publisher: string | null;
   amountCents: number;
   netCents: number;
@@ -228,18 +228,18 @@ export async function recordPaidOrder(order: PaidOrder): Promise<void> {
     if (updated === 0) {
       // No pending row to claim — insert a self-contained complete row. Requires
       // app_id from metadata; without it we cannot attribute the sale.
-      if (!order.appId) {
+      if (!order.pluginId) {
         throw new Error(
-          `recordPaidOrder: no pending purchase for order ${order.polarOrderId} and metadata carries no app_id`,
+          `recordPaidOrder: no pending purchase for order ${order.polarOrderId} and metadata carries no plugin_id`,
         );
       }
       await client.query(
         `INSERT INTO purchases
-           (account_id, app_id, publisher, polar_order_id, amount_cents, net_cents, currency, status)
+           (account_id, plugin_id, publisher, polar_order_id, amount_cents, net_cents, currency, status)
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'complete')`,
         [
           order.accountId,
-          order.appId,
+          order.pluginId,
           order.publisher,
           order.polarOrderId,
           order.amountCents,
@@ -251,7 +251,7 @@ export async function recordPaidOrder(order: PaidOrder): Promise<void> {
 
     await client.query('COMMIT');
     console.info(
-      `[commerce] purchase complete polar_order_id=${order.polarOrderId} app_id=${order.appId ?? '?'} net_cents=${order.netCents} publisher_payout_cents=${publisherPayoutCents(order.netCents)}`,
+      `[commerce] purchase complete polar_order_id=${order.polarOrderId} plugin_id=${order.pluginId ?? '?'} net_cents=${order.netCents} publisher_payout_cents=${publisherPayoutCents(order.netCents)}`,
     );
   } catch (err) {
     await client.query('ROLLBACK');
@@ -265,23 +265,23 @@ export async function recordPaidOrder(order: PaidOrder): Promise<void> {
 /** Delete the purchase row for a refunded order. Idempotent. */
 export async function deletePurchaseByOrder(polarOrderId: string): Promise<void> {
   const res = await query(
-    `DELETE FROM purchases WHERE polar_order_id = $1 RETURNING app_id`,
+    `DELETE FROM purchases WHERE polar_order_id = $1 RETURNING plugin_id`,
     [polarOrderId],
   );
   if (res.rowCount) {
     console.info(
-      `[commerce] purchase refunded, row deleted polar_order_id=${polarOrderId} app_id=${res.rows[0].app_id}`,
+      `[commerce] purchase refunded, row deleted polar_order_id=${polarOrderId} plugin_id=${res.rows[0].plugin_id}`,
     );
   }
 }
 
 /** True if the account holds a completed, unrefunded purchase for the app. */
-export async function hasEntitlement(accountId: string, appId: string): Promise<boolean> {
+export async function hasEntitlement(accountId: string, pluginId: string): Promise<boolean> {
   const res = await query(
     `SELECT 1 FROM purchases
-     WHERE account_id = $1 AND app_id = $2 AND status = 'complete'
+     WHERE account_id = $1 AND plugin_id = $2 AND status = 'complete'
      LIMIT 1`,
-    [accountId, appId],
+    [accountId, pluginId],
   );
   return (res.rowCount ?? 0) > 0;
 }

@@ -40,7 +40,7 @@
     "next_payment_attempt_at": null,
     "metadata": {
       "purchase_id": "PURCHASE_ID",
-      "app_id": "reviewed-notes",
+      "plugin_id": "reviewed-notes",
       "account_id": "ACCOUNT_ID",
       "publisher": "plexi"
     },
@@ -83,7 +83,7 @@
     },
     "product": {
       "metadata": {
-        "app_id": "reviewed-notes",
+        "plugin_id": "reviewed-notes",
         "plexi_kind": "app"
       },
       "id": "717d9942-9e10-4694-b4b1-3d20f14c123e",
