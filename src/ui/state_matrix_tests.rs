@@ -245,14 +245,27 @@ fn assert_state_stable_impl(
 fn button_state_matrix() {
     let colors = crate::testing::HostHarness::new().app.colors;
     for specimen in crate::overlays::ui_gallery::kit_specimens() {
-        assert_state_stable(|ui, state| {
-            specimen.show(
-                ui,
-                &colors,
-                matches!(state, MatrixState::Selected),
-                "Choice",
-            )
-        });
+        if specimen.interactive() {
+            assert_state_stable(|ui, state| {
+                specimen.show(
+                    ui,
+                    &colors,
+                    matches!(state, MatrixState::Selected),
+                    "Choice",
+                    "Details",
+                )
+            });
+        } else {
+            assert_static_state_stable(|ui, state| {
+                specimen.show(
+                    ui,
+                    &colors,
+                    matches!(state, MatrixState::Selected),
+                    "Choice",
+                    "Details",
+                )
+            });
+        }
     }
 }
 
