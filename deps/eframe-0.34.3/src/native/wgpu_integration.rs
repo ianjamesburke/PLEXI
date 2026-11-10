@@ -721,6 +721,7 @@ impl WgpuWinitRunning<'_> {
             let capture_only = !screenshot_commands.is_empty();
             if capture_only {
                 log::info!(
+                    target: "plexi::screenshot_backend",
                     "screenshot: fresh offscreen paint viewport={viewport_id:?} visible={is_visible} occluded={:?} minimized={:?} focused={:?}",
                     viewport.info.occluded,
                     viewport.info.minimized,
