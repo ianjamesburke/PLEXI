@@ -153,7 +153,16 @@ impl super::PlexiApp {
             // AppKit confirmation is distinct from egui's occlusion flag:
             // occluded means covered, and cannot prove the window disappeared.
             match hide_native_window(frame) {
-                Ok(true) => trace("window_hidden_native"),
+                Ok(true) => {
+                    trace("window_hidden_native");
+                    // Native hide is acknowledged now. Deferred backends only
+                    // enter this watchdog mode on the following logic pass.
+                    crate::platform::logging::mark_shutdown_cleanup(
+                        &self.ui_phase,
+                        self.quit_coordinator.is_active(),
+                        true,
+                    );
+                }
                 Ok(false) => trace("window_hide_deferred"),
                 Err(error) => {
                     log::error!("quit: cannot hide native window: {error}; retrying");
@@ -171,9 +180,18 @@ impl super::PlexiApp {
             return true;
         }
         trace("post_hide_logic");
+        self.begin_quit_cleanup();
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
         exit_host(reason);
+    }
+
+    pub(super) fn begin_quit_cleanup(&self) {
+        crate::platform::logging::mark_shutdown_cleanup(
+            &self.ui_phase,
+            self.quit_coordinator.is_active(),
+            self.quit_coordinator.hide_requested,
+        );
     }
 
     pub(crate) fn working_agent_count(&self) -> usize {
@@ -431,6 +449,22 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_cleanup_replaces_the_stale_workspace_save_heartbeat_phase() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.request_quit(ExitReason::HostStop);
+        assert!(h.app.service_quit(&eframe::Frame::_new_kittest()));
+        assert!(h.app.quit_coordinator.hide_requested);
+        // Model the next logic pass after the backend has applied hide,
+        // stopping before exit_host so the watchdog phase is observable.
+        h.app.begin_quit_cleanup();
+        assert_eq!(
+            crate::platform::logging::current_ui_phase_name(&h.app.ui_phase),
+            "shutdown_cleanup"
+        );
+    }
 
     #[test]
     fn quit_save_is_not_duplicated_by_a_second_quit_path() {

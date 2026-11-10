@@ -4744,6 +4744,7 @@ impl eframe::App for PlexiApp {
             log::error!("quit: backend teardown waiting for durable workspace save");
             std::thread::sleep(std::time::Duration::from_secs(1));
         }
+        self.begin_quit_cleanup();
         quit::exit_host(
             self.quit_coordinator.reason.unwrap_or(quit::ExitReason::WindowClosed),
         );
