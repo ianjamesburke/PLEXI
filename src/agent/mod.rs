@@ -243,6 +243,7 @@ struct AgentTable {
 
 #[derive(Debug, serde::Deserialize)]
 struct SubscriptionTable {
+    // Permanent settings.toml spelling; agents keep their existing subscriptions.
     app: String,
     events: Vec<String>,
     payload: String,
@@ -459,7 +460,7 @@ impl AgentDefinition {
         for (i, sub) in settings.subscriptions.iter().enumerate() {
             let ctx = |e: String| format!("settings.toml: [[subscriptions]] #{}: {e}", i + 1);
             if sub.app.trim().is_empty() {
-                return Err(ctx("'plugin' must be non-empty".to_string()));
+                return Err(ctx("'app' must be non-empty".to_string()));
             }
             if sub.events.is_empty() {
                 return Err(ctx("'events' must be non-empty".to_string()));
@@ -1672,17 +1673,17 @@ default_tier = "medium"
 default_posture = "review"
 
 allow = [
-  "plugin.chess.current_state",
-  "plugin.chess.legal_moves",
+  "app.chess.current_state",
+  "app.chess.legal_moves",
 ]
 
 ask = [
-  "plugin.chess.make_move",
-  "plugin.chess.undo_move",
+  "app.chess.make_move",
+  "app.chess.undo_move",
 ]
 
 [[subscriptions]]
-plugin = "chess"
+app = "chess"
 events = ["game.started", "turn.ready", "move.played", "move.undone", "game.ended"]
 payload = "full"
 trigger = "conversation"

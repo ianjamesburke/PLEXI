@@ -1829,7 +1829,7 @@ mod tests {
 [permissions]
 default_posture = "review"
 allow = ["host.panes.read"]
-ask = ["plugin.chess.make_move"]
+ask = ["app.chess.make_move"]
 deny = ["host.secrets.read"]
 "#,
         )

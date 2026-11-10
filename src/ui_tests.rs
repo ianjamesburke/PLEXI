@@ -5666,14 +5666,18 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         }
         let image = h.render().expect("render clock fixture");
         image.save(&evidence_png!()).expect("save clock screenshot");
-        // Fixed viewport coordinates: verify the dark cursor block is visible
-        // and contains an amber glyph before checking the blue cell to its right.
+        // Locate the fixture row from its unique background instead of anchoring
+        // it to host chrome height. The cursor and adjacent cell checks remain
+        // independent of the renderer's cell-rectangle calculations.
+        let row_top = (0..image.height())
+            .find(|&y| image.get_pixel(20, y).0[..3] == [226, 174, 99])
+            .expect("amber clock row must be visible");
         assert_eq!(
-            image.get_pixel(55, 184).0[..3],
+            image.get_pixel(55, row_top + 2).0[..3],
             [26, 29, 40],
             "cursor must be visible"
         );
-        let glyph = (189..224)
+        let glyph = (row_top..row_top + 40)
             .flat_map(|y| (56..72).map(move |x| (x, y)))
             .filter(|&(x, y)| {
                 let [r, g, b, _] = image.get_pixel(x, y).0;
@@ -5684,7 +5688,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             glyph > 30,
             "visible cursor must contain the inverted clock glyph"
         );
-        let spill = (189..224)
+        let spill = (row_top..row_top + 40)
             .flat_map(|y| (78..85).map(move |x| (x, y)))
             .filter(|&(x, y)| {
                 let [r, g, b, _] = image.get_pixel(x, y).0;

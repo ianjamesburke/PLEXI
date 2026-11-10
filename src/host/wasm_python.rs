@@ -10425,7 +10425,7 @@ default = true
         std::fs::write(
             &path,
             "[2026-07-18 01:00:00] [INFO] [plexi::boot] up\n\
-             [2026-07-18 01:00:01] [ERROR] [app::todo] boom\n",
+             [2026-07-18 01:00:01] [ERROR] [plugin::todo] boom\n",
         )
         .expect("write log");
 

@@ -61,7 +61,7 @@ fn ps7501_split_across_reads() {
 
 #[test]
 fn ps7501_malformed_pairs_skipped() {
-    let (_, r) = set("novalue:=x:state=working:bad!=1:plugin=a b:progress=5");
+    let (_, r) = set("novalue:=x:state=working:bad!=1:app=a b:progress=5");
     assert_eq!(r.state, State::Working);
     assert_eq!(r.progress, Some(5));
     assert_eq!(r.app, None);
@@ -78,7 +78,7 @@ fn ps7501_unknown_keys_ignored_last_repeat_wins() {
 
 #[test]
 fn ps7501_whitespace_trimmed() {
-    let (_, r) = set(" state = working : plugin = cargo ");
+    let (_, r) = set(" state = working : app = cargo ");
     assert_eq!(r.state, State::Working);
     assert_eq!(r.app.as_deref(), Some("cargo"));
 }

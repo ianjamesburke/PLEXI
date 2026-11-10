@@ -2436,7 +2436,7 @@ mod tests {
 
         let opened = harness.app.handle_assistant_host_tool(
             "host.views.open",
-            &serde_json::json!({"view": "text-editor", "pane_id": target_id}).to_string(),
+            &serde_json::json!({"plugin": "text-editor", "pane_id": target_id}).to_string(),
             origin,
             context,
         );
@@ -2479,7 +2479,7 @@ mod tests {
 
         let result = harness.app.handle_assistant_host_tool(
             "host.views.open",
-            &serde_json::json!({"view": "text-editor", "pane_id": occupied}).to_string(),
+            &serde_json::json!({"plugin": "text-editor", "pane_id": occupied}).to_string(),
             origin,
             context,
         );

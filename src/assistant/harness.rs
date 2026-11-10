@@ -968,7 +968,7 @@ mod tests {
             output["stdout"]
                 .as_str()
                 .unwrap()
-                .contains("stub-build plugin init demo-plugin"),
+                .contains("stub-build plugin init demo-app"),
             "{output}"
         );
     }

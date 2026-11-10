@@ -12,7 +12,7 @@ import plexi_sdk as sdk
 from plexi_sdk import _v3_state
 from plexi_sdk import state
 from plexi_sdk._adapter import _decode_event, _encode_effect, _encode_uitree
-from plexi_sdk._adapter import call_lifecycle, load_app
+from plexi_sdk._adapter import call_lifecycle, load_plugin
 from plexi_sdk.effects import (
     AiTool,
     ExposeTools,
@@ -344,7 +344,7 @@ def test_view_lifecycle_resets_view_guard(
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    load_app("sample_app")
+    load_plugin("sample_app")
     call_lifecycle("view", json.dumps({"state": {}}))
 
     assert _v3_state._in_view is False

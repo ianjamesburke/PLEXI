@@ -56,7 +56,8 @@ impl WorkspaceConfig {
 #[derive(Deserialize, Debug, Clone)]
 pub struct WorkspaceSecrets {
     pub fallback: bool,
-    #[serde(default)]
+    // Permanent workspace router spelling: preserve existing explicit routes.
+    #[serde(default, rename = "apps")]
     pub plugins: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub default: HashMap<String, String>,
@@ -99,7 +100,7 @@ impl WorkspaceSecrets {
     }
 
     /// Look up a route for `(plugin_id, canonical_name)`. Returns the friendly
-    /// Keychain name when an explicit `[plugins.<plugin_id>]` route exists, or a
+    /// Keychain name when an explicit `[apps.<plugin_id>]` stored route exists, or a
     /// `[default]` route otherwise. `None` means no route is defined.
     pub fn route_for(&self, plugin_id: &str, canonical_name: &str) -> Option<&str> {
         if let Some(plugin_routes) = self.plugins.get(plugin_id) {

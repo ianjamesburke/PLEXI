@@ -1181,39 +1181,35 @@ fn context_transition_rescans_registry() {
     let _ = std::fs::remove_dir_all(&dir_b);
 
     let manifest_a = concat!(
-        "schema_version = 1\n",
-        "\n[plugin]\n\n[runtime]\n\n[[contributes.views]]\nid = \"plugin.main\"\ndefault = true\n",
-        "id = \"test-1801-app-a\"\n",
-        "name = \"Test App A\"\n",
-        "entry = \"app.py\"\n",
-        "type = \"app\"\n",
+        "schema_version = 2\n[plugin]\n",
+        "id = \"test-1801-plugin-a\"\nname = \"Test Plugin A\"\n",
+        "[runtime]\nkind = \"python\"\nentry = \"app.py\"\n",
+        "[[contributes.views]]\nid = \"test-1801-plugin-a.main\"\ndefault = true\n",
     );
     let manifest_b = concat!(
-        "schema_version = 1\n",
-        "\n[plugin]\n\n[runtime]\n\n[[contributes.views]]\nid = \"plugin.main\"\ndefault = true\n",
-        "id = \"test-1801-app-b\"\n",
-        "name = \"Test App B\"\n",
-        "entry = \"app.py\"\n",
-        "type = \"app\"\n",
+        "schema_version = 2\n[plugin]\n",
+        "id = \"test-1801-plugin-b\"\nname = \"Test Plugin B\"\n",
+        "[runtime]\nkind = \"python\"\nentry = \"app.py\"\n",
+        "[[contributes.views]]\nid = \"test-1801-plugin-b.main\"\ndefault = true\n",
     );
 
     let apps_a = crate::app::registry::workspace_plugins_dir(&dir_a);
-    std::fs::create_dir_all(apps_a.join("test-1801-app-a")).unwrap();
+    std::fs::create_dir_all(apps_a.join("test-1801-plugin-a")).unwrap();
     std::fs::write(
-        apps_a.join("test-1801-app-a").join("manifest.toml"),
+        apps_a.join("test-1801-plugin-a").join("manifest.toml"),
         manifest_a,
     )
     .unwrap();
-    std::fs::write(apps_a.join("test-1801-app-a").join("app.py"), b"").unwrap();
+    std::fs::write(apps_a.join("test-1801-plugin-a").join("app.py"), b"").unwrap();
 
     let apps_b = crate::app::registry::workspace_plugins_dir(&dir_b);
-    std::fs::create_dir_all(apps_b.join("test-1801-app-b")).unwrap();
+    std::fs::create_dir_all(apps_b.join("test-1801-plugin-b")).unwrap();
     std::fs::write(
-        apps_b.join("test-1801-app-b").join("manifest.toml"),
+        apps_b.join("test-1801-plugin-b").join("manifest.toml"),
         manifest_b,
     )
     .unwrap();
-    std::fs::write(apps_b.join("test-1801-app-b").join("app.py"), b"").unwrap();
+    std::fs::write(apps_b.join("test-1801-plugin-b").join("app.py"), b"").unwrap();
 
     // Switch context 0 to root A and verify registry picks up plugin-a.
     let idx0 = app.router.active_idx();
@@ -1232,11 +1228,11 @@ fn context_transition_rescans_registry() {
         .map(|a| a.manifest.id.clone())
         .collect();
     assert!(
-        ids.contains(&"test-1801-app-a".to_string()),
+        ids.contains(&"test-1801-plugin-a".to_string()),
         "registry should contain test-1801-plugin-a after setting root A, got: {ids:?}"
     );
     assert!(
-        !ids.contains(&"test-1801-app-b".to_string()),
+        !ids.contains(&"test-1801-plugin-b".to_string()),
         "registry should not contain test-1801-plugin-b while on root A, got: {ids:?}"
     );
 
@@ -1277,11 +1273,11 @@ fn context_transition_rescans_registry() {
         .map(|a| a.manifest.id.clone())
         .collect();
     assert!(
-        ids.contains(&"test-1801-app-b".to_string()),
+        ids.contains(&"test-1801-plugin-b".to_string()),
         "registry should contain test-1801-plugin-b after switching to root B, got: {ids:?}"
     );
     assert!(
-        !ids.contains(&"test-1801-app-a".to_string()),
+        !ids.contains(&"test-1801-plugin-a".to_string()),
         "registry should not contain test-1801-plugin-a while on root B, got: {ids:?}"
     );
 

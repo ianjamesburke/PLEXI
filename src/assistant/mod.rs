@@ -174,7 +174,7 @@ fn turns_to_messages(turns: &[model::Turn]) -> Vec<AiMessage> {
             }),
             TurnRole::Event => Some(AiMessage {
                 role: "user".to_string(),
-                content: format!("App event delivered to you: {}", turn.text),
+                content: format!("Plugin event delivered to you: {}", turn.text),
             }),
             TurnRole::Assistant => Some(AiMessage {
                 role: "assistant".to_string(),
@@ -1068,6 +1068,7 @@ impl AssistantView {
     }
 
     /// Broker target id for a plugin-exposed tool.
+    /// Permanent authority identity: changing it would orphan sealed grants and denials.
     fn connector_target(tool: &str) -> String {
         format!("app.{tool}")
     }
@@ -1329,7 +1330,7 @@ impl AssistantView {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "plugin": {"type": "string", "description": "App id, e.g. 'calc'"},
+                "plugin": {"type": "string", "description": "Plugin id, e.g. 'calc'"},
                 "event": {
                     "type": "string",
                     "description": "Declared event stream name, or '*' for all"
@@ -1999,11 +2000,11 @@ impl AssistantView {
                 let placement =
                     match crate::app::registry::resolve_workspace_root(&self.workspace_root) {
                         Some(root) => format!(
-                            "\n\nApp placement: this session has a Plexi workspace at {} — \
-                         `plugin init <name>` with no flag creates a hot-reloading workspace app.",
+                            "\n\nPlugin placement: this session has a Plexi workspace at {} — \
+                         `plugin init <name>` with no flag creates a hot-reloading workspace plugin.",
                             root.display()
                         ),
-                        None => "\n\nApp placement: no Plexi workspace exists in this session's \
+                        None => "\n\nPlugin placement: no Plexi workspace exists in this session's \
                              directory — pass --global to `plugin init` on the first call."
                             .to_string(),
                     };
@@ -3688,9 +3689,9 @@ impl AssistantView {
             streams.len()
         );
         let mut text = if tools.is_empty() {
-            "No app connector tools are exposed in this workspace.\n".to_string()
+            "No plugin connector tools are exposed in this workspace.\n".to_string()
         } else {
-            let mut out = String::from("App connector tools:\n");
+            let mut out = String::from("Plugin connector tools:\n");
             for tool in tools {
                 out.push_str(&format!(
                     "{} — {}\n",
@@ -3709,9 +3710,9 @@ impl AssistantView {
             ));
         }
         if streams.is_empty() {
-            text.push_str("\nNo app event streams declared in this workspace.");
+            text.push_str("\nNo plugin event streams declared in this workspace.");
         } else {
-            text.push_str("\nApp event streams (host.events.subscribe / unsubscribe):\n");
+            text.push_str("\nPlugin event streams (host.events.subscribe / unsubscribe):\n");
             for (app, event) in streams {
                 let target = format!("{app}::{event}");
                 let decision = self.event_stream_decision(&app, &event);
@@ -3827,7 +3828,7 @@ impl AssistantView {
                 .join(", ")
         };
         let text = format!(
-            "Assistant context:\n- Estimated transcript tokens: ~{} ({} turns)\n- Loaded instructions: agent `{}` plus {} installed skill(s) available on demand\n- Active workspace context: `{}`\n- Open pane/app context: {}\n- Enabled tools: {}",
+            "Assistant context:\n- Estimated transcript tokens: ~{} ({} turns)\n- Loaded instructions: agent `{}` plus {} installed skill(s) available on demand\n- Active workspace context: `{}`\n- Open pane/view context: {}\n- Enabled tools: {}",
             chars.div_ceil(4),
             self.model.turns.len(),
             agent.map(|agent| agent.id.as_str()).unwrap_or("default"),
@@ -3884,8 +3885,8 @@ impl AssistantView {
             plugins.len()
         );
         let text = if plugins.is_empty() {
-            "No apps are exposing connector tools in this workspace.\n\
-             Start an app that calls emit_tools() to see its connectors here."
+            "No plugins are exposing connector tools in this workspace.\n\
+             Start a plugin that calls emit_tools() to see its connectors here."
                 .to_string()
         } else {
             let mut out = String::new();
@@ -5530,7 +5531,7 @@ enabled = ["allowed.tool"]
             PluginEventSender::Channel(tx),
             test_scope_origin(9201, 9201),
         );
-        app.model.composer = "/apps".to_string();
+        app.model.composer = "/plugins".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
 
@@ -6066,7 +6067,7 @@ enabled = ["allowed.tool"]
         app.execute_effects(effects);
         let tools_row = &app.model.turns.last().unwrap().text;
         assert!(
-            tools_row.contains("plugin.view.tool — ask"),
+            tools_row.contains("app.view.tool — ask"),
             "a name-only grant is not an authorization: {tools_row}"
         );
 
@@ -6085,7 +6086,7 @@ enabled = ["allowed.tool"]
         app.model.cancel_overlay();
 
         // `/revoke <target_id>` keeps its fast-path text behavior.
-        app.model.composer = "/revoke plugin.view.tool".to_string();
+        app.model.composer = "/revoke app.view.tool".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
         assert!(app
@@ -6474,7 +6475,7 @@ enabled = ["allowed.tool"]
         assert!(
             history
                 .iter()
-                .any(|m| m.role == "user" && m.content.contains("App event delivered")),
+                .any(|m| m.role == "user" && m.content.contains("Plugin event delivered")),
             "event line must be in the turn history"
         );
         wait_for_turn(&mut app);

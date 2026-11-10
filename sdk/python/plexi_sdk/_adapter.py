@@ -16,14 +16,14 @@ from . import events as event_types
 _module = None
 
 
-def load_app(module_name: str) -> None:
+def load_plugin(module_name: str) -> None:
     global _module
     _module = importlib.import_module(module_name)
 
 
 def call_lifecycle(fn_name: str, json_arg: str) -> str:
     if _module is None:
-        raise RuntimeError("no Plexi app module loaded")
+        raise RuntimeError("no Plexi plugin module loaded")
     fn = getattr(_module, fn_name)
     arg = json.loads(json_arg) if json_arg else {}
 

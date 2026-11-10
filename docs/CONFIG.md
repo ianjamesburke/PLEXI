@@ -2,6 +2,13 @@ Plexi reads config.toml from the active channel profile. Alpha uses ~/.plexi-alp
 
 Changes take effect on the next launch unless a command says otherwise.
 
+The plugin rename preserves permanent user-data keys: workspace secrets use
+`[apps.<plugin-id>]`, agent event subscriptions use `app`, connector authority
+targets keep `app.<tool>`, and AI budgets keep `per_app_daily_usd`. These are the
+single stored representations, not alternate plugin command or manifest forms.
+Existing routes, subscriptions, sealed grants and denials remain bound to the
+same identities.
+
 ## Channel discipline
 
 See the [configuration reference](../website/src/content/docs/config.md#channel-discipline) for channel profiles and installation behavior.
@@ -266,7 +273,7 @@ A server runs in its own process group and is killed — including anything an
 that never produces output, or never completes the MCP handshake, is
 disconnected after a deadline with a visible error rather than left running.
 
-An plugin never supplies a command: it names a server id and the host resolves the
+A plugin never supplies a command: it names a server id and the host resolves the
 rest here, so the `mcp.client` capability means "talk to a server you
 configured", not "run this command". Servers reach the assistant through the
 bridge plugin (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
@@ -283,7 +290,7 @@ This is the built-in template Plexi writes when it creates or resets the active 
 config_version = 1
 
 font_size = 14.0
-# ui_scale = 1.0               # plugin-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
+# ui_scale = 1.0               # host-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
 # pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)

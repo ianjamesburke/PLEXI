@@ -1416,10 +1416,10 @@ fn legacy_view_pane_without_launch_context_still_loads() {
                     "panes": [
                         {{
                             "id": 1,
-                            "kind": "plugin",
+                            "kind": "app",
                             "cwd": "/tmp",
                             "name": "Todo",
-                            "plugin_id": "python-wasm",
+                            "app_id": "python-wasm",
                             "app_state": null
                         }}
                     ],

@@ -59,7 +59,7 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
     }
     if args.iter().any(|arg| arg == "--open") {
         return Err(
-            "command_not_allowed: --open is rejected; open the plugin with host.plugins.open instead"
+            "command_not_allowed: --open is rejected; open the plugin with host.views.open instead"
                 .to_string(),
         );
     }

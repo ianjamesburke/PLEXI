@@ -347,7 +347,7 @@ mod tests {
              installed plugins instead"
         );
         assert!(
-            skill.instructions.contains("App placement"),
+            skill.instructions.contains("Plugin placement"),
             "the skill must point at the host-injected placement line so init never \
              burns a failed no-workspace probe"
         );

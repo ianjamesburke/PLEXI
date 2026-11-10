@@ -7,7 +7,7 @@
 //!   - the binary's compile-time-bundled core pack (`packs/core.toml` baked in)
 //!
 //! ```toml
-//! schema_version = 1
+//! schema_version = 2
 //!
 //! [[plugin]]
 //! id      = "stand-up-reminder"
@@ -157,7 +157,7 @@ source = "github:plexi-plugins/stand-up-reminder"
 version = "v1.2.0"
 "#;
         let pack = Pack::from_toml_str(raw).expect("pack should parse");
-        assert_eq!(pack.schema_version, 1);
+        assert_eq!(pack.schema_version, 2);
         assert_eq!(pack.plugins.len(), 1);
         assert_eq!(pack.plugins[0].id, "stand-up-reminder");
         assert_eq!(
@@ -195,7 +195,7 @@ checksum = "sha256:deadbeef"
         );
         let err = Pack::from_toml_str(&raw).expect_err("future schema must refuse");
         assert!(
-            err.contains("newer than this Plexi build"),
+            err.contains("unsupported; use schema_version = 2"),
             "expected schema-too-new error, got: {err}"
         );
     }

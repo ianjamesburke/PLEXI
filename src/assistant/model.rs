@@ -1617,7 +1617,7 @@ mod tests {
             vec![AssistantEffect::ShowAudit]
         );
         assert_eq!(
-            submitted(&mut m, "/revoke plugin.csv.write_range"),
+            submitted(&mut m, "/revoke app.csv.write_range"),
             vec![AssistantEffect::RevokeGrant {
                 target_id: "app.csv.write_range".to_string()
             }]

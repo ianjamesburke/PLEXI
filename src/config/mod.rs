@@ -827,7 +827,7 @@ pub struct KeybindingsConfig {
     pub ui_scale_up: Option<String>,
     /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
     pub ui_scale_down: Option<String>,
-    /// Reset plugin-wide UI scale (default Cmd+Shift+0).
+    /// Reset host-wide UI scale (default Cmd+Shift+0).
     pub ui_scale_reset: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
