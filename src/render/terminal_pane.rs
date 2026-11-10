@@ -40,8 +40,12 @@ pub struct TerminalInput {
 }
 
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-// Keep glyph overhang clear of the shared content inset.
-pub(crate) const TERMINAL_GLYPH_PADDING_X: f32 = crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::SPACE_XS;
+
+/// Single source for the terminal grid padding: one inset token on both axes. Normal and
+/// zoomed views both use it, so the PTY grid and the drawn grid agree.
+pub(crate) fn terminal_content_padding() -> Vec2 {
+    Vec2::splat(crate::ui::style::PANE_CONTENT_INSET)
+}
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 fn standby_view_rects(
@@ -273,8 +277,8 @@ pub fn render(
     let font_size = terminal.font_size;
     LOG_TERMINAL_GLYPH_PADDING.call_once(|| {
         log::info!(
-            "terminal_renderer: glyph padding enabled x={} y={} points",
-            TERMINAL_GLYPH_PADDING_X, crate::ui::style::PANE_CONTENT_INSET
+            "terminal_renderer: content padding enabled {} points on both axes",
+            crate::ui::style::PANE_CONTENT_INSET
         );
     });
     // The terminal's deterministic widget id is this pane's default text
@@ -289,7 +293,7 @@ pub fn render(
         .set_focus(is_focused)
         .set_theme(theme.clone())
         .set_font(theme::terminal_font(font_size))
-        .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, crate::ui::style::PANE_CONTENT_INSET))
+        .set_padding(terminal_content_padding())
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
         .resize_immediately(resize_immediately)
         .with_input(input.keyboard_events, input.modifiers);
@@ -712,6 +716,37 @@ mod tests {
             if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
         }
 
+    }
+
+    #[test]
+    fn pane_header_provenance_icon_clears_content_inset() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        for width in [120.0, 200.0, 400.0, 1200.0] {
+            let ctx = egui::Context::default();
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
+                    render_name_bar_and_tabs(ui, NameBarParams {
+                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
+                        pane_agent_state: None, is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
+                    });
+                });
+            });
+            let icon: egui::Rect = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64)))).expect("header paints provenance icon");
+            assert!(icon.right() <= width - crate::ui::style::PANE_CONTENT_INSET, "provenance icon {icon:?} crosses the content inset at width {width}");
+        }
+    }
+
+    #[test]
+    fn terminal_padding_is_one_token_clearing_pane_rings() {
+        use crate::ui::style::{PANE_CONTENT_INSET, PANE_FOCUS_WIDTH, PANE_STATE_WIDTH};
+        let pad = terminal_content_padding();
+        assert_eq!(pad.x, pad.y, "x and y share one inset token");
+        assert_eq!(pad.x, PANE_CONTENT_INSET);
+        assert!(pad.x > PANE_FOCUS_WIDTH + PANE_STATE_WIDTH, "inset leaves a gap beyond both rings");
+        let frame = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 200.0));
+        let grid = egui::Rect::from_min_max(frame.min + pad, frame.max - pad);
+        let inside_rings = frame.shrink(PANE_FOCUS_WIDTH + PANE_STATE_WIDTH);
+        assert!(inside_rings.contains_rect(grid), "grid {grid:?} overlaps rings; frame {frame:?}");
     }
 
     #[test]

@@ -1115,6 +1115,7 @@ impl PlexiApp {
                                                     .set_focus(owner_pane == Some(pane_id))
                                                     .set_theme(self.theme.clone())
                                                     .set_font(theme::terminal_font(font_size))
+                                                    .set_padding(crate::render::terminal_pane::terminal_content_padding())
                                                     .set_size(Vec2::new(
                                                         ui.available_width(),
                                                         ui.available_height(),
