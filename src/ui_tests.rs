@@ -6912,6 +6912,93 @@ open(out + ".done", "w").close()
     /// browser, a terminal printing every ANSI color plus dim text, and agent
     /// panes in several states. Review evidence for the theme family (stint 1186).
     #[test]
+    fn quit_toast_hugs_content_within_bound() {
+        let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
+        h.with_app_mut(|app| {
+            app.quit_press_count = 1;
+            app.quit_last_press = None;
+        });
+        h.run_steps(3);
+        let rect = h.with_app(|app| {
+            app.ctx
+                .memory(|m| m.area_rect(egui::Id::new("quit_confirm_overlay")))
+                .unwrap()
+        });
+        assert!(
+            rect.width() < crate::ui::style::TOAST_MAX_WIDTH - 80.0,
+            "quit toast should hug content: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn screenshot_toast_shrink_variants() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for title in [
+                "Meeting",
+                "Release review with a very long title ".repeat(20).as_str(),
+            ] {
+                let mut h = PlexiUiHarness::new_sized_scaled(720.0, 800.0, 1.0);
+                let path = h.workspace_root().join("meeting.md");
+                std::fs::write(&path, "Meeting notes").unwrap();
+                add_focused_pane(&mut h);
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(
+                        &cfg,
+                        crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                    );
+                    crate::ui::theme::setup_style(
+                        &app.ctx,
+                        &app.colors,
+                        !crate::ui::theme::is_light_preset(theme),
+                    );
+                    app.notes_picker_entries = vec![crate::notes::NotePickerEntry {
+                        path: path.clone(),
+                        title: title.into(),
+                        preview: String::new(),
+                        search_text: String::new(),
+                        tier_label: None,
+                    }];
+                    app.push_focus_layer(crate::app::FocusKind::NotesPicker);
+                    assert!(app.notes_picker_delete_entry(0));
+                    app.notes_picker_shown_paths.clear();
+                });
+                h.run_steps(3);
+                let rect = h.with_app(|app| {
+                    app.ctx
+                        .memory(|m| m.area_rect(egui::Id::new("notes_delete_toast")))
+                        .unwrap()
+                });
+                assert!(
+                    rect.width() <= crate::ui::style::TOAST_MAX_WIDTH + 1.0,
+                    "action exceeds bound: {rect:?}"
+                );
+                if title == "Meeting" {
+                    assert!(
+                        rect.width() < crate::ui::style::TOAST_MAX_WIDTH - 80.0,
+                        "short action must hug content: {rect:?}"
+                    );
+                }
+                assert!(h.harness().query_by_label("Undo").is_some());
+                let kind = if title == "Meeting" { "short" } else { "long" };
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{kind}")))
+                    .unwrap();
+                h.with_app_mut(|app| {
+                    app.notes_picker_undo = None;
+                    app.quit_last_press = None;
+                });
+                for count in [1, 2] {
+                    h.with_app_mut(|app| app.quit_press_count = count);
+                    h.run_steps(3);
+                    h.save_screenshot(&evidence_png!(&format!("_{theme}_quit_{count}")))
+                        .unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bounded_toast_long_title_keeps_named_undo() {
         for keyboard in [false, true] {
             let mut h = PlexiUiHarness::new_sized_scaled(520.0, 600.0, 2.0);

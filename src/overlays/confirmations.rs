@@ -7,17 +7,24 @@ impl PlexiApp {
             ctx,
             &self.colors,
             |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
-                    crate::ui::toast::toast_caption(
-                        ui,
-                        format!(
-                            "{} pressed {} of 3 — press again to quit",
-                            crate::ui::shortcuts::key_text(&["cmd", "Q"]),
-                            count
-                        ),
-                        &self.colors,
-                    );
+                ui.horizontal(|ui| {
+                    let dots = crate::ui::toast::ProgressDots::new(count, 3);
+                    ui.scope(|ui| {
+                        ui.set_max_width(
+                            (ui.available_width() - dots.width() - ui.spacing().item_spacing.x)
+                                .max(0.0),
+                        );
+                        crate::ui::toast::toast_caption(
+                            ui,
+                            format!(
+                                "{} pressed {} of 3 — press again to quit",
+                                crate::ui::shortcuts::key_text(&["cmd", "Q"]),
+                                count
+                            ),
+                            &self.colors,
+                        );
+                    });
+                    dots.show(ui, &self.colors);
                 });
             },
         );
