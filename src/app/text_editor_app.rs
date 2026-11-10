@@ -23,6 +23,11 @@ const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
 const FIND_BAR_FONT_SIZE: f32 = 13.0;
+/// Editor lines that must stay visible above the find bar; below this the
+/// replace row collapses before the editor is squeezed further.
+const FIND_EDITOR_MIN_LINES: f32 = 2.0;
+/// Narrowest the replace input may get before the buttons stack below it.
+const REPLACE_INPUT_MIN_W: f32 = 64.0;
 
 struct FindBar {
     query: String,
@@ -34,6 +39,8 @@ struct FindBar {
     /// One-shot: claim the find input as this pane's focused surface on the
     /// next render (via `claim_text_surface`; the reconciler grants it).
     claim_focus: bool,
+    /// Last replace-row layout, kept only to log layout transitions.
+    layout: Option<ReplaceLayout>,
 }
 
 impl FindBar {
@@ -44,6 +51,7 @@ impl FindBar {
             matches: Vec::new(),
             current: 0,
             claim_focus: true,
+            layout: None,
         }
     }
 
@@ -123,7 +131,6 @@ pub struct TextEditorApp {
     font_size: f32,
     /// Active find/replace bar, or `None` when dismissed.
     find_bar: Option<FindBar>,
-    pending_match_reveal: Option<(usize, usize)>,
     editor_focused: bool,
     /// True after Escape released the body editor back to pane-level
     /// navigation: the pane stays open and focused, but the editor stops
@@ -287,7 +294,6 @@ impl TextEditorApp {
             load_error,
             font_size: FONT_SIZE_DEFAULT,
             find_bar: None,
-            pending_match_reveal: None,
             editor_focused: false,
             input_released: false,
             reclaim_editor_focus: false,
@@ -1181,8 +1187,20 @@ impl TextEditorApp {
         let end = movement::char_to_cursor(self.doc.buffer(), range.1);
         self.doc.apply(EditorCommand::SetCursor(start));
         self.doc.apply(EditorCommand::ExtendTo(end));
-        self.view.pending_reveal = Some(end);
-        self.pending_match_reveal = Some(range);
+        self.view.pending_reveal = Some(crate::editor::view::Reveal { start, end });
+        log::info!(
+            "notes_editor: find reveal chars {}..{} lines {}..{}",
+            range.0,
+            range.1,
+            start.line,
+            end.line
+        );
+    }
+
+    /// Reveals the caret after an edit. A queued match reveal would address
+    /// the buffer as it was before the edit, so the caret replaces it.
+    fn reveal_caret(&mut self) {
+        self.view.pending_reveal = Some(crate::editor::view::Reveal::caret(self.doc.cursor()));
     }
 
     /// Replaces the current match with the bar's replacement text through the
@@ -1197,6 +1215,7 @@ impl TextEditorApp {
         let replacement = bar.replace.clone();
         self.select_match(range);
         self.doc.apply(EditorCommand::InsertText(replacement));
+        self.reveal_caret();
         self.last_edit = Some(Instant::now());
         let text = self.doc.text();
         if let Some(bar) = &mut self.find_bar {
@@ -1221,6 +1240,7 @@ impl TextEditorApp {
             self.doc
                 .apply(EditorCommand::InsertText(replacement.clone()));
         }
+        self.reveal_caret();
         self.last_edit = Some(Instant::now());
         let text = self.doc.text();
         if let Some(bar) = &mut self.find_bar {
@@ -1580,7 +1600,7 @@ fn position_caret_at_end(doc: &mut Document, view: &mut ViewState) {
         movement: crate::editor::commands::Movement::DocEnd,
         extend: false,
     });
-    view.pending_reveal = Some(doc.cursor());
+    view.pending_reveal = Some(crate::editor::view::Reveal::caret(doc.cursor()));
 }
 
 fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
@@ -1947,6 +1967,239 @@ fn paint_editor_header(
     switched_scope
 }
 
+/// How the replace controls are laid out under the find row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplaceLayout {
+    /// Replace input, `Replace` and `All` share one band.
+    Inline,
+    /// Input on one band, the two buttons on the next.
+    Stacked,
+    /// No replace controls: the pane cannot hold them without clipping or
+    /// squeezing the editor. The find row is always kept.
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FindBarPlan {
+    replace: ReplaceLayout,
+}
+
+impl FindBarPlan {
+    fn bands(self) -> f32 {
+        match self.replace {
+            ReplaceLayout::Hidden => 1.0,
+            ReplaceLayout::Inline => 2.0,
+            ReplaceLayout::Stacked => 3.0,
+        }
+    }
+
+    fn height(self) -> f32 {
+        self.bands() * crate::ui::embedded_bar::BAR_TOTAL_H
+    }
+}
+
+/// Measured widths of the two required replace actions (`Replace`, `All`).
+fn replace_button_widths(ui: &egui::Ui) -> [f32; 2] {
+    let pad = 2.0 * ui.spacing().button_padding.x;
+    ["Replace", "All"].map(|label| {
+        ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(crate::ui::style::TEXT_CAPTION),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .ceil()
+            + pad
+    })
+}
+
+/// Required replace actions, right to left: `All` is outermost.
+fn replace_slots(widths: [f32; 2]) -> [crate::ui::bounded::Slot<'static>; 2] {
+    [("all", widths[1]), ("replace", widths[0])].map(|(id, width)| crate::ui::bounded::Slot {
+        id,
+        width,
+        compact: None,
+        required: true,
+    })
+}
+
+/// Chooses the replace layout through `bounded::allocate`, required actions
+/// first: inline when the input keeps its minimum beside them, stacked when
+/// only the buttons fit, hidden when they cannot fit at all. Whatever the
+/// width allows is then dropped to `Hidden` if the editor would be left
+/// shorter than `editor_min_height`.
+fn plan_find_bar(
+    pane_width: f32,
+    available_height: f32,
+    editor_min_height: f32,
+    buttons: [f32; 2],
+) -> FindBarPlan {
+    let row = crate::ui::embedded_bar::inner_rect(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(pane_width, crate::ui::embedded_bar::BAR_TOTAL_H),
+    ));
+    let slots = replace_slots(buttons);
+    let gap = crate::ui::style::SPACE_SM;
+    // `allocate` only fails when the required actions do not fit, so the input
+    // minimum is checked on the text lane it leaves.
+    let inline_fits = crate::ui::bounded::allocate(row, REPLACE_INPUT_MIN_W, gap, &slots)
+        .is_ok_and(|layout| layout.text.width() >= REPLACE_INPUT_MIN_W);
+    let by_width = if inline_fits {
+        ReplaceLayout::Inline
+    } else if crate::ui::bounded::allocate(row, 0.0, gap, &slots).is_ok() {
+        ReplaceLayout::Stacked
+    } else {
+        ReplaceLayout::Hidden
+    };
+    let by_width = FindBarPlan { replace: by_width };
+    if available_height - by_width.height() >= editor_min_height {
+        by_width
+    } else {
+        FindBarPlan {
+            replace: ReplaceLayout::Hidden,
+        }
+    }
+}
+
+struct FindBarIds {
+    find: egui::Id,
+    replace: egui::Id,
+    surface: crate::ui::focus::SurfaceKey,
+}
+
+#[derive(Default)]
+struct FindBarOutput {
+    query_changed: bool,
+    replace_current: bool,
+    replace_all: bool,
+}
+
+/// Paints the find/replace bar into `rect` (exactly `plan.height()` tall).
+/// Every control is placed from rectangles allocated inside its band's safe
+/// insets, so nothing is painted outside `rect`.
+fn draw_find_bar(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    plan: FindBarPlan,
+    bar: &mut FindBar,
+    ids: FindBarIds,
+    colors: &crate::ui::theme::Colors,
+) -> FindBarOutput {
+    use crate::ui::embedded_bar::{embedded_bottom_bar, inner_rect, BAR_TOTAL_H};
+    let mut out = FindBarOutput::default();
+    let gap = crate::ui::style::SPACE_SM;
+    let band = |index: usize| {
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(0.0, index as f32 * BAR_TOTAL_H),
+            egui::vec2(rect.width(), BAR_TOTAL_H),
+        )
+    };
+    let fill = colors.pane_header_bg();
+
+    embedded_bottom_bar(ui, band(0), fill, |ui| {
+        let mut search = crate::ui::search_bar::SearchBar::with_id(ids.find, "Find\u{2026}")
+            .surface(ids.surface)
+            .claim_focus(std::mem::take(&mut bar.claim_focus))
+            .font_size(FIND_BAR_FONT_SIZE);
+        if !bar.query.is_empty() {
+            search = search.position(bar.current + 1, bar.matches.len());
+        }
+        out.query_changed = search.show(ui, &mut bar.query, colors).changed;
+    });
+
+    if plan.replace == ReplaceLayout::Hidden {
+        return out;
+    }
+    let widths = replace_button_widths(ui);
+    let slots = replace_slots(widths);
+    let replace_input = |ui: &mut egui::Ui, bar: &mut FindBar, lane: egui::Rect| {
+        let mut input_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(lane)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        crate::ui::text_field::TextField::singleline(ids.replace, "Replace\u{2026}")
+            .log_name("text_editor_replace")
+            .show(&mut input_ui, &mut bar.replace, colors);
+        // Registered under the pane so the post-frame focus reconciler keeps
+        // a clicked replace field focused instead of snapping focus back to
+        // the editor.
+        crate::ui::focus::register_text_surface(ui.ctx(), ids.surface, ids.replace);
+    };
+    let buttons = |ui: &mut egui::Ui, row: &crate::ui::bounded::RowLayout, enabled: bool| {
+        let (mut replace, mut all) = (false, false);
+        for slot in &row.slots {
+            let label = if slot.id == "replace" {
+                "Replace"
+            } else {
+                "All"
+            };
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(slot.rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let clicked = child
+                .add_enabled_ui(enabled, |ui| {
+                    crate::ui::button::chrome_button_sized(
+                        ui,
+                        label,
+                        crate::ui::button::ButtonKind::Secondary,
+                        colors,
+                        slot.rect.width(),
+                        crate::ui::embedded_bar::BAR_CONTENT_H,
+                    )
+                    .clicked()
+                })
+                .inner;
+            if slot.id == "replace" {
+                replace = clicked;
+            } else {
+                all = clicked;
+            }
+        }
+        (replace, all)
+    };
+    let enabled = !bar.matches.is_empty();
+    match plan.replace {
+        ReplaceLayout::Inline => embedded_bottom_bar(ui, band(1), fill, |ui| {
+            match crate::ui::bounded::allocate(
+                inner_rect(band(1)),
+                REPLACE_INPUT_MIN_W,
+                gap,
+                &slots,
+            ) {
+                Ok(row) => {
+                    replace_input(ui, bar, row.text);
+                    (out.replace_current, out.replace_all) = buttons(ui, &row, enabled);
+                }
+                Err(e) => {
+                    log::warn!("notes_editor: planned inline replace row does not fit: {e:?}")
+                }
+            }
+        }),
+        ReplaceLayout::Stacked => {
+            embedded_bottom_bar(ui, band(1), fill, |ui| {
+                replace_input(ui, bar, inner_rect(band(1)));
+            });
+            embedded_bottom_bar(ui, band(2), fill, |ui| {
+                match crate::ui::bounded::allocate(inner_rect(band(2)), 0.0, gap, &slots) {
+                    Ok(row) => (out.replace_current, out.replace_all) = buttons(ui, &row, enabled),
+                    Err(e) => {
+                        log::warn!("notes_editor: planned stacked replace row does not fit: {e:?}")
+                    }
+                }
+            });
+        }
+        ReplaceLayout::Hidden => {}
+    }
+    out
+}
+
 impl App for TextEditorApp {
     fn sync_change_set(&mut self) -> bool {
         self.apply_change_set()
@@ -2199,13 +2452,7 @@ impl App for TextEditorApp {
         // One header for notes and files opened from the browser: file name
         // always, frontmatter title when a note has one, and the same save
         // indicator. The YAML block itself stays out of the buffer.
-        let compact_find = self.find_bar.is_some()
-            && ui.available_height()
-                < 2.0 * crate::ui::embedded_bar::BAR_TOTAL_H
-                    + crate::ui::style::BUTTON_H_MD
-                    + NOTE_HEADER_BAR_HEIGHT
-                    + 2.0 * ui.spacing().item_spacing.y;
-        if !compact_find && paint_editor_header(ui, colors, &self.editor_chrome()) {
+        if paint_editor_header(ui, colors, &self.editor_chrome()) {
             self.switch_commands_scope_in_place();
         }
 
@@ -2349,16 +2596,19 @@ impl App for TextEditorApp {
         self.show_change_banner(ui, colors);
         self.show_prompt(ui, colors);
 
-        // When the find bar is open, reserve its height at the bottom before
-        // laying out the editor so it doesn't overlap the bar.
-        let find_bar_height = if self.find_bar.is_some() {
-            2.0 * crate::ui::embedded_bar::BAR_TOTAL_H
-                + (crate::ui::style::BUTTON_H_MD - crate::ui::embedded_bar::BAR_CONTENT_H).max(0.0)
-                + 2.0 * ui.spacing().item_spacing.y
-        } else {
-            0.0
-        };
-        let editor_height = (ui.available_height() - find_bar_height).max(1.0);
+        // When the find bar is open, plan its bands from the pane's width and
+        // height first and reserve exactly that at the bottom, so neither the
+        // bar nor the editor is ever painted past the pane edge.
+        let find_plan = self.find_bar.is_some().then(|| {
+            plan_find_bar(
+                ui.available_width(),
+                ui.available_height(),
+                FIND_EDITOR_MIN_LINES * self.view.line_height,
+                replace_button_widths(ui),
+            )
+        });
+        let editor_height =
+            (ui.available_height() - find_plan.map_or(0.0, FindBarPlan::height)).max(0.0);
         let editor_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), editor_height),
@@ -2435,36 +2685,6 @@ impl App for TextEditorApp {
         }
         let output = widget.show(&mut editor_ui);
         let response = output.response;
-        if let Some((start, end)) = self.pending_match_reveal.take() {
-            if self.mode.is_code() {
-                let start = movement::char_to_cursor(self.doc.buffer(), start);
-                let end = movement::char_to_cursor(self.doc.buffer(), end);
-                if start.line == end.line {
-                    let line = movement::line_text(self.doc.buffer(), start.line);
-                    let font = egui::FontId::monospace(self.font_size);
-                    let measure = |ui: &egui::Ui, column: usize| {
-                        let text: String = line.chars().take(column).collect();
-                        ui.fonts_mut(|fonts| {
-                            fonts
-                                .layout_no_wrap(text, font.clone(), egui::Color32::WHITE)
-                                .size()
-                                .x
-                        })
-                    };
-                    let left = measure(ui, start.column);
-                    let right = measure(ui, end.column);
-                    let margin =
-                        8.0_f32.min((self.view.viewport_width - (right - left)).max(0.0) / 2.0);
-                    if right > self.view.scroll_x + self.view.viewport_width - margin {
-                        self.view.scroll_x = (right - self.view.viewport_width + margin).max(0.0);
-                    }
-                    if left < self.view.scroll_x + margin {
-                        self.view.scroll_x = (left - margin).max(0.0);
-                    }
-                    ui.ctx().request_repaint();
-                }
-            }
-        }
         ui.advance_cursor_after_rect(editor_rect);
 
         if let Some(link) = output.link_activation {
@@ -2513,95 +2733,44 @@ impl App for TextEditorApp {
 
         self.maybe_autosave();
 
-        // Each row reserves a full embedded-bar band, including its safe insets.
-        if let Some(bar) = &mut self.find_bar {
-            let mut replace_one = false;
-            let mut replace_every = false;
-            let band_height = crate::ui::embedded_bar::BAR_TOTAL_H;
-            let find_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), band_height),
+        if let (Some(bar), Some(plan)) = (&mut self.find_bar, find_plan) {
+            if bar.layout != Some(plan.replace) {
+                log::info!(
+                    "notes_editor: find bar layout replace={:?} width={:.0} bands={}",
+                    plan.replace,
+                    editor_rect.width(),
+                    plan.height() / crate::ui::embedded_bar::BAR_TOTAL_H
+                );
+                bar.layout = Some(plan.replace);
+            }
+            let bars_rect = egui::Rect::from_min_size(
+                egui::pos2(editor_rect.left(), editor_rect.bottom()),
+                egui::vec2(editor_rect.width(), plan.height()),
             );
-            ui.advance_cursor_after_rect(find_rect);
-            crate::ui::embedded_bar::embedded_bottom_bar(
+            ui.advance_cursor_after_rect(bars_rect);
+            let out = draw_find_bar(
                 ui,
-                find_rect,
-                colors.pane_header_bg(),
-                |ui| {
-                    let mut search = crate::ui::search_bar::SearchBar::new(
-                        ("text_editor_find_input", &self.path),
-                        "Find…",
-                    )
-                    .surface(crate::ui::focus::SurfaceKey::Pane(ctx.pane_id))
-                    .claim_focus(std::mem::take(&mut bar.claim_focus))
-                    .font_size(FIND_BAR_FONT_SIZE);
-                    if !bar.query.is_empty() {
-                        search = search.status(bar.matches.len(), false);
-                    }
-                    if search.show(ui, &mut bar.query, colors).changed {
-                        bar.recompute(&self.doc.text());
-                        log::info!(
-                            "notes_editor: find query changed — {} matches",
-                            bar.matches.len()
-                        );
-                    }
+                bars_rect,
+                plan,
+                bar,
+                FindBarIds {
+                    find: find_input_id,
+                    replace: replace_input_id,
+                    surface: crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
                 },
+                colors,
             );
-            let replace_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(
-                    ui.available_width(),
-                    band_height
-                        + (crate::ui::style::BUTTON_H_MD - crate::ui::embedded_bar::BAR_CONTENT_H)
-                            .max(0.0),
-                ),
-            );
-            ui.advance_cursor_after_rect(replace_rect);
-            crate::ui::embedded_bar::embedded_bottom_bar(
-                ui,
-                replace_rect,
-                colors.pane_header_bg(),
-                |ui| {
-                    let button_width = 72.0;
-                    let all_width = 48.0;
-                    let input_width = (ui.available_width()
-                        - button_width
-                        - all_width
-                        - 2.0 * ui.spacing().item_spacing.x)
-                        .max(0.0);
-                    crate::ui::text_field::TextField::singleline(replace_input_id, "Replace…")
-                        .desired_width(input_width)
-                        .log_name("text_editor_replace")
-                        .show(ui, &mut bar.replace, colors);
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                        replace_input_id,
-                    );
-                    ui.add_enabled_ui(!bar.matches.is_empty(), |ui| {
-                        replace_one = crate::ui::button::chrome_button(
-                            ui,
-                            "Replace",
-                            crate::ui::button::ButtonKind::Secondary,
-                            colors,
-                            button_width,
-                        )
-                        .clicked();
-                        replace_every = crate::ui::button::chrome_button(
-                            ui,
-                            "All",
-                            crate::ui::button::ButtonKind::Secondary,
-                            colors,
-                            all_width,
-                        )
-                        .clicked();
-                    });
-                },
-            );
-            if replace_one {
+            if out.query_changed {
+                bar.recompute(&self.doc.text());
+                log::info!(
+                    "notes_editor: find query changed — {} matches",
+                    bar.matches.len()
+                );
+            }
+            if out.replace_current {
                 self.replace_current();
             }
-            if replace_every {
+            if out.replace_all {
                 self.replace_all();
             }
         }
@@ -3567,16 +3736,23 @@ mod tests {
         assert!(bar.matches.is_empty());
     }
 
-    fn find_regression_harness(text: &str) -> egui_kittest::Harness<'static, TextEditorApp> {
-        let dir = tempfile::tempdir().unwrap().keep();
-        let path = dir.join("find.rs");
-        std::fs::write(&path, text).unwrap();
+    fn find_regression_harness(
+        file: &str,
+        text: &str,
+        query: &str,
+    ) -> (
+        egui_kittest::Harness<'static, TextEditorApp>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("temp dir for find regression");
+        let path = dir.path().join(file);
+        std::fs::write(&path, text).expect("write find fixture");
         let mut app = TextEditorApp::new(path);
         let mut bar = FindBar::new();
-        bar.query = "abcdefgh".into();
+        bar.query = query.into();
         bar.recompute(text);
         app.find_bar = Some(bar);
-        egui_kittest::Harness::new_ui_state(
+        let harness = egui_kittest::Harness::new_ui_state(
             |ui, app: &mut TextEditorApp| {
                 let colors = crate::ui::theme::Colors::from_config(
                     &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
@@ -3591,115 +3767,333 @@ mod tests {
                 );
             },
             app,
-        )
+        );
+        (harness, dir)
     }
 
-    #[test]
-    fn find_bar_controls_stay_inside_narrow_pane() {
-        use egui_kittest::kittest::Queryable;
-        let mut h = find_regression_harness("abcdefgh");
-        h.set_size(egui::vec2(250.0, 180.0));
+    fn press_find_enter(h: &mut egui_kittest::Harness<'static, TextEditorApp>, backwards: bool) {
+        let modifiers = if backwards {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        let input = crate::app::input_router::PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        assert!(matches!(
+            h.state_mut().handle_key(&input),
+            KeyDisposition::Consumed
+        ));
         h.run();
-        for label in ["Replace", "All"] {
-            let rect = h.get_by_label(label).rect();
+    }
+
+    /// Horizontal offset of `column` on `line`, measured with the editor font.
+    fn measured_x(
+        h: &egui_kittest::Harness<'static, TextEditorApp>,
+        line: &str,
+        column: usize,
+    ) -> f32 {
+        let font = egui::FontId::monospace(h.state().font_size);
+        h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    line.chars().take(column).collect(),
+                    font,
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+    }
+
+    /// The whole selected match is inside the viewport on both axes, keeping
+    /// the horizontal margin whenever the match is narrower than the pane.
+    fn assert_match_revealed(h: &egui_kittest::Harness<'static, TextEditorApp>, what: &str) {
+        let app = h.state();
+        let bar = app.find_bar.as_ref().expect("find bar open");
+        let (start, end) = bar.matches[bar.current];
+        let start = movement::char_to_cursor(app.doc.buffer(), start);
+        let end = movement::char_to_cursor(app.doc.buffer(), end);
+        assert!(
+            app.view
+                .cursor_visible(start, app.doc.buffer().line_count())
+                && app.view.cursor_visible(end, app.doc.buffer().line_count()),
+            "{what}: match rows {start:?}..{end:?} outside vertical viewport (scroll_y {})",
+            app.view.scroll_y
+        );
+        if !app.mode.is_code() {
+            return;
+        }
+        let margin = crate::editor::view::SCROLL_X_MARGIN;
+        let left = measured_x(
+            h,
+            &movement::line_text(app.doc.buffer(), start.line),
+            start.column,
+        );
+        let right = measured_x(
+            h,
+            &movement::line_text(app.doc.buffer(), end.line),
+            end.column,
+        );
+        let (view_left, view_right) = (
+            app.view.scroll_x,
+            app.view.scroll_x + app.view.viewport_width,
+        );
+        // Glyph positions are pixel-snapped, so a summed prefix width can
+        // differ from the laid-out caret x by about a pixel; the 8pt margin
+        // is far outside this tolerance.
+        let eps = 1.5;
+        assert!(
+            left >= view_left + margin - eps || view_left == 0.0 && left >= view_left - eps,
+            "{what}: match start {left} violates margin in {view_left}..{view_right}"
+        );
+        if right - left <= app.view.viewport_width - 2.0 * margin {
             assert!(
-                rect.right() <= 250.0 && rect.bottom() <= 180.0,
-                "{label} escapes pane: {rect:?}"
+                right <= view_right - margin + eps,
+                "{what}: match end {right} violates margin in {view_left}..{view_right}"
             );
         }
     }
 
     #[test]
-    fn find_next_match_keeps_whole_match_visible_in_narrow_code_pane() {
-        let text = format!("{}abcdefgh\n", "x".repeat(80));
-        let mut h = find_regression_harness(&text);
-        h.set_size(egui::vec2(140.0, 120.0));
+    fn find_bar_and_header_stay_inside_pane_at_every_size() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        for width in [100.0_f32, 140.0, 180.0, 250.0] {
+            for height in [100.0_f32, 120.0, 200.0] {
+                let (mut h, _dir) = find_regression_harness("find.rs", "abcdefgh\n", "abcdefgh");
+                h.set_size(egui::vec2(width, height));
+                h.run();
+                let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                let mut seen = 0;
+                for node in h.root().children_recursive() {
+                    if !matches!(
+                        node.accesskit_node().role(),
+                        egui::accesskit::Role::Button
+                            | egui::accesskit::Role::TextInput
+                            | egui::accesskit::Role::Label
+                    ) {
+                        continue;
+                    }
+                    let rect = node.rect();
+                    seen += 1;
+                    assert!(
+                        pane.expand(0.75).contains_rect(rect),
+                        "{width}x{height}: {:?} {:?} escapes pane {rect:?}",
+                        node.accesskit_node().role(),
+                        node.accesskit_node().label()
+                    );
+                }
+                assert!(seen > 0, "{width}x{height}: no controls found");
+                // The header carries the save indicator and the scope switch;
+                // it is never traded away for height.
+                h.get_by_label("Saved");
+                h.get_by_label("find.rs");
+                // Count and clear belong to the find row.
+                h.get_by_label("\u{00d7}");
+                // The badge is optional text: it degrades full, compact, then
+                // hides when the input would drop under its minimum (the test
+                // harness pane is 16pt narrower than the window).
+                if width >= 180.0 {
+                    assert!(
+                        h.query_by_label("1 / 1").is_some() || h.query_by_label("1/1").is_some(),
+                        "{width}x{height}: position count missing"
+                    );
+                }
+                let view = &h.state().view;
+                // Two lines whenever the replace block can be sacrificed for
+                // them; the find row alone leaves what the pane has.
+                let min_lines = if height >= 120.0 { 2.0 } else { 1.0 };
+                assert!(
+                    view.viewport_height >= min_lines * view.line_height - 0.5,
+                    "{width}x{height}: editor squeezed to {} (line {})",
+                    view.viewport_height,
+                    view.line_height
+                );
+                if width >= 250.0 && height >= 200.0 {
+                    h.get_by_label("Replace");
+                    h.get_by_label("All");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_bar_plan_reflows_then_collapses_replace_row() {
+        let buttons = [50.0, 30.0];
+        let tall = 400.0;
+        let min_editor = 36.0;
+        let plan = |w: f32, h: f32| plan_find_bar(w, h, min_editor, buttons).replace;
+        assert_eq!(plan(300.0, tall), ReplaceLayout::Inline);
+        // Buttons still fit once the input would drop under its minimum.
+        assert_eq!(plan(130.0, tall), ReplaceLayout::Stacked);
+        // Required buttons themselves no longer fit.
+        assert_eq!(plan(60.0, tall), ReplaceLayout::Hidden);
+        // Height collapses the replace block before the editor is squeezed.
+        let inline_h = FindBarPlan {
+            replace: ReplaceLayout::Inline,
+        }
+        .height();
+        assert_eq!(plan(300.0, inline_h + min_editor), ReplaceLayout::Inline);
+        assert_eq!(
+            plan(300.0, inline_h + min_editor - 0.5),
+            ReplaceLayout::Hidden
+        );
+        // Every plan keeps the editor at least its minimum, except when even
+        // the find row alone leaves less (below any supported pane height).
+        for w in 0..400 {
+            for h in 0..400 {
+                let p = plan_find_bar(w as f32, h as f32, min_editor, buttons);
+                if p.replace != ReplaceLayout::Hidden {
+                    assert!(h as f32 - p.height() >= min_editor, "{w}x{h}: {p:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_bar_shows_position_and_no_results() {
+        use egui_kittest::kittest::Queryable;
+        let (mut h, _dir) = find_regression_harness("find.rs", "ab ab ab\n", "ab");
+        h.set_size(egui::vec2(300.0, 200.0));
         h.run();
-        let start_x = h.ctx.fonts_mut(|f| {
-            f.layout_no_wrap(
-                "x".repeat(80),
-                egui::FontId::monospace(h.state().font_size),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .x
-        });
-        // Simulate returning to this match from a later one: its end remains
-        // visible, but its start is left of the viewport.
+        h.get_by_label("1 / 3");
+        press_find_enter(&mut h, false);
+        h.get_by_label("2 / 3");
+        h.state_mut().find_bar.as_mut().unwrap().query = "zzz".into();
+        h.state_mut()
+            .find_bar
+            .as_mut()
+            .unwrap()
+            .recompute("ab ab ab\n");
+        h.run();
+        h.get_by_label("No results");
+    }
+
+    #[test]
+    fn find_replace_buttons_are_wired_to_replace_current_and_all() {
+        use egui_kittest::kittest::Queryable;
+        let (mut h, _dir) = find_regression_harness("find.rs", "foo bar foo\n", "foo");
+        h.state_mut().find_bar.as_mut().unwrap().replace = "qux".into();
+        h.set_size(egui::vec2(300.0, 200.0));
+        h.run();
+        h.get_by_label("Replace").click();
+        h.run();
+        assert_eq!(h.state().doc.text(), "qux bar foo\n");
+        h.get_by_label("All").click();
+        h.run();
+        assert_eq!(h.state().doc.text(), "qux bar qux\n");
+    }
+
+    #[test]
+    fn find_match_reveal_keeps_whole_match_visible_with_margin_in_narrow_code_pane() {
+        let text = format!("{}abcdefgh{}\n", "x".repeat(80), "x".repeat(80));
+        let (mut h, _dir) = find_regression_harness("find.rs", &text, "abcdefgh");
+        h.set_size(egui::vec2(140.0, 140.0));
+        h.run();
+        let start_x = measured_x(&h, &"x".repeat(80), 80);
+        // Returning to the match from the right: its end is visible, its
+        // start is left of the viewport.
         h.state_mut().view.scroll_x = start_x + 10.0;
         h.state_mut().select_match((80, 88));
         h.run();
-        let app = h.state();
-        assert!(
-            start_x >= app.view.scroll_x,
-            "match start is off-screen: {start_x} < {}",
-            app.view.scroll_x
+        assert_match_revealed(&h, "backward");
+        // And arriving from the left: the end is right of the viewport.
+        h.state_mut().view.scroll_x = 0.0;
+        h.state_mut().select_match((80, 88));
+        h.run();
+        assert_match_revealed(&h, "forward");
+    }
+
+    #[test]
+    fn find_match_reveal_handles_wide_characters_and_tabs() {
+        let line = format!(
+            "\t{}\u{4e16}\u{754c}\t{}\u{4e16}\u{754c}abcdefgh{}\n",
+            "\u{4e16}".repeat(30),
+            "x".repeat(30),
+            "\t".repeat(20)
         );
-        assert!(app
-            .view
-            .cursor_visible(app.doc.cursor(), app.doc.buffer().line_count()));
+        let (mut h, _dir) = find_regression_harness("find.rs", &line, "abcdefgh");
+        h.set_size(egui::vec2(160.0, 140.0));
+        h.run();
+        let start = line.chars().position(|c| c == 'a').unwrap();
+        h.state_mut().view.scroll_x = 0.0;
+        h.state_mut().select_match((start, start + 8));
+        h.run();
+        assert_match_revealed(&h, "wide chars and tabs");
+    }
+
+    #[test]
+    fn find_match_reveal_straddling_soft_wrapped_rows_shows_both_rows() {
+        let paragraph = "alpha beta gamma delta epsilon zeta eta theta iota kappa ".repeat(8);
+        let text = format!("{}{paragraph}\n{}", "pad\n".repeat(30), "pad\n".repeat(30));
+        let (mut h, _dir) = find_regression_harness("find.md", &text, "kappa alpha");
+        h.set_size(egui::vec2(220.0, 140.0));
+        h.run();
+        let bar_len = h.state().find_bar.as_ref().unwrap().matches.len();
+        assert!(bar_len >= 2, "fixture has wrapped matches");
+        for _ in 0..bar_len {
+            press_find_enter(&mut h, false);
+            assert_match_revealed(&h, "wrapped markdown");
+        }
     }
 
     #[test]
     fn find_navigation_keeps_each_match_visible_on_both_axes() {
         let line = format!("{}abcdefgh{}abcdefgh\n", "x".repeat(80), "x".repeat(80));
         let text = format!("{line}{}{line}", "other\n".repeat(20));
-        let mut h = find_regression_harness(&text);
+        let (mut h, _dir) = find_regression_harness("find.rs", &text, "abcdefgh");
         h.set_size(egui::vec2(180.0, 140.0));
         h.run();
         for backwards in [false, false, false, false, true, true, true, true] {
-            let modifiers = if backwards {
-                egui::Modifiers::SHIFT
+            press_find_enter(&mut h, backwards);
+            assert_eq!(h.state().doc.selected_text(), "abcdefgh");
+            assert_match_revealed(&h, "navigation");
+        }
+    }
+
+    #[test]
+    fn replace_reveals_the_caret_not_the_stale_match() {
+        let text = format!(
+            "foo{}foo\n{}foo{}foo\n",
+            "x".repeat(200),
+            "pad\n".repeat(3),
+            "x".repeat(200)
+        );
+        let replacement = "y".repeat(60);
+        for all in [false, true] {
+            let (mut h, _dir) = find_regression_harness("find.rs", &text, "foo");
+            h.state_mut().find_bar.as_mut().unwrap().replace = replacement.clone();
+            h.set_size(egui::vec2(160.0, 160.0));
+            h.run();
+            if all {
+                h.state_mut().replace_all();
             } else {
-                egui::Modifiers::NONE
-            };
-            let input = crate::app::input_router::PlexiInput::synthetic(
-                vec![egui::Event::Key {
-                    key: egui::Key::Enter,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                }],
-                modifiers,
-            );
-            assert!(matches!(
-                h.state_mut().handle_key(&input),
-                KeyDisposition::Consumed
-            ));
+                h.state_mut().replace_current();
+            }
             h.run();
             let app = h.state();
-            let bar = app.find_bar.as_ref().unwrap();
-            let (start, end) = bar.matches[bar.current];
-            assert_eq!(app.doc.selected_text(), "abcdefgh");
-            let start = movement::char_to_cursor(app.doc.buffer(), start);
-            let end = movement::char_to_cursor(app.doc.buffer(), end);
-            let line = movement::line_text(app.doc.buffer(), start.line);
-            let font = egui::FontId::monospace(app.font_size);
-            let measure = |column: usize| {
-                h.ctx.fonts_mut(|fonts| {
-                    fonts
-                        .layout_no_wrap(
-                            line.chars().take(column).collect(),
-                            font.clone(),
-                            egui::Color32::WHITE,
-                        )
-                        .size()
-                        .x
-                })
-            };
-            let left = measure(start.column);
-            let right = measure(end.column);
+            let caret = app.doc.cursor();
+            let caret_x = measured_x(
+                &h,
+                &movement::line_text(app.doc.buffer(), caret.line),
+                caret.column,
+            );
             assert!(
-                left >= app.view.scroll_x && right <= app.view.scroll_x + app.view.viewport_width,
-                "match {start:?}..{end:?} outside horizontal viewport {}..{}",
+                app.view
+                    .cursor_visible(caret, app.doc.buffer().line_count())
+                    && caret_x >= app.view.scroll_x
+                    && caret_x <= app.view.scroll_x + app.view.viewport_width,
+                "replace(all={all}): caret {caret:?} x={caret_x} outside {}..{}",
                 app.view.scroll_x,
                 app.view.scroll_x + app.view.viewport_width
             );
-            assert!(app
-                .view
-                .cursor_visible(start, app.doc.buffer().line_count()));
-            assert!(app.view.cursor_visible(end, app.doc.buffer().line_count()));
         }
     }
 

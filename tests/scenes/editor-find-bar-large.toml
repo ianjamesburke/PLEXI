@@ -1,5 +1,6 @@
 # Find/replace bar at large window size.
 size = [1000.0, 700.0]
+themes = ["plexi-dusk", "plexi-dawn"]
 
 [[steps]]
 open = { kind = "builtin", id = "text-editor", as = "editor", args = ["{tmp}/note.rs"] }

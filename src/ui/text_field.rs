@@ -175,7 +175,6 @@ pub(crate) struct TextField<'a> {
     surface: Option<crate::ui::focus::SurfaceKey>,
     select_all_on_focus: bool,
     password: bool,
-    desired_width: f32,
     log_name: &'a str,
 }
 
@@ -187,7 +186,6 @@ impl<'a> TextField<'a> {
             surface: None,
             select_all_on_focus: false,
             password: false,
-            desired_width: f32::INFINITY,
             log_name: "text_field",
         }
     }
@@ -211,11 +209,6 @@ impl<'a> TextField<'a> {
         self
     }
 
-    pub(crate) fn desired_width(mut self, desired_width: f32) -> Self {
-        self.desired_width = desired_width;
-        self
-    }
-
     pub(crate) fn log_name(mut self, log_name: &'a str) -> Self {
         self.log_name = log_name;
         self
@@ -234,7 +227,7 @@ impl<'a> TextField<'a> {
             self.id,
             colors,
             self.password,
-            self.desired_width,
+            f32::INFINITY,
         );
         if let Some(key) = self.surface {
             crate::ui::focus::register_default_text_surface(ui.ctx(), key, self.id);

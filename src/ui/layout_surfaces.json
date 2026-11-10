@@ -22,6 +22,15 @@
       "gap": "Unresolved: card_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/app/text_editor_app.rs::draw_find_bar",
+      "fixture": {
+        "file": "src/app/text_editor_app.rs",
+        "test": "find_bar_and_header_stay_inside_pane_at_every_size"
+      },
+      "states": "panes 100/140/180/250 wide by 100/120/200 tall; query with one match; replace row inline, stacked or collapsed; header kept at every size; scenes editor-find-bar-narrow/small/large capture Dusk and Dawn screenshots",
+      "minimum": "Find row always present with the clear action; count degrades full, compact, hidden; Replace and All are required actions that stack under the input, then the replace block collapses before the editor drops under two lines"
+    },
+    {
       "id": "src/app/zoom.rs::draw_tree_atlas_canvas",
       "gap": "Unresolved: zoom has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
