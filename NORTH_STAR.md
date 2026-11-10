@@ -1,6 +1,6 @@
 # Plexi North Star
 
-> **Plexi — the last app you'll ever need.**
+> **Plexi — the last plugin you'll ever need.**
 
 This is the compass, not a plan. Read it before filing issues, implementing features, or making architectural decisions.
 
@@ -8,9 +8,9 @@ This is the compass, not a plan. Read it before filing issues, implementing feat
 
 ## The One-Liner
 
-**The last app you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
+**The last plugin you'll ever need.** Not because it does everything today. Because you never outgrow it. You grow it.
 
-Plexi is a mini-OS, not an app: a tiling, terminal-native personal computing environment where capability-gated apps, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
+Plexi is a mini-OS, not an plugin: a tiling, terminal-native personal computing environment where capability-gated plugins, agents, and terminals share one inheritable place. You install it once and build your working environment on top of it for the rest of your life. Software has the ownership relationship backwards — you subscribe to tools you can't modify, storing data you can't inspect, that vanish when you stop paying. Plexi is the opposite bet: an environment you own completely, the way you own a book. And it is built for human + AI collaboration from the ground up — a garden both participants tend, growing interfaces that fit the person using them — not a chat window bolted onto software that was never built to reason about itself.
 
 ---
 
@@ -26,7 +26,7 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 3. **Keyboard-first. The mouse is optional.** Every interaction has a keyboard path, and the fast path is the default path.
 
-    **Every action is a command.** Cmd+P is the discovery path for every user-facing Plexi action: moving focus, launching apps, opening contexts, moving panes, and changing settings. A central command registry gives each action a stable identity, searchable name and aliases, explicit targets and arguments, and availability rules. The palette and configurable keybindings invoke the same command; shortcuts are the learned fast path. Commands remain discoverable when unavailable and explain what they need. Any exception must have an explicit product or security reason.
+    **Every action is a command.** Cmd+P is the discovery path for every user-facing Plexi action: moving focus, launching plugins, opening contexts, moving panes, and changing settings. A central command registry gives each action a stable identity, searchable name and aliases, explicit targets and arguments, and availability rules. The palette and configurable keybindings invoke the same command; shortcuts are the learned fast path. Commands remain discoverable when unavailable and explain what they need. Any exception must have an explicit product or security reason.
 
     Opening the palette preserves the invoking pane and selection. Pane commands act on selected panes when a selection exists, otherwise on the focused pane, and show which targets they will affect. CLI and agent entry points share command behavior and retain their capability checks; discoverability never grants authority.
 
@@ -36,13 +36,13 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 6. **If it needs a manual, it needs a redesign.** No jargon without explanation, no dead commands, no stubs. Obvious over clever.
 
-7. **Your environment is an inheritance.** A Plexi instance is a complete record of how a person works — every app, permission, transcript, and piece of state, portable and ownable. Hand someone your machine, and you hand them your working life. Hand the next generation your workflows the way you'd hand them a library. That has never been true of software before.
+7. **Your environment is an inheritance.** A Plexi instance is a complete record of how a person works — every plugin, permission, transcript, and piece of state, portable and ownable. Hand someone your machine, and you hand them your working life. Hand the next generation your workflows the way you'd hand them a library. That has never been true of software before.
 
-8. **The whole app lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds an app, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Apps are portable, auditable, replaceable; any process that speaks the protocol is an app.
+8. **The whole plugin lifecycle lives in Plexi — build, test, publish, iterate.** An agent scaffolds an plugin, hot-reloads it, tests it, and ships it to the marketplace without leaving the environment. Plugins are portable, auditable, replaceable; any process that speaks the protocol is an app.
 
 9. **Local-first. Cloud is an option, never a dependency.** Sync, hosting, and the portable server instance are opt-in conveniences on the same architecture. Nothing required to run what you own lives on someone else's computer.
 
-10. **Apps never get ambient authority.** Every capability is declared in a manifest, granted with explicit scoped consent, and logged to an append-only audit trail. The host owns rendering and enforcement; apps own state and intent. Security by construction, not by policy.
+10. **Plugins never get ambient authority.** Every capability is declared in a manifest, granted with explicit scoped consent, and logged to an append-only audit trail. The host owns rendering and enforcement; plugins own state and intent. Security by construction, not by policy.
 
 11. **Make the last 20% easy.** When a workflow needs human judgment, Plexi puts the relevant material and the means to change it directly in the person's hands. Their choices become durable, machine-readable changes that automation can continue from. Every handoff preserves context, makes the result immediately perceptible, and supports correction and undo.
 
@@ -56,23 +56,23 @@ Evaluate every proposed feature against these commandments before adding it to t
 
 **Small core, everything else an experiment:** stable ships a small core. Every other capability lives behind a per-feature experiment flag, off by default on every channel, and graduates to stable only once Ian uses it every day. Experiments own their data and never get migration code; graduation freezes the format.
 
-**Grown, not universal:** no universal UI. Plexi grows to fit the individual, shaped by use, with the assistant as workspace operator and third-party AI apps as ordinary capability-gated apps — never ambient controllers.
+**Grown, not universal:** no universal UI. Plexi grows to fit the individual, shaped by use, with the assistant as workspace operator and third-party AI plugins as ordinary capability-gated plugins — never ambient controllers.
 
 ---
 
 ## Who This Is For
 
-Now (v1): developers running several CLI coding agents (Claude Code, Codex) on a Mac, who want the best host for the agents they already pay for. Destination: non-technical people who know AI power users have caught on to the terminal and want that leverage without the priesthood. Plexi wraps the whole experience in a CLI an agent can drive and a person can learn. Secondary: power users and agent builders who need a programmable, auditable environment — and a deployment model of "install Plexi, install the app, connect a key. Done."
+Now (v1): developers running several CLI coding agents (Claude Code, Codex) on a Mac, who want the best host for the agents they already pay for. Destination: non-technical people who know AI power users have caught on to the terminal and want that leverage without the priesthood. Plexi wraps the whole experience in a CLI an agent can drive and a person can learn. Secondary: power users and agent builders who need a programmable, auditable environment — and a deployment model of "install Plexi, install the plugin, connect a key. Done."
 
 ---
 
 ## The Progression
 
-- **Foundation** *(shipped)* — tiling layout, terminal + app panes, PGAP v3 + Python SDK, typed pipes, contexts, capability system with audit trail, CLI, core apps.
-- **Phase 2 — The Protocol** — declarative host-rendered UI; a polished app in under 100 lines of Python.
-- **v1** *(now)* — a thin, authoritative core plus bundled core plugins built only on the same public capability API third parties get; the core plugins are today's day-to-day features, extracted, and double as example code. Stable host + CLI agents driving Plexi through the `plexi` CLI and skill, building Python apps and plugins; Apple Silicon Mac. Security: Plexi guards what it owns (secrets stay out of agent panes, approvals only by a click in the Plexi window) and switches on each agent vendor's own sandbox; it builds no sandbox of its own.
-- **Phase 3 — Intelligence** — ships only once it replaces Ian's own agent setup day to day. The host Assistant, an ordinary boxed agent with no private back door, becomes a full workspace operator: typed host tools behind the permission broker, named agent personas, skills, app connectors, AI onboarding for non-technical users.
-- **Phase 4 — The Platform** — WASM runtime (same app contract, true sandboxing, mobile-viable), marketplace with review flow and revenue sharing.
+- **Foundation** *(shipped)* — tiling layout, terminal + plugin panes, PGAP v4 + Python SDK, typed pipes, contexts, capability system with audit trail, CLI, bundled plugins.
+- **Phase 2 — The Protocol** — declarative host-rendered UI; a polished plugin in under 100 lines of Python.
+- **v1** *(now)* — a thin, authoritative core plus bundled core plugins built only on the same public capability API third parties get; the core plugins are today's day-to-day features, extracted, and double as example code. Stable host + CLI agents driving Plexi through the `plexi` CLI and skill, building Python plugins; Apple Silicon Mac. Security: Plexi guards what it owns (secrets stay out of agent panes, approvals only by a click in the Plexi window) and switches on each agent vendor's own sandbox; it builds no sandbox of its own.
+- **Phase 3 — Intelligence** — ships only once it replaces Ian's own agent setup day to day. The host Assistant, an ordinary boxed agent with no private back door, becomes a full workspace operator: typed host tools behind the permission broker, named agent personas, skills, plugin connectors, AI onboarding for non-technical users.
+- **Phase 4 — The Platform** — WASM runtime (same plugin contract, true sandboxing, mobile-viable), marketplace with review flow and revenue sharing.
 - **Phase 5 — The Portable Instance** — your environment runs as a server, local or cloud, same architecture; thin clients attach from anywhere; SpacetimeDB persistence/sync.
 - **Phase 6 — Ubiquity** — Linux, Windows, any device that can run a process and render a frame. Same config, same keybindings, for life.
 - **Phase ∞ — The Inheritance Layer** — commandment 7, fully realized.
@@ -82,10 +82,10 @@ Now (v1): developers running several CLI coding agents (Claude Code, Codex) on a
 ## What Does Not Belong Here
 
 - Cloud-required features (sync is opt-in and portable)
-- Apps that duplicate what a terminal already does well
-- Capabilities that require trusting the app rather than the protocol
+- Plugins that duplicate what a terminal already does well
+- Capabilities that require trusting the plugin rather than the protocol
 - Two sources of truth for state or permissions
 - Complexity that serves the implementation rather than the capability
-- Pixel math in app code — apps declare structure; the host renders
+- Pixel math in plugin code — plugins declare structure; the host renders
 
-For the app-framework and marketplace execution plan, see [`docs/app-framework-marketplace.md`](docs/app-framework-marketplace.md).
+For the plugin-framework and marketplace execution plan, see [`docs/app-framework-marketplace.md`](docs/app-framework-marketplace.md).

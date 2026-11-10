@@ -21,7 +21,7 @@ The corollary: a large share of the 21 `in-progress` tasks are not stalled work.
 
 ## 2. Scope ruling in force
 
-The owner ruled on 2026-08-01 that **the Assistant app and the agent-swarm/mesh infrastructure are V1 launch scope.**
+The owner ruled on 2026-08-01 that **the Assistant plugin and the agent-swarm/mesh infrastructure are V1 launch scope.**
 
 This supersedes, on the Assistant and orchestration points only:
 - `2026-08-01-v1-cut.md`: *"Do not pull Assistant, orchestration, browser, marketplace, native WASM distribution, or media editing into this sprint."* Browser, marketplace, WASM distribution, and media editing **stay out**.
@@ -29,7 +29,7 @@ This supersedes, on the Assistant and orchestration points only:
 
 Both documents need editing to match. Until they are, agents will keep reading a stale constraint — one auditor correctly refused a peer-relayed override for exactly this reason.
 
-**The Assistant is a host app, not a PGAP app.** `assistant-host-app.md` is canonical; `NORTH_STAR.md` is inaccurate on this point and should be corrected. Code lives in `src/assistant/` and `src/app/assistant_host_tools.rs`. The only `apps/`-side remnant is `apps/dev/assistant-pgap/`, an empty shell holding one stray `hello-world/SKILL.md`, absent from `packs/core.toml`. It should be deleted.
+**The Assistant is a host plugin, not a PGAP app.** `assistant-host-app.md` is canonical; `NORTH_STAR.md` is inaccurate on this point and should be corrected. Code lives in `src/assistant/` and `src/app/assistant_host_tools.rs`. The only `apps/`-side remnant is `apps/dev/assistant-pgap/`, an empty shell holding one stray `hello-world/SKILL.md`, absent from `packs/core.toml`. It should be deleted.
 
 ---
 
@@ -94,7 +94,7 @@ Older PRs — **#1604, #2316, #2318, #2323, #2353** — predate this audit's win
 - **0707** — `plexi ai setup` destroys `[ai.local]` and budget caps via a hand-rolled line scanner at `src/cli/ai.rs:492`. Corrupts the Meridian config on alpha today.
 - **0636** — `plexi notify` takes `source_pane_id` as a caller-supplied parameter rather than deriving it from the socket peer. Sender identity is spoofable, at exactly the moment the mesh multiplies cross-agent messages.
 - **0711** — delete notification tiers and the unreachable cue gate so visible, non-muted CLI notifications interrupt.
-- **0680 → 0682 → 0681 → 0683** — Python app state silently corrupts and clobbers today. Do as one cluster.
+- **0680 → 0682 → 0681 → 0683** — Python plugin state silently corrupts and clobbers today. Do as one cluster.
 - **0601** — unbounded stdin buffer growth; a slow OOM under long-running agent MCP clients.
 
 **Host stability — a swarm needs a host that survives hours**
@@ -130,8 +130,8 @@ Video-editor sequencing is superseded by [xml-video-editor.md](xml-video-editor.
 
 - **0258 and 0259 declare `blocked_by: []` but their prose cites a blocker that already shipped** (the `PlexiInput` router, stint 0387, now `src/app/input_router.rs`). An agent reading the prose skips them forever. They are dispatchable today.
 - **0706 is not superseded by #2555** — that PR's own body explicitly defers it. Marking it closed would silently drop a v1 gate.
-- **Three distinct MCP protocol extensions are in play** — tools (0382/0578), Apps (mesh #11), Tasks (mesh #12). Do not let anyone merge them into one stint.
-- **0483 (native WebView runtime) and the mesh's MCP-app pane may be the same primitive built twice.** Rule before either is stinted.
+- **Three distinct MCP protocol extensions are in play** — tools (0382/0578), Plugins (mesh #11), Tasks (mesh #12). Do not let anyone merge them into one stint.
+- **0483 (native WebView runtime) and the mesh's MCP-plugin pane may be the same primitive built twice.** Rule before either is stinted.
 
 ---
 
@@ -141,7 +141,7 @@ Video-editor sequencing is superseded by [xml-video-editor.md](xml-video-editor.
 2. **Which surface is the flagship demo?** 0598 is a pure decision-blocker and now sharper with the Assistant in V1.
 3. **Where do notification affordances live** — sidebar or dedicated chrome? 0699 and 0700 touch the same real estate, filed independently. Ruling: 0699 first, 0700 inherits.
 4. **0395** — "third-party agents as first-class panes" is the mesh vision itself, but is scoped explore-only. Calling it V1 while leaving it in explore state is a contradiction.
-5. **Webview ownership** — mesh MCP-app pane vs. `browser-surface.md`. The mesh doc names this as a ruling to take before either is stinted.
+5. **Webview ownership** — mesh MCP-plugin pane vs. `browser-surface.md`. The mesh doc names this as a ruling to take before either is stinted.
 6. **0356 cannot be worked by any agent.** It is an ops checklist needing production credentials. It is a human gate wearing a task's clothes.
 
 ---
@@ -169,7 +169,7 @@ Nothing in `.stint/` decomposes the mesh, and it is now V1. This is the largest 
 | 8 | Escalation as a typed record | M | 2, 4 — **share schema with `decision-trust-plane.md`** |
 | 9 | Conversation-surface unification (`Turn` gains stable id + author; head owns the store) | L | 1, 4 — split into 9a/9b if a babysitter queue needs smaller units |
 | 10 | Command-palette head picker | S | 1, 9 |
-| 11 | MCP Apps host-side plane (`ui://`, postMessage bridge, visibility gating) | L | P0b, 2, 0696, 0699 |
+| 11 | MCP Plugins host-side plane (`ui://`, postMessage bridge, visibility gating) | L | P0b, 2, 0696, 0699 |
 | 12 | Long-running work via MCP Tasks extension | M | 6, 0628 |
 
 **Already covered — do not re-file:** 0628 (feeds #12), 0554 + `assistant-authority-model.md` (the authority plane the mesh explicitly does not change), 0696 and 0699 (feed #11), 0382/0578 (distinct MCP layers), 0558 (feeds #4's authority guarantee).

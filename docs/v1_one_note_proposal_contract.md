@@ -248,7 +248,7 @@ When a proposal is presented, the user has three mutually exclusive choices:
 ## 8. Authority Boundary, Harness Qualification, and Release Gate
 
 ### 8.1 Host Broker vs. Harness-Native Tools
-Plexi's Permission Monitor (`src/broker/gate.rs`) intercepts host-brokered capabilities: `secret.get`, `secret.list`, `pane.send`, and `app call`. Stint 0964 qualified that agent `[permissions]` posture reliably enforces `deny` and `ask` for these host-brokered tools (`docs/security/worker-permission-posture-qualification.md`).
+Plexi's Permission Monitor (`src/broker/gate.rs`) intercepts host-brokered capabilities: `secret.get`, `secret.list`, `pane.send`, and `plugin call`. Stint 0964 qualified that agent `[permissions]` posture reliably enforces `deny` and `ask` for these host-brokered tools (`docs/security/worker-permission-posture-qualification.md`).
 
 However, **harness-native tools** (e.g. bash execution, file read/write tools built into `pi`, `claude -p`, `codex`, `agy`) execute inside the child harness process on the host OS, completely bypassing Plexi's host broker gate. A system prompt saying "You are read-only" provides zero security enforcement against a compromised or hallucinating model.
 

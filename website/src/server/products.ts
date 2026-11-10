@@ -160,7 +160,7 @@ export interface EnsuredProduct {
 
 /**
  * Provision the Polar product for a first-party paid app, idempotently. First
- * call creates the product (metadata carries `app_id` so the order webhook can
+ * call creates the product (metadata carries `plugin_id` so the order webhook can
  * attribute the sale) and writes the `app_products` row; later calls PATCH the
  * existing product and update the row. The `product_id` is written once and
  * never changes. Free apps are never passed here — the caller enforces a price.

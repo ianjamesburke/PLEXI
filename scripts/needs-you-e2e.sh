@@ -172,8 +172,8 @@ fi
 export PLEXI_SOCKET="$SOCKET"
 
 echo "opening chess"
-"$BIN" app open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
-  echo "error: app open failed" >&2
+"$BIN" view open "$ROOT/apps/chess" >"$WORK/open.log" 2>&1 || {
+  echo "error: view open failed" >&2
   cat "$WORK/open.log" >&2
   exit 1
 }
@@ -222,7 +222,7 @@ ask_approval() {
   local outfile="$2"
   local asked=0
   for _ in $(seq 1 40); do
-    if ! run_in_pane "$outfile" "$BIN app call chess chess.play --json --input '$input' > '$outfile' 2>&1"; then
+    if ! run_in_pane "$outfile" "$BIN plugin call chess chess.play --json --input '$input' > '$outfile' 2>&1"; then
       sleep 1
       continue
     fi
@@ -351,7 +351,7 @@ if ! HUMAN_APPROVE "$ID"; then
 fi
 
 echo "retrying the tool"
-run_in_pane "$WORK/call2.out" "$BIN app call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
+run_in_pane "$WORK/call2.out" "$BIN plugin call chess chess.play --json --input '$INPUT' > '$WORK/call2.out' 2>&1"
 python3 - "$WORK/call2.out" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()
@@ -482,7 +482,7 @@ if [[ "$GRANTS_BEFORE" != "$GRANTS_AFTER" ]]; then
   echo "error: check 7 wrote a grant ($GRANTS_BEFORE -> $GRANTS_AFTER)" >&2
   exit 1
 fi
-run_in_pane "$WORK/call4.out" "$BIN app call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
+run_in_pane "$WORK/call4.out" "$BIN plugin call chess chess.play --json --input '$INPUT2' > '$WORK/call4.out' 2>&1" || true
 python3 - "$WORK/call4.out" <<'PY'
 import json, sys
 text = open(sys.argv[1]).read()

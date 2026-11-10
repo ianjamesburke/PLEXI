@@ -66,7 +66,7 @@ Clean. Human driver scripts.
 
 ### #2711 `33adfbbc` onto #2725
 
-`SpawnPane` and `PaneLaunchSpec` carry `peer_ancestry` (host-stamped; a client cannot set it) and `force_new` (`app open --new`). Several instances and a bare app call return `ambiguous_instance` and do not pick. Approvals stay refused.
+`SpawnPane` and `PaneLaunchSpec` carry `peer_ancestry` (host-stamped; a client cannot set it) and `force_new` (`view open --new`). Several instances and a bare plugin call return `ambiguous_instance` and do not pick. Approvals stay refused.
 
 ### #2700 `e7d9b7f4` then #2718 `485d0397`
 
@@ -176,7 +176,7 @@ A human Allow once spends exactly one folder-secret read (`approve_pending(Once)
 
 ### #2700 `4808ad65` and #2718 `f2c2e4b3`
 
-#2700 is an ancestor of this #2718 head. Land #2700 first in the squash train, then the commits on #2718 that are not in #2700. The journal HMAC is still `seal::mac_key_bytes`. `existing_mac_key` does not create a key. Seal and app-share e2e approve with a real click. One profile-integrity row still carries `bad mac` and still writes the audit fact.
+#2700 is an ancestor of this #2718 head. Land #2700 first in the squash train, then the commits on #2718 that are not in #2700. The journal HMAC is still `seal::mac_key_bytes`. `existing_mac_key` does not create a key. Seal and plugin-share e2e approve with a real click. One profile-integrity row still carries `bad mac` and still writes the audit fact.
 
 ### #2721 `df0ed176`
 

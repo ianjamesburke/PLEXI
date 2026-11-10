@@ -22,14 +22,14 @@ render_app() {
   local json="$out_dir/${label}.json"
 
   if [[ -n "$state_path" ]]; then
-    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" app render "$app_path" \
+    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" view render "$app_path" \
       --size "$size" --state "$state_path" --png --output "$png"
-    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" app render "$app_path" \
+    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" view render "$app_path" \
       --size "$size" --state "$state_path" --output "$json"
   else
-    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" app render "$app_path" \
+    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" view render "$app_path" \
       --size "$size" --png --output "$png"
-    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" app render "$app_path" \
+    PLEXI_SDK_PATH="$repo_root/sdk/python" "$plexi_bin" view render "$app_path" \
       --size "$size" --output "$json"
   fi
 }
@@ -43,7 +43,7 @@ write_github_state_fixtures() {
       "number": 285,
       "title": "SDK v3 native apps visual audit",
       "state": "open",
-      "body": "Audit every core app render before merge.",
+      "body": "Audit every core view render before merge.",
       "createdAt": "2026-06-23T15:00:00Z",
       "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
       "assignees": [{"login": "ian"}],
@@ -96,7 +96,7 @@ JSON
     "number": 285,
     "title": "SDK v3 native apps visual audit",
     "state": "open",
-    "body": "Audit every core app render before merge.\n\nAcceptance:\n- all apps render non-empty\n- GitHub Issues list/detail/loading/error/filter states render\n- game controls remain usable",
+    "body": "Audit every core view render before merge.\n\nAcceptance:\n- all apps render non-empty\n- GitHub Issues list/detail/loading/error/filter states render\n- game controls remain usable",
     "createdAt": "2026-06-23T15:00:00Z",
     "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
     "assignees": [{"login": "ian"}],
@@ -143,7 +143,7 @@ JSON
       "number": 285,
       "title": "SDK v3 native apps visual audit",
       "state": "open",
-      "body": "Audit every core app render before merge.",
+      "body": "Audit every core view render before merge.",
       "createdAt": "2026-06-23T15:00:00Z",
       "labels": [{"name": "p1"}, {"name": "sdk-v3"}],
       "assignees": [{"login": "ian"}],
@@ -169,7 +169,7 @@ JSON
       "number": 285,
       "title": "SDK v3 native apps visual audit",
       "state": "open",
-      "body": "Audit every core app render before merge.",
+      "body": "Audit every core view render before merge.",
       "createdAt": "2026-06-23T15:00:00Z",
       "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
       "assignees": [{"login": "ian"}],
@@ -216,7 +216,7 @@ JSON
       "number": 285,
       "title": "SDK v3 native apps visual audit",
       "state": "open",
-      "body": "Audit every core app render before merge.",
+      "body": "Audit every core view render before merge.",
       "createdAt": "2026-06-23T15:00:00Z",
       "labels": [{"name": "p1"}, {"name": "sdk-v3"}, {"name": "ui"}],
       "assignees": [{"login": "ian"}],

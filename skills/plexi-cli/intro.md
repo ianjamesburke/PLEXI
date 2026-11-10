@@ -6,7 +6,7 @@ every command (`plexi-alpha` reads `~/.plexi-alpha/` and `<repo>/.plexi-alpha/`;
 `plexi-beta` reads `~/.plexi-beta/` and `<repo>/.plexi-beta/`; stable `plexi`
 reads `~/.plexi/` and `<repo>/.plexi/`). Bare `plexi` inherits the calling
 pane's routing and may target a different host. Run host commands from a Plexi
-pane so the host supplies its context and connection. Use the CLI or app SDK
+pane so the host supplies its context and connection. Use the CLI or plugin SDK
 for state.
 
 This binary carries the skill. Install it for your agent:
@@ -19,7 +19,7 @@ plexi skill install --agent pi
 
 ## Use a configured MCP server
 
-For a configured MCP server, `plexi app open --mcp <server-id>` opens its tools,
+For a configured MCP server, `plexi view open --mcp <server-id>` opens its tools,
 resources and prompts when the MCP client experiment is enabled. Supply the
 configured id, such as `filesystem`. Approve connection and endpoint requests
 in Needs You, then retry in the pane. Use j/k, Enter, Tab and Esc to operate the
@@ -44,7 +44,7 @@ Keep each wait below your tool harness call limit. Exit 0 prints the result;
 exit 2 means the slice expired, so report progress and repeat the same wait.
 Inspect errors on exit 1. A timeout does not call for a replacement worker.
 
-`settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `app call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
+`settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `plugin call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
 
 <!-- /experiment -->
 
@@ -93,7 +93,7 @@ plexi agent team run consult-experts --question "Which option is safest?"
 
 <!-- /experiment -->
 
-## Inspect apps and request human decisions
+## Inspect plugins and request human decisions
 
 Discover live tools and their schemas before calling them. A mutating call
 may return `permission_required` and a `pending_request_id`; show it to the
@@ -102,8 +102,8 @@ requests. Creative answers settle questions but never grant permissions.
 After an answer, re-read resource state before retrying a mutation.
 
 ```bash
-plexi app tools --json
-plexi app call <app_id> <tool> --input '<json object>' --json
+plexi plugin tools --json
+plexi plugin call <plugin_id> <tool> --input '<json object>' --json
 plexi needs-you list --json
 plexi needs-you show <id>
 plexi needs-you reconcile
@@ -121,26 +121,26 @@ unidentified callers receive an error before any text is sent; ordinary sends
 without the flag remain available. A completed operation reported as a
 duplicate does not send text again.
 
-Completed continuations must not repeat their mutation. For app-to-app data,
+Completed continuations must not repeat their mutation. For plugin-to-plugin data,
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.
 
 ## Open files and native surfaces
 
-You run inside a pane, so prefer a Plexi surface over an OS app or an external
+You run inside a pane, so prefer a Plexi surface over an OS plugin or an external
 editor. Built-in pane types open any file:
 
 ```bash
-plexi app open text-editor <path>     # text, markdown, code (.md gets live preview)
-plexi app open image-viewer <path>
-plexi app open video-player <path>
-plexi app open audio-player <path>
-plexi app open file_browser           # no path: browses the pane's directory
+plexi view open text-editor <path>     # text, markdown, code (.md gets live preview)
+plexi view open image-viewer <path>
+plexi view open video-player <path>
+plexi view open audio-player <path>
+plexi view open file_browser           # no path: browses the pane's directory
 ```
 
-Built-in pane types do not appear in `plexi app list` (that lists installed
-apps only), and `text-editor` with no path opens a fresh scratch note. Read an
-open app pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+Built-in pane types do not appear in `plexi plugin list` (that lists installed
+plugins only), and `text-editor` with no path opens a fresh scratch note. Read an
+open plugin pane with `plexi pane state <id>`; `pane capture` is terminal-only.
 
 ## Capture and handle notes
 
@@ -196,7 +196,7 @@ sharing a capacity limit.
 ## Draft a workflow from a session
 
 The host captures CLI argv with caller pane, agent session, timestamps and the
-CLI exit code. [Logging for app developers](https://plexiapp.com/docs/apps/#logging)
+CLI exit code. [Logging for plugin developers](https://plexiapp.com/docs/plugins/#logging)
 describes content and secret redaction and the content-capture opt-in. Ordinary
 grants such as `agents.ping=allow` remain readable. Interrupted calls, including
 a host shutdown, retain an unknown exit status. This diagnostic trace is not an
@@ -260,10 +260,10 @@ pane count (`--json` is supported).
 
 Use `plexi context open /path/to/project` to focus the context for that folder,
 or create one if needed. The reply identifies the selected context; the calling
-pane stays in its original context. An app opened from a pane uses that pane's
+pane stays in its original context. An view opened from a pane uses that pane's
 owning context even while another context is visible.
 
 `plexi context set-root /path/to/project` changes the caller's shared context
-root. `plexi app state get <app> --scope context` then uses the current host root,
+root. `plexi plugin state get <plugin> --scope context` then uses the current host root,
 even from a shell whose launch-time environment still names the old folder.
 Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.

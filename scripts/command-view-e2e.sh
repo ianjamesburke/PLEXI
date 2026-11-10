@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# V1-11 acceptance. Ported from #2707 scripts/command-view-e2e.sh onto the
+# V1-11 acceptance. Ported from #2707 scripts/agents-dashboard-e2e.sh onto the
 # real-lead command view (#2717). #2707's in-memory board is not installed:
-# enqueue, pause, and block are not commands, and command-view allow / resolve
+# enqueue, pause, and block are not commands, and agents-dashboard allow / resolve
 # do not grant. This script opens the pane, refuses an ungranted send, shows
 # both leads plus a queued task, screenshots the warning-color waiting line,
 # then clicks Allow once with HUMAN_APPROVE. An agent pane still cannot
 # allow or resolve.
-# Usage: scripts/command-view-e2e.sh <PR>
+# Usage: scripts/agents-dashboard-e2e.sh <PR>
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
   exec xvfb-run -a "$0" "$@"
 fi
 
-PR="${1:?usage: scripts/command-view-e2e.sh <PR>}"
+PR="${1:?usage: scripts/agents-dashboard-e2e.sh <PR>}"
 BIN="plexi-pr-${PR}"
 if ! command -v "$BIN" >/dev/null 2>&1; then
   echo "FAIL: $BIN is not on PATH. Run: just pr-install ${PR}"
@@ -83,7 +83,7 @@ open_command_pane() {
   local id="$1"
   local before list pane
   before="$(cli pane list)"
-  cli app open "$id" >/dev/null
+  cli view open "$id" >/dev/null
   pane=""
   for _ in $(seq 1 40); do
     list="$(cli pane list)"
@@ -93,7 +93,7 @@ before = {row.get("id") for row in json.loads(sys.argv[1])}
 for row in json.loads(sys.argv[2]):
     if row.get("id") in before:
         continue
-    if row.get("manifest_id") in ("command-view", "command") or row.get("title") == "Command":
+    if row.get("manifest_id") == "agents-dashboard" or row.get("title") == "Agents dashboard":
         print(row.get("id", ""))
         break
 PY
@@ -104,7 +104,7 @@ PY
     fi
     sleep 0.25
   done
-  echo "FAIL: app open $id did not open a Command pane" >&2
+  echo "FAIL: view open $id did not open a Command pane" >&2
   cli pane list >&2 || true
   return 1
 }
@@ -127,19 +127,15 @@ PY
   return 1
 }
 
-echo "STEP app open command and command-view both open the Command pane"
-PANE_CMD="$(open_command_pane command)"
-echo "app open command -> pane $PANE_CMD"
-cli pane close "$PANE_CMD" >/dev/null
-wait_pane_gone "$PANE_CMD"
-PANE_VIEW="$(open_command_pane command-view)"
-echo "app open command-view -> pane $PANE_VIEW"
+echo "STEP view open agents-dashboard opens the Agents dashboard"
+PANE_VIEW="$(open_command_pane agents-dashboard)"
+echo "view open agents-dashboard -> pane $PANE_VIEW"
 cli pane close "$PANE_VIEW" >/dev/null
 wait_pane_gone "$PANE_VIEW"
 
 echo "STEP ungranted send exits 2 and creates no lead"
 set +e
-MISSING="$(cli command-view send not-a-lead "hello")"
+MISSING="$(cli agents-dashboard send not-a-lead "hello")"
 MISSING_CODE=$?
 set -e
 printf '%s\n' "$MISSING" >"$WORKDIR/missing.json"
@@ -170,7 +166,7 @@ python3 -c 'import json,sys; assert json.loads(sys.argv[1]).get("ok") is True' "
 
 echo "STEP ungranted write becomes a pending approval"
 set +e
-PENDING="$(cli command-view send lead-a "write-file")"
+PENDING="$(cli agents-dashboard send lead-a "write-file")"
 PENDING_CODE=$?
 set -e
 printf '%s\n' "$PENDING" >"$WORKDIR/pending.json"
@@ -178,7 +174,7 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("stat
 echo "pending send exited $PENDING_CODE"
 
 echo "STEP command view pane shows both leads and the pending approval"
-OPEN="$(cli command-view open)"
+OPEN="$(cli agents-dashboard open)"
 python3 -c 'import json,sys; assert json.loads(sys.argv[1]).get("ok") is True' "$OPEN"
 PANE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["pane_id"])' "$OPEN")"
 STATE="$(cli pane state "$PANE")"
@@ -194,8 +190,8 @@ assert needs, body
 print("pane state heads", sorted(ids), "needs_you", len(needs))
 PY
 
-echo "STEP command-view send produces a real turn"
-STATUS="$(cli command-view send lead-a "status?")"
+echo "STEP agents-dashboard send produces a real turn"
+STATUS="$(cli agents-dashboard send lead-a "status?")"
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("state")=="succeeded", body; assert "idle" in (body.get("reply") or ""), body' "$STATUS"
 CONV="$(cli agent conversation --head lead-a --json)"
 python3 -c 'import json,sys; text=json.dumps(json.loads(sys.argv[1])); assert "idle" in text, text' "$CONV"
@@ -207,7 +203,7 @@ QUEUED="$(cli agent assign --head lead-b --input "$WORKDIR/queue-task.json" --js
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok") is True, body' "$QUEUED"
 QTASK="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$QUEUED")"
 for _ in $(seq 1 40); do
-  if python3 - "$(cli command-view --json)" "$QTASK" <<'PY'
+  if python3 - "$(cli agents-dashboard --json)" "$QTASK" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
 task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
@@ -218,7 +214,7 @@ PY
   fi
   sleep 0.25
 done
-python3 - "$(cli command-view --json)" "$QTASK" <<'PY'
+python3 - "$(cli agents-dashboard --json)" "$QTASK" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
 task = next((item for item in body.get("tasks", []) if item.get("id") == sys.argv[2]), None)
@@ -227,15 +223,15 @@ print("queue task", task["id"], task["state"])
 PY
 
 echo "STEP command pane pixels show both leads, the queue, last output, and a waiting line"
-SHOT="$WORKDIR/command-view.png"
+SHOT="$WORKDIR/agents-dashboard.png"
 if ! cli host screenshot --pane "$PANE" --output "$SHOT"; then
   echo "FAIL: host screenshot"
   exit 1
 fi
 test -s "$SHOT"
 mkdir -p /tmp/plexi-e2e /opt/cursor/artifacts
-cp "$SHOT" /tmp/plexi-e2e/command-view-steer.png
-cp "$SHOT" /opt/cursor/artifacts/command-view-steer.png
+cp "$SHOT" /tmp/plexi-e2e/agents-dashboard-steer.png
+cp "$SHOT" /opt/cursor/artifacts/agents-dashboard-steer.png
 python3 - "$SHOT" <<'PY'
 import struct, sys, zlib
 path = sys.argv[1]
@@ -349,7 +345,7 @@ if ! HUMAN_APPROVE "$WRITE_PENDING" once; then
 fi
 echo "STEP the same write proceeds after Allow once"
 set +e
-WROTE="$(cli command-view send lead-a "write-file")"
+WROTE="$(cli agents-dashboard send lead-a "write-file")"
 set -e
 printf '%s\n' "$WROTE" >"$WORKDIR/wrote.json"
 python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("state")=="succeeded", body' "$WROTE"
@@ -358,11 +354,11 @@ python3 -c 'import pathlib,sys; assert pathlib.Path(sys.argv[1]).read_text()=="o
 echo "HUMAN_APPROVE wrote out.txt"
 
 echo "STEP cancel a live run"
-cli command-view send lead-b "long-task" >"$WORKDIR/long.out" 2>"$WORKDIR/long.err" &
+cli agents-dashboard send lead-b "long-task" >"$WORKDIR/long.out" 2>"$WORKDIR/long.err" &
 SEND_PID=$!
 RUN=""
 for _ in $(seq 1 40); do
-  VIEW="$(cli command-view --json)"
+  VIEW="$(cli agents-dashboard --json)"
   RUN="$(python3 - "$VIEW" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -383,7 +379,7 @@ if [[ -z "$RUN" ]]; then
   exit 1
 fi
 echo "cancelling $RUN"
-cli command-view cancel "$RUN"
+cli agents-dashboard cancel "$RUN"
 wait "$SEND_PID" || true
 SEND_PID=""
 sleep 1
@@ -403,7 +399,7 @@ python3 -c 'import json,sys; text=json.dumps(json.loads(sys.argv[1])); assert "l
 echo "cancel stopped run $RUN; lead.step rows stayed $STEPS"
 
 echo "STEP restart shows the same leads and runs"
-BEFORE="$(cli command-view --json)"
+BEFORE="$(cli agents-dashboard --json)"
 "$BIN" host stop >/dev/null 2>&1 || true
 HOST_STARTED=0
 if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
@@ -411,7 +407,7 @@ if ! "$BIN" host start --background --ephemeral --timeout-secs 45; then
   exit 1
 fi
 HOST_STARTED=1
-AFTER="$(cli command-view --json)"
+AFTER="$(cli agents-dashboard --json)"
 python3 - "$BEFORE" "$AFTER" <<'PY'
 import json, sys
 before = json.loads(sys.argv[1])
@@ -427,7 +423,7 @@ PY
 
 echo "STEP resolve and allow from an agent pane are refused"
 BEFORE="$(cli pane list)"
-cli pane new "$BIN_PATH command-view resolve pending_example; $BIN_PATH command-view allow --tool assistant.turn; sleep 20" --no-focus >/dev/null
+cli pane new "$BIN_PATH agents-dashboard resolve pending_example; $BIN_PATH agents-dashboard allow --tool assistant.turn; sleep 20" --no-focus >/dev/null
 FOUND=0
 CAPTURE=""
 for _ in $(seq 1 40); do
@@ -460,7 +456,7 @@ echo "agent pane refused resolve and allow"
 
 echo "STEP follow streams command.view without another list"
 : >"$WORKDIR/follow.ndjson"
-cli command-view --follow >"$WORKDIR/follow.ndjson" 2>"$WORKDIR/follow.err" &
+cli agents-dashboard --follow >"$WORKDIR/follow.ndjson" 2>"$WORKDIR/follow.err" &
 FOLLOW_PID=$!
 SUBSCRIBED=0
 for _ in $(seq 1 40); do
@@ -472,7 +468,7 @@ for line in open(sys.argv[1]):
     if not line:
         continue
     body = json.loads(line)
-    if body.get("type") == "subscribed" and body.get("event") == "command.view" and body.get("app_id") == "plexi.host.command":
+    if body.get("type") == "subscribed" and body.get("event") == "command.view" and body.get("plugin_id") == "plexi.host.command":
         ok = True
 raise SystemExit(0 if ok else 1)
 PY
@@ -500,7 +496,7 @@ for line in lines[start:]:
     heads = body.get("heads") or []
     if (
         body.get("event") == "command.view"
-        and body.get("app_id") == "plexi.host.command"
+        and body.get("plugin_id") == "plexi.host.command"
         and any(item.get("id") == "follow-lead" for item in heads)
     ):
         raise SystemExit(0)

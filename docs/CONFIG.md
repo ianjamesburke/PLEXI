@@ -203,7 +203,7 @@ Scope decides which contexts a notification is visible in: `window` (only the or
 **A notification that does not request a scope is `context`.** It belongs to the context that produced it; following the user into unrelated contexts is the deliberate, opt-in case. Precedence, highest first:
 
 1. An explicitly requested scope — `plexi notify --scope global|context|window`.
-2. For app panes, the app's own `manifest.toml` `[launch] notification_scope`, which is a per-app policy declared by the app author and defaults to `window`.
+2. For plugin panes, the plugin's own `manifest.toml` `[launch] notification_scope`, which is a per-plugin policy declared by the plugin author and defaults to `window`.
 3. Otherwise the shared default, `context`.
 
 A `context`- or `window`-scoped notification needs a sender to attach to. `plexi notify` stamps the caller's own identity (`PLEXI_CONTEXT_ID` / `PLEXI_PANE_ID`) onto the request; the host attaches the notification to that context — never to whichever context happens to be active when the request is handled. When the sender cannot support the requested scope, the host resolves to the nearest wider scope it can honor (logged): `window` with a resolvable context but no live window narrows to `context`; a caller with no resolvable identity at all (a script running outside any pane with `PLEXI_SOCKET` exported, or a stale id) has no home context, so an explicit `--scope context|window` fails with an error at the CLI and an unscoped notification escalates to `global` — reachable everywhere rather than attached to a context that never produced it.
@@ -266,10 +266,10 @@ A server runs in its own process group and is killed — including anything an
 that never produces output, or never completes the MCP handshake, is
 disconnected after a deadline with a visible error rather than left running.
 
-An app never supplies a command: it names a server id and the host resolves the
+An plugin never supplies a command: it names a server id and the host resolves the
 rest here, so the `mcp.client` capability means "talk to a server you
 configured", not "run this command". Servers reach the assistant through the
-bridge app (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
+bridge plugin (`apps/dev/mcp-bridge`), which re-exposes their tools as ordinary
 connector tools. Format and process contract: `src/host/mcp_client.rs`.
 
 ## Default config.toml
@@ -283,7 +283,7 @@ This is the built-in template Plexi writes when it creates or resets the active 
 config_version = 1
 
 font_size = 14.0
-# ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
+# ui_scale = 1.0               # plugin-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)
 # pane_corner_radius = 6        # shared pane corner radius in points (0-255)
 # pane_title_font_size = 12    # pane title bar font size (6-32)
@@ -359,11 +359,11 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 tips = true
 
 [marketplace]
-# Hosted app catalog + CDN. Defaults point at the official plexiapp.com registry,
+# Hosted plugin catalog + CDN. Defaults point at the official plexiapp.com registry,
 # so leave these unset to use it. Override only to point at a private registry.
 # registry_url    = "https://plexiapp.com/registry/v1/index.json"
 # cdn_url         = "https://plexiapp.com/registry/v1/packages"
-# Publisher submission endpoint. Unset = `plexi app publish` prepares the package
+# Publisher submission endpoint. Unset = `plexi plugin publish` prepares the package
 # locally but does not upload it.
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =

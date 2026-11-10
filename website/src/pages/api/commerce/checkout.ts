@@ -6,7 +6,7 @@ import { json, parseJsonBody, requireAccount } from '../../../server/http';
 export const prerender = false;
 
 /**
- * Authenticated checkout creation. Body: { app_id }. Returns the Polar checkout
+ * Authenticated checkout creation. Body: { plugin_id }. Returns the Polar checkout
  * URL and a purchase_id the caller polls. The marketplace app "buy" button and
  * the CLI both hit this. Free/unknown apps have no product and 404.
  */

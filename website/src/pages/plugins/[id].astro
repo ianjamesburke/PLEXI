@@ -6,13 +6,13 @@ import registry from '../../../public/registry/v1/index.json';
 // (website/public/registry/v1/index.json). Only `public` apps get a page; the
 // build reads the committed index so it never depends on a live registry.
 export async function getStaticPaths() {
-  const apps = (registry.apps as any[]).filter(
+  const plugins = (registry.plugins as any[]).filter(
     (a) => (a.visibility ?? 'private') === 'public'
   );
-  return apps.map((app: any) => ({ params: { id: app.id }, props: { app } }));
+  return plugins.map((plugin: any) => ({ params: { id: plugin.id }, props: { plugin } }));
 }
 
-const { app } = Astro.props;
+const { plugin } = Astro.props;
 
 function priceLabel(price: any): string {
   if (!price || price === 'free') return 'Free';
@@ -25,70 +25,70 @@ function priceLabel(price: any): string {
   return 'Free';
 }
 
-const sourceUrl = app.source?.startsWith('github:')
-  ? `https://github.com/${app.source.slice('github:'.length)}`
+const sourceUrl = plugin.source?.startsWith('github:')
+  ? `https://github.com/${plugin.source.slice('github:'.length)}`
   : null;
 ---
 
-<Layout title={`${app.name} — Plexi Apps`} description={`${app.description} This marketplace listing is beta-gated.`}>
+<Layout title={`${plugin.name} — Plexi Plugins`} description={`${plugin.description} This marketplace listing is beta-gated.`}>
   <div class="wrap">
     <nav class="breadcrumb">
       <a href="/">plexi</a>
       <span class="sep">/</span>
-      <a href="/apps">apps</a>
+      <a href="/plugins">plugins</a>
       <span class="sep">/</span>
-      <span class="current">{app.id}</span>
+      <span class="current">{plugin.id}</span>
     </nav>
 
-    <header class="app-header">
+    <header class="plugin-header">
       <div class="title-row">
-        <h1>{app.name}</h1>
-        <span class="core-badge">{priceLabel(app.price)}</span>
-        <span class="version">v{app.version}</span>
+        <h1>{plugin.name}</h1>
+        <span class="core-badge">{priceLabel(plugin.price)}</span>
+        <span class="version">v{plugin.version}</span>
       </div>
-      <p class="desc">{app.description}</p>
-      <p class="beta-note">Marketplace listings and installs are beta-gated; stable v1 supports local app authoring and opening apps by path.</p>
+      <p class="desc">{plugin.description}</p>
+      <p class="beta-note">Marketplace listings and installs are beta-gated; stable v1 supports local plugin authoring and opening plugins by path.</p>
     </header>
 
     <div class="install-block" id="install-block">
       <span class="install-label">stable v1</span>
-      <span class="install-cmd">plexi app open ./my-app</span>
-      <a class="copy-btn" href="/docs/apps">Author a local app</a>
+      <span class="install-cmd">plexi view open ./my-plugin</span>
+      <a class="copy-btn" href="/docs/plugins">Author a local plugin</a>
     </div>
 
     <div class="meta">
-      {app.publisher && (
+      {plugin.publisher && (
         <div class="meta-row">
           <span class="meta-label">Publisher</span>
-          <span class="meta-val">@{app.publisher}</span>
+          <span class="meta-val">@{plugin.publisher}</span>
         </div>
       )}
-      {app.trust_label && (
+      {plugin.trust_label && (
         <div class="meta-row">
           <span class="meta-label">Trust</span>
-          <span class="meta-val">{app.trust_label}</span>
+          <span class="meta-val">{plugin.trust_label}</span>
         </div>
       )}
       {sourceUrl && (
         <div class="meta-row">
           <span class="meta-label">Source</span>
           <span class="meta-val">
-            <a href={sourceUrl} target="_blank">{app.source}</a>
+            <a href={sourceUrl} target="_blank">{plugin.source}</a>
           </span>
         </div>
       )}
-      {app.capabilities?.length > 0 && (
+      {plugin.capabilities?.length > 0 && (
         <div class="meta-row">
           <span class="meta-label">Capabilities</span>
           <span class="meta-val tags">
-            {app.capabilities.map((c: string) => <span class="tag">{c}</span>)}
+            {plugin.capabilities.map((c: string) => <span class="tag">{c}</span>)}
           </span>
         </div>
       )}
     </div>
 
     <div class="back-row">
-      <a href="/apps" class="back">← All apps</a>
+      <a href="/plugins" class="back">← All plugins</a>
     </div>
   </div>
 </Layout>
@@ -108,7 +108,7 @@ const sourceUrl = app.source?.startsWith('github:')
   .breadcrumb .sep { color: var(--border-3); }
   .breadcrumb .current { color: var(--fg-2); }
 
-  .app-header {
+  .plugin-header {
     padding: 40px 0 32px;
     border-bottom: 1px solid var(--border);
     margin-bottom: 32px;

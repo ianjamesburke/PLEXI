@@ -8,9 +8,9 @@ Stint: see `wasm-runtime-impl-plan.md` for the build sequence.
 
 ## Current runtime reference
 
-Plexi runs a WASM component in one `wasmtime::Store` per app pane. The component exports `lifecycle.init`, `lifecycle.update`, and `lifecycle.view`. The host renders the returned `ui-tree`, delivers input events, and executes returned effects.
+Plexi runs a WASM component in one `wasmtime::Store` per plugin pane. The component exports `lifecycle.init`, `lifecycle.update`, and `lifecycle.view`. The host renders the returned `ui-tree`, delivers input events, and executes returned effects.
 
-The current worlds are `plexi-app`, `plexi-gpu-app`, `plexi-audio-app`, and `plexi-full-app`. Their exact imports, exports, records, variants, and field names live in [`wit/plexi.wit`](../wit/plexi.wit).
+The current worlds are `plexi-plugin`, `plexi-gpu-plugin`, `plexi-audio-plugin`, and `plexi-full-plugin`. Their exact imports, exports, records, variants, and field names live in [`wit/plexi.wit`](../wit/plexi.wit).
 
 ### Effects and result events
 
@@ -24,27 +24,27 @@ The host executes these WIT effects:
 
 Effects that need a response return it through the matching `input-event` result variant. `clipboard-read`, `clipboard-write`, `notify`, and `spawn` return `clipboard-*-result`, `notify-result`, and `spawn-result` after the host action completes.
 
-`notify` posts a context-scoped host notification. Its optional icon is descriptive metadata; it does not load an image or grant file access. `spawn` opens a manifest-registered app with the requested layout and argv. It does not create a process or bypass app registry policy.
+`notify` posts a context-scoped host notification. Its optional icon is descriptive metadata; it does not load an image or grant file access. `spawn` opens a manifest-registered plugin with the requested layout and argv. It does not create a process or bypass plugin registry policy.
 
-Apps subscribe to declared streams by publisher app ID and stream name. Matching
-events enter the subscriber's `update` loop as `app-event`, regardless of
+Plugins subscribe to declared streams by publisher plugin ID and stream name. Matching
+events enter the subscriber's `update` loop as `plugin-event`, regardless of
 whether the publisher or subscriber is a Rust WASM component or a Python app.
 Subscriptions last for the pane session and are removed when the subscriber
-unsubscribes or closes. Cross-app reads pass through the unified event-stream
+unsubscribes or closes. Cross-plugin reads pass through the unified event-stream
 permission broker before the host records the subscription.
 
-`declare-tools` registers a running component's typed tools in the same app
-connector registry as Python apps. Assistant calls arrive as `tool-call`; the
+`declare-tools` registers a running component's typed tools in the same plugin
+connector registry as Python plugins. Assistant calls arrive as `tool-call`; the
 component answers with `tool-result`. The Assistant permission broker filters
 tool visibility and gates calls before they reach the component. Read-only
 tools auto-grant unless an explicit deny applies; mutating tools require the
-normal app-connector grant. Every invocation is audit logged.
+normal plugin-connector grant. Every invocation is audit logged.
 
 ### Capabilities
 
-WASM components request session capabilities with `request-capability`. The host prompts the user for unknown requests, records remembered decisions by app and workspace, and returns `capability-granted` or `capability-denied` to the component.
+WASM components request session capabilities with `request-capability`. The host prompts the user for unknown requests, records remembered decisions by plugin and workspace, and returns `capability-granted` or `capability-denied` to the component.
 
-Current runtime capability IDs include scoped filesystem and network forms plus `ai.query`, `state:read-write`, `pipe.open`, `gpu.render`, `audio.playback`, `audio:record`, `open-pane`, `spawn.app`, `clipboard.read`, `clipboard.write`, and `notify`. A protected effect without its grant returns an error result. The host logs every requested capability and every new effect execution.
+Current runtime capability IDs include scoped filesystem and network forms plus `ai.query`, `state:read-write`, `pipe.open`, `gpu.render`, `audio.playback`, `audio:record`, `open-pane`, `spawn.plugin`, `clipboard.read`, `clipboard.write`, and `notify`. A protected effect without its grant returns an error result. The host logs every requested capability and every new effect execution.
 
 Imported `host-state`, pipes, GPU, and audio interfaces are link-time gated. The component cannot call an interface the host did not link.
 
@@ -52,15 +52,15 @@ Imported `host-state`, pipes, GPU, and audio interfaces are link-time gated. The
 
 The host renders the WIT `ui-tree` through egui. Typed UI actions are delivered as `ui-action` and `ui-value-change` events. Surface nodes use a host-owned GPU texture. The state import provides persisted get, set, delete, and list-prefix operations scoped to the app. Typed pipes use host-managed handles.
 
-The runtime is sandboxed. Components have isolated linear memory and only the host interfaces that Plexi links. Python apps run through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285) and are sandboxed by this same component boundary — there is no remaining native-subprocess Python runtime (`src/process_app/` was deleted).
+The runtime is sandboxed. Components have isolated linear memory and only the host interfaces that Plexi links. Python plugins run through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285) and are sandboxed by this same component boundary — there is no remaining native-subprocess Python runtime (`src/process_app/` was deleted).
 
 ## Performance
 
-The reference workload is `apps/balls` — a continuous-cadence canvas app that moves every drawing command every frame, which is the worst realistic case for the render transport. Measured on alpha (2026-07-24), it holds its declared 60 fps: `guest_fps` ≈ 59.9 with a ~13 ms guest round-trip and ~0.05 ms of host time per pane paint. The frame path is guest-bound, not host-bound.
+The reference workload is `apps/balls` — a continuous-cadence canvas plugin that moves every drawing command every frame, which is the worst realistic case for the render transport. Measured on alpha (2026-07-24), it holds its declared 60 fps: `guest_fps` ≈ 59.9 with a ~13 ms guest round-trip and ~0.05 ms of host time per pane paint. The frame path is guest-bound, not host-bound.
 
-**How to measure.** Never guess at frame cost. The CPython-WASM adapter logs a sampled `CPython-WASM perf` line per app at debug level, carrying `paint_fps`, `guest_fps`, `avg_host_ms`, `avg_roundtrip_ms`, per-stage decode/render times, and `stdout_kib`. Debug keeps that sample out of the default info channel log (see the Logging section of the root `CLAUDE.md`), which the Logs app tails. Native WASM surface panes are paced and measured separately by `FrameClock` / `FrameTelemetry` in `src/host/wasm_frame.rs`. Read those numbers before changing anything; the two paths are independent and only the Python one carries today's apps.
+**How to measure.** Never guess at frame cost. The CPython-WASM adapter logs a sampled `CPython-WASM perf` line per plugin at debug level, carrying `paint_fps`, `guest_fps`, `avg_host_ms`, `avg_roundtrip_ms`, per-stage decode/render times, and `stdout_kib`. Debug keeps that sample out of the default info channel log (see the Logging section of the root `CLAUDE.md`), which the Logs plugin tails. Native WASM surface panes are paced and measured separately by `FrameClock` / `FrameTelemetry` in `src/host/wasm_frame.rs`. Read those numbers before changing anything; the two paths are independent and only the Python one carries today's plugins.
 
-**Reading the numbers.** `guest_fps` is the app's real cadence — the only number that answers "is it smooth". `avg_host_ms` is what the pane costs the host per paint. `avg_roundtrip_ms` is the guest's total budget per frame and must stay under the declared interval (16.7 ms at 60 fps). `paint_fps` counts host repaints, which legitimately exceeds `guest_fps`: the scheduler's admission deadline and the decoder's frame-arrival wake are independent repaint sources.
+**Reading the numbers.** `guest_fps` is the plugin's real cadence — the only number that answers "is it smooth". `avg_host_ms` is what the pane costs the host per paint. `avg_roundtrip_ms` is the guest's total budget per frame and must stay under the declared interval (16.7 ms at 60 fps). `paint_fps` counts host repaints, which legitimately exceeds `guest_fps`: the scheduler's admission deadline and the decoder's frame-arrival wake are independent repaint sources.
 
 **Peak-performance SDK usage**, with balls as the exemplar:
 
@@ -74,25 +74,15 @@ Both games under `apps/` declare 60 fps. Stint 0446 locked breakout to a lower r
 
 ## Security Model
 
-Every app pane — Rust WASM component or Python app — runs inside its own `wasmtime::Store` with isolated linear memory. A component can only reach the host interfaces Plexi links for its world (`plexi-app`, `plexi-gpu-app`, `plexi-audio-app`, `plexi-full-app`); this is link-time gating, not a runtime policy check. Python apps run through the CPython-in-WASM adapter (`src/host/wasm_python.rs`, stint 0285) inside the same component boundary — there is no separate native-subprocess Python runtime.
+Rust plugins run as WASM components in a Wasmtime store. Their WIT world determines the linked interfaces. Protected effects also pass through the existing capability checks; declaring a capability is not a new grant. See `src/host/wasm_view.rs` and `src/host/wasm_pane.rs` for the component path.
 
-Beyond the link-time boundary, protected effects (`file-read`, `file-write`, `http-fetch`, `ai-query`, `pipe.open`, `gpu.render`, `audio.playback`, `audio:record`, `open-pane`, `spawn.app`, `clipboard.read`, `clipboard.write`, `notify`, and scoped filesystem/network forms) require an explicit capability grant. A component requests one with `request-capability`; the host prompts the user on first request, remembers the decision per app and workspace, and returns `capability-granted` or `capability-denied` on every subsequent request. A protected effect invoked without its grant returns an error result instead of executing. Every requested capability and every executed effect is logged.
+Python plugins run through `WasmPythonRuntime::launch` in `src/host/wasm_python.rs`. This is a core WASM module with WASI preview 1 and the PGAP bridge, not the Rust component/WIT boundary. The guest receives the configured read-only plugin, SDK and standard-library mounts. `LivePythonPane::has_capability` checks the admitted manifest capability set; Python capability requests do not implement the component prompt flow. Native SDK tests and developer tooling run outside that pane sandbox.
 
-**Python apps use a different grant model.** The prompt-and-remember flow above applies to Rust WASM components. A Python app's grants are its manifest: `[app.capabilities]` in `manifest.toml` is accepted at install time, and `LivePythonPane::has_capability` checks membership in that list. A Python `RequestCapability` returns `granted` only for a declared capability and never shows a consent prompt; protected bridge effects (file access, HTTP, MCP, `spawn.app`, `panes.spawn`, `panes.control`, `notify`) are dropped with a logged denial when undeclared. The two models are not at parity.
-
-**Trust labels.** `trust_label()` (`src/app/package.rs`) classifies a package before install:
-
-| Label | When |
-|---|---|
-| `FirstPartyCore` | App id is in the bundled core pack |
-| `SandboxedWasm` | `[app] type = "wasm"` entry |
-| `PythonUnreviewed` / `ReviewedNative` | `.py` entry, outside the core pack — reviewed if `marketplace_reviewed` is set by the install flow (server attestation only; never in-package self-attestation) |
-
-`marketplace_reviewed` gates only the trust label, not a sandbox choice. `FirstPartyCore`, `SandboxedWasm`, and Python entries all launch through the same wasmtime component boundary and capability grant flow described above — `PythonUnreviewed`/`ReviewedNative` for Python is a review-provenance label, not a weaker sandbox. A non-`.py`, non-WASM entry has no launch path at all: `ManifestType` only defines `App` (routed to the CPython-in-WASM adapter, which requires a `.py`/`.pyc` entry) and `Wasm`, so such a package is rejected at validate time (`PackageError::UnlaunchableEntry`) rather than classified with a trust label (stints 0411, #2412 removed the former `NativeUnreviewed` label and `PackageRuntime::Native`).
+`trust_label()` in `src/app/package.rs` reports provenance. Bundled membership comes from `packs/core.toml`; review metadata does not choose a different Python runtime or itself grant broader authority. Runtime selection is `[runtime] kind = "python"` or `"wasm"`. The rename does not add a broker, new sandbox guarantees or parity between the two runtime adapters.
 
 ## Verification
 
-`src/host/wasm_app.rs` and `src/host/wasm_pane.rs` contain component and effect-loop tests. `src/app/permissions.rs` validates accepted raw-WASM capability IDs. The WIT file is compiled by the Rust bindgen invocation in `wasm_app.rs`; changing it breaks the host build until every generated variant is handled.
+`src/host/wasm_view.rs` and `src/host/wasm_pane.rs` contain component and effect-loop tests. `src/app/permissions.rs` validates accepted raw-WASM capability IDs. The WIT file is compiled by the Rust bindgen invocation in `wasm_app.rs`; changing it breaks the host build until every generated variant is handled.
 
 ## Roadmap
 

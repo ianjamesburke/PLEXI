@@ -126,8 +126,8 @@ fi
 note "host ready: $(tr '\n' ' ' < "$EVID/host-status.json")"
 "$BIN" context set-root "$WS" >"$EVID/set-root.out" 2>"$EVID/set-root.err" || fail "context set-root failed: $(cat "$EVID/set-root.err")"
 
-"$BIN" app install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
-"$BIN" app open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
+"$BIN" plugin install "$REPO/apps/chess" --yes >"$EVID/app-install.out" 2>"$EVID/app-install.err" || fail "chess install failed: $(tail -20 "$EVID/app-install.err")"
+"$BIN" view open chess >"$EVID/open-chess.out" 2>"$EVID/open-chess.err" || true
 mkdir -p "$EVID/jobs"
 "$BIN" pane list >"$EVID/panes-boot.json" 2>/dev/null || true
 TERM="$(python3 - "$EVID/panes-boot.json" <<'PY'
@@ -160,7 +160,7 @@ EOF
 }
 CHESS_READY=0
 for attempt in $(seq 1 12); do
-  in_pane "ready-$attempt" "\"$BIN\" app call chess chess.state --json > '$EVID/chess-state.json' 2> '$EVID/chess-state.err'" || true
+  in_pane "ready-$attempt" "\"$BIN\" plugin call chess chess.state --json > '$EVID/chess-state.json' 2> '$EVID/chess-state.err'" || true
   if [[ -f "$EVID/chess-state.json" || -f "$EVID/chess-state.err" ]] \
      && ! grep -q 'tool_not_found' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null \
      && grep -Eq 'revision|permission_required' "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null; then
@@ -171,7 +171,7 @@ for attempt in $(seq 1 12); do
 done
 [[ "$CHESS_READY" -eq 1 ]] || fail "chess.state never registered: $(cat "$EVID/chess-state.json" "$EVID/chess-state.err" 2>/dev/null)"
 note "chess tool registered"
-"$BIN" app open assistant >"$EVID/open-assistant.out" 2>"$EVID/open-assistant.err" || true
+"$BIN" view open assistant >"$EVID/open-assistant.out" 2>"$EVID/open-assistant.err" || true
 
 ASSIST=""
 for _ in $(seq 1 20); do

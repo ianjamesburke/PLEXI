@@ -4,8 +4,8 @@ Status: active
 # The search → results → detail pattern
 
 Search for a thing, get a list of results, pick one, view it. This is not a
-Wikipedia feature — it's the shape of most apps anyone will build on Plexi.
-There is currently no sanctioned pattern for it, so apps hand-roll it, badly.
+Wikipedia feature — it's the shape of most plugins anyone will build on Plexi.
+There is currently no sanctioned pattern for it, so plugins hand-roll it, badly.
 `apps/wikipedia/wikipedia.py` is the evidence case this doc uses throughout;
 `apps/github-issues/main.py` and `apps/kraken/main.py` show the same two
 failures independently, confirming this is a cross-cutting SDK gap, not a
@@ -33,7 +33,7 @@ block is faking: keyboard nav (`handle_key`, j/k/arrows), scroll-into-view,
 click hit-testing, and a real selected-row visual. `AUTHORING.md:233` already
 says *"List + detail navigation: use `SelectList`... Never reimplement this
 by hand."* Wikipedia breaks a rule that's already written down and already
-followed by five other exemplar apps (github-issues, kraken, permissions,
+followed by five other exemplar plugins (github-issues, kraken, permissions,
 stats, todo). This is a discoverability/enforcement failure, not a missing
 primitive — see §4.
 
@@ -52,7 +52,7 @@ if data["loading"]: return "Loading"
 ```
 
 Every region that can be pending re-derives it from the same global
-`data["loading"]`. Nothing in the SDK lets an app say "this region is
+`data["loading"]`. Nothing in the SDK lets a plugin say "this region is
 pending" once. `github-issues/main.py:286,343,351` and `kraken/main.py`
 (6+ sites) do the identical fork. This is the real SDK gap — see §5.
 
@@ -71,7 +71,7 @@ One real trap found during research, worth fixing alongside this stint:
 `ListRow` family** — canvas-mode row descriptors for `ctx.list_view(...)`,
 not `to_node()` components. They share a name with `SelectList`'s declarative
 item vocabulary (`{name, description, leading, trailing}`) but are a
-different code path. Grep found zero app usages of the canvas
+different code path. Grep found zero plugin usages of the canvas
 `ctx.list_view` path today — nothing depends on keeping them. Per
 CLAUDE.md's "no parallel vocabulary" rule: **delete them** in the
 implementation stint. `loading_pill` should be re-scoped to
@@ -81,7 +81,7 @@ answer.
 Also found: `PlexiEvent::ListSelect`/`ListActivate` exist in the wire schema
 (`src/protocol/events.rs:462-469`) but nothing in `src/` constructs them
 outside serde round-trip tests — the host does not drive list keyboard nav
-today. Every `SelectList` app still calls `handle_key()` from its own
+today. Every `SelectList` plugin still calls `handle_key()` from its own
 `on_key`. Don't design against host-native list events existing; they aren't
 shipped.
 
@@ -143,7 +143,7 @@ the task — the sweep is in §5.
 *Alternative considered and rejected:* a first-class `SearchResultsList`
 node. Rejected because it would duplicate `SelectList`'s state machine
 (selection, scroll, key handling) for no behavioral gain — the only thing
-missing is that apps aren't calling the primitive that already exists.
+missing is that plugins aren't calling the primitive that already exists.
 
 ## 5. Decision: pending-state model
 
@@ -162,8 +162,8 @@ Pending(
 
 `to_node()` returns `placeholder.to_node()` when `active`, else
 `child.to_node()`. One call site per pending region, zero host changes,
-100% declarative — the app still only describes structure, per NORTH_STAR's
-"apps declare structure; the host renders."
+100% declarative — the plugin still only describes structure, per NORTH_STAR's
+"plugins declare structure; the host renders."
 
 *Alternative considered:* a true host-owned `pending` node/property, where
 the host infers the skeleton shape from the child's own layout and animates
@@ -172,10 +172,10 @@ needs new WIT schema (`wit/plexi.wit`), a new decode arm in
 `wasm_python.rs`, and host-side shimmer rendering that doesn't exist today
 (`Skeleton` is currently static empty badges, no animation). That's
 implementation scope well beyond an M design task, and nothing here proves
-it's needed yet — `Pending` solves the stated problem ("no app should ever
+it's needed yet — `Pending` solves the stated problem ("no plugin should ever
 thread one boolean through three render functions again") without it.
 Recommend treating it as a **separate future stint**, informed by how far
-`Pending` gets apps once it ships, not gated on this one.
+`Pending` gets plugins once it ships, not gated on this one.
 
 ## 6. Decision: where the loading affordance lives
 
@@ -208,7 +208,7 @@ right half of the screen is skeletal, not the whole app.
   428-430, 445-446`) — replaced by `Pending(...)` around only the regions
   that are actually in flight.
 - Canvas-mode `ListRow`/`LeadingIcon`/`LeadingAvatar`/`RowChip`
-  (`ui.py:2607-2687`) — dead code, zero app usages found, name-collides with
+  (`ui.py:2607-2687`) — dead code, zero plugin usages found, name-collides with
   `SelectList`'s declarative vocabulary. Delete outright.
 - `loading_pill`'s docstring gets narrowed to "canvas-mode only" — `Pending`
   is the tree-mode equivalent, so it should stop reading as a general
@@ -235,8 +235,8 @@ stint is gated on beating 340, not on hitting an arbitrary round number.
 1. **Results/detail layout shape** — keep wikipedia's current 3-screen
    sequential swap (search → results → article, least visual change) vs.
    adopt the persistent-list/independent-detail-region split from §3/§6
-   (matches other exemplar apps, sets the pattern other search-to-detail
-   apps should copy). §6's recommendation assumes the split; if Ian prefers
+   (matches other exemplar plugins, sets the pattern other search-to-detail
+   plugins should copy). §6's recommendation assumes the split; if Ian prefers
    the 3-screen swap, `Pending` still collapses the loading forks, but the
    "partially loaded" state described in §6 doesn't apply to wikipedia
    specifically.
@@ -247,7 +247,7 @@ stint is gated on beating 340, not on hitting an arbitrary round number.
    content's height causes a layout jump).
 3. **Canvas `ListRow` family** — delete now (§7, recommended, zero usages
    found) vs. rename to something non-colliding (e.g. `CanvasListRow`) and
-   keep as the sanctioned canvas-mode row API for apps doing custom
+   keep as the sanctioned canvas-mode row API for plugins doing custom
    `Canvas()` rendering outside the declarative tree.
 
 Once these three are picked, the implementation stint (sibling to 0728) can

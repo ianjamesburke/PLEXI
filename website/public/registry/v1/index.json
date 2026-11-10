@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "apps": [
+  "schema_version": 2,
+  "plugins": [
     {
       "id": "calc",
       "name": "Calculator",
@@ -13,7 +13,7 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed native process \u2014 human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
@@ -34,7 +34,7 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed native process \u2014 human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
@@ -52,7 +52,7 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed native process \u2014 human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
@@ -70,7 +70,7 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed native process \u2014 human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",
@@ -90,7 +90,7 @@
         "free",
         "reviewed-native"
       ],
-      "trust_label": "Reviewed native process — human-reviewed; not sandboxed",
+      "trust_label": "Reviewed native process \u2014 human-reviewed; not sandboxed",
       "reviewed_native": true,
       "visibility": "public",
       "price": "free",

@@ -3,21 +3,21 @@ import Layout from '../../layouts/Layout.astro';
 import Newsletter from '../../components/Newsletter.astro';
 ---
 
-<Layout title="Apps — Plexi" description="Build and run local Plexi apps with the v1 app runtime and Python SDK.">
+<Layout title="Plugins — Plexi" description="Build and run local Plexi plugins with the v1 plugin runtime and Python SDK.">
   <div class="wrap">
-    <header class="apps-header">
-      <div class="soon-badge">Local app runtime</div>
-      <h1>Build apps for your workspace.</h1>
+    <header class="plugins-header">
+      <div class="soon-badge">Local plugin runtime</div>
+      <h1>Build plugins for your workspace.</h1>
       <p class="sub">
-        Create, test, and open apps locally with <code>plexi app</code> and the
-        Python SDK. Apps run in panes and request only the capabilities they need.
+        Create, test, and open plugins locally with <code>plexi plugin</code> and the
+        Python SDK. Plugins run in panes and request only the capabilities they need.
       </p>
     </header>
 
     <div class="empty">
-      <p>Start with a local app, not a catalog.</p>
+      <p>Start with a local plugin, not a catalog.</p>
       <p class="empty-sub">
-        See <a href="/docs/apps">the app runtime guide</a> and the
+        See <a href="/docs/plugins">the plugin runtime guide</a> and the
         <a href="/docs/sdk"> Python SDK reference</a>. Marketplace and publishing
         flows are beta-gated and are not part of stable v1.
       </p>
@@ -28,7 +28,7 @@ import Newsletter from '../../components/Newsletter.astro';
 </Layout>
 
 <style>
-  .apps-header {
+  .plugins-header {
     padding: 96px 0 48px;
     text-align: center;
   }
@@ -47,7 +47,7 @@ import Newsletter from '../../components/Newsletter.astro';
     margin-bottom: 24px;
   }
 
-  .apps-header h1 {
+  .plugins-header h1 {
     font-size: 52px;
     font-weight: 700;
     letter-spacing: 0;

@@ -7,7 +7,7 @@ Last updated: 2026-07-27.
 
 This is the authoritative threat model and capability design for the host Assistant. [`assistant-host-app.md`](assistant-host-app.md) owns the Assistant's product surface — agents, skills, slash commands, settings, UI, marketplace. This document owns the authority plane underneath it: what the Assistant is trusted to do, who decides, what a grant binds to, and what must be true before any new Assistant power ships.
 
-The third-party app security model is not restated here. Capability declaration, manifest parsing, the wasmtime component boundary, and marketplace trust labels are owned by [`app-framework-marketplace.md`](app-framework-marketplace.md) and [`wasm-runtime.md`](wasm-runtime.md). This document describes only the boundary those documents do not cover: the host protecting itself from its own built-in Assistant.
+The third-party plugin security model is not restated here. Capability declaration, manifest parsing, the wasmtime component boundary, and marketplace trust labels are owned by [`app-framework-marketplace.md`](app-framework-marketplace.md) and [`wasm-runtime.md`](wasm-runtime.md). This document describes only the boundary those documents do not cover: the host protecting itself from its own built-in Assistant.
 
 ## Threat Model
 
@@ -15,15 +15,15 @@ The third-party app security model is not restated here. Capability declaration,
 
 The Assistant runs in-process inside the native Plexi host, as the logged-in macOS user. The host is not App-Sandboxed and not containerized. Everything that user can reach, a mistake in the Assistant's authorization path can reach: the entire home directory, every workspace and context, every running process, every terminal's environment, and the macOS Keychain entries Plexi itself can unlock.
 
-Wasmtime bounds third-party apps. It does not bound the Assistant, because the Assistant is host code, and because the powers it needs — read this repository, run this project's test command, edit this file — are exactly the powers a sandbox would have to grant back.
+Wasmtime bounds third-party plugins. It does not bound the Assistant, because the Assistant is host code, and because the powers it needs — read this repository, run this project's test command, edit this file — are exactly the powers a sandbox would have to grant back.
 
 ### The adversary
 
-The adversary is not primarily a malicious user. It is **untrusted text reaching a capable planner**. A remote model's output is a proposal, and its input is attacker-reachable: repository contents, a README, a web page a connector fetched, a terminal's scrollback, an app's semantic state, a note someone shared, an app manifest's tool descriptions. Prompt injection is the expected case, not the exotic one.
+The adversary is not primarily a malicious user. It is **untrusted text reaching a capable planner**. A remote model's output is a proposal, and its input is attacker-reachable: repository contents, a README, a web page a connector fetched, a terminal's scrollback, a plugin's semantic state, a note someone shared, a plugin manifest's tool descriptions. Prompt injection is the expected case, not the exotic one.
 
 Secondary adversaries, in descending likelihood:
 
-- A third-party app that lies in its own tool metadata to obtain silent invocation.
+- A third-party plugin that lies in its own tool metadata to obtain silent invocation.
 - A user who approves one narrow action and does not realize the approval generalized.
 - A model that is simply wrong — mis-resolving a path, re-running a command with mutated arguments, addressing the wrong pane.
 
@@ -40,7 +40,7 @@ Secondary adversaries, in descending likelihood:
 1. Workspace secrets and Keychain-resolvable values.
 2. The filesystem outside the approved project root, especially the user's home directory and other contexts' roots.
 3. Arbitrary process execution as the logged-in user.
-4. Other contexts' panes, terminals, and app state — both reading them and controlling them.
+4. Other contexts' panes, terminals, and plugin state — both reading them and controlling them.
 5. Content leaving the machine in a model request.
 6. The integrity of the audit trail itself.
 
@@ -50,15 +50,15 @@ These exist today and are the reason this document exists. Each is stated as the
 
 **Grants do not bind to resources.** `GrantRecord` carries `resource_scope` and `resource_id`, and `GrantRecord::matches` never compares them. Matching is actor plus `target_id` plus workspace root. `PermissionRequest` has no field for arguments at all. The practical result: approving one file write approves every future file write in that workspace, and approving one terminal command approves every future command. The Assistant's session-approval set and ask-list are likewise keyed by bare tool name. Narrow binding is documented in the product spec and structurally present in the record type, but inert at evaluation time.
 
-**Read-only is self-asserted and buys silent invocation.** A connector tool's `read_only` flag comes straight from the app's own declaration, and `AssistantApp::gated_dispatcher` auto-allows a read-only tool under an `Ask` decision with no prompt. An app that marks a mutating tool read-only gets unprompted execution. Grants for connector tools bind to a tool-name string rather than to app package identity. The dispatcher withholds simultaneously exposed duplicate names, but a grant still cannot distinguish which package supplied that name across time.
+**Read-only is self-asserted and buys silent invocation.** A connector tool's `read_only` flag comes straight from the plugin's own declaration, and `AssistantApp::gated_dispatcher` auto-allows a read-only tool under an `Ask` decision with no prompt. An plugin that marks a mutating tool read-only gets unprompted execution. Grants for connector tools bind to a tool-name string rather than to plugin package identity. The dispatcher withholds simultaneously exposed duplicate names, but a grant still cannot distinguish which package supplied that name across time.
 
-**Pane and terminal observation and control cross contexts.** `assistant_pane_list` walks every window in every context and takes no origin context parameter. `assistant_pane_state` and `assistant_read_terminal` resolve a pane id against all windows. Focus and close do the same. The optional target `pane_id` accepted by pane and app open also resolves through `find_pane_in_any_window` without proving that the target belongs to the origin context; a successful retarget can then close that cross-context pane. Terminal reads are marked read-only, so they are auto-allowed — any context's terminal scrollback, including any secret echoed into it, is readable without a prompt. `assistant_run_terminal` and `assistant_bind_terminal` do constrain the linked terminal to the origin context, but they do not make the other read and control paths context-local.
+**Pane and terminal observation and control cross contexts.** `assistant_pane_list` walks every window in every context and takes no origin context parameter. `assistant_pane_state` and `assistant_read_terminal` resolve a pane id against all windows. Focus and close do the same. The optional target `pane_id` accepted by pane and view open also resolves through `find_pane_in_any_window` without proving that the target belongs to the origin context; a successful retarget can then close that cross-context pane. Terminal reads are marked read-only, so they are auto-allowed — any context's terminal scrollback, including any secret echoed into it, is readable without a prompt. `assistant_run_terminal` and `assistant_bind_terminal` do constrain the linked terminal to the origin context, but they do not make the other read and control paths context-local.
 
-**The global apps directory is an unconditional writable root.** `assistant_file_roots` returns the caller's context root plus the installed-apps directory for every conversation in every workspace.
+**The global plugins directory is an unconditional writable root.** `assistant_file_roots` returns the caller's context root plus the installed-plugins directory for every conversation in every workspace.
 
-**Scoped files still carry ambient root authority and a check-to-use gap.** Direct paths reject `..` and canonicalize the deepest existing prefix before checking containment; directory walks also skip symlinks. Those are real protections. They are not grants: every file tool receives the context root and global apps root before any resource decision, and the resolved path is later reopened by pathname. A path component can therefore be replaced between containment checking and the file operation. The reference monitor must preserve the existing traversal protections while replacing ambient roots and pathname reuse with explicit root grants and race-resistant resolution.
+**Scoped files still carry ambient root authority and a check-to-use gap.** Direct paths reject `..` and canonicalize the deepest existing prefix before checking containment; directory walks also skip symlinks. Those are real protections. They are not grants: every file tool receives the context root and global plugins root before any resource decision, and the resolved path is later reopened by pathname. A path component can therefore be replaced between containment checking and the file operation. The reference monitor must preserve the existing traversal protections while replacing ambient roots and pathname reuse with explicit root grants and race-resistant resolution.
 
-**The hidden build adapter is process authority broader than its grant.** `host.build.run` restricts the leading argv shape to `plexi app init` or `plexi app check`, but the grant binds only to the tool name and workspace, not the subcommand, path, flags, or timeout. The `plexi` child itself is a native process with the host's inherited environment. Python app code exercised by `app check` runs through the existing CPython-in-Wasmtime path, so this is not currently an arbitrary-native-code path; the defect is that the authorization record does not describe the concrete process invocation it permits.
+**The hidden build adapter is process authority broader than its grant.** `host.build.run` restricts the leading argv shape to `plexi plugin init` or `plexi plugin check`, but the grant binds only to the tool name and workspace, not the subcommand, path, flags, or timeout. The `plexi` child itself is a native process with the host's inherited environment. Python plugin code exercised by `plugin check` runs through the existing CPython-in-Wasmtime path, so this is not currently an arbitrary-native-code path; the defect is that the authorization record does not describe the concrete process invocation it permits.
 
 **The built-in bypass makes Assistant authority unenumerable.** `AppPermissions::builtin()` carries an empty capability set because `is_builtin` short-circuits the PGAP checks. The terminal-binding capability check is therefore vacuous for the Assistant. Its real restraints live only in the newer broker layer, and nothing lists what it actually holds or lets a user revoke it.
 
@@ -76,7 +76,7 @@ An authorization request names:
 
 - **Actor**: agent identity and scope, the delegating parent when the actor is a sub-agent, and the model backend that produced the proposal.
 - **Action**: the stable capability id.
-- **Resource identity**: the narrowest durable identity that exists for this action — context id, pane id, canonical filesystem path, connector plus app package identity, secret canonical name, or exact command shape.
+- **Resource identity**: the narrowest durable identity that exists for this action — context id, pane id, canonical filesystem path, connector plus plugin package identity, secret canonical name, or exact command shape.
 - **Arguments**: the concrete, already-resolved argument set the adapter will receive.
 - **Environment**: working directory and the set of injected secret names.
 - **Origin**: the pane and context the request came from, supplied by the host and never by the model.
@@ -97,7 +97,7 @@ Every pane-addressed action takes the origin context as a parameter and resolves
 
 ### Filesystem authority
 
-Filesystem authority is a set of explicitly granted capability roots. The context root is the default root proposed in a permission request, not a root the Assistant may use without a decision. There is no implicit global root; installed-app directories are a normal grantable root like any other.
+Filesystem authority is a set of explicitly granted capability roots. The context root is the default root proposed in a permission request, not a root the Assistant may use without a decision. There is no implicit global root; installed-plugin directories are a normal grantable root like any other.
 
 Containment is proven on the canonical path, with symlinks not followed, for existing paths and for not-yet-existing descendants alike. Lexical prefix comparison is never a boundary. The window between checking a path and using it is closed by carrying the resolved handle or path forward from the authorization, so a replacement race cannot swap the target underneath an approved operation. Directory walks do not traverse symlinks. Bounded size, line, match, and depth limits stay in force; they are resource protection, not authority.
 
@@ -123,25 +123,25 @@ Because injected values live in a running process's environment, terminal-read a
 
 ### Connector trust
 
-An app's declared schema, description, and mutability claim are model-facing hints. Host policy decides authority.
+An plugin's declared schema, description, and mutability claim are model-facing hints. Host policy decides authority.
 
-**Ruling: tool mutability is host policy, never an app connector's self-declared `read_only` bit.** The host independently establishes whether a tool mutates, from the capabilities the app actually holds and the adapter the call reaches. A connector's own `read_only` declaration is an untrusted input to that determination with strictly one direction of effect: it may *downgrade* trust — an app volunteering that its tool mutates is believed, because the claim is against the app's own interest — and it may never *upgrade* it. A `read_only: true` claim from an app whose held capabilities or target adapter indicate mutation is discarded, and the tool is treated as mutating. Where the host cannot establish the class, the tool is ask-gated; silence is never read as read-only.
+**Ruling: tool mutability is host policy, never a plugin connector's self-declared `read_only` bit.** The host independently establishes whether a tool mutates, from the capabilities the plugin actually holds and the adapter the call reaches. A connector's own `read_only` declaration is an untrusted input to that determination with strictly one direction of effect: it may *downgrade* trust — a plugin volunteering that its tool mutates is believed, because the claim is against the plugin's own interest — and it may never *upgrade* it. A `read_only: true` claim from a plugin whose held capabilities or target adapter indicate mutation is discarded, and the tool is treated as mutating. Where the host cannot establish the class, the tool is ask-gated; silence is never read as read-only.
 
-This closes the current behavior in which `AssistantApp::gated_dispatcher` converts an app-asserted `read_only` flag into an automatic allow under an `Ask` decision, giving an app unprompted execution for a tool it merely claims is pure. That path is removed rather than narrowed: no unprompted-invocation decision may key on a value the app supplies.
+This closes the current behavior in which `AssistantApp::gated_dispatcher` converts a plugin-asserted `read_only` flag into an automatic allow under an `Ask` decision, giving a plugin unprompted execution for a tool it merely claims is pure. That path is removed rather than narrowed: no unprompted-invocation decision may key on a value the plugin supplies.
 
-A connector tool's effective risk class is assigned by the host from the capabilities the app actually holds and the adapter the call reaches. An app cannot lower its own risk class. A tool whose class the host cannot establish is ask-gated conservatively. There is no unprompted-invocation path whose key is a value the app supplies.
+A connector tool's effective risk class is assigned by the host from the capabilities the plugin actually holds and the adapter the call reaches. An plugin cannot lower its own risk class. A tool whose class the host cannot establish is ask-gated conservatively. There is no unprompted-invocation path whose key is a value the plugin supplies.
 
-Connector grants bind to the app's package identity together with the connector and tool id, and to the resource the call names. Two apps exposing the same tool name are different grants. Reinstalling under a different package identity does not inherit the previous grant.
+Connector grants bind to the plugin's package identity together with the connector and tool id, and to the resource the call names. Two plugins exposing the same tool name are different grants. Reinstalling under a different package identity does not inherit the previous grant.
 
 ### Model context
 
-A model request carries only what the current context needs and what the user has authorized. Unrelated panes' metadata and contents are absent from the request — not truncated, not summarized, absent. Terminal scrollback and app state reach the model only through an intentional tool call whose authorization the user can see and revoke.
+A model request carries only what the current context needs and what the user has authorized. Unrelated panes' metadata and contents are absent from the request — not truncated, not summarized, absent. Terminal scrollback and plugin state reach the model only through an intentional tool call whose authorization the user can see and revoke.
 
 Project instructions — the root and nested `AGENTS.md` files, compatible `CLAUDE.md` imports, explicitly granted additional roots, and path-scoped rules — are model context and never authority. An instruction file cannot grant a capability, widen a root, pre-approve a command, or alter a grant. It is attacker-reachable text like any other repository content.
 
 ### Turn input
 
-One ordered content-block envelope serves every entrypoint: the pane composer, Quick Note, Notes panes, app connectors, tests, and headless clients. The behavioral contract — provenance, bounded decoding, provider-native image blocks, persistence of metadata rather than payloads, and structured acceptance and rejection events — is specified in [`assistant-host-app.md`](assistant-host-app.md) and not repeated here.
+One ordered content-block envelope serves every entrypoint: the pane composer, Quick Note, Notes panes, plugin connectors, tests, and headless clients. The behavioral contract — provenance, bounded decoding, provider-native image blocks, persistence of metadata rather than payloads, and structured acceptance and rejection events — is specified in [`assistant-host-app.md`](assistant-host-app.md) and not repeated here.
 
 The authority rule for that envelope: an attachment reference is a claim, never a capability. A path in note Markdown, a screenshot reference, or a client-supplied filename is resolved canonically and then authorized as an exact-file request through the reference monitor. Resolution is relative to the source note or the declaring pane. Nothing scans the surrounding directory for related files. A remote URL is never fetched implicitly; it requires an approved network action first. A rejected attachment fails visibly and never reaches the provider.
 
@@ -167,13 +167,13 @@ The blast radius that genuinely needs bounding is execution: a project command, 
 
 `sandbox_init` is formally deprecated API. That is accepted deliberately and with eyes open: it remains the mechanism Apple's own sandboxing is built on, it is what every current sandboxing tool on macOS uses in practice, and there is no supported replacement that offers per-process, per-invocation policy. The deprecation is a documentation status, not a removal, and the cost of the bet is bounded because the profile is a leaf detail behind an already-correct process contract — the worker's typed argv/roots/environment contract does not change if the enforcement primitive does.
 
-**The migration path is the WASM-era runtime.** When the app runtime's WASM/WASI substrate matures to the point where it can host the user's real toolchain rather than only capability-shaped app code, the execution worker moves onto it and seatbelt drops out. That is the same substrate that already bounds third-party apps, so the endgame collapses two sandbox mechanisms into one. It is explicitly not today's answer — the reasoning in the paragraph below still holds against WASI as it stands — but it is the direction the process contract is shaped to accommodate, which is why the boundary is specified as a process contract and not as a seatbelt profile.
+**The migration path is the WASM-era runtime.** When the plugin runtime's WASM/WASI substrate matures to the point where it can host the user's real toolchain rather than only capability-shaped plugin code, the execution worker moves onto it and seatbelt drops out. That is the same substrate that already bounds third-party plugins, so the endgame collapses two sandbox mechanisms into one. It is explicitly not today's answer — the reasoning in the paragraph below still holds against WASI as it stands — but it is the direction the process contract is shaped to accommodate, which is why the boundary is specified as a process contract and not as a seatbelt profile.
 
-Wasmtime is the wrong tool here specifically. It is excellent for third-party app code, whose needs are expressible as a small capability set. The Assistant's execution worker exists to run the user's real toolchain — compilers, package managers, test runners, git — as native processes with filesystem and network access. Putting that behind WASI means granting back essentially everything the sandbox would have withheld, producing the appearance of containment without the substance, at a very high implementation cost. Reusing the app runtime here would also blur a boundary the product depends on staying sharp: third-party apps are sandboxed; the first-party Assistant is *authorized*. Those are different mechanisms answering different questions.
+Wasmtime is the wrong tool here specifically. It is excellent for third-party plugin code, whose needs are expressible as a small capability set. The Assistant's execution worker exists to run the user's real toolchain — compilers, package managers, test runners, git — as native processes with filesystem and network access. Putting that behind WASI means granting back essentially everything the sandbox would have withheld, producing the appearance of containment without the substance, at a very high implementation cost. Reusing the plugin runtime here would also blur a boundary the product depends on staying sharp: third-party plugins are sandboxed; the first-party Assistant is *authorized*. Those are different mechanisms answering different questions.
 
 Host UI and authorization ownership stay in Plexi in all cases. The monitor never moves out of the host, and a worker never renders a permission prompt or evaluates a grant. A worker can only execute what it was handed.
 
-This decision is scoped to defense in depth for the model and tool loop. It does not reopen the third-party app sandbox, and it does not propose sandboxing the Plexi desktop host.
+This decision is scoped to defense in depth for the model and tool loop. It does not reopen the third-party plugin sandbox, and it does not propose sandboxing the Plexi desktop host.
 
 ## Required Security Proof
 
@@ -198,7 +198,7 @@ Implementation is split so that each piece is independently testable and lands b
 
 **The reference monitor comes first and alone.** Widening `PermissionRequest` to carry resource identity, arguments, and origin; making grant matching compare every identity field; binding session approval to the same fields; adding argument fingerprinting; removing the built-in enforcement bypass; and invalidating the old broad grants. Nothing else in this list is safe to build before it, because everything else expresses its authority in its vocabulary. It is provable entirely through host tests on grant matching and evaluation, with no new capability attached.
 
-**Context isolation of the pane and terminal surface** follows immediately, since it is the largest live gap and depends only on the monitor. Origin-context parameters on every pane-addressed action, the explicit cross-context capability, and removal of the unconditional global apps root. Proof is harness tests asserting that a second context's panes are invisible and unreachable.
+**Context isolation of the pane and terminal surface** follows immediately, since it is the largest live gap and depends only on the monitor. Origin-context parameters on every pane-addressed action, the explicit cross-context capability, and removal of the unconditional global plugins root. Proof is harness tests asserting that a second context's panes are invisible and unreachable.
 
 **File tool completion** brings the read, write, edit, grep, and list surface fully under canonical, no-follow, race-resistant resolution against granted roots, with roots as first-class grantable resources.
 

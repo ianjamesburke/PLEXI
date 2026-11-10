@@ -4,7 +4,7 @@
 # host.files.write is not granted at head create. The script clicks Allow
 # once through HUMAN_APPROVE (scripts/e2e/human.sh). The queue resumes that
 # same task after the click. It never calls assistant permission resolve
-# or command-view resolve.
+# or agents-dashboard resolve.
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
@@ -83,7 +83,7 @@ python3 -c 'import json,sys; body=json.loads(sys.argv[1]); assert body.get("ok")
 ASK_ID="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["task"]["id"])' "$ASK")"
 PENDING=""
 for _ in $(seq 1 40); do
-  VIEW="$(cli command-view --json)"
+  VIEW="$(cli agents-dashboard --json)"
   PENDING="$(python3 - "$VIEW" "$ASK_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -125,7 +125,7 @@ fi
 
 echo "STEP the same assignment continues after Allow once"
 for _ in $(seq 1 40); do
-  VIEW="$(cli command-view --json)"
+  VIEW="$(cli agents-dashboard --json)"
   if python3 - "$VIEW" "$ASK_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -173,7 +173,7 @@ else
   STEPS_LATER=0
 fi
 python3 -c 'import sys; a,b=int(sys.argv[1]),int(sys.argv[2]); assert a==b, (a,b)' "$STEPS_AFTER" "$STEPS_LATER"
-FINAL="$(cli command-view --json)"
+FINAL="$(cli agents-dashboard --json)"
 python3 - "$FINAL" "$LONG_ID" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])
@@ -222,7 +222,7 @@ for _ in $(seq 1 40); do
     break
   fi
   if [[ "$CLICKED" == 0 ]]; then
-    VIEW="$(cli command-view --json 2>/dev/null || true)"
+    VIEW="$(cli agents-dashboard --json 2>/dev/null || true)"
     PENDING="$(python3 - "$VIEW" "$AGAIN_ID" <<'PY' || true
 import json, sys
 raw = sys.argv[1]
@@ -251,7 +251,7 @@ PY
   sleep 0.5
 done
 test -f "$WORKDIR/out.txt"
-RESTORED="$(cli command-view --json)"
+RESTORED="$(cli agents-dashboard --json)"
 python3 - "$RESTORED" <<'PY'
 import json, sys
 body = json.loads(sys.argv[1])

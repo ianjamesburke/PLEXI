@@ -17,7 +17,7 @@ every command (`plexi-alpha` reads `~/.plexi-alpha/` and `<repo>/.plexi-alpha/`;
 `plexi-beta` reads `~/.plexi-beta/` and `<repo>/.plexi-beta/`; stable `plexi`
 reads `~/.plexi/` and `<repo>/.plexi/`). Bare `plexi` inherits the calling
 pane's routing and may target a different host. Run host commands from a Plexi
-pane so the host supplies its context and connection. Use the CLI or app SDK
+pane so the host supplies its context and connection. Use the CLI or plugin SDK
 for state.
 
 This binary carries the skill. Install it for your agent:
@@ -30,7 +30,7 @@ plexi skill install --agent pi
 
 ## Use a configured MCP server
 
-For a configured MCP server, `plexi app open --mcp <server-id>` opens its tools,
+For a configured MCP server, `plexi view open --mcp <server-id>` opens its tools,
 resources and prompts when the MCP client experiment is enabled. Supply the
 configured id, such as `filesystem`. Approve connection and endpoint requests
 in Needs You, then retry in the pane. Use j/k, Enter, Tab and Esc to operate the
@@ -55,7 +55,7 @@ Keep each wait below your tool harness call limit. Exit 0 prints the result;
 exit 2 means the slice expired, so report progress and repeat the same wait.
 Inspect errors on exit 1. A timeout does not call for a replacement worker.
 
-`settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `app call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
+`settings.toml` `[permissions]` posture (`default_posture`, `allow`, `ask`, `deny`) is snapshotted onto each spawned worker pane (intersected with its parent's posture) and enforced by the host permission monitor on Plexi CLI and host-brokered capabilities (`secret.get`, `secret.list`, `pane.send`, `plugin call`). Harness-native tools (such as `pi` `bash`/`read`/`write`/`edit`, `claude -p` with no permission mode, `codex` workspace-write and network, and `agy`) execute inside the harness process and are outside Plexi's permission gate.
 
 <!-- /experiment -->
 
@@ -104,7 +104,7 @@ plexi agent team run consult-experts --question "Which option is safest?"
 
 <!-- /experiment -->
 
-## Inspect apps and request human decisions
+## Inspect plugins and request human decisions
 
 Discover live tools and their schemas before calling them. A mutating call
 may return `permission_required` and a `pending_request_id`; show it to the
@@ -113,8 +113,8 @@ requests. Creative answers settle questions but never grant permissions.
 After an answer, re-read resource state before retrying a mutation.
 
 ```bash
-plexi app tools --json
-plexi app call <app_id> <tool> --input '<json object>' --json
+plexi plugin tools --json
+plexi plugin call <plugin_id> <tool> --input '<json object>' --json
 plexi needs-you list --json
 plexi needs-you show <id>
 plexi needs-you reconcile
@@ -132,26 +132,26 @@ unidentified callers receive an error before any text is sent; ordinary sends
 without the flag remain available. A completed operation reported as a
 duplicate does not send text again.
 
-Completed continuations must not repeat their mutation. For app-to-app data,
+Completed continuations must not repeat their mutation. For plugin-to-plugin data,
 use event streams or typed binary pipes. `pane send` is for driving a terminal
 a person is watching.
 
 ## Open files and native surfaces
 
-You run inside a pane, so prefer a Plexi surface over an OS app or an external
+You run inside a pane, so prefer a Plexi surface over an OS plugin or an external
 editor. Built-in pane types open any file:
 
 ```bash
-plexi app open text-editor <path>     # text, markdown, code (.md gets live preview)
-plexi app open image-viewer <path>
-plexi app open video-player <path>
-plexi app open audio-player <path>
-plexi app open file_browser           # no path: browses the pane's directory
+plexi view open text-editor <path>     # text, markdown, code (.md gets live preview)
+plexi view open image-viewer <path>
+plexi view open video-player <path>
+plexi view open audio-player <path>
+plexi view open file_browser           # no path: browses the pane's directory
 ```
 
-Built-in pane types do not appear in `plexi app list` (that lists installed
-apps only), and `text-editor` with no path opens a fresh scratch note. Read an
-open app pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+Built-in pane types do not appear in `plexi plugin list` (that lists installed
+plugins only), and `text-editor` with no path opens a fresh scratch note. Read an
+open plugin pane with `plexi pane state <id>`; `pane capture` is terminal-only.
 
 ## Capture and handle notes
 
@@ -207,7 +207,7 @@ sharing a capacity limit.
 ## Draft a workflow from a session
 
 The host captures CLI argv with caller pane, agent session, timestamps and the
-CLI exit code. [Logging for app developers](https://plexiapp.com/docs/apps/#logging)
+CLI exit code. [Logging for plugin developers](https://plexiapp.com/docs/plugins/#logging)
 describes content and secret redaction and the content-capture opt-in. Ordinary
 grants such as `agents.ping=allow` remain readable. Interrupted calls, including
 a host shutdown, retain an unknown exit status. This diagnostic trace is not an
@@ -271,16 +271,23 @@ pane count (`--json` is supported).
 
 Use `plexi context open /path/to/project` to focus the context for that folder,
 or create one if needed. The reply identifies the selected context; the calling
-pane stays in its original context. An app opened from a pane uses that pane's
+pane stays in its original context. An view opened from a pane uses that pane's
 owning context even while another context is visible.
 
 `plexi context set-root /path/to/project` changes the caller's shared context
-root. `plexi app state get <app> --scope context` then uses the current host root,
+root. `plexi plugin state get <plugin> --scope context` then uses the current host root,
 even from a shell whose launch-time environment still names the old folder.
 Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 
 ## Feature map
 
+- `plexi view`: Discover, open, and render plugin views
+- `plexi view list`: List declared views of installed plugins
+- `plexi view open`: Open a plugin or tool in a new pane
+<!-- experiment: mcp_client -->
+  - `plexi view open --mcp` (experiment option; see command help).
+<!-- /experiment -->
+- `plexi view render`: Render a plugin headlessly (JSON frame tree by default, or PNG with --png)
 - `plexi lease`: Acquire process-lifetime capacity before starting work
 - `plexi lease acquire`: Acquire one slot
 - `plexi lease release`: Release this holder's leases (or just the named pool)
@@ -306,19 +313,19 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi assistant permission resolve`: Resolve one pending request: once, session, always, or deny
 <!-- /experiment -->
 <!-- experiment: command_view -->
-- `plexi command-view`: Show every registered agent and its runs
+- `plexi agents-dashboard`: Show every registered agent and its runs
 <!-- /experiment -->
 <!-- experiment: command_view -->
-- `plexi command-view open`: Open the command view pane in the active context
+- `plexi agents-dashboard open`: Open the command view pane in the active context
 <!-- /experiment -->
 <!-- experiment: command_view -->
-- `plexi command-view cancel`: Stop a live run before its next tool call
+- `plexi agents-dashboard cancel`: Stop a live run before its next tool call
 <!-- /experiment -->
 <!-- experiment: command_view -->
-- `plexi command-view resolve`: Resolve a pending approval
+- `plexi agents-dashboard resolve`: Resolve a pending approval
 <!-- /experiment -->
 <!-- experiment: command_view -->
-- `plexi command-view allow`: Record an allow
+- `plexi agents-dashboard allow`: Record an allow
 <!-- /experiment -->
 - `plexi run`: Run a named command from `<repo>/.plexi-<channel>/commands.toml` or `~/.plexi-<channel>/commands.toml` (or global scripts)
 - `plexi workspace`: Set up a .plexi/ workspace in your project folder
@@ -363,7 +370,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi secret grant`: Ask for an allow on a folder secret
 <!-- /experiment -->
 <!-- experiment: folder_secrets -->
-- `plexi secret read`: Read a folder secret as an agent or app
+- `plexi secret read`: Read a folder secret as an agent or plugin
 <!-- /experiment -->
 <!-- experiment: folder_secrets -->
 - `plexi secret exec`: Run a command with the environment a new terminal pane in `--cwd` receives, including folder secrets for that directory
@@ -459,41 +466,34 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi context zoom-out`: Zoom out of the current sub-context to the parent
 - `plexi context push`: Push a pane into a new sub-context
 - `plexi context list`: List all open contexts as a JSON array
-- `plexi app`: Manage your Plexi apps — open, install, list, scaffold, and inspect
-- `plexi app open`: Open an app or tool in a new pane
-<!-- experiment: mcp_client -->
-  - `plexi app open --mcp` (experiment option; see command help).
-<!-- /experiment -->
-- `plexi app trust`: Pre-approve a raw `.wasm` component's host imports without a prompt
-- `plexi app install`: Install an app from a local path, a remote source, or a pack file
-- `plexi app uninstall`: Remove an installed app by id
-- `plexi app list`: Show all installed apps with their versions
-- `plexi app prune`: Report obsolete first-party pre-v3 apps that launch-time reseeding quarantines
-- `plexi app render`: Render an app headlessly (JSON frame tree by default, or PNG with --png)
-- `plexi app check`: Check a local app with manifest, scaffold metadata, SDK, and render-size checks
-- `plexi app test`: Run an app's AppHarness tests with `uv run --with pytest pytest tests/`
-- `plexi app info`: Show details about an installed app: manifest fields and tool status
-- `plexi app state`: Read or replace a file-backed app's state document
-- `plexi app state get`: Print an app's current state document to stdout
-- `plexi app state set`: Replace an app's state document, reading from a file or stdin
-- `plexi app init`: Create a new app from a template, or adopt an existing app directory
-- `plexi app validate`: Check a Plexi app directory or .plexipkg package for errors before publishing or installing
-- `plexi app inspect`: Show the trust sheet for a local app directory or .plexipkg package
-- `plexi app package`: Build a distributable .plexipkg package from an app directory
-- `plexi app freeze`: Export your currently installed apps as a single TOML snapshot for sharing or backup
+- `plexi plugin`: Manage your Plexi plugins — open, install, list, scaffold, and inspect
+- `plexi plugin install`: Install a plugin from a local path, a remote source, or a pack file
+- `plexi plugin uninstall`: Remove an installed plugin by id
+- `plexi plugin list`: Show all installed plugins with their versions
+- `plexi plugin prune`: Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines
+- `plexi plugin check`: Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks
+- `plexi plugin test`: Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/`
+- `plexi plugin info`: Show details about an installed view: manifest fields and tool status
+- `plexi plugin state`: Read or replace a file-backed plugin's state document
+- `plexi plugin state get`: Print a plugin's current state document to stdout
+- `plexi plugin state set`: Replace a plugin's state document, reading from a file or stdin
+- `plexi plugin init`: Create a new plugin from a template, or adopt an existing plugin directory
+- `plexi plugin validate`: Check a Plexi plugin directory or .plexipkg package for errors before publishing or installing
+- `plexi plugin inspect`: Show the trust sheet for a local plugin directory or .plexipkg package
+- `plexi plugin package`: Build a distributable .plexipkg package from a plugin directory
+- `plexi plugin freeze`: Export your currently installed plugins as a single TOML snapshot for sharing or backup
 <!-- experiment: marketplace -->
-- `plexi app publish`: Validate, package, and submit an app to the Plexi marketplace
+- `plexi plugin publish`: Validate, package, and submit a plugin to the Plexi marketplace
 <!-- /experiment -->
 <!-- experiment: marketplace -->
-- `plexi app browse`: Browse every public app in the hosted marketplace
+- `plexi plugin browse`: Browse every public plugin in the hosted marketplace
 <!-- /experiment -->
 <!-- experiment: marketplace -->
-- `plexi app search`: Search the public marketplace catalog
+- `plexi plugin search`: Search the public marketplace catalog
 <!-- /experiment -->
-- `plexi app update`: Pull git-backed installed apps to their latest source revision
-- `plexi app action`: Send a semantic action to a running app pane
-- `plexi app call`: Call a tool an app exposes and print its JSON result
-- `plexi app tools`: Snapshot the live tool registry exposed by running app panes in the current context
+- `plexi plugin update`: Pull git-backed installed plugins to their latest source revision
+- `plexi plugin call`: Call a tool a plugin exposes and print its JSON result
+- `plexi plugin tools`: Snapshot the live tool registry exposed by running view panes in the current context
 <!-- experiment: cloud_account -->
 - `plexi account`: Optional account that links this desktop to cloud features
 <!-- /experiment -->
@@ -509,6 +509,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi registry`: Watch installed CLI tools for changes to their available commands and options
 - `plexi registry watch`: Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
 - `plexi pane`: Control panes — list, focus, send input, capture output, and more
+- `plexi pane action`: Send a semantic action to a running view pane
 - `plexi pane layout`: Show active workspace strip membership and geometry
 - `plexi pane hide`: Hide a pane (defaults to the calling pane)
 - `plexi pane reveal`: Reveal a hidden pane (defaults to the calling pane)
@@ -530,8 +531,8 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi pane status`: Report one composite working, idle, blocked, or unknown verdict as JSON
 - `plexi pane key`: Send a key press to a pane
 - `plexi pane drop`: Drop a local file or image URL onto a pane
-- `plexi pane click`: Inject a synthetic pointer click into an app pane, for driving canvas interaction without OS-level automation
-- `plexi pane drag`: Drag the pointer across an app pane through the production input path: press, N intermediate moves, release — delivered one frame at a time
+- `plexi pane click`: Inject a synthetic pointer click into a view pane, for driving canvas interaction without OS-level automation
+- `plexi pane drag`: Drag the pointer across a view pane through the production input path: press, N intermediate moves, release — delivered one frame at a time
 - `plexi pane command`: Send an ordinary shell command to a terminal pane as if typed from the keyboard
 - `plexi pane state`: Return the current UI state of a pane as JSON
 - `plexi pane slot`: Manage host-managed named file slots for a pane
@@ -546,11 +547,11 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi pane result`: Read a pane's validated structured result
 - `plexi pane result read`: Read a pane's validated structured result as JSON
 - `plexi pane result wait`: Block host-side until a pane commits a valid structured result, then print it
-- `plexi events`: Subscribe to a Plexi app's event streams and receive brokered deliveries
-- `plexi events subscribe`: Subscribe to an app's event stream and print delivered events as NDJSON
+- `plexi events`: Subscribe to a Plexi plugin's event streams and receive brokered deliveries
+- `plexi events subscribe`: Subscribe to a plugin's event stream and print delivered events as NDJSON
 - `plexi events declare`: Declare an event stream so it can be emitted on and subscribed to
 - `plexi events emit`: Emit an event onto a declared stream
-- `plexi events list`: List event streams currently declared by running apps
+- `plexi events list`: List event streams currently declared by running plugins
 <!-- experiment: mcp_client -->
 - `plexi events mcp-config`: Print the host MCP server config for an MCP-aware agent
 <!-- /experiment -->
@@ -571,7 +572,7 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi notify dismiss`: Remove a notification previously posted by this pane
 - `plexi ai`: AI configuration and diagnostics — scan hardware, check integrations, recommend models
 <!-- experiment: ai_setup -->
-- `plexi ai onboard`: Guide first-run AI setup and the next app install step
+- `plexi ai onboard`: Guide first-run AI setup and the next plugin install step
 <!-- /experiment -->
 - `plexi ai doctor`: Scan hardware and report recommended AI models
 <!-- experiment: ai_setup -->
@@ -611,14 +612,14 @@ Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
 - `plexi note open`: Open a note picker with fzf in the focused terminal pane
 - `plexi note show`: Print one note's contents by the path `plexi note list` printed
 - `plexi note rm`: Delete one note by the path `plexi note list` printed
-- `plexi doctor`: Audit all installed apps for capability and config gaps
+- `plexi doctor`: Audit all installed plugins for capability and config gaps
 - `plexi demo`: Interactive keybinding tutorial — learn split and navigate in real time
 - `plexi update`: Update this channel's managed package, or restore its previous generation
 - `plexi uninstall`: Remove this channel's recorded package and launchers
 - `plexi host`: Launch, stop, or check a headless-friendly Plexi host from the CLI
 - `plexi host workspace-rollback`: Export the preserved v2 workspace to a new isolated channel
 - `plexi host restart`: Restart this channel, restoring the saved workspace
-- `plexi host start`: Launch this channel's app bundle detached and wait for readiness
+- `plexi host start`: Launch this channel's plugin bundle detached and wait for readiness
 - `plexi host stop`: Stop the running host and every pane agent for this channel
 - `plexi host log`: Write one info-level marker line into the running host's channel log
 - `plexi host status`: Report whether this channel's host is running, its pid, socket path, and pane count

@@ -19,9 +19,9 @@ Cited here, not re-derived.
 ## 1. What a context root is today
 
 A root is a single directory a context is anchored to. It is the address every
-context-scoped thing is derived from: the app registry scan, the workspace
+context-scoped thing is derived from: the plugin registry scan, the workspace
 config overlay, the agent set, `PLEXI_CONTEXT_ROOT` in every pane's
-environment, notes scoping, and — the subject of the audit — app state paths.
+environment, notes scoping, and — the subject of the audit — plugin state paths.
 
 **Every place a root is set or changed** — enumerated by grepping every write
 to `Context::root`, not by following the entry points a reader would expect:
@@ -67,7 +67,7 @@ directory, and a pushed sub-context inherits its parent's root by construction.
 The
 audit records a live saved workspace holding two contexts both rooted at the home
 directory, and shows what that costs: a shared root means one shared
-context-scoped state file per app, addressed identically from both contexts,
+context-scoped state file per plugin, addressed identically from both contexts,
 overwritten whole by whichever instance persists last. Nothing warns, and nothing
 merges.
 
@@ -118,7 +118,7 @@ that keeps the rule true and the shipped model intact — see the open decision 
 context root already in use by context "notes"
   requested: /Users/ianburke/Documents/notes
   in use by: context "notes" (id 14)
-A root anchors exactly one context — app state, agents, and config all resolve
+A root anchors exactly one context — plugin state, agents, and config all resolve
 through it, so two contexts on one root overwrite each other's state.
 Next: switch to it            plexi context switch notes
       or re-root this context plexi context set-root <other-dir>
@@ -196,13 +196,13 @@ the descendants' todos, aggregated and attributed.
 **A read-only, host-computed view over registered contexts — not a merge, and
 not a filesystem walk.**
 
-- **What crosses:** nothing by default. An app opts into being rolled up by
+- **What crosses:** nothing by default. An plugin opts into being rolled up by
   declaring it, and reads the aggregate through a host API that returns
   *attributed* entries (each item carries the context it came from). This keeps
-  rollup inside the capability model — commandment 10 is that apps never get
-  ambient authority, and "a parent context can read every descendant's app
+  rollup inside the capability model — commandment 10 is that plugins never get
+  ambient authority, and "a parent context can read every descendant's plugin
   state" is ambient authority by any other name if it applies to all state
-  implicitly. Todo becomes the first opt-in app, not a special case in the host.
+  implicitly. Todo becomes the first opt-in plugin, not a special case in the host.
 - **Read-only, always.** The parent view can display and filter; it cannot write
   through to a child's file. A write-through model needs conflict rules,
   ownership rules, and an undo story, and buys little: the user can zoom into the
@@ -230,9 +230,9 @@ not a filesystem walk.**
 - **Merge child state into the parent's file.** Destroys the property that state
   lives with the directory (commandment 1: portable files that still make sense
   without Plexi), and makes rollup irreversible.
-- **General implicit aggregation of all context-scoped state.** Every app that
+- **General implicit aggregation of all context-scoped state.** Every plugin that
   ever declares `context` scope would silently gain cross-context reads it never
-  asked for, and no app author could reason about who sees their bytes.
+  asked for, and no plugin author could reason about who sees their bytes.
 - **Rollup by filesystem ancestry with a depth cap.** Rejected on the accidental
   data-flow argument above; retained as an option for Ian in §5 because it is
   the literal reading of his ruling.
@@ -258,7 +258,7 @@ not a filesystem walk.**
   justified only because the alternative is silent data loss, and only if the
   error names the next move. An error that just says "already in use" would
   fail this commandment.
-- *Commandment 10 — apps never get ambient authority.* Rollup is a
+- *Commandment 10 — plugins never get ambient authority.* Rollup is a
   cross-context read. The opt-in declaration is what keeps it inside the
   permission model; an implicit version would violate this commandment outright.
 - *"Grown, not universal."* Rollup shaped as "todos specifically" is a
@@ -284,7 +284,7 @@ filesystem ancestry.
    tree. Ian's ruling as stated says directory ancestry. This is the one place
    the recommendation departs from the ruling, and it is worth an explicit call.
 4. **Is rollup todo-specific or general?** Recommendation: general mechanism,
-   opt-in per app, todo as the first adopter.
+   opt-in per plugin, todo as the first adopter.
 5. **Does a child's state stay independently addressable once rolled up?**
    Recommendation: yes, unconditionally — it is what makes the feature
    reversible.

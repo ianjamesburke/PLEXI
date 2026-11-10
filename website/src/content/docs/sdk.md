@@ -13,7 +13,7 @@ The Python SDK and local app runtime are part of stable v1. MCP client APIs list
 Plexi Python SDK.
 
 Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
-functions. The V3AppRuntime drives the event loop: host sends JSON events on
+functions. The PluginRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 
 Python apps are sandboxed. They run through the CPython-in-WASM adapter
@@ -312,7 +312,7 @@ EmitEvent(event: str, actor: str, summary: str, resource_id: str, revision_after
 ### `SubscribeEventStreams`
 
 ```python
-SubscribeEventStreams(request_id: str, app_id: str, event_names: list[str], payload_mode: str = 'full', trigger_mode: str = 'conversation', resource_id: Optional[str] = None)
+SubscribeEventStreams(request_id: str, plugin_id: str, event_names: list[str], payload_mode: str = 'full', trigger_mode: str = 'conversation', resource_id: Optional[str] = None)
 ```
 
 ### `UnsubscribeEventStreams`
@@ -597,10 +597,10 @@ EventSubscriptionResult(request_id: str, subscription_id: Optional[str], error: 
 EventUnsubscriptionResult(request_id: str, removed: bool, error: Optional[str])
 ```
 
-### `AppEvent`
+### `PluginEvent`
 
 ```python
-AppEvent(subscription_id: str, app_id: str, event: str, event_id: int, resource_id: str, trigger_mode: str, summary: Optional[str], payload_json: Optional[str], state_ref: Optional[str], created_at: str)
+PluginEvent(subscription_id: str, plugin_id: str, event: str, event_id: int, resource_id: str, trigger_mode: str, summary: Optional[str], payload_json: Optional[str], state_ref: Optional[str], created_at: str)
 ```
 
 ### `DeclareEventStreamsResult`
@@ -777,7 +777,7 @@ Usage::
 
     from plexi_sdk import theme
     from plexi_sdk.ui import (
-        AppBar, Badge, Button, Card, Column, DataTable, Divider,
+        SurfaceHeader, Badge, Button, Card, Column, DataTable, Divider,
         FooterKeys, HStack, Heading, Label, Pending, Scrollable,
         Section, SelectList, Skeleton, Spacer, Text, TextInput,
         SPACE_SM, SPACE_MD,
@@ -850,10 +850,10 @@ Grid(columns: int, children: list[Component] | None = None, gap: float = SPACE_S
 
 Multi-column grid layout composed onto rows and columns.
 
-### `AppBar`
+### `SurfaceHeader`
 
 ```python
-AppBar(title: str, subtitle: str = '', accent: str | None = None)
+SurfaceHeader(title: str, subtitle: str = '', accent: str | None = None)
 ```
 
 Top application header bar with title and optional subtitle.
@@ -1261,10 +1261,10 @@ Raises:
 
 Write PNG bytes to path. Creates parent directories as needed.
 
-### `AppHarness`
+### `PluginHarness`
 
 ```python
-AppHarness(app_path: 'str | Path', width: int = 800, height: int = 600, timeout: float = 5.0, host_log_path: 'str | Path | None' = None)
+PluginHarness(plugin_path: 'str | Path', width: int = 800, height: int = 600, timeout: float = 5.0, host_log_path: 'str | Path | None' = None)
 ```
 
 Headless runner for Plexi Python apps.
@@ -1274,7 +1274,7 @@ using the PGAP v3 protocol. No display or running Plexi host required.
 
 Usage::
 
-    with AppHarness("my_app.py", width=400, height=300) as h:
+    with PluginHarness("my_app.py", width=400, height=300) as h:
         cmds = h.run(1)                  # step one render frame
         h.key("enter")                   # inject a key event
         cmds = h.run(1)                  # render again to see effects
@@ -1371,10 +1371,10 @@ Overlay host-provided roles. Unknown keys and non-string/empty
 values are ignored so a partial payload never blanks a color.
 
 
-### `AppPalette`
+### `PluginPalette`
 
 ```python
-AppPalette(dark: 'dict[str, str]', light: 'dict[str, str]')
+PluginPalette(dark: 'dict[str, str]', light: 'dict[str, str]')
 ```
 
 Light/dark palette for app-defined color tokens.
