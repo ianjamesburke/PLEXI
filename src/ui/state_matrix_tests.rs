@@ -226,7 +226,14 @@ fn assert_state_stable_impl(
                 );
             }
             if matches!(state, MatrixState::Hover) {
-                assert!(hovered, "hover was not injected at ppp={ppp}");
+                let position = ctx.input(|input| input.pointer.hover_pos());
+                assert!(
+                    position.is_some_and(|pos| rect.contains(pos)),
+                    "pointer did not enter the specimen at ppp={ppp}"
+                );
+                if interactive {
+                    assert!(hovered, "hover did not reach control at ppp={ppp}");
+                }
             }
             if matches!(state, MatrixState::Pressed) {
                 assert!(
