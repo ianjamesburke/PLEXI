@@ -33,6 +33,7 @@ impl<'a> ToastShell<'a> {
     ) -> egui::InnerResponse<R> {
         let width = (ctx.content_rect().width() - style::SPACE_MD * 2.0 - 32.0)
             .clamp(0.0, style::TOAST_MAX_WIDTH);
+        let inner_width = (width - 34.0).max(0.0);
         egui::Area::new(egui::Id::new(self.id))
             .anchor(self.anchor, self.offset)
             .order(egui::Order::Foreground)
@@ -44,7 +45,7 @@ impl<'a> ToastShell<'a> {
                     .shadow(style::elevation_shadow())
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
-                        ui.set_width(width);
+                        ui.set_max_width(inner_width);
                         ui.spacing_mut().interact_size.y = TOAST_CONTROL_H;
                         ui.spacing_mut().item_spacing.x = style::SPACE_MD;
                         ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
@@ -69,18 +70,28 @@ impl<'a> ToastShell<'a> {
         self.show(ctx, colors, |ui| {
             let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "toast");
             let font = egui::FontId::proportional(style::TEXT_CAPTION);
-            let width = ui.available_width();
+            let max_width = ui.available_width();
             let padding = ui.spacing().button_padding;
             let action_text = ui.fonts_mut(|f| {
                 f.layout(
                     label.into(),
                     font.clone(),
                     colors.text_primary,
-                    (width - padding.x * 2.0).max(1.0),
+                    (max_width - padding.x * 2.0).max(1.0),
                 )
             });
             let action_size = (action_text.size() + padding * 2.0)
                 .max(egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD));
+            let message_width = crate::ui::text::elided_galley(
+                ui,
+                message,
+                font.clone(),
+                max_width,
+                crate::ui::text::Side::Trailing,
+            )
+            .size()
+            .x;
+            let width = (message_width + style::SPACE_MD + action_size.x).min(max_width);
             let bounds =
                 egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, action_size.y));
             let slots = [crate::ui::bounded::Slot {
@@ -203,8 +214,12 @@ impl ProgressDots {
         Self { active, total }
     }
 
+    pub(crate) fn width(&self) -> f32 {
+        self.total.saturating_sub(1) as f32 * 12.0 + 8.0
+    }
+
     pub(crate) fn show(self, ui: &mut egui::Ui, colors: &Colors) -> egui::Response {
-        let width = self.total.saturating_sub(1) as f32 * 12.0 + 8.0;
+        let width = self.width();
         let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 8.0), egui::Sense::hover());
 
         for i in 0..self.total {

@@ -200,6 +200,13 @@
       "count": 1,
       "surface": "src/ui/list.rs",
       "rationale": "ListRow owns measured action reservation, shared bounded text/metadata lanes, required action hit geometry and emitted layout reports; rendered and pointer fixtures exercise reflow."
+    },
+    {
+      "source": "src/overlays/confirmations.rs",
+      "site": "draw_quit_confirm_overlay | ui.horizontal(|ui| {",
+      "count": 1,
+      "surface": "src/ui/toast.rs",
+      "rationale": "The quit toast uses a content-sized row for its caption and progress dots; the registered toast fixture renders the quit state."
     }
   ]
 }
