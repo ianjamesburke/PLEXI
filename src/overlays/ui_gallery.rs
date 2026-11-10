@@ -186,6 +186,14 @@ pub(crate) enum KitSpecimen {
     StatusChip,
     Badge,
     EmptyState,
+    SwatchToolbar,
+    SwatchActive,
+    SwatchAccent,
+    SwatchDanger,
+    SwatchBorder,
+    Hints,
+    TrustHints,
+    ToastCaption,
 }
 
 impl KitSpecimen {
@@ -250,6 +258,27 @@ impl KitSpecimen {
             Self::StatusChip => status_chip(ui, choice_label, colors),
             Self::Badge => crate::ui::badge::badge(ui, choice_label, colors.bg_active, colors),
             Self::EmptyState => empty_state_panel(ui, choice_label, Some(detail), colors),
+            Self::SwatchToolbar => color_swatch(ui, "toolbar", colors.bg_toolbar, colors),
+            Self::SwatchActive => color_swatch(ui, "active", colors.bg_active, colors),
+            Self::SwatchAccent => color_swatch(ui, "accent", colors.accent, colors),
+            Self::SwatchDanger => color_swatch(ui, "danger", colors.danger, colors),
+            Self::SwatchBorder => color_swatch(ui, "border", colors.border, colors),
+            Self::Hints => ui.scope(|ui| hint_bar(ui, colors)).response,
+            Self::TrustHints => {
+                ui.scope(|ui| {
+                    let hints = [
+                        HintGroup::new(&["Enter"], "confirm"),
+                        HintGroup::new(&["Esc"], "cancel"),
+                        HintGroup::new(&["Shift", "Esc"], "deny forever"),
+                    ];
+                    HintBar::new(&hints).show(ui, colors);
+                })
+                .response
+            }
+            Self::ToastCaption => {
+                ui.scope(|ui| toast_caption(ui, choice_label, colors))
+                    .response
+            }
         }
     }
 
@@ -292,6 +321,14 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             KitSpecimen::StatusChip,
             KitSpecimen::Badge,
             KitSpecimen::EmptyState,
+            KitSpecimen::SwatchToolbar,
+            KitSpecimen::SwatchActive,
+            KitSpecimen::SwatchAccent,
+            KitSpecimen::SwatchDanger,
+            KitSpecimen::SwatchBorder,
+            KitSpecimen::Hints,
+            KitSpecimen::TrustHints,
+            KitSpecimen::ToastCaption,
         ])
 }
 
@@ -384,7 +421,7 @@ impl PlexiApp {
                         });
                         chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
-                            hint_bar(ui, &colors);
+                            KitSpecimen::Hints.show(ui, &colors, false, "", "");
                         });
 
                         chrome_section(ui, "Code and toast surfaces", &colors, |ui| {
@@ -393,7 +430,13 @@ impl PlexiApp {
                             KitSpecimen::CopyCommand.show(ui, &colors, false, data.command, "");
                             ui.add_space(style::SPACE_SM);
                             ui.vertical(|ui| {
-                                toast_caption(ui, "Shell completions aren't set up.", &colors);
+                                KitSpecimen::ToastCaption.show(
+                                    ui,
+                                    &colors,
+                                    false,
+                                    "Shell completions aren't set up.",
+                                    "",
+                                );
                                 KitSpecimen::CompactCommand.show(
                                     ui,
                                     &colors,
@@ -419,12 +462,7 @@ impl PlexiApp {
                                         .min_width(116.0),
                                 );
                             });
-                            let hints = [
-                                HintGroup::new(&["Enter"], "confirm"),
-                                HintGroup::new(&["Esc"], "cancel"),
-                                HintGroup::new(&["Shift", "Esc"], "deny forever"),
-                            ];
-                            HintBar::new(&hints).show(ui, &colors);
+                            KitSpecimen::TrustHints.show(ui, &colors, false, "", "");
                             for (index, specimen) in [
                                 KitSpecimen::TrustNeutral,
                                 KitSpecimen::TrustWarning,
@@ -638,11 +676,15 @@ impl PlexiApp {
 
 fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     ui.horizontal_wrapped(|ui| {
-        color_swatch(ui, "toolbar", colors.bg_toolbar, colors);
-        color_swatch(ui, "active", colors.bg_active, colors);
-        color_swatch(ui, "accent", colors.accent, colors);
-        color_swatch(ui, "danger", colors.danger, colors);
-        color_swatch(ui, "border", colors.border, colors);
+        for specimen in [
+            KitSpecimen::SwatchToolbar,
+            KitSpecimen::SwatchActive,
+            KitSpecimen::SwatchAccent,
+            KitSpecimen::SwatchDanger,
+            KitSpecimen::SwatchBorder,
+        ] {
+            specimen.show(ui, colors, false, "", "");
+        }
     });
 }
 
