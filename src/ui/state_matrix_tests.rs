@@ -288,6 +288,9 @@ fn popup_row_and_menu_item_state_matrix() {
             .response()
     });
     assert_state_stable(|ui, _state| crate::ui::button::menu_item(ui, "Rename", &colors));
+    assert_state_stable(|ui, _state| {
+        crate::ui::button::overflow_menu(ui, "More", &colors, |_ui| {}).0
+    });
 }
 
 #[test]
