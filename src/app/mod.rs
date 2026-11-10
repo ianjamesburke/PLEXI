@@ -4621,13 +4621,8 @@ impl eframe::App for PlexiApp {
                     self.toggle_park_active_context();
                 }
                 Action::ToggleMinimap => {
-                    if crate::release::feature_enabled(crate::release::ReleaseFeature::PageGrid) {
-                        self.minimap.toggle();
-                    } else {
-                        crate::release::log_feature_blocked(
-                            crate::release::ReleaseFeature::PageGrid,
-                        );
-                    }
+                    self.minimap.toggle();
+                    log::info!("minimap: visible={}", self.minimap.visible);
                 }
                 Action::OpenScratchpad => {
                     log::info!("scratchpad: Cmd+Shift+Space — opening");

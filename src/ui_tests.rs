@@ -6593,6 +6593,44 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn screenshot_minimap_core_themes() {
+        let _experiments = crate::release::set_test_experiments(&[]);
+        let mut h = PlexiUiHarness::new_sized_ppp(1280.0, 800.0, 1.0);
+        for name in ["README.md", "notes.md", "project.toml"] {
+            std::fs::write(h.workspace_root().join(name), "Minimap test content\n").unwrap();
+        }
+        add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            let ws_id = app.router.active().context_id;
+            let win_id = app.next_window_id;
+            app.next_window_id += 1;
+            app.windows.push(crate::host::context::Window {
+                name: String::new(),
+                path: crate::testing::scratch_context_root("ui"),
+                tree: egui_tiles::Tree::empty("minimap-evidence"),
+                panes: std::collections::HashMap::new(),
+                focused_pane: None,
+                zoomed_pane: None,
+                grid_x: 1,
+                grid_y: 0,
+                window_id: win_id,
+                context_id: ws_id,
+            });
+            app.minimap.visible = true;
+        });
+        for theme in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
+            });
+            h.run_steps(5);
+            h.save_screenshot(&evidence_png!(&format!("_{theme}"))).unwrap();
+        }
+    }
+
+    #[test]
     fn screenshot_agents_pane_states_and_keys() {
         use crate::protocol::AgentState;
         let mut h = PlexiUiHarness::new_sized(1200.0, 850.0);
@@ -7643,8 +7681,7 @@ open(out + ".done", "w").close()
         add_focused_pane(&mut h);
         let inactive_ctx_id = h.with_app_mut(|app| {
             app.sidebar_visible = true;
-            // The minimap overlay only draws when the active workspace has a
-            // second window — seed an empty one on the grid.
+            // Seed a second window to show the grid.
             let ws_id = app.router.active().context_id;
             let win_id = app.next_window_id;
             app.next_window_id += 1;
