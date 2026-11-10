@@ -8183,7 +8183,9 @@ fn screenshot_delivered_capture_still_fulfills() {
     let raw_input = egui::RawInput {
         events: vec![egui::Event::Screenshot {
             viewport_id: egui::ViewportId::ROOT,
-            user_data: egui::UserData::default(),
+            user_data: egui::UserData::new(
+                h.app.pending_screenshots[0].capture_requested_at.unwrap(),
+            ),
             image,
         }],
         ..Default::default()
@@ -8205,6 +8207,48 @@ fn screenshot_delivered_capture_still_fulfills() {
         h.app.pending_screenshots.is_empty(),
         "a fulfilled request must be dequeued"
     );
+}
+
+/// A late capture from a timed-out request must never be reported as a fresh
+/// result for the next CLI caller. Nor may another viewport satisfy the root.
+#[test]
+fn screenshot_rejects_unmatched_and_wrong_viewport_events() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    let response_file = temp_response(tmp.path(), "fresh-screenshot");
+    h.inject_ipc(AppRequest::Screenshot {
+        pane_id: None,
+        output_path: tmp.path().join("fresh.png").to_string_lossy().into_owned(),
+        response_file: response_file.clone(),
+    });
+    h.run_hidden_frames(1);
+    let issued = h.app.pending_screenshots[0].capture_requested_at.unwrap();
+    for (viewport_id, user_data) in [
+        (egui::ViewportId::ROOT, egui::UserData::default()),
+        (
+            egui::ViewportId::ROOT,
+            egui::UserData::new(issued - std::time::Duration::from_secs(1)),
+        ),
+        (
+            egui::ViewportId::from_hash_of("other"),
+            egui::UserData::new(issued),
+        ),
+    ] {
+        let input = egui::RawInput {
+            events: vec![egui::Event::Screenshot {
+                viewport_id,
+                user_data,
+                image: std::sync::Arc::new(egui::ColorImage::filled([8, 8], egui::Color32::RED)),
+            }],
+            ..Default::default()
+        };
+        h.app.fulfill_screenshot_events(&h.ctx.clone(), &input);
+        assert!(
+            !std::path::Path::new(&response_file).exists(),
+            "unmatched capture was accepted"
+        );
+        assert_eq!(h.app.pending_screenshots.len(), 1);
+    }
 }
 
 // -- Rename pre-selection (stint 0545) ------------------------------------

@@ -3,11 +3,14 @@
 //! The CLI sends `AppRequest::Screenshot`; the handler queues a
 //! [`PendingScreenshot`] and asks egui for a viewport capture
 //! (`ViewportCommand::Screenshot`). The wgpu backend reads the real
-//! swapchain back and delivers it as `egui::Event::Screenshot` in a later
+//! live paint target back and delivers it as `egui::Event::Screenshot` in a later
 //! frame's raw input, where [`PlexiApp::fulfill_screenshot_events`] crops,
 //! encodes, and writes the PNG plus the CLI response file. This captures the
-//! pixels the user actually sees — chrome, terminals, apps, overlays — with
-//! no OS-level screen capture involved.
+//! host UI — chrome, terminals, apps, overlays — with
+//! no OS-level screen capture involved. The native backend paints requested
+//! frames into a GPU texture without acquiring or presenting a window drawable,
+//! including when occluded. It uses the same egui context and renderer.
+//! Request timestamps reject unrelated, expired and late readbacks.
 //!
 //! # The reply invariant (stints 0495, 0504)
 //!
@@ -32,9 +35,6 @@ use super::PlexiApp;
 /// a typed error. Must stay comfortably under `host_screenshot_cli`'s response
 /// timeout so the caller surfaces this reason instead of its own generic one.
 pub const SCREENSHOT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(6);
-
-/// How often an undelivered capture is re-requested from the viewport.
-const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Debug)]
 pub struct PendingScreenshot {
@@ -120,23 +120,23 @@ impl PlexiApp {
         }
     }
 
-    /// Ask the viewport for a capture, at most once per [`RETRY_INTERVAL`].
+    /// Issue one capture per newly queued batch. Keep its identity stable while
+    /// GPU readback is outstanding; repaint/poll and the deadline bound progress.
     fn request_pending_screenshot(&mut self, ctx: &egui::Context) {
         let now = std::time::Instant::now();
-        let should_capture = self.pending_screenshots.iter().any(|request| {
-            request
-                .capture_requested_at
-                .is_none_or(|requested_at| now.duration_since(requested_at) >= RETRY_INTERVAL)
-        });
+        let should_capture = self
+            .pending_screenshots
+            .iter()
+            .any(|request| request.capture_requested_at.is_none());
         if !should_capture {
             return;
         }
         for request in &mut self.pending_screenshots {
-            request.capture_requested_at = Some(now);
+            request.capture_requested_at.get_or_insert(now);
         }
         ctx.send_viewport_cmd_to(
             egui::ViewportId::ROOT,
-            egui::ViewportCommand::Screenshot(egui::UserData::default()),
+            egui::ViewportCommand::Screenshot(egui::UserData::new(now)),
         );
     }
 
@@ -164,40 +164,57 @@ impl PlexiApp {
         ctx: &egui::Context,
         raw_input: &egui::RawInput,
     ) {
-        let images: Vec<std::sync::Arc<egui::ColorImage>> = raw_input
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-            .collect();
-        let Some(image) = images.last() else {
-            return;
-        };
-        if self.pending_screenshots.is_empty() {
-            return;
-        }
-        let pixels_per_point = ctx.pixels_per_point();
-        for request in std::mem::take(&mut self.pending_screenshots) {
-            let result = self.write_screenshot(&request, image, pixels_per_point);
-            let response = match &result {
-                Ok((width, height)) => serde_json::json!({
-                    "ok": true,
-                    "path": request.output_path,
-                    "width": width,
-                    "height": height,
-                }),
-                Err(error) => {
-                    log::warn!(
-                        "screenshot: pane_id={:?} output={} failed: {error}",
-                        request.pane_id,
-                        request.output_path
-                    );
-                    serde_json::json!({ "error": error })
-                }
+        for event in &raw_input.events {
+            let egui::Event::Screenshot {
+                viewport_id,
+                user_data,
+                image,
+            } = event
+            else {
+                continue;
             };
-            crate::rpc::write_json_response(&request.response_file, response);
+            if *viewport_id != egui::ViewportId::ROOT {
+                continue;
+            }
+            let Some(captured_at) = user_data
+                .data
+                .as_ref()
+                .and_then(|data| data.downcast_ref::<std::time::Instant>())
+            else {
+                continue;
+            };
+            // Match the request generation, not merely the arrival of any
+            // image. A late GPU result must not satisfy a newer CLI request.
+            let now = std::time::Instant::now();
+            let (matched, remaining): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.pending_screenshots)
+                    .into_iter()
+                    .partition(|request| {
+                        request.capture_requested_at == Some(*captured_at)
+                            && now < request.expires_at
+                    });
+            self.pending_screenshots = remaining;
+            let pixels_per_point = ctx.pixels_per_point();
+            for request in matched {
+                let result = self.write_screenshot(&request, image, pixels_per_point);
+                let response = match &result {
+                    Ok((width, height)) => serde_json::json!({
+                        "ok": true,
+                        "path": request.output_path,
+                        "width": width,
+                        "height": height,
+                    }),
+                    Err(error) => {
+                        log::warn!(
+                            "screenshot: pane_id={:?} output={} failed: {error}",
+                            request.pane_id,
+                            request.output_path
+                        );
+                        serde_json::json!({ "error": error })
+                    }
+                };
+                crate::rpc::write_json_response(&request.response_file, response);
+            }
         }
     }
 
@@ -302,6 +319,79 @@ fn crop_color_image(
 #[cfg(test)]
 mod tests {
     use super::{crop_color_image, screenshot_timeout_error};
+
+    /// Real GPU readback without any window/surface. Odd width exercises row
+    /// padding; successive colors ensure a reused capture returns fresh pixels.
+    #[test]
+    fn screenshot_gpu_readback_without_compositor_drawable() {
+        let config = egui_wgpu::WgpuConfiguration::default();
+        let instance = config.wgpu_setup.new_instance();
+        let instance = pollster::block_on(instance);
+        let state = pollster::block_on(egui_wgpu::RenderState::create(
+            &config,
+            &instance,
+            None,
+            egui_wgpu::RendererOptions::default(),
+        ))
+        .expect("headless GPU");
+        let template = state.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot regression"),
+            size: wgpu::Extent3d {
+                width: 73,
+                height: 41,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: state.target_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let mut capture = egui_wgpu::capture::CaptureState::new(&state.device, &template);
+        let (tx, rx) = egui_wgpu::capture::capture_channel();
+        let timeout = crate::testing::load_aware_timeout(std::time::Duration::from_secs(10));
+        for (color, expected) in [
+            (wgpu::Color::RED, egui::Color32::RED),
+            (wgpu::Color::BLUE, egui::Color32::BLUE),
+        ] {
+            let mut encoder = state.device.create_command_encoder(&Default::default());
+            let view = capture.texture.create_view(&Default::default());
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(color),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    ..Default::default()
+                });
+            }
+            let buffer = capture.copy_textures(&state.device, None, &mut encoder);
+            state.queue.submit([encoder.finish()]);
+            capture.read_screen_rgba(
+                egui::Context::default(),
+                buffer,
+                vec![],
+                tx.clone(),
+                egui::ViewportId::ROOT,
+            );
+            state
+                .device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(timeout),
+                })
+                .expect("GPU readback");
+            let (_, _, image) = rx.recv_timeout(timeout).expect("capture reply");
+            assert_eq!(image.size, [73, 41]);
+            assert!(image.pixels.iter().all(|pixel| *pixel == expected));
+        }
+    }
 
     #[test]
     fn timeout_reports_observed_viewport_and_ui_frames_without_assuming_cause() {
