@@ -158,7 +158,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-user-notifications = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSFileManager"] }
 # AVFoundation video decoder (#346).
 objc2-av-foundation = { version = "0.3", features = [
     "AVAsset",

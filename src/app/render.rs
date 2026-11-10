@@ -1294,6 +1294,8 @@ impl PlexiApp {
         // path at the top of `update()` — they own a `FocusKind` and render
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
+        self.draw_notes_delete_toast(&ctx);
+
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {
             // Reset on Escape or timeout
