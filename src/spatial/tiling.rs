@@ -597,6 +597,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             .map(|p| p.clip_rect.intersect(visible_rect))
             .unwrap_or(visible_rect);
 
+        let pane_state = pane.effective_activity().cloned();
         if let Some(app_pane) = pane.as_app_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
@@ -605,27 +606,19 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
             let tab_group = self.tab_info.get(&tile_id);
             let has_tabs = tab_group.is_some();
-            if let Some(group) = tab_group {
-                let bar_rect = egui::Rect::from_min_size(
-                    app_ui.cursor().min,
-                    egui::vec2(app_ui.available_width(), TAB_BAR_HEIGHT),
-                );
-                app_ui.advance_cursor_after_rect(bar_rect);
+            if tab_group.is_some() {
                 let is_overtaken = app_pane.overlay_replaced.is_some();
-                if let Some(action) = paint_tab_bar(
-                    app_ui.ctx(),
-                    app_ui.painter(),
-                    TabBarPaintParams {
-                        bar_rect,
-                        group,
-                        tab_labels: &self.tab_labels,
-                        tab_activities: &tab_activities,
-                        colors: &self.colors,
-                        font_size: self.pane_title_font_size,
-                        overtake_hint: is_overtaken,
+                if let Some(action) = render::terminal_pane::render_name_bar_and_tabs(
+                    &mut app_ui,
+                    render::terminal_pane::NameBarParams {
+                        tile_id, pane_id, tab_info: &self.tab_info, tab_labels: &self.tab_labels,
+                        tab_activities: &tab_activities, pane_names: &self.pane_names,
+                        pane_agent_state: pane_state.as_ref(), is_error: false, colors: &self.colors,
+                        outside_workspace: false, name_font_size: self.pane_title_font_size,
+                        spawned_by_badge: None, waiting_results_badge: None, overtake_hint: is_overtaken,
                     },
                 ) {
-                    self.tab_action = Some((group.container_tile, action));
+                    self.tab_action = Some(action);
                 }
             }
 

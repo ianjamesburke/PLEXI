@@ -6529,6 +6529,56 @@ open(out + ".done", "w").close()
     }
 
     #[test]
+    fn pane_chrome_selected_app_keeps_its_state_ring() {
+        let (mut h, terminal, app_pane) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            app.windows[app.active_window].panes.get_mut(&app_pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: app_pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
+            }));
+            let window = app.windows[app.active_window].window_id;
+            app.host.extend_pane_selection(window, terminal, app_pane);
+        });
+        h.focus_pane(terminal).unwrap();
+        h.run_steps(3);
+        let (rect, color) = h.with_app(|app| (app.visible_pane_rect(app_pane).unwrap(), app.colors.state_blocked));
+        let ring = h.harness().output().shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(color) && p.points.iter().all(|point| rect.contains(*point)) => Some(p),
+            _ => None,
+        }).next().expect("selected app retains its state ring");
+        let left = ring.points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - ring.stroke.width / 2.0;
+        assert!((left - rect.left() - crate::ui::style::PANE_FOCUS_WIDTH).abs() < 0.01);
+    }
+
+    #[test]
+    fn pane_chrome_app_tabs_use_responsive_state_header() {
+        let mut h = PlexiUiHarness::new_sized(500.0, 300.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let second = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let win = &mut app.windows[app.active_window];
+            win.panes.get_mut(&first).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: first, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
+            }));
+            let a = win.tree.tiles.find_pane(&first).unwrap();
+            let b = win.tree.tiles.find_pane(&second).unwrap();
+            win.tree.root = Some(win.tree.tiles.insert_tab_tile(vec![a, b]));
+            win.focused_pane = Some(a);
+        });
+        h.run_steps(3);
+        let (layout, fill) = h.with_app(|app| {
+            let color = app.colors.status_badge_color(app.colors.state_blocked);
+            (crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, first).expect("app tab header uses shared layout"),
+             egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 36))
+        });
+        let badge = h.harness().output().shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None,
+        }).expect("wide app tab header shows state chip");
+        if let Some(title) = layout.label_rect { assert!(!title.intersects(badge), "app tab title must not overlap its state chip"); }
+    }
+
+    #[test]
     fn pane_chrome_rings_are_concentric_at_both_scales() {
         for scale in [1.0, 2.0] {
             let (mut h, pane, _) = pane_chrome_fixture(scale);
