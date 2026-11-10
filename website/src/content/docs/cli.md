@@ -912,10 +912,10 @@ Manage the active context (the folder and project scope tied to the current pane
 | `unpark` | Unpark a context and focus it |
 | `new` | Open a new context with an optional name |
 | `sub` | Create a sub-context under the current one, pre-populated with panes |
-| `open` | Switch the current pane to a context at the given path |
-| `set-root` | Change the root folder for the active context |
+| `open` | Focus the context at this folder, or create it. Defaults to the caller's cwd |
+| `set-root` | Change the caller's context root (active context outside a pane); unknown ids fail |
 | `current` | Print the id and name of the current pane's context as JSON |
-| `describe` | Set the description for the active context |
+| `describe` | Set the caller's context description (active context outside a pane) |
 | `zoom` | Zoom into a sub-context by its context id or name |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
 | `push` | Push a pane into a new sub-context |
@@ -993,7 +993,7 @@ Examples: plexi context sub agentsquad --agents 3 --command cm plexi context sub
 
 ### `plexi context open`
 
-Switch the current pane to a context at the given path
+Focus the context at this folder, or create it. Defaults to the caller's cwd
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1001,7 +1001,7 @@ Switch the current pane to a context at the given path
 
 ### `plexi context set-root`
 
-Change the root folder for the active context
+Change the caller's context root (active context outside a pane); unknown ids fail
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1013,7 +1013,7 @@ Print the id and name of the current pane's context as JSON
 
 ### `plexi context describe`
 
-Set the description for the active context
+Set the caller's context description (active context outside a pane)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -1194,7 +1194,7 @@ Populates `tools` from the live tool registry when a pane of this app is running
 
 Read or replace a file-backed app's state document.
 
-Only apps that declare a `[state]` section are addressable. The state path is resolved from the manifest and the calling context — callers never pass a path, and there is no flag to address another context.
+Only apps that declare a `[state]` section are addressable. The state path uses the pane's current host context. Outside a pane, context scope uses the nearest ancestor of cwd containing `.plexi`; no anchor is an error. Global scope uses the shared user-data tier. Spawn-time root env vars are ignored.
 
 | Subcommand | Description |
 |---|---|

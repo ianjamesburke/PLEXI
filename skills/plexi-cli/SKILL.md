@@ -1,9 +1,9 @@
 ---
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
-skill_version: "6.1.5"
+skill_version: "6.1.6"
 plexi_version: "0.4.3"
-last_verified: "2026-10-26"
+last_verified: "2026-11-10"
 disable-model-invocation: true
 ---
 
@@ -267,6 +267,18 @@ A restart restores the saved workspace. From a pane of the host being restarted,
 restart. From another host or terminal, restart waits and prints the new pid and
 pane count (`--json` is supported).
 
+### Choose a context folder
+
+Use `plexi context open /path/to/project` to focus the context for that folder,
+or create one if needed. The reply identifies the selected context; the calling
+pane stays in its original context. An app opened from a pane uses that pane's
+owning context even while another context is visible.
+
+`plexi context set-root /path/to/project` changes the caller's shared context
+root. `plexi app state get <app> --scope context` then uses the current host root,
+even from a shell whose launch-time environment still names the old folder.
+Outside a pane, context state uses the nearest `.plexi` ancestor of cwd.
+
 ## Feature map
 
 - `plexi lease`: Acquire process-lifetime capacity before starting work
@@ -439,10 +451,10 @@ pane count (`--json` is supported).
 - `plexi context unpark`: Unpark a context and focus it
 - `plexi context new`: Open a new context with an optional name
 - `plexi context sub`: Create a sub-context under the current one, pre-populated with panes
-- `plexi context open`: Switch the current pane to a context at the given path
-- `plexi context set-root`: Change the root folder for the active context
+- `plexi context open`: Focus the context at this folder, or create it
+- `plexi context set-root`: Change the caller's context root (active context outside a pane); unknown ids fail
 - `plexi context current`: Print the id and name of the current pane's context as JSON
-- `plexi context describe`: Set the description for the active context
+- `plexi context describe`: Set the caller's context description (active context outside a pane)
 - `plexi context zoom`: Zoom into a sub-context by its context id or name
 - `plexi context zoom-out`: Zoom out of the current sub-context to the parent
 - `plexi context push`: Push a pane into a new sub-context
