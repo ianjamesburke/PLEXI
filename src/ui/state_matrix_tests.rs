@@ -246,11 +246,11 @@ fn button_state_matrix() {
     let colors = crate::testing::HostHarness::new().app.colors;
     for specimen in crate::overlays::ui_gallery::kit_specimens() {
         assert_state_stable(|ui, state| {
-            ui.add(
-                KitButton::new(specimen.label, &colors)
-                    .kind(specimen.kind)
-                    .size(specimen.size)
-                    .selected(matches!(state, MatrixState::Selected)),
+            specimen.show(
+                ui,
+                &colors,
+                matches!(state, MatrixState::Selected),
+                "Choice",
             )
         });
     }
