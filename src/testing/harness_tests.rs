@@ -16091,6 +16091,29 @@ mod tiled_navigation_frame_tests {
     }
 
     #[test]
+    fn boundary_swap_moves_stacked_pane_to_row_end() {
+        for (direction, end) in [(Direction::Up, false), (Direction::Down, true)] {
+            let mut h = HostHarness::new();
+            let top = h.add_test_pane();
+            h.focus_pane(top);
+            let bottom = h.app.split_focused(true, None, false, false, None).expect("split");
+            assert_eq!(h.app.windows[0].panes.len(), 2);
+            h.run_frames(3);
+            let pane = if end { bottom } else { top };
+            assert!(h.app.focus_pane_in_strip(pane));
+            h.run_frames(2);
+            let focused = h.app.windows[h.app.active_window].focused_pane.expect("focus");
+            assert!(h.app.windows[h.app.active_window].find_pane_in_direction_from(focused, direction).is_none(), "fixture must be at {direction:?} boundary");
+            h.app.swap_pane_action(direction);
+            h.run_frames(2);
+            let moved = h.app.windows.iter().find(|w| w.panes.contains_key(&pane)).expect("moved pane");
+            let other = h.app.windows.iter().find(|w| w.panes.contains_key(&if end { top } else { bottom })).expect("remaining pane");
+            assert_ne!(moved.window_id, other.window_id, "{direction:?} must create a window");
+            assert_eq!(moved.grid_x < other.grid_x, !end);
+        }
+    }
+
+    #[test]
     fn swap_pane_uses_geometric_neighbors_and_keeps_focus() {
         let mut h = HostHarness::new();
         let panes = five_terminal_columns(&mut h);
