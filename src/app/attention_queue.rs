@@ -2047,7 +2047,7 @@ impl PlexiApp {
         // Scrim behind the pulled-up queue list, positioned below the toolbar
         // so the top chrome and mailbox button remain interactively accessible.
         let scrim_rect = Rect::from_min_max(
-            Pos2::new(screen.min.x, screen.min.y + style::TOOLBAR_H),
+            Pos2::new(screen.min.x, screen.min.y + crate::platform::titlebar::toolbar_height(ctx)),
             screen.max,
         );
         egui::Area::new(egui::Id::new("attention_queue_scrim"))
@@ -2064,7 +2064,7 @@ impl PlexiApp {
         let panel_w = style::QUEUE_PANEL_W.min(screen.width() - 32.0).max(280.0);
         let pos = Pos2::new(
             screen.max.x - panel_w - style::SPACE_MD,
-            screen.min.y + style::PATH_BAR_H + style::SPACE_SM,
+            screen.min.y + (style::PATH_BAR_H + style::SPACE_SM).max(crate::platform::titlebar::toolbar_height(ctx) + style::SPACE_SM),
         );
 
         let mut clicked_idx: Option<usize> = None;

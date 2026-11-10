@@ -2207,6 +2207,92 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         });
     }
 
+    #[test]
+    fn native_buttons_safe_area_respects_scale_and_geometry() {
+        for scale in [0.8_f32, 1.0, 1.3, 2.0] {
+            for width in [400.0_f32, 700.0, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| {
+                    app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0)));
+                });
+                h.run_steps(3);
+                let (screen, color, row) = h.with_app(|app| (app.ctx.content_rect(), app.colors.bg_toolbar, app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_row_rect"))).unwrap()));
+                let height = h.harness().output().shapes.iter().find_map(|shape| {
+                    match &shape.shape {
+                        egui::Shape::Rect(r) if r.fill == color && (r.rect.width() - screen.width()).abs() < 1.0 && (r.rect.top() - screen.top()).abs() < 1.0 => Some(r.rect.height()),
+                        _ => None,
+                    }
+                }).expect("toolbar background");
+                assert!((height - crate::ui::style::TOOLBAR_H.max(32.0 / scale)).abs() < 0.1, "scale {scale}: wrong toolbar height {height}");
+                assert!(row.left() + 0.1 >= 110.0 / scale, "scale {scale}: toolbar enters native button area: {row:?}");
+                #[cfg(target_os = "macos")]
+                h.with_app(|app| {
+                    let title = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_title_rect"))).unwrap();
+                    assert!(!title.is_positive() || title.left() + 0.1 >= 110.0 / scale, "title enters native button area: {title:?}");
+                });
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn titlebar_title_never_overlaps_toolbar_at_any_scale_or_width() {
+        let mut saw_centered = false;
+        let mut saw_shifted = false;
+        let mut saw_elided = false;
+        let mut saw_hidden = false;
+        for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
+            for width in [400.0_f32, 500.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| app.router.get_mut(0).name = "attention demo — needs_you".to_string().into());
+                h.run_steps(3);
+                h.with_app(|app| {
+                    let get = |name| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(name)));
+                    let title = get("titlebar_title_rect").expect("title geometry must be published");
+                    let visible = app.ctx.data(|d| d.get_temp::<String>(egui::Id::new("titlebar_visible_title"))).unwrap();
+                    if visible.is_empty() {
+                        saw_hidden = true;
+                    } else if visible.ends_with('…') {
+                        saw_elided = true;
+                    } else if (title.center().x - app.ctx.content_rect().center().x).abs() < 0.1 {
+                        saw_centered = true;
+                    } else {
+                        saw_shifted = true;
+                    }
+                    for name in ["help", "version", "attention_mailbox", "gallery"] {
+                        let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))).expect("toolbar item");
+                        assert!(!title.intersects(item), "scale {scale}, width {width}: title {title:?} overlaps {name} {item:?}");
+                    }
+                });
+            }
+        }
+        assert!(saw_centered && saw_shifted && saw_elided && saw_hidden, "must exercise center, shift, truncate, and hide");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_titlebar_scales() {
+        for scale in [0.8_f32, 1.0, 1.3, 2.0] {
+            for width in [700.0_f32, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                std::fs::write(h.workspace_root().join("review-notes.txt"), "Review the pending request\n").unwrap();
+                let id = add_focused_pane(&mut h);
+                h.with_app_mut(|app| {
+                    app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(70.0, 28.0)));
+                    let cfg = crate::ui::theme::preset_colors("plexi-dusk").unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+                    app.router.get_mut(0).name = "attention demo".to_string().into();
+                    app.windows[app.active_window].panes.get_mut(&id).unwrap().as_app_mut().unwrap().name = "needs_you".into();
+                    app.enqueue_ask("titlebar-fixture", id, "Review the pending request", 1_000, Vec::new());
+                });
+                h.run_steps(4);
+                h.save_screenshot(&evidence_png!(format!("_{scale}_{width}"))).unwrap();
+            }
+        }
+    }
+
     /// The attention chip in the path bar keeps its own slot: at every UI
     /// scale and window width it stays inside the viewport and never
     /// intersects the toolbar controls, version label, or the pane header's

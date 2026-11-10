@@ -1,0 +1,13 @@
+sizes = [[700.0, 600.0], [1600.0, 600.0]]
+
+[[steps]]
+open = { kind = "builtin", id = "file_browser", as = "files" }
+
+[[steps]]
+focus = "files"
+
+[[steps]]
+assert = { target = "files", focused = true, lifecycle = "running" }
+
+[[steps]]
+shot = "titlebar-focused-pane.png"

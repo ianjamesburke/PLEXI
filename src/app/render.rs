@@ -291,21 +291,29 @@ impl PlexiApp {
         // Taken exactly once by whichever production path renders the focused
         // terminal this frame: the tiling behavior or the zoom overlay.
         let mut focused_terminal_input = focused_terminal_input;
+        // The native button area is in macOS points; egui coordinates also
+        // include Plexi's zoom, so reserve it in logical points here.
+        let safe_area = crate::platform::titlebar::logical_safe_area(&ctx);
         // Toolbar
         egui::Panel::top("toolbar")
-            .exact_size(crate::ui::style::TOOLBAR_H)
+            .exact_size(crate::platform::titlebar::toolbar_height(&ctx))
             .frame(
                 egui::Frame::new()
                     .fill(self.colors.bg_toolbar)
                     .inner_margin(egui::Margin {
-                        left: 80,
+                        left: 0,
                         right: 8,
                         top: 4,
                         bottom: 4,
                     }),
             )
             .show_inside(ui, |ui| {
-                crate::platform::ui_profile::time("toolbar", || self.draw_toolbar(ui));
+                let mut row = ui.max_rect();
+                row.min.x = (row.min.x + safe_area.x).min(row.max.x);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(row));
+                    crate::platform::ui_profile::time("toolbar", || self.draw_toolbar(ui));
+                });
             });
 
         // Separator line under toolbar
