@@ -213,6 +213,7 @@ pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
+pub const BUTTON_H_SM: f32 = 28.0; // Compact actions and menus.
 pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 /// Floor width for a modal's confirm/cancel pair. Wide enough that a short
 /// label ("OK") still reads as a button rather than as a chip, and that the

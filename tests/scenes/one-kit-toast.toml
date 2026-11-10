@@ -1,0 +1,46 @@
+# Headless scene: quick capture seeds the isolated notes tier. The test build
+# injects fake Trash, so no real system Trash is touched.
+size = [900.0, 640.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+
+[[steps]]
+key = { target = "host", value = "cmd+0" }
+
+[[steps]]
+text = { target = "host", value = "Release planning note" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 4
+
+[[steps]]
+key = { target = "host", value = "cmd+o" }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert_label = { target = "host", label = "Release planning note" }
+
+[[steps]]
+key = { target = "host", value = "cmd+backspace" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "host", label = "Undo" }
+
+[[steps]]
+shot = "notes-trash-toast.png"
+
+[[steps]]
+key = { target = "host", value = "cmd+z" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert_label = { target = "host", label = "Release planning note" }

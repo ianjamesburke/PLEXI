@@ -1,6 +1,8 @@
 //! Native master/detail fleet pane. State comes from the host's pure projection.
 use crate::agent::fleet::{AgentRow, AgentsView, DisplayState, FleetFilter};
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::ui::button::KitButton;
+use crate::ui::list::ListRow;
 
 pub enum FleetAction {
     Seen(u64),
@@ -184,7 +186,8 @@ impl App for AgentsApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Agents");
-                    if ui.button(format!("{}  [f]", self.filter.label())).clicked() {
+                    let filter_label = format!("{}  [f]", self.filter.label());
+                    if ui.add(KitButton::new(&filter_label, colors)).clicked() {
                         self.filter = self.filter.next();
                     }
                 });
@@ -249,13 +252,7 @@ impl App for AgentsApp {
                                                 waiting_suffix,
                                                 row.pane_id
                                             );
-                                            if ui
-                                                .selectable_label(
-                                                    self.selected == Some(row.pane_id),
-                                                    egui::RichText::new(label).color(color),
-                                                )
-                                                .clicked()
-                                            {
+                                            if agent_row(ui, self.selected == Some(row.pane_id), &label, color, colors) {
                                                 self.selected = Some(row.pane_id);
                                                 self.replying = false;
                                             }
@@ -308,13 +305,7 @@ impl App for AgentsApp {
                                                         row.age,
                                                         row.pane_id
                                                     );
-                                                    if ui
-                                                        .selectable_label(
-                                                            self.selected == Some(row.pane_id),
-                                                            egui::RichText::new(label).color(color),
-                                                        )
-                                                        .clicked()
-                                                    {
+                                                    if agent_row(ui, self.selected == Some(row.pane_id), &label, color, colors) {
                                                         self.selected = Some(row.pane_id);
                                                         self.replying = false;
                                                     }
@@ -396,20 +387,20 @@ impl App for AgentsApp {
                                             if ui
                                                 .add_enabled(
                                                     row.live,
-                                                    egui::Button::new("Jump [Enter]"),
+                                                    KitButton::new("Jump [Enter]", colors),
                                                 )
                                                 .clicked()
                                             {
                                                 self.jump();
                                             }
                                             if row.blocked_on.is_some()
-                                                && ui.button("Answer [a]").clicked()
+                                                && ui.add(KitButton::new("Answer [a]", colors)).clicked()
                                             {
                                                 self.answer();
                                             }
                                             if (row.display_state == DisplayState::DoneUnseen
                                                 || row.display_state.is_failure_like())
-                                                && ui.button("Dismiss [x]").clicked()
+                                                && ui.add(KitButton::new("Dismiss [x]", colors)).clicked()
                                             {
                                                 self.dismiss();
                                             }
@@ -429,7 +420,7 @@ impl App for AgentsApp {
                                             if ui
                                                 .add_enabled(
                                                     !self.reply.trim().is_empty(),
-                                                    egui::Button::new("Send reply"),
+                                                    KitButton::new("Send reply", colors),
                                                 )
                                                 .clicked()
                                             {
@@ -470,5 +461,62 @@ impl App for AgentsApp {
                     );
                 });
             });
+    }
+}
+
+/// One selectable agent row. The state colour (working, blocked, failed ...)
+/// colours the primary line; the row itself is the shared list row.
+fn agent_row(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    state_color: egui::Color32,
+    colors: &crate::ui::theme::Colors,
+) -> bool {
+    ListRow::new(label)
+        .dense()
+        .selected(selected)
+        .body_color(state_color)
+        .show(ui, colors)
+        .row_clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn agent_rows_keep_their_state_colour() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let mut output = None;
+        for frame in 0..2 {
+            output = Some(host.app.ctx.run_ui(
+                egui::RawInput {
+                    time: Some(frame as f64),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                        super::agent_row(ui, false, "Failed row", colors.danger, &colors);
+                        super::agent_row(ui, false, "Working row", colors.accent, &colors);
+                    });
+                },
+            ));
+        }
+        let painted = |label: &str| {
+            output
+                .as_ref()
+                .unwrap()
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == label => {
+                        Some(t.override_text_color.unwrap_or(t.fallback_color))
+                    }
+                    _ => None,
+                })
+                .expect("agent row text")
+        };
+        assert_ne!(painted("Failed row"), painted("Working row"));
+        assert_ne!(painted("Failed row"), colors.text_primary);
     }
 }

@@ -1,0 +1,11 @@
+size = [1100.0, 640.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+
+[[steps]]
+open = { kind = "builtin", id = "button-gallery-fixture", as = "gallery" }
+[[steps]]
+assert_label = { target = "gallery", label = "Md · 32 (default)" }
+[[steps]]
+assert_label = { target = "gallery", label = "Lg · 52" }
+[[steps]]
+shot = "one-kit-gallery.png"

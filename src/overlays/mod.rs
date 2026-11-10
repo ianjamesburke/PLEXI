@@ -64,6 +64,7 @@ pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
                     ui,
                     egui::Id::new("shortcuts_email_copy"),
                     "ADHDisntreal@gmail.com",
+                    colors,
                 );
             });
         }

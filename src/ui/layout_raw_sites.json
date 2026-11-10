@@ -207,6 +207,13 @@
       "count": 1,
       "surface": "src/ui/toast.rs",
       "rationale": "The quit toast uses a content-sized row for its caption and progress dots; the registered toast fixture renders the quit state."
+    },
+    {
+      "source": "src/overlays/ui_gallery.rs",
+      "site": "draw_button_sizes | ui.horizontal_wrapped(|ui| {",
+      "count": 1,
+      "surface": "src/overlays/ui_gallery.rs::draw_button_sizes",
+      "rationale": "The button matrix wraps complete kit actions by size class; the one-kit-gallery scene renders it in both themes."
     }
   ]
 }

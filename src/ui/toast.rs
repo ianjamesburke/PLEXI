@@ -3,7 +3,7 @@ use egui::{Align2, RichText};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-pub(crate) const TOAST_CONTROL_H: f32 = 28.0;
+pub(crate) const TOAST_CONTROL_H: f32 = style::BUTTON_H_SM;
 
 pub(crate) struct ToastShell<'a> {
     id: &'a str,
@@ -46,13 +46,21 @@ impl<'a> ToastShell<'a> {
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.set_max_width(inner_width);
-                        ui.spacing_mut().interact_size.y = TOAST_CONTROL_H;
                         ui.spacing_mut().item_spacing.x = style::SPACE_MD;
-                        ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
                         add_contents(ui)
                     })
                     .inner
             })
+    }
+
+    /// Toast actions are the default kit button (Primary, Md) on the toast's
+    /// own surface. They stay Md rather than Sm (28): the layout contract
+    /// reserves a 32px minimum hit target for every required action (see the
+    /// `minimum` recorded in `action`), and a 28px control would violate it.
+    pub(crate) fn button<'l>(label: &'l str, colors: &Colors) -> crate::ui::button::KitButton<'l> {
+        crate::ui::button::KitButton::new(label, colors)
+            .wrap_mode(egui::TextWrapMode::Wrap)
+            .surface(colors.bg_sidebar)
     }
 
     /// Reserve the complete action before fitting the message. Reflow into
@@ -71,7 +79,7 @@ impl<'a> ToastShell<'a> {
             let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "toast");
             let font = egui::FontId::proportional(style::TEXT_CAPTION);
             let max_width = ui.available_width();
-            let padding = ui.spacing().button_padding;
+            let padding = egui::vec2(style::SPACE_MD, style::SPACE_XS);
             let action_text = ui.fonts_mut(|f| {
                 f.layout(
                     label.into(),
@@ -140,7 +148,6 @@ impl<'a> ToastShell<'a> {
                 crate::ui::text::Side::Trailing,
             );
             capture.text_slot("message", &message_galley, message_rect);
-            capture.text_slot("action", &action_text, action_rect);
             ui.painter().galley(
                 egui::pos2(
                     message_rect.left(),
@@ -149,19 +156,20 @@ impl<'a> ToastShell<'a> {
                 message_galley,
                 colors.text_dim,
             );
+            let button_start = shape_count(ui);
             let response = ui
                 .push_id(id, |ui| {
                     ui.put(
                         action_rect,
-                        egui::Button::new(action_text)
-                            .fill(colors.bg_active)
-                            .min_size(action_rect.size()),
+                        Self::button(label, colors).min_size(action_rect.size()),
                     )
                 })
                 .inner;
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-            });
+            // Record the galley the kit actually painted, not a re-measurement.
+            match painted_text(ui, button_start, label) {
+                Some(galley) => capture.text_slot("action", &galley, action_rect),
+                None => log::error!("ui: toast action label {label:?} was not painted"),
+            }
             if let Some(error) = error {
                 toast_caption(ui, error, colors);
             }
@@ -182,6 +190,29 @@ impl<'a> ToastShell<'a> {
         })
         .inner
     }
+}
+
+fn shape_count(ui: &egui::Ui) -> usize {
+    let layer = ui.layer_id();
+    ui.ctx()
+        .graphics(|g| g.get(layer).map_or(0, |list| list.all_entries().len()))
+}
+
+/// The laid-out galley of the first text shape painted after `start` whose
+/// text is `label`.
+fn painted_text(ui: &egui::Ui, start: usize, label: &str) -> Option<std::sync::Arc<egui::Galley>> {
+    let layer = ui.layer_id();
+    ui.ctx().graphics(|g| {
+        g.get(layer)?
+            .all_entries()
+            .skip(start)
+            .find_map(|entry| match &entry.shape {
+                egui::Shape::Text(text) if text.galley.job.text == label => {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+    })
 }
 
 pub(crate) fn toast_caption(ui: &mut egui::Ui, text: impl Into<String>, colors: &Colors) {
@@ -233,5 +264,124 @@ impl ProgressDots {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The only line that names the default kit button; the parity assertions
+    /// below are independent of how it is constructed.
+    fn default_kit_button(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) -> egui::Response {
+        ui.add(crate::ui::button::KitButton::new("Undo", colors))
+    }
+
+    struct Painted {
+        size: egui::Vec2,
+        fill: egui::Color32,
+        stroke: egui::epaint::Stroke,
+        corner_radius: egui::CornerRadius,
+        font: egui::FontId,
+        text_color: egui::Color32,
+    }
+
+    fn painted(output: &egui::FullOutput, bounds: egui::Rect) -> Painted {
+        let rect = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(rect) if rect.rect.contains(bounds.center()) => Some(rect),
+                _ => None,
+            })
+            .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+            .expect("button background rect");
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text == "Undo"
+                        && bounds.contains(text.visual_bounding_rect().center()) =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("button label");
+        let section = &text.galley.job.sections[0];
+        Painted {
+            size: rect.rect.size(),
+            fill: rect.fill,
+            stroke: rect.stroke.into(),
+            corner_radius: rect.corner_radius,
+            font: section.format.font_id.clone(),
+            text_color: text.override_text_color.unwrap_or(section.format.color),
+        }
+    }
+
+    /// Reported mismatch (2026-11-10): the toast action button differed from
+    /// the default kit button in corner radius, stroke, padding, height class,
+    /// font and fill. Every one of those is asserted here for every theme
+    /// preset, and again with a user theme whose preferred foreground has too
+    /// little contrast.
+    #[test]
+    fn toast_action_matches_default_kit_button() {
+        let host = crate::testing::HostHarness::new();
+        let ctx = &host.app.ctx;
+        for name in crate::ui::theme::preset_names() {
+            for low_contrast in [false, true] {
+                let mut colors = crate::ui::theme::Colors::from_config(
+                    &crate::ui::theme::preset_colors(name).unwrap(),
+                );
+                crate::ui::theme::setup_style(ctx, &colors);
+                if low_contrast {
+                    // Both surfaces must run the same correction against their
+                    // painted fill.
+                    colors.text_primary = colors.bg_active;
+                }
+                let case = format!("{name} low_contrast={low_contrast}");
+                let mut bounds = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+                let mut output = None;
+                for frame in 0..3 {
+                    output = Some(ctx.run_ui(
+                        egui::RawInput {
+                            time: Some(frame as f64),
+                            ..Default::default()
+                        },
+                        |ui| {
+                            egui::CentralPanel::default().show_inside(ui, |ui| {
+                                bounds.0 = default_kit_button(ui, &colors).rect;
+                            });
+                            bounds.1 = super::ToastShell::bottom("parity")
+                                .action(ctx, &colors, "Moved note to Trash", "Undo", None)
+                                .rect;
+                        },
+                    ));
+                }
+                let output = output.unwrap();
+                let (default, toast) = (painted(&output, bounds.0), painted(&output, bounds.1));
+                assert_eq!(
+                    bounds.1.height(),
+                    crate::ui::button::ButtonSize::Md.height(),
+                    "{case}: toast action keeps the Md height class (the layout contract's 32px minimum hit target)"
+                );
+                assert_eq!(bounds.0.height(), bounds.1.height(), "{case}: height class");
+                assert_eq!(default.size, toast.size, "{case}: padding (natural size)");
+                assert_eq!(
+                    default.corner_radius, toast.corner_radius,
+                    "{case}: corner radius"
+                );
+                assert_eq!(default.stroke, toast.stroke, "{case}: stroke");
+                assert_eq!(default.fill, toast.fill, "{case}: fill");
+                assert_eq!(
+                    default.fill, colors.bg_active,
+                    "{case}: fill source is the kit's"
+                );
+                assert_eq!(default.font, toast.font, "{case}: font");
+                assert_eq!(
+                    default.text_color, toast.text_color,
+                    "{case}: contrast-corrected foreground"
+                );
+            }
+        }
     }
 }

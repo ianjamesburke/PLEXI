@@ -123,6 +123,14 @@
       "gap": "Unresolved: ui_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/overlays/ui_gallery.rs::draw_button_sizes",
+      "fixture": {
+        "file": "tests/scenes/one-kit-gallery.toml"
+      },
+      "states": "Primary/Secondary/Accent/Danger/Ghost and disabled at Sm/Md/Lg; Dusk/Dawn",
+      "minimum": "Gallery button rows wrap at the available width; complete labels remain visible and padded from the pane edge"
+    },
+    {
       "id": "src/render/app_chrome.rs",
       "gap": "Unresolved: app_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },

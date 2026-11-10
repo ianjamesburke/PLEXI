@@ -362,11 +362,11 @@ impl SecretsApp {
         );
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
-            if button::chrome_button(ui, "Save", ButtonKind::Accent, colors, 64.0).clicked() || save
+            if ui.add(button::KitButton::new("Save", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() || save
             {
                 self.commit_add();
             }
-            if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 64.0).clicked() {
+            if ui.add(button::KitButton::new("Cancel", colors).kind(ButtonKind::Secondary).min_width(64.0)).clicked() {
                 self.close_form();
             }
         });
@@ -531,8 +531,8 @@ impl App for SecretsApp {
         egui::Frame::NONE.inner_margin(egui::Margin::same(style::SPACE_MD as i8)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Secrets");
-                if button::chrome_button(ui, "Add", ButtonKind::Accent, colors, 64.0).clicked() { self.begin_add(); }
-                if button::chrome_button(ui, "Refresh", ButtonKind::Secondary, colors, 80.0).clicked() { self.refresh(); }
+                if ui.add(button::KitButton::new("Add", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() { self.begin_add(); }
+                if ui.add(button::KitButton::new("Refresh", colors).kind(ButtonKind::Secondary).min_width(80.0)).clicked() { self.refresh(); }
             });
             if !self.form_open {
                 HintBar::new(&[HintGroup::new(&["j", "k"], "select"), HintGroup::new(&["Enter"], "edit"), HintGroup::new(&["a"], "add"), HintGroup::new(&["d"], "delete"), HintGroup::new(&["c"], "copy")]).show(ui, colors);
@@ -548,7 +548,12 @@ impl App for SecretsApp {
                     self.scope_picker(ui, colors);
                     labels::description_label(ui, "The source file is never changed. Import replaces matching names in this scope.", colors);
                     ui.add_enabled_ui(self.pending_import.is_none(), |ui| {
-                        if button::chrome_button(ui, "Import .env…", ButtonKind::Secondary, colors, 128.0).clicked() { self.pick_requested = true; }
+                        if ui
+                            .add(button::KitButton::new("Import .env…", colors).kind(ButtonKind::Secondary).min_width(128.0))
+                            .clicked()
+                        {
+                            self.pick_requested = true;
+                        }
                     });
                     HintBar::new(&[HintGroup::new(&["i"], "import .env")]).show(ui, colors);
                     return;
@@ -556,8 +561,18 @@ impl App for SecretsApp {
                 if self.pending_delete {
                     if let Some(entry) = self.entries.get(self.selected) { ui.label(format!("Delete {} from {}?", entry.name, entry.scope)); }
                     ui.horizontal(|ui| {
-                        if button::chrome_button(ui, "Delete", ButtonKind::Accent, colors, 80.0).clicked() { self.delete_selected(); }
-                        if button::chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 80.0).clicked() { self.pending_delete = false; }
+                        if ui
+                            .add(button::KitButton::new("Delete", colors).kind(ButtonKind::Accent).min_width(80.0))
+                            .clicked()
+                        {
+                            self.delete_selected();
+                        }
+                        if ui
+                            .add(button::KitButton::new("Cancel", colors).kind(ButtonKind::Secondary).min_width(80.0))
+                            .clicked()
+                        {
+                            self.pending_delete = false;
+                        }
                     });
                     HintBar::new(&[HintGroup::new(&["d", "y"], "confirm"), HintGroup::new(&["Esc"], "cancel")]).show(ui, colors);
                 }
@@ -574,7 +589,13 @@ impl App for SecretsApp {
                         labels::description_label(ui, &format!("Grants: {grant}"), colors);
                         if let SecretTarget::Workspace { root, .. } = &entry.target {
                             let enabled = self.terminal_inject.contains(&entry.name);
-                            if button::chrome_button(ui, if enabled { "Human terminal env: on" } else { "Human terminal env: off" }, ButtonKind::Secondary, colors, 180.0).clicked() { toggle = Some((entry.name.clone(), root.clone())); }
+                            let label = if enabled { "Human terminal env: on" } else { "Human terminal env: off" };
+                            if ui
+                                .add(button::KitButton::new(label, colors).kind(ButtonKind::Secondary).min_width(180.0))
+                                .clicked()
+                            {
+                                toggle = Some((entry.name.clone(), root.clone()));
+                            }
                         }
                     });
                     if index == self.selected && self.scroll_to_selected { response.scroll_to_me(Some(egui::Align::Center)); }

@@ -69,7 +69,7 @@ pub(crate) fn compact_copyable_command(
 fn command_row(ui: &mut egui::Ui, id: egui::Id, command: &str, size: f32, colors: &Colors) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            crate::ui::button::copy_button(ui, id, command);
+            crate::ui::button::copy_button(ui, id, command, colors);
             let label = crate::ui::text::elide(
                 ui,
                 command,

@@ -417,7 +417,11 @@ mod tests {
                         let capture = Capture::begin(ui.painter(), "button");
                         let response = ui
                             .add_enabled_ui(enabled, |ui| {
-                                crate::ui::button::chrome_button(ui, "Action", kind, &colors, 80.0)
+                                ui.add(
+                                    crate::ui::button::KitButton::new("Action", &colors)
+                                        .kind(kind)
+                                        .min_width(80.0),
+                                )
                             })
                             .inner;
                         capture.finish(
