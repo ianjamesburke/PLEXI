@@ -4275,10 +4275,27 @@ fn read_display_version() -> String {
     crate::distribution::version_text().to_string()
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HOST_ACTION_PROBE: std::cell::RefCell<Option<Vec<Action>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl PlexiApp {
 
     /// Dispatch host actions from both shortcuts and the command palette.
     pub(crate) fn dispatch_host_action(&mut self, action: Action, ctx: &egui::Context) {
+        #[cfg(test)]
+        if HOST_ACTION_PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            if let Some(actions) = probe.as_mut() {
+                actions.push(action.clone());
+                true
+            } else {
+                false
+            }
+        }) {
+            return;
+        }
             match action {
                 Action::SplitHorizontal | Action::SplitVertical => {
                     let vertical = matches!(action, Action::SplitVertical);

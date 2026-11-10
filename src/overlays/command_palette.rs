@@ -3784,6 +3784,25 @@ mod tests {
         assert!(matches!(focused, Some(egui_tiles::Tile::Pane(11))));
     }
 
+    #[test]
+    fn every_registered_palette_host_command_reaches_shared_dispatcher() {
+        let mut h = crate::testing::HostHarness::new();
+        let expected: Vec<_> = PALETTE_COMMANDS.iter().filter_map(|entry| {
+            if let PaletteCommand::Host(action) = &entry.command {
+                Some(action.clone())
+            } else {
+                None
+            }
+        }).collect();
+        assert!(!expected.is_empty());
+        crate::app::HOST_ACTION_PROBE.with(|probe| *probe.borrow_mut() = Some(Vec::new()));
+        for action in &expected {
+            h.app.run_palette_command(PaletteCommand::Host(action.clone()));
+        }
+        let actual = crate::app::HOST_ACTION_PROBE.with(|probe| probe.borrow_mut().take().unwrap());
+        assert_eq!(actual, expected);
+    }
+
     fn scale_shortcut(h: &mut crate::testing::HostHarness, key: egui::Key) {
         h.press_key(key, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
     }
