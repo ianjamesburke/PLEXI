@@ -126,7 +126,18 @@ enum MatrixState {
     Disabled,
 }
 
-fn assert_state_stable(mut specimen: impl FnMut(&mut egui::Ui, MatrixState) -> egui::Response) {
+fn assert_state_stable(specimen: impl FnMut(&mut egui::Ui, MatrixState) -> egui::Response) {
+    assert_state_stable_impl(specimen, true);
+}
+
+fn assert_static_state_stable(specimen: impl FnMut(&mut egui::Ui, MatrixState) -> egui::Response) {
+    assert_state_stable_impl(specimen, false);
+}
+
+fn assert_state_stable_impl(
+    mut specimen: impl FnMut(&mut egui::Ui, MatrixState) -> egui::Response,
+    interactive: bool,
+) {
     for ppp in [1.0, 1.25, 1.5, 2.0] {
         let host = crate::testing::HostHarness::new();
         let ctx = &host.app.ctx;
@@ -217,7 +228,7 @@ fn assert_state_stable(mut specimen: impl FnMut(&mut egui::Ui, MatrixState) -> e
             if matches!(state, MatrixState::Hover) {
                 assert!(hovered, "hover was not injected at ppp={ppp}");
             }
-            if matches!(state, MatrixState::Pressed) {
+            if matches!(state, MatrixState::Pressed) && interactive {
                 assert!(down, "press was not injected at ppp={ppp}");
             }
         }
@@ -295,6 +306,65 @@ fn gallery_controls_state_matrix() {
         }
         .show(ui, egui::Id::new("matrix_sidebar"), &colors)
         .1
+    });
+}
+
+#[test]
+fn gallery_noninteractive_surfaces_state_matrix() {
+    let colors = crate::testing::HostHarness::new().app.colors;
+    assert_static_state_stable(|ui, _| {
+        crate::ui::surface::color_swatch(ui, "accent", colors.accent, &colors)
+    });
+    assert_static_state_stable(|ui, _| crate::ui::surface::status_chip(ui, "running", &colors));
+    assert_static_state_stable(|ui, _| {
+        crate::ui::badge::badge(ui, "3 items", colors.bg_active, &colors)
+    });
+    assert_static_state_stable(|ui, _| {
+        crate::ui::shortcuts::key_chip(
+            ui,
+            "Enter",
+            &colors,
+            egui::FontId::monospace(crate::ui::style::TEXT_HINT),
+        )
+    });
+    assert_static_state_stable(|ui, _| crate::ui::toast::ProgressDots::new(2, 3).show(ui, &colors));
+    assert_static_state_stable(|ui, _| {
+        crate::ui::surface::empty_state_panel(ui, "No items", Some("Details"), &colors)
+    });
+    assert_static_state_stable(|ui, _| {
+        crate::ui::surface::trust_decision_panel(
+            ui,
+            "Example",
+            "Details",
+            crate::ui::surface::TrustTone::Neutral,
+            &colors,
+        )
+    });
+    assert_static_state_stable(|ui, _| {
+        crate::ui::surface::copyable_command(
+            ui,
+            egui::Id::new("matrix_command"),
+            "plexi --help",
+            &colors,
+        )
+    });
+    assert_static_state_stable(|ui, _| {
+        crate::ui::surface::compact_copyable_command(
+            ui,
+            egui::Id::new("matrix_compact_command"),
+            "plexi --help",
+            &colors,
+        )
+    });
+    assert_static_state_stable(|ui, _| {
+        crate::ui::code_viewer::ReadOnlyCodeViewer::new(
+            egui::Id::new("matrix_code"),
+            "fn main() {}",
+            "rs",
+        )
+        .line_numbers(true)
+        .max_height(96.0)
+        .show(ui, &colors)
     });
 }
 
