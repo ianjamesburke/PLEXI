@@ -2209,19 +2209,29 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
     #[test]
     fn native_buttons_safe_area_respects_scale_and_geometry() {
-        let mut h = PlexiUiHarness::new_sized_scaled(700.0, 600.0, 0.8);
-        h.with_app_mut(|app| {
-            app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0)));
-        });
-        h.run_steps(3);
-        let (screen, color) = h.with_app(|app| (app.ctx.content_rect(), app.colors.bg_toolbar));
-        let height = h.harness().output().shapes.iter().find_map(|shape| {
-            match &shape.shape {
-                egui::Shape::Rect(r) if r.fill == color && (r.rect.width() - screen.width()).abs() < 1.0 && (r.rect.top() - screen.top()).abs() < 1.0 => Some(r.rect.height()),
-                _ => None,
+        for scale in [0.8_f32, 1.0, 1.3, 2.0] {
+            for width in [400.0_f32, 700.0, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| {
+                    app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0)));
+                });
+                h.run_steps(3);
+                let (screen, color, row) = h.with_app(|app| (app.ctx.content_rect(), app.colors.bg_toolbar, app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_row_rect"))).unwrap()));
+                let height = h.harness().output().shapes.iter().find_map(|shape| {
+                    match &shape.shape {
+                        egui::Shape::Rect(r) if r.fill == color && (r.rect.width() - screen.width()).abs() < 1.0 && (r.rect.top() - screen.top()).abs() < 1.0 => Some(r.rect.height()),
+                        _ => None,
+                    }
+                }).expect("toolbar background");
+                assert!((height - crate::ui::style::TOOLBAR_H.max(32.0 / scale)).abs() < 0.1, "scale {scale}: wrong toolbar height {height}");
+                assert!(row.left() + 0.1 >= 110.0 / scale, "scale {scale}: toolbar enters native button area: {row:?}");
+                #[cfg(target_os = "macos")]
+                h.with_app(|app| {
+                    let title = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_title_rect"))).unwrap();
+                    assert!(!title.is_positive() || title.left() + 0.1 >= 110.0 / scale, "title enters native button area: {title:?}");
+                });
             }
-        }).expect("toolbar background");
-        assert!(height >= 32.0 / 0.8, "toolbar clips native buttons: logical height {height}");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2262,12 +2272,13 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     #[cfg(target_os = "macos")]
     #[test]
     fn screenshot_titlebar_scales() {
-        for scale in [1.0_f32, 1.3, 2.0] {
+        for scale in [0.8_f32, 1.0, 1.3, 2.0] {
             for width in [700.0_f32, 1600.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
                 std::fs::write(h.workspace_root().join("review-notes.txt"), "Review the pending request\n").unwrap();
                 let id = add_focused_pane(&mut h);
                 h.with_app_mut(|app| {
+                    app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(70.0, 28.0)));
                     let cfg = crate::ui::theme::preset_colors("plexi-dusk").unwrap();
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
                     app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);

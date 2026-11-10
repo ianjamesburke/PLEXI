@@ -4,6 +4,8 @@ use crate::ui::button;
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         let row = ui.max_rect();
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("titlebar_row_rect"), row));
         let mailbox_rect = ui.horizontal(|ui| {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

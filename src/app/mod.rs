@@ -3607,6 +3607,7 @@ impl eframe::App for PlexiApp {
         }
         self.update_preamble(ctx);
         self.apply_ui_scale(ctx);
+        crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
         if self.present_relay_pairing_sheet() {
             ctx.request_repaint();
