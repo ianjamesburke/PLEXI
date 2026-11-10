@@ -949,6 +949,38 @@ mod tests {
     }
 
     #[test]
+    fn disabled_paint_fades_every_kind_without_contrast_lift() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        for kind in [
+            ButtonKind::Primary,
+            ButtonKind::Secondary,
+            ButtonKind::Ghost,
+            ButtonKind::Accent,
+            ButtonKind::Danger,
+        ] {
+            let (rest, rect) = render(3, None, |ui| {
+                ui.add(KitButton::new("Action", &colors).kind(kind))
+            });
+            let (disabled, disabled_rect) = render(3, None, |ui| {
+                ui.add_enabled(false, KitButton::new("Action", &colors).kind(kind))
+            });
+            assert_eq!(rect, disabled_rect, "{kind:?}");
+            assert_eq!(
+                fills_at(&disabled, rect.center()).last().copied(),
+                fills_at(&rest, rect.center())
+                    .last()
+                    .map(|color| color.gamma_multiply(0.4)),
+                "{kind:?} fill"
+            );
+            assert_eq!(
+                label_shape(&disabled, "Action").1,
+                label_shape(&rest, "Action").1.gamma_multiply(0.4),
+                "{kind:?} label"
+            );
+        }
+    }
+
+    #[test]
     fn filled_accent_changes_color_on_hover() {
         let colors = crate::testing::HostHarness::new().app.colors;
         let (rest, rect) = render(3, None, |ui| {
