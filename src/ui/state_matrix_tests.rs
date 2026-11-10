@@ -228,8 +228,14 @@ fn assert_state_stable_impl(
             if matches!(state, MatrixState::Hover) {
                 assert!(hovered, "hover was not injected at ppp={ppp}");
             }
-            if matches!(state, MatrixState::Pressed) && interactive {
-                assert!(down, "press was not injected at ppp={ppp}");
+            if matches!(state, MatrixState::Pressed) {
+                assert!(
+                    ctx.input(|input| input.pointer.primary_down()),
+                    "pointer press was not injected at ppp={ppp}"
+                );
+                if interactive {
+                    assert!(down, "press did not reach control at ppp={ppp}");
+                }
             }
         }
     }
