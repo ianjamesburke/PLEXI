@@ -215,10 +215,13 @@ pub(crate) fn overflow_menu<R>(
     colors: &Colors,
     contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (egui::Response, Option<egui::InnerResponse<R>>) {
-    let response = ui.add(
-        KitButton::new(label, colors)
-            .size(ButtonSize::Sm)
-            .frameless(),
+    // Titlebar rows can be shorter than the standard Sm action height at
+    // large UI scales. Use the kit's compact toolbar geometry for the trigger;
+    // the popup's menu items retain their normal Sm targets.
+    let response = toolbar_button(
+        ui,
+        RichText::new(label).size(style::TEXT_CAPTION).color(colors.text_dim),
+        "Toolbar actions",
     );
     let inner = egui::Popup::menu(&response).show(contents);
     (response, inner)
