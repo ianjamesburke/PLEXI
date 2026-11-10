@@ -2278,7 +2278,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let mut saw_elided = false;
         let mut saw_hidden = false;
         for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
-            for width in [400.0_f32, 425.0, 450.0, 475.0, 500.0, 525.0, 550.0, 575.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
+            for width in [200.0_f32, 250.0, 300.0, 350.0, 400.0, 425.0, 450.0, 475.0, 500.0, 525.0, 550.0, 575.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
                 h.with_app_mut(|app| app.router.get_mut(0).name = "attention demo — needs_you".to_string().into());
                 h.run_steps(3);
