@@ -1866,7 +1866,7 @@ pub enum HostRequest {
 pub enum PluginEventActor {
     User,
     Agent,
-    View,
+    Plugin,
     System,
 }
 

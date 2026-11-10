@@ -3014,7 +3014,7 @@ mod tests {
     fn emit_event(name: &str) -> Effect {
         Effect::EmitEvent(EmitEventEffect {
             event: name.to_string(),
-            actor: "app".to_string(),
+            actor: "plugin".to_string(),
             actor_id: None,
             caused_by: None,
             summary: "Moved".to_string(),

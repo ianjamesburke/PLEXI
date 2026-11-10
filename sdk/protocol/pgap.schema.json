@@ -298,7 +298,7 @@
           "enum": [
             "user",
             "agent",
-            "view",
+            "plugin",
             "system"
           ],
           "type": "string"

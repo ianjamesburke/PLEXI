@@ -538,6 +538,14 @@ impl WorkspaceFile {
                     None => None,
                 };
                 if let Some(launch_path) = launch_path {
+                    if let Err(error) =
+                        crate::app::plugin_migration::migrate_launch_root(launch_path)
+                    {
+                        log::error!(
+                            "workspace plugin-path migration: {error}; preserving original"
+                        );
+                        return None;
+                    }
                     if let Some(path) = crate::app::plugin_migration::migrated_path(launch_path) {
                         *launch_path = path;
                         migrated = true;

@@ -2342,7 +2342,7 @@ default_tier = "low"
             0,
             vec![delivery(
                 2,
-                PluginEventActor::View,
+                PluginEventActor::Plugin,
                 "chess",
                 Some("agent:chess-opponent"),
             )],

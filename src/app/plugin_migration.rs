@@ -184,7 +184,8 @@ fn migrate_manifest(raw: &str) -> Result<String, Box<dyn std::error::Error>> {
         .remove("app")
         .ok_or("legacy manifest is missing [app]")?;
     let identity = plugin.as_table_mut().ok_or("[app] must be a table")?;
-    if let Some(capabilities) = identity.get_mut("capabilities")
+    if let Some(capabilities) = identity
+        .get_mut("capabilities")
         .and_then(|value| value.get_mut("capabilities"))
         .and_then(toml::Value::as_array_mut)
     {
@@ -241,9 +242,54 @@ pub(crate) fn migrated_path(path: &Path) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Restore may visit an inactive workspace before its registry is loaded.
+/// Migrate only the current channel's explicit config root, never a repository
+/// source folder named `apps` or another channel's installed packages.
+pub(crate) fn migrate_launch_root(path: &Path) -> Result<(), String> {
+    let channel = crate::config::workspace_channel_dir();
+    for ancestor in path.ancestors().skip(1) {
+        if ancestor.file_name().is_some_and(|name| name == "apps") {
+            if let Some(root) = ancestor.parent() {
+                if root
+                    .file_name()
+                    .is_some_and(|name| name == channel.as_str())
+                {
+                    migrate(root)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_rename_restore_migrates_inactive_workspace_but_not_source_apps() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = workspace
+            .path()
+            .join(crate::config::workspace_channel_dir());
+        let legacy = config.join("apps/notes");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'notes'\nname = 'Notes'\ntype = 'app'\nentry = 'main.py'\n[app.capabilities]\ncapabilities = ['spawn.app']\n").unwrap();
+        migrate_launch_root(&legacy).unwrap();
+        let migrated = migrated_path(&legacy).unwrap();
+        let manifest: super::super::registry::PluginManifest =
+            toml::from_str(&std::fs::read_to_string(migrated.join("manifest.toml")).unwrap())
+                .unwrap();
+        assert_eq!(
+            manifest.plugin.capabilities.capabilities,
+            vec!["spawn.plugin"]
+        );
+        let source = workspace.path().join("apps/source");
+        std::fs::create_dir_all(&source).unwrap();
+        migrate_launch_root(&source).unwrap();
+        assert!(source.exists());
+        assert!(migrated_path(&source).is_none());
+    }
 
     #[test]
     fn plugin_rename_pack_migration_preserves_pin_and_keeps_original() {

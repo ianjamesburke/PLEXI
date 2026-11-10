@@ -3973,7 +3973,8 @@ impl AssistantView {
                     if removed > 0 {
                         self.grants().save();
                     }
-                    let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
+                    let _ = self.audit.append(&AuditEvent::now(
+                        &self.audit_actor(),
                         "revoke",
                         &row.target_id,
                         "revoked",
@@ -6429,7 +6430,7 @@ enabled = ["allowed.tool"]
         // App-emitted event caused by the assistant's tool call: row, no turn.
         emit_move(
             &timeline,
-            PluginEventActor::View,
+            PluginEventActor::Plugin,
             None,
             Some("agent:assistant"),
         );

@@ -48,6 +48,7 @@ pub enum TargetType {
     // Preserve sealed grant identity; renaming a public type must not mint a grant.
     #[serde(rename = "app_connector")]
     PluginConnector,
+    #[serde(rename = "app_event_stream")]
     PluginEventStream,
     McpTool,
     FileScope,

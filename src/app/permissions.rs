@@ -520,14 +520,42 @@ impl Default for PermissionStore {
 }
 
 impl PermissionStore {
+    // Permanent disk representation: preserve both grants and denials without
+    // rewriting a sealed authority store. This is not a public capability alias.
+    fn stored_capability(id: &str) -> &str {
+        if id == "spawn.plugin" {
+            "spawn.app"
+        } else {
+            id
+        }
+    }
+
+    fn public_capability(id: &str) -> &str {
+        if id == "spawn.app" {
+            "spawn.plugin"
+        } else {
+            id
+        }
+    }
+
     fn entry_key(plugin_id: &str, workspace_root: &Path, cap: Capability) -> String {
         let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", plugin_id, canonical.display(), cap.as_str())
+        format!(
+            "{}::{}::{}",
+            plugin_id,
+            canonical.display(),
+            Self::stored_capability(cap.as_str())
+        )
     }
 
     fn wasm_entry_key(plugin_id: &str, workspace_root: &Path, capability_id: &str) -> String {
         let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", plugin_id, canonical.display(), capability_id)
+        format!(
+            "{}::{}::{}",
+            plugin_id,
+            canonical.display(),
+            Self::stored_capability(capability_id)
+        )
     }
 
     /// Split a store key (`plugin_id::workspace_path::capability_str`) into its
@@ -550,7 +578,12 @@ impl PermissionStore {
             .iter()
             .filter_map(|(key, &state)| {
                 let (plugin_id, workspace, capability_id) = Self::parse_entry_key(key)?;
-                Some((plugin_id, workspace, capability_id, state))
+                Some((
+                    plugin_id,
+                    workspace,
+                    Self::public_capability(capability_id),
+                    state,
+                ))
             })
     }
 
@@ -565,7 +598,7 @@ impl PermissionStore {
                 log::warn!("permission_store: skipping malformed entry key '{key}'");
                 return None;
             };
-            let Ok(cap) = Capability::try_from(cap_str) else {
+            let Ok(cap) = Capability::try_from(Self::public_capability(cap_str)) else {
                 log::warn!("permission_store: skipping entry with unknown capability '{cap_str}'");
                 return None;
             };
@@ -811,7 +844,7 @@ impl PermissionStore {
                 Some(s) => s,
                 None => continue,
             };
-            let Ok(cap) = Capability::try_from(cap_str) else {
+            let Ok(cap) = Capability::try_from(Self::public_capability(cap_str)) else {
                 continue;
             };
             if declared.contains(&cap) {
@@ -874,6 +907,7 @@ impl PermissionStore {
             let Some(capability_id) = key.strip_prefix(&prefix) else {
                 continue;
             };
+            let capability_id = Self::public_capability(capability_id);
             if declared.contains(capability_id) {
                 continue;
             }
@@ -1020,6 +1054,44 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_rename_keeps_stored_grants_and_denials_without_public_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = PermissionStore::default();
+        let key = format!(
+            "notes::{}::spawn.app",
+            root.path().canonicalize().unwrap().display()
+        );
+        store
+            .file
+            .data
+            .entries
+            .insert(key.clone(), PermissionState::Red);
+        store
+            .file
+            .data
+            .wasm_entries
+            .insert(key, PermissionState::Green);
+        assert_eq!(
+            store.get("notes", root.path(), Capability::SpawnView),
+            Some(PermissionState::Red)
+        );
+        assert_eq!(
+            store.get_wasm("notes", root.path(), "spawn.plugin"),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            store.iter_entries().next().unwrap().2,
+            Capability::SpawnView
+        );
+        assert_eq!(store.iter_wasm_entries().next().unwrap().2, "spawn.plugin");
+        assert!(Capability::try_from("spawn.app").is_err());
+        assert_eq!(
+            serde_json::to_string(&crate::broker::TargetType::PluginEventStream).unwrap(),
+            "\"app_event_stream\""
+        );
+    }
 
     #[test]
     fn capability_all_round_trips() {

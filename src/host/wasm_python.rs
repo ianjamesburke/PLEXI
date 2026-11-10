@@ -6924,7 +6924,10 @@ mod tests {
     #[test]
     fn python_bridge_gate_is_manifest_membership() {
         assert!(!manifest_declares(&[], "spawn.plugin"));
-        assert!(manifest_declares(&["spawn.plugin".to_string()], "spawn.plugin"));
+        assert!(manifest_declares(
+            &["spawn.plugin".to_string()],
+            "spawn.plugin"
+        ));
         assert!(!manifest_declares(&["spawn.plugin".to_string()], "notify"));
     }
 
@@ -9022,7 +9025,7 @@ mod tests {
         let emit = plugin_command_from_python_message(&json!({
             "type": "emit_event",
             "event": "note.saved",
-            "actor": "app",
+            "actor": "plugin",
             "summary": "Saved note",
             "resource_id": "note-1",
             "revision_after": "rev-2",
