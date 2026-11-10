@@ -59,13 +59,14 @@ impl PlexiApp {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if compact {
+                    let mut toggle_changelog = false;
                     let (overflow, _) = button::overflow_menu(ui, "…", &self.colors, |ui| {
                         if button::menu_item(ui, "Keyboard shortcuts", &self.colors).clicked() {
                             self.show_shortcuts = !self.show_shortcuts;
                             ui.close();
                         }
                         if button::menu_item(ui, "Changelog", &self.colors).clicked() {
-                            self.toggle_changelog();
+                            toggle_changelog = true;
                             ui.close();
                         }
                         if host_ui_gallery_available()
@@ -75,6 +76,9 @@ impl PlexiApp {
                             ui.close();
                         }
                     });
+                    if toggle_changelog {
+                        self.toggle_changelog();
+                    }
                     overflow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toolbar actions"));
                     record_toolbar_rect(ui, "overflow", overflow.rect);
                 }
