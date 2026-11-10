@@ -15,7 +15,7 @@
       "badge | let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());": 1
     },
     "src/ui/button.rs": {
-      "choice_button | ui.allocate_exact_size(Vec2::new(width, style::BUTTON_H_LG), egui::Sense::click());": 1
+      "choice_button | let (rect, resp) = ui.allocate_exact_size(": 1
     },
     "src/ui/card_block.rs": {
       "measure_fn | f.layout_no_wrap(s.to_string(), font.clone(), Color32::PLACEHOLDER)": 1,

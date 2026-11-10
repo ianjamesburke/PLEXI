@@ -172,7 +172,7 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
     for (size, caption) in [
         (ButtonSize::Sm, "Sm · 28"),
         (ButtonSize::Md, "Md · 32 (default)"),
-        (ButtonSize::Lg, "Lg · 52"),
+        (ButtonSize::Lg, "Lg · 40"),
     ] {
         crate::ui::typography::caption(ui, caption, colors);
         ui.horizontal_wrapped(|ui| {
