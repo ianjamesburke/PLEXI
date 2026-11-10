@@ -36,12 +36,13 @@ impl PaneHeader {
         labels: &Labels<'_>,
         colors: &Colors,
     ) -> Self {
+        let right = (bar.right() - style::PANE_CONTENT_INSET).max(bar.left());
         let bounds = Rect::from_min_max(
             egui::pos2(
-                (bar.left() + leading + style::SPACE_SM).min(bar.right()),
+                (bar.left() + leading + style::SPACE_SM).min(right),
                 bar.top(),
             ),
-            bar.max,
+            egui::pos2(right, bar.bottom()),
         );
         let make = |text: &str| {
             ui.painter()

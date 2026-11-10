@@ -1902,8 +1902,7 @@ mod tests {
                     .terminal_size;
                 (size.cell_width as f32, size.cell_height as f32)
             });
-            // Host terminal rendering reserves two logical points for glyph padding.
-            let origin = rect.min + egui::vec2(2.0, 0.0);
+            let origin = rect.min + egui::vec2(crate::render::terminal_pane::TERMINAL_GLYPH_PADDING_X, crate::ui::style::PANE_CONTENT_INSET);
             let at = |cell: f32| origin + egui::vec2(cell * width, height * 0.5);
             h.harness().input_mut().events.extend([
                 egui::Event::PointerMoved(at(0.25)),
@@ -4999,8 +4998,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .and_then(|pane| pane.as_terminal_mut()).expect("fixture terminal")
             .backend.last_content().terminal_size);
         let scale = 2.0;
-        let x = ((rect.min.x + 2.0 + 2.0 * size.cell_width as f32) * scale).round() as u32;
-        let y = (rect.min.y * scale).round() as u32;
+        let x = ((rect.min.x + crate::render::terminal_pane::TERMINAL_GLYPH_PADDING_X + 2.0 * size.cell_width as f32) * scale).round() as u32;
+        let y = ((rect.min.y + crate::ui::style::PANE_CONTENT_INSET) * scale).round() as u32;
         let width = (size.cell_width as f32 * scale).round() as u32;
         let height = (size.cell_height as f32 * scale).round() as u32;
         let image = h.render().expect("render clock fixture");
@@ -6696,7 +6695,11 @@ open(out + ".done", "w").close()
     }
 
     fn pane_chrome_fixture(scale: f32) -> (PlexiUiHarness, u64, u64) {
-        let mut h = PlexiUiHarness::new_sized_scaled(1200.0, 700.0, scale);
+        pane_chrome_fixture_sized(scale, 1200.0)
+    }
+
+    fn pane_chrome_fixture_sized(scale: f32, width: f32) -> (PlexiUiHarness, u64, u64) {
+        let mut h = PlexiUiHarness::new_sized_scaled(width, 700.0, scale);
         h.step();
         let first = add_focused_pane(&mut h);
         let second = add_focused_pane(&mut h);
@@ -6712,6 +6715,134 @@ open(out + ".done", "w").close()
             win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![a, b]));
         });
         (h, first, second)
+    }
+
+    fn assert_pane_content_or_provenance_clear_focused_state_rings(check_glyph: bool) {
+        for scale in [1.0, 2.0] {
+          for width in [480.0, 1200.0] {
+            let (mut h, pane, _) = pane_chrome_fixture_sized(scale, width);
+            std::fs::write(crate::config::config_path(), format!("ui_scale = {scale}\n")).unwrap();
+            h.with_app_mut(|app| { app.reload_config(); app.ui_scale = scale; });
+            h.run_steps(3);
+            h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.001, "fixture must retain requested scale"));
+            let root = h.workspace_root().to_path_buf();
+            h.with_app_mut(|app| {
+                let mut term = crate::host::pane::TerminalPane::new(pane, app.ctx.clone(), app.pty_event_tx.clone(),
+                    egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'WIDEGLYPH\\n'; while IFS= read -r line; do eval \"$line\"; done".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                term.outside_workspace_cached = false;
+                term.outside_workspace_checked_at = Some(Instant::now());
+                term.outside_workspace_root = Some(app.router.active().root.clone());
+                term.spawned_by = Some("human".into());
+                term.name = Some("fixture".into());
+                app.ctx.data_mut(|d| d.insert_temp(egui::Id::new(("provenance_icon_rect", pane)), egui::Rect::NOTHING));
+                if check_glyph { term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None }); }
+                app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term)));
+            });
+            h.focus_pane(pane).unwrap();
+            let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+            loop {
+                h.run_steps(3);
+                let ready = h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend.capture_lines(50).iter().any(|line| line.contains("WIDEGLYPH")));
+                if ready { h.run_steps(3); break; }
+                assert!(Instant::now() < deadline, "terminal fixture timed out");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let (frame, icon) = h.with_app(|app| (app.visible_pane_rect(pane).unwrap(), app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", pane))).unwrap())));
+            let inset = crate::ui::style::PANE_FOCUS_WIDTH + crate::ui::style::PANE_STATE_WIDTH + crate::ui::style::SPACE_XS;
+            let glyph = h.harness().output().shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().contains('W') && frame.contains(t.pos) => Some(t.pos.x),
+                _ => None,
+            }).fold(f32::INFINITY, f32::min);
+            assert!(glyph.is_finite(), "fixture glyph must be rendered");
+            if check_glyph {
+                let rect = h.harness().ctx.read_response(egui_term::terminal_widget_id(pane)).unwrap().rect;
+                let (cell_width, cell_height, grid_cols, grid_rows) = h.with_app_mut(|app| {
+                    let backend = &mut app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend;
+                    let content = backend.last_content();
+                    let cols = content.grid.display_iter().map(|cell| cell.point.column.0 + 1).max().unwrap();
+                    let rows = content.grid.display_iter().map(|cell| cell.point.line.0 + 1).max().unwrap();
+                    (content.terminal_size.cell_width as f32, content.terminal_size.cell_height as f32, cols, rows as usize)
+                });
+                let cols = ((rect.width() - 2.0 * crate::render::terminal_pane::TERMINAL_GLYPH_PADDING_X) / cell_width) as usize;
+                let rows = ((rect.height() - 2.0 * crate::ui::style::PANE_CONTENT_INSET) / cell_height) as usize;
+                assert_eq!((grid_cols, grid_rows), (cols, rows), "terminal grid must match inset widget dimensions");
+                h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend.process_command(egui_term::BackendCommand::Write(b"printf 'PTY_%s ' SIZE; stty size\n".to_vec())));
+                let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+                loop {
+                    h.run_steps(3);
+                    let lines = h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend.capture_lines(50));
+                    if let Some(index) = lines.iter().position(|line| line.trim_start().starts_with("PTY_SIZE ")) {
+                        let actual: Vec<usize> = lines[index..].iter().flat_map(|line| line.split_whitespace()).filter_map(|word| word.parse().ok()).take(2).collect();
+                        if actual.len() == 2 {
+                            assert_eq!(actual, vec![rows, cols], "PTY size must match inset grid");
+                            break;
+                        }
+                    }
+                    assert!(Instant::now() < deadline, "PTY size fixture timed out: {lines:?}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+
+                assert!(glyph >= frame.left() + inset, "terminal glyph {glyph} overlaps pane edge {}", frame.left());
+            } else {
+                assert_ne!(icon, egui::Rect::NOTHING, "current frame must paint provenance");
+                assert!(icon.right() <= frame.right() - inset, "provenance icon {icon:?} overlaps pane edge {frame:?}");
+            }
+          }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pane_content_clears_focused_state_rings() {
+        assert_pane_content_or_provenance_clear_focused_state_rings(true);
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pane_provenance_clears_focused_state_rings() {
+        assert_pane_content_or_provenance_clear_focused_state_rings(false);
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
+    fn screenshot_terminal_inset_and_provenance_matrix() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for width in [480.0, 1200.0] {
+                let mut h = PlexiUiHarness::new_sized(width, 500.0);
+                h.step();
+                let pane = add_focused_pane(&mut h);
+                let root = h.workspace_root().to_path_buf();
+                std::fs::write(crate::config::config_path(), format!("[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| {
+                    app.reload_config();
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                    app.sidebar_visible = false;
+                    let mut term = crate::host::pane::TerminalPane::new(pane, app.ctx.clone(), app.pty_event_tx.clone(),
+                        egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf '* Working on your request\\nWIDEGLYPH\\n'; sleep 300".into()], working_directory: Some(root), ..Default::default() }, 14.0).unwrap();
+                    term.name = Some("Claude Code".into());
+                    term.spawned_by = Some("human".into());
+                    term.outside_workspace_root = Some(app.router.active().root.clone());
+                    term.outside_workspace_checked_at = Some(Instant::now());
+                    term.agent = Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Working, agent: "fixture".into(), detail: None, session_id: None });
+                    app.windows[app.active_window].panes.insert(pane, Pane::Terminal(Box::new(term)));
+                });
+                h.focus_pane(pane).unwrap();
+                let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+                loop {
+                    h.run_steps(3);
+                    if h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend.capture_lines(50).iter().any(|line| line.contains("WIDEGLYPH"))) { h.run_steps(3); break; }
+                    assert!(Instant::now() < deadline, "terminal fixture timed out");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                h.with_app(|app| assert_eq!(app.colors.bg_darkest, crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap()).bg_darkest, "fixture must retain requested theme"));
+                let path = evidence_png!(&format!("_{theme}_{width}"));
+                h.save_screenshot(&path).unwrap();
+                println!("screenshot: {path}");
+            }
+        }
     }
 
     #[test]

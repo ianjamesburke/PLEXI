@@ -66,6 +66,8 @@ pub const RADIUS_PANE: CornerRadius = RADIUS_SMALL;
 /// Focus is independent of the inter-pane gap, including when the gap is zero.
 pub const PANE_FOCUS_WIDTH: f32 = 2.5;
 pub const PANE_STATE_WIDTH: f32 = 1.5;
+/// Clear both pane rings and leave breathing room for pane content.
+pub const PANE_CONTENT_INSET: f32 = PANE_FOCUS_WIDTH + PANE_STATE_WIDTH + SPACE_XS;
 
 /// Resolve a configured pane radius, fitting it to small pane rectangles.
 pub fn pane_radius(configured: Option<u8>, rect: egui::Rect) -> CornerRadius {

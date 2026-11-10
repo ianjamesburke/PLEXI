@@ -40,7 +40,8 @@ pub struct TerminalInput {
 }
 
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
+// Keep glyph overhang clear of the shared content inset.
+pub(crate) const TERMINAL_GLYPH_PADDING_X: f32 = crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::SPACE_XS;
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 fn standby_view_rects(
@@ -272,8 +273,8 @@ pub fn render(
     let font_size = terminal.font_size;
     LOG_TERMINAL_GLYPH_PADDING.call_once(|| {
         log::info!(
-            "terminal_renderer: glyph padding enabled x={}px",
-            TERMINAL_GLYPH_PADDING_X
+            "terminal_renderer: glyph padding enabled x={} y={} points",
+            TERMINAL_GLYPH_PADDING_X, crate::ui::style::PANE_CONTENT_INSET
         );
     });
     // The terminal's deterministic widget id is this pane's default text
@@ -288,7 +289,7 @@ pub fn render(
         .set_focus(is_focused)
         .set_theme(theme.clone())
         .set_font(theme::terminal_font(font_size))
-        .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
+        .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, crate::ui::style::PANE_CONTENT_INSET))
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
         .resize_immediately(resize_immediately)
         .with_input(input.keyboard_events, input.modifiers);
