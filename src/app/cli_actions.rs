@@ -79,6 +79,7 @@ impl PlexiApp {
             .position(|c| c.context_id == context_id)
             .ok_or_else(|| format!("context {context_id} not found"))?;
         if self.router.len() <= 1 {
+            log::info!("close_context: refusing to close only context ctx={context_id}");
             return Err("cannot close the last context".into());
         }
         let state = self.build_context_close_state(context_id);
