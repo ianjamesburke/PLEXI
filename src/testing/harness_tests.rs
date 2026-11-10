@@ -17087,3 +17087,80 @@ fn python_app_pane_receives_focus_and_visibility_events_in_order() {
         false,
     );
 }
+
+#[test]
+#[ignore = "requires-pty"]
+fn changelog_escape_restores_pane_and_closed_escape_reaches_terminal() {
+    use crate::app::input_owner::InputOwner;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.terminal_backend(pane).enable_input_tap();
+    h.app.toggle_changelog();
+    h.run_frames(1);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!h.app.show_changelog, "Escape must close the changelog");
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert!(
+        h.terminal_backend(pane).take_input_tap().is_empty(),
+        "overlay must consume Escape"
+    );
+
+    h.run_frames(2);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert_eq!(h.terminal_backend(pane).take_input_tap(), b"\x1b");
+}
+
+#[test]
+fn changelog_toolbar_and_click_away_close_focus_layer() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(3);
+    let version: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "version"))))
+        .expect("version toolbar button");
+    let click = |h: &mut HostHarness, pos: egui::Pos2| {
+        for pressed in [true, false] {
+            h.frame(egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            });
+        }
+    };
+    click(&mut h, version.center());
+    h.run_frames(2);
+    assert!(h.app.show_changelog);
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&crate::app::FocusKind::Changelog)
+    );
+    click(&mut h, egui::pos2(10.0, 300.0));
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(pane)
+    );
+
+    h.run_frames(3);
+    click(&mut h, version.center());
+    h.run_frames(2);
+    assert!(h.app.show_changelog);
+    click(&mut h, version.center());
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+}

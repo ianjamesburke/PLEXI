@@ -6032,7 +6032,7 @@ open(out + ".done", "w").close()
         add_focused_pane(&mut h);
         h.step();
         h.with_app_mut(|app| {
-            app.show_changelog = true;
+            app.toggle_changelog();
         });
         h.run_steps(2);
 

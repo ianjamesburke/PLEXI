@@ -65,7 +65,7 @@ impl PlexiApp {
                             ui.close();
                         }
                         if button::menu_item(ui, "Changelog", &self.colors).clicked() {
-                            self.show_changelog = !self.show_changelog;
+                            self.toggle_changelog();
                             ui.close();
                         }
                         if host_ui_gallery_available()
@@ -122,7 +122,7 @@ impl PlexiApp {
                 );
                 record_toolbar_rect(ui, "version", version.rect);
                 if version.clicked() {
-                    self.show_changelog = !self.show_changelog;
+                    self.toggle_changelog();
                 }
                 }
 

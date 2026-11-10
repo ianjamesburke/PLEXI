@@ -82,6 +82,7 @@ pub(crate) enum FocusKind {
     RawWasmReview,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
+    Changelog,
 }
 
 impl FocusKind {
@@ -101,6 +102,7 @@ impl FocusKind {
             Self::EventConsent => "EventConsent",
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
+            Self::Changelog => "Changelog",
         }
     }
 
@@ -122,6 +124,7 @@ impl FocusKind {
             Self::EventConsent => &EventConsentOwner,
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
+            Self::Changelog => &ChangelogOwner,
         }
     }
 }
@@ -193,6 +196,7 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },

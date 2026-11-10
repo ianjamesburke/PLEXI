@@ -1283,9 +1283,6 @@ impl PlexiApp {
         // Shortcuts overlay
         self.draw_shortcuts_overlay(&ctx);
 
-        // Changelog overlay
-        self.draw_changelog_overlay(&ctx);
-
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
 
