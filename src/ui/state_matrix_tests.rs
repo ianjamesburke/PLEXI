@@ -67,6 +67,32 @@ fn ghost_hover_preserves_size_at_every_scale() {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "negative control reproduces the stock egui row defect"
+)]
+fn stock_selectable_row_reproduces_scope_size_change() {
+    let host = crate::testing::HostHarness::new();
+    let mut sizes = Vec::new();
+    for selected in [false, true] {
+        let mut rect = egui::Rect::NOTHING;
+        for _ in 0..3 {
+            let _ = host.app.ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let mut value = selected;
+                    rect = ui.selectable_value(&mut value, true, "Workspace").rect;
+                });
+            });
+        }
+        sizes.push(rect.size());
+    }
+    assert_ne!(
+        sizes[0], sizes[1],
+        "stock egui must reproduce the original scope-row geometry defect"
+    );
+}
+
+#[test]
 fn scope_popup_rows_have_equal_size() {
     let host = crate::testing::HostHarness::new();
     let mut sizes = Vec::new();
