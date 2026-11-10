@@ -4281,7 +4281,6 @@ thread_local! {
 }
 
 impl PlexiApp {
-
     /// Dispatch host actions from both shortcuts and the command palette.
     pub(crate) fn dispatch_host_action(&mut self, action: Action, ctx: &egui::Context) {
         #[cfg(test)]
@@ -4296,424 +4295,437 @@ impl PlexiApp {
         }) {
             return;
         }
-            match action {
-                Action::SplitHorizontal | Action::SplitVertical => {
-                    let vertical = matches!(action, Action::SplitVertical);
-                    if let Some(tile) = self.windows[self.active_window].zoomed_pane {
-                        if let Some(egui_tiles::Tile::Pane(pane)) = self.windows[self.active_window].tree.tiles.get(tile) {
-                            let pane = *pane;
-                            if self.wrap_panes_to_subcontext(&[pane], pane, None) {
-                                log::info!("wrap_panes: zoomed split pane={pane} vertical={vertical}");
-                                self.split_focused(vertical, None, false, false, None);
-                            }
+        // A wildcard arm is forbidden here. The palette routes every host row
+        // through this match, and the test
+        // `every_registered_palette_host_command_reaches_shared_dispatcher`
+        // relies on its exhaustiveness: a new `Action` must fail to compile
+        // until handled, never be silently dropped.
+        match action {
+            Action::SplitHorizontal | Action::SplitVertical => {
+                let vertical = matches!(action, Action::SplitVertical);
+                if let Some(tile) = self.windows[self.active_window].zoomed_pane {
+                    if let Some(egui_tiles::Tile::Pane(pane)) =
+                        self.windows[self.active_window].tree.tiles.get(tile)
+                    {
+                        let pane = *pane;
+                        if self.wrap_panes_to_subcontext(&[pane], pane, None) {
+                            log::info!("wrap_panes: zoomed split pane={pane} vertical={vertical}");
+                            self.split_focused(vertical, None, false, false, None);
                         }
-                        return;
                     }
+                    return;
+                }
+                self.windows[self.active_window].clear_zoom();
+                self.split_focused(vertical, None, false, false, None);
+                self.mark_workspace_dirty();
+            }
+            Action::SplitRight => {
+                self.windows[self.active_window].clear_zoom();
+                self.split_focused_mirror(crate::host::command::Placement::Right);
+                self.mark_workspace_dirty();
+            }
+            Action::SplitDown => {
+                self.windows[self.active_window].clear_zoom();
+                self.split_focused_mirror(crate::host::command::Placement::Below);
+                self.mark_workspace_dirty();
+            }
+            Action::SelectPane(dir) => self.extend_pane_selection(dir),
+            Action::CancelPaneSelection => {
+                self.host
+                    .clear_pane_selection(self.windows[self.active_window].window_id);
+            }
+            Action::Navigate(dir) => {
+                self.host
+                    .clear_pane_selection(self.windows[self.active_window].window_id);
+                let old_active_window = self.active_window;
+                let old_focus = self.windows[self.active_window].focused_pane;
+                let old_window_id = self.windows[self.active_window].window_id;
+                let navigated = self.navigate_at_current_zoom_level(dir);
+                let new_window_id = self.windows[self.active_window].window_id;
+                let new_focus = self.windows[self.active_window].focused_pane;
+                if navigated && self.zoom.level == zoom::ZoomLevel::Columns {
+                    self.windows[old_active_window].clear_zoom();
                     self.windows[self.active_window].clear_zoom();
-                    self.split_focused(vertical, None, false, false, None);
-                    self.mark_workspace_dirty();
-                }
-                Action::SplitRight => {
-                    self.windows[self.active_window].clear_zoom();
-                    self.split_focused_mirror(crate::host::command::Placement::Right);
-                    self.mark_workspace_dirty();
-                }
-                Action::SplitDown => {
-                    self.windows[self.active_window].clear_zoom();
-                    self.split_focused_mirror(crate::host::command::Placement::Below);
-                    self.mark_workspace_dirty();
-                }
-                Action::SelectPane(dir) => self.extend_pane_selection(dir),
-                Action::CancelPaneSelection => {
-                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
-                }
-                Action::Navigate(dir) => {
-                    self.host.clear_pane_selection(self.windows[self.active_window].window_id);
-                    let old_active_window = self.active_window;
-                    let old_focus = self.windows[self.active_window].focused_pane;
-                    let old_window_id = self.windows[self.active_window].window_id;
-                    let navigated = self.navigate_at_current_zoom_level(dir);
-                    let new_window_id = self.windows[self.active_window].window_id;
-                    let new_focus = self.windows[self.active_window].focused_pane;
-                    if navigated && self.zoom.level == zoom::ZoomLevel::Columns {
-                        self.windows[old_active_window].clear_zoom();
-                        self.windows[self.active_window].clear_zoom();
-                        log::info!(
+                    log::info!(
                             "zoom: directional navigate exited fullscreen source_window={} destination_window={} focused_pane={new_focus:?}",
                             old_window_id,
                             new_window_id,
                         );
-                    }
-                    if new_window_id != old_window_id || new_focus != old_focus {
-                        self.push_focus_history(old_window_id, old_focus);
-                    }
                 }
-                Action::SwapPane(dir) => self.swap_pane_action(dir),
-                Action::SendPane(dir) => {
-                    match self.send_pane(dir) {
-                        crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
-                            let now = std::time::Instant::now();
-                            self.pane_anims = vec![
-                                PaneSwapAnim {
-                                    from: rect_a,
-                                    to: rect_b,
-                                    started_at: now,
-                                },
-                                PaneSwapAnim {
-                                    from: rect_b,
-                                    to: rect_a,
-                                    started_at: now,
-                                },
-                            ];
-                            self.ctx.request_repaint();
-                        }
-                        crate::pane_ops::SwapResult::AtBoundary => {
-                            // For U/D at boundary: edge-pulse only (no row-boundary move).
-                            // For L/R at boundary: try cross-window send (focus stays on source).
-                            let moved = match dir {
-                                crate::host::keys::Direction::Down
-                                | crate::host::keys::Direction::Up => false,
-                                _ => self.send_pane_to_adjacent_window(dir),
-                            };
-                            if moved {
-                                self.ctx.request_repaint();
-                            } else if let Some(focused) =
-                                self.windows[self.active_window].focused_pane
-                            {
-                                self.edge_pulse = Some(EdgePulse {
-                                    tile: focused,
-                                    dir,
-                                    started_at: std::time::Instant::now(),
-                                });
-                                self.ctx.request_repaint();
-                            }
-                        }
-                        crate::pane_ops::SwapResult::NoFocus => {}
-                    }
-                }
-                Action::ClosePane => {
-                    if self.show_ui_gallery {
-                        self.show_ui_gallery = false;
-                        return;
-                    }
-                    if self.show_changelog {
-                        self.show_changelog = false;
-                        return;
-                    }
-                    if self.show_shortcuts {
-                        self.show_shortcuts = false;
-                        return;
-                    }
-                    if self.attention_queue.decision_overlay.is_some()
-                        || self.attention_queue.open
-                        || self.zoom.level != zoom::ZoomLevel::Columns
-                    {
-                        self.zoom_out_or_close_surface();
-                        return;
-                    }
-                    // If the focused app pane has a non-empty nav stack
-                    // (via PushNav), Escape routes NavBack to the app
-                    // instead of closing the pane.
-                    if !self.try_nav_back_focused() && !self.focused_app_vetoes_close() {
-                        if let Some(child_ctx_id) = self.get_focused_portal_context_id() {
-                            let state = self.build_context_close_state(child_ctx_id);
-                            if state.items.is_empty() {
-                                // Empty context — close immediately, no dialog needed.
-                                let idx = self
-                                    .router
-                                    .iter()
-                                    .position(|c| c.context_id == child_ctx_id);
-                                if let Some(i) = idx {
-                                    log::info!("context_close: empty ctx={child_ctx_id} — closing immediately");
-                                    self.delete_context(i);
-                                    self.mark_workspace_dirty();
-                                }
-                            } else {
-                                log::info!("context_close: ctx={child_ctx_id} has {} panes — showing dialog", state.items.len());
-                                self.pending_context_close = Some(state);
-                            }
-                        } else if self.confirm_close() {
-                            self.pending_close = true;
-                        } else {
-                            self.execute_close_pane();
-                            self.mark_workspace_dirty();
-                        }
-                    }
-                }
-                Action::NavBackApp => {
-                    if !self.try_nav_back_focused() {
-                        self.step_focus_history_back();
-                    }
-                    log::info!("nav: back-app — window={}", self.active_window);
-                }
-                Action::FocusHistoryForward => {
-                    self.step_focus_history_forward();
-                }
-                Action::NewTab => {
-                    self.new_tab(self.active_window, None, false, None, false, true);
-                    self.mark_workspace_dirty();
-                }
-                Action::ToggleZoom => self.toggle_pane_zoom(),
-                Action::Quit => {
-                    quit::trace("quit_action");
-                    if !self.prepare_user_quit() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                    } else if !self.confirm_quit() {
-                        self.request_quit(quit::ExitReason::WindowClosed);
-                    } else {
-                        let now = std::time::Instant::now();
-                        let elapsed = self
-                            .quit_last_press
-                            .map(|t| now.duration_since(t))
-                            .unwrap_or(std::time::Duration::MAX);
-                        if elapsed > std::time::Duration::from_millis(1500) {
-                            self.quit_press_count = 0;
-                        }
-                        self.quit_press_count += 1;
-                        self.quit_last_press = Some(now);
-                        if self.quit_press_count >= 3 {
-                            self.quit_press_count = 0;
-                            self.quit_last_press = None;
-                            self.request_quit(quit::ExitReason::WindowClosed);
-                        }
-                    }
-                }
-                Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-                Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
-                Action::ToggleCommandPalette => {
-                    self.show_command_palette = !self.show_command_palette;
-                    if self.show_command_palette {
-                        self.palette_query.clear();
-                        self.palette_selected = 0;
-                        self.palette_selected_key = None;
-                        self.palette_scroll_reset = true;
-                        // Resolve focused pane workspace once at open-time — not per draw-frame —
-                        // to avoid filesystem traversal in the egui hot path.
-                        self.palette_workspace_root = None;
-                        self.palette_workspace_root = self.effective_commands_workspace_root();
-                        log::info!(
-                            "palette: opened, focused workspace = {:?}",
-                            self.palette_workspace_root
-                        );
-                        // The palette is a switcher for what you are working
-                        // on, so it lists only notes open in an editor pane —
-                        // never the whole notes dir. Cmd+O's picker remains
-                        // the browse-everything surface. No disk scan here.
-                        let palette_notes = self.open_note_entries();
-                        log::info!("palette: loaded {} open note(s)", palette_notes.len());
-                        self.palette_notes = palette_notes;
-                        // Resolve user commands once at open-time (re-read each open
-                        // → hot reload). Mirrors `plexi run` precedence exactly.
-                        self.palette_commands = crate::cli::resolve_user_commands(
-                            self.palette_workspace_root.as_deref(),
-                        );
-                        log::info!(
-                            "palette: loaded {} user command(s)",
-                            self.palette_commands.len()
-                        );
-                    } else {
-                        self.palette_workspace_root = None;
-                        self.palette_notes.clear();
-                        self.palette_commands.clear();
-                    }
-                }
-                Action::RenamePane => {
-                    self.open_rename_for_focused();
-                }
-                Action::HidePane => {
-                    let win = &self.windows[self.active_window];
-                    let target = win
-                        .focused_pane
-                        .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
-                        .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
-                    if let Some((pane_id, hidden)) = target {
-                        if let Err(error) = self.set_pane_hidden(pane_id, hidden) {
-                            log::warn!("pane_hide: {error}");
-                        }
-                    }
-                }
-                Action::SwitchContext(n) => {
-                    // Map display position n (0-indexed) to the actual router
-                    // index through the same top-level order the sidebar
-                    // renders, so Cmd+1..9 stays pinned to the numbered rows
-                    // regardless of how many subcontexts exist.
-                    let active_order: Vec<usize> = self
-                        .router
-                        .top_level_order()
-                        .into_iter()
-                        .filter(|&i| !self.router.get(i).parked)
-                        .collect();
-                    if let Some(&router_idx) = active_order.get(n) {
-                        let target_ctx_id = self.router.get(router_idx).context_id;
-                        log::info!(
-                            "SwitchContext: display_pos={} → router_idx={} context_id={target_ctx_id}",
-                            n + 1,
-                            router_idx
-                        );
-                        self.switch_workspace(router_idx);
-                    } else {
-                        log::info!(
-                            "SwitchContext: display_pos={} unmapped (active top-level count={})",
-                            n + 1,
-                            active_order.len()
-                        );
-                    }
-                }
-                Action::NextTab => {
-                    self.cycle_tab(true);
-                    log::info!("tab: next — window={}", self.active_window);
-                }
-                Action::PrevTab => {
-                    self.cycle_tab(false);
-                    log::info!("tab: prev — window={}", self.active_window);
-                }
-                Action::NextContext => {
-                    // Cycle the sidebar's own enumeration, not raw router
-                    // indices: masters only, unparked, wrapping at both ends.
-                    if let Some(idx) = self.router.cycle_top_level(true) {
-                        log::info!("context: next — idx={}", idx);
-                        self.switch_workspace(idx);
-                    }
-                }
-                Action::PrevContext => {
-                    if let Some(idx) = self.router.cycle_top_level(false) {
-                        log::info!("context: prev — idx={}", idx);
-                        self.switch_workspace(idx);
-                    }
-                }
-                Action::MoveContextUp => {
-                    let active = self.router.active_idx();
-                    let ctx_id = self.router.active().context_id;
-                    if self.router.reorder_top_level(active, ContextMove::Up) {
-                        log::info!("context: moved up — id={ctx_id}");
-                        self.mark_workspace_dirty();
-                    }
-                }
-                Action::MoveContextDown => {
-                    let active = self.router.active_idx();
-                    let ctx_id = self.router.active().context_id;
-                    if self.router.reorder_top_level(active, ContextMove::Down) {
-                        log::info!("context: moved down — id={ctx_id}");
-                        self.mark_workspace_dirty();
-                    }
-                }
-                Action::IncreasePaneFontSize => {
-                    self.adjust_active_or_remembered_pane_font_size(1.0);
-                }
-                Action::DecreasePaneFontSize => {
-                    self.adjust_active_or_remembered_pane_font_size(-1.0);
-                }
-                Action::ResetPaneFontSize => {
-                    self.reset_active_or_remembered_pane_font_size();
-                }
-                Action::UiScaleUp => self.set_ui_scale(ui_scale::step_up(self.ui_scale)),
-                Action::UiScaleDown => self.set_ui_scale(ui_scale::step_down(self.ui_scale)),
-                Action::UiScaleReset => self.set_ui_scale(ui_scale::reset()),
-                Action::ScrollUp => {
-                    self.scroll_focused_pane(3);
-                }
-                Action::ScrollDown => {
-                    self.scroll_focused_pane(-3);
-                }
-                Action::CloseApp => {
-                    self.close_focused_app();
-                }
-                Action::NextBlockedAgent => {
-                    self.summon_decision_overlay();
-                }
-                Action::FocusApproval => {
-                    self.focus_approval();
-                }
-                Action::OpenAgents => self.open_agents_pane(),
-                Action::OpenFileBrowser => {
-                    self.open_file_browser();
-                }
-                Action::OpenQuickNote => {
-                    self.open_quick_note_modal();
-                }
-                Action::OpenConfig => {
-                    let path = crate::config::ensure_config_file();
-                    self.open_config_in_editor(path);
-                }
-                Action::ReloadConfig => {
-                    self.reload_config();
-                }
-                Action::OpenSecretsManager => {
-                    self.open_secrets_manager();
-                }
-                Action::OpenAssistant => {
-                    self.open_assistant_pane();
-                }
-                Action::RenameContext => {
-                    self.open_context_rename(self.router.active_idx());
-                }
-                Action::ToggleAttentionQueue => {
-                    self.toggle_attention_queue_list();
-                }
-                Action::ZoomIn => {
-                    self.wrap_selection_or_zoom_in();
-                }
-                Action::ForceReloadApp => {
-                    self.force_reload_focused_app();
-                }
-                Action::NewPageRight => {
-                    if self.windows[self.active_window].panes.is_empty()
-                        || self.windows[self.active_window].tree.root.is_none()
-                    {
-                        self.reset_active_context();
-                    } else {
-                        self.new_page_right();
-                    }
-                    self.mark_workspace_dirty();
-                }
-                Action::NewContext => {
-                    self.new_context();
-                    self.mark_workspace_dirty();
-                }
-                Action::NewChildContext => {
-                    self.new_child_context_from_keyboard();
-                }
-                Action::PushPaneToSubcontext => {
-                    self.push_pane_to_subcontext(None, None);
-                }
-                Action::SetContextRootFromCwd => {
-                    let active = self.active_window;
-                    if let Some(tile_id) = self.windows[active].focused_pane {
-                        if let Some(cwd) = self.windows[active].get_focused_pane_cwd(tile_id) {
-                            log::info!("SetContextRootFromCwd: setting root to {}", cwd.display());
-                            self.set_context_root(cwd, None);
-                        } else {
-                            log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
-                        }
-                    }
-                }
-                Action::ParkContext => {
-                    self.toggle_park_active_context();
-                }
-                Action::ToggleMinimap => {
-                    self.minimap.toggle();
-                    log::info!("minimap: visible={}", self.minimap.visible);
-                }
-                Action::OpenScratchpad => {
-                    log::info!("scratchpad: Cmd+Shift+Space — opening");
-                    self.open_scratchpad();
-                }
-                Action::OpenNotesPicker => {
-                    log::info!("notes_picker: Cmd+O — opening picker");
-                    self.open_notes_picker();
-                }
-                Action::CloseContext => {
-                    let _ = self.close_context_action(self.router.active().context_id);
-                }
-                Action::ContextZoomOut => {
-                    self.zoom_out_or_close_surface();
-                }
-                Action::RunUserCommand(ref name) => {
-                    log::info!("keys: executing user command binding 'run:{name}'");
-                    let _ = self.run_user_command_by_name(name);
+                if new_window_id != old_window_id || new_focus != old_focus {
+                    self.push_focus_history(old_window_id, old_focus);
                 }
             }
+            Action::SwapPane(dir) => self.swap_pane_action(dir),
+            Action::SendPane(dir) => {
+                match self.send_pane(dir) {
+                    crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
+                        let now = std::time::Instant::now();
+                        self.pane_anims = vec![
+                            PaneSwapAnim {
+                                from: rect_a,
+                                to: rect_b,
+                                started_at: now,
+                            },
+                            PaneSwapAnim {
+                                from: rect_b,
+                                to: rect_a,
+                                started_at: now,
+                            },
+                        ];
+                        self.ctx.request_repaint();
+                    }
+                    crate::pane_ops::SwapResult::AtBoundary => {
+                        // For U/D at boundary: edge-pulse only (no row-boundary move).
+                        // For L/R at boundary: try cross-window send (focus stays on source).
+                        let moved = match dir {
+                            crate::host::keys::Direction::Down
+                            | crate::host::keys::Direction::Up => false,
+                            _ => self.send_pane_to_adjacent_window(dir),
+                        };
+                        if moved {
+                            self.ctx.request_repaint();
+                        } else if let Some(focused) = self.windows[self.active_window].focused_pane
+                        {
+                            self.edge_pulse = Some(EdgePulse {
+                                tile: focused,
+                                dir,
+                                started_at: std::time::Instant::now(),
+                            });
+                            self.ctx.request_repaint();
+                        }
+                    }
+                    crate::pane_ops::SwapResult::NoFocus => {}
+                }
+            }
+            Action::ClosePane => {
+                if self.show_ui_gallery {
+                    self.show_ui_gallery = false;
+                    return;
+                }
+                if self.show_changelog {
+                    self.show_changelog = false;
+                    return;
+                }
+                if self.show_shortcuts {
+                    self.show_shortcuts = false;
+                    return;
+                }
+                if self.attention_queue.decision_overlay.is_some()
+                    || self.attention_queue.open
+                    || self.zoom.level != zoom::ZoomLevel::Columns
+                {
+                    self.zoom_out_or_close_surface();
+                    return;
+                }
+                // If the focused app pane has a non-empty nav stack
+                // (via PushNav), Escape routes NavBack to the app
+                // instead of closing the pane.
+                if !self.try_nav_back_focused() && !self.focused_app_vetoes_close() {
+                    if let Some(child_ctx_id) = self.get_focused_portal_context_id() {
+                        let state = self.build_context_close_state(child_ctx_id);
+                        if state.items.is_empty() {
+                            // Empty context — close immediately, no dialog needed.
+                            let idx = self
+                                .router
+                                .iter()
+                                .position(|c| c.context_id == child_ctx_id);
+                            if let Some(i) = idx {
+                                log::info!(
+                                    "context_close: empty ctx={child_ctx_id} — closing immediately"
+                                );
+                                self.delete_context(i);
+                                self.mark_workspace_dirty();
+                            }
+                        } else {
+                            log::info!(
+                                "context_close: ctx={child_ctx_id} has {} panes — showing dialog",
+                                state.items.len()
+                            );
+                            self.pending_context_close = Some(state);
+                        }
+                    } else if self.confirm_close() {
+                        self.pending_close = true;
+                    } else {
+                        self.execute_close_pane();
+                        self.mark_workspace_dirty();
+                    }
+                }
+            }
+            Action::NavBackApp => {
+                if !self.try_nav_back_focused() {
+                    self.step_focus_history_back();
+                }
+                log::info!("nav: back-app — window={}", self.active_window);
+            }
+            Action::FocusHistoryForward => {
+                self.step_focus_history_forward();
+            }
+            Action::NewTab => {
+                self.new_tab(self.active_window, None, false, None, false, true);
+                self.mark_workspace_dirty();
+            }
+            Action::ToggleZoom => self.toggle_pane_zoom(),
+            Action::Quit => {
+                quit::trace("quit_action");
+                if !self.prepare_user_quit() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else if !self.confirm_quit() {
+                    self.request_quit(quit::ExitReason::WindowClosed);
+                } else {
+                    let now = std::time::Instant::now();
+                    let elapsed = self
+                        .quit_last_press
+                        .map(|t| now.duration_since(t))
+                        .unwrap_or(std::time::Duration::MAX);
+                    if elapsed > std::time::Duration::from_millis(1500) {
+                        self.quit_press_count = 0;
+                    }
+                    self.quit_press_count += 1;
+                    self.quit_last_press = Some(now);
+                    if self.quit_press_count >= 3 {
+                        self.quit_press_count = 0;
+                        self.quit_last_press = None;
+                        self.request_quit(quit::ExitReason::WindowClosed);
+                    }
+                }
+            }
+            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Action::ToggleCommandPalette => {
+                self.show_command_palette = !self.show_command_palette;
+                if self.show_command_palette {
+                    self.palette_query.clear();
+                    self.palette_selected = 0;
+                    self.palette_selected_key = None;
+                    self.palette_scroll_reset = true;
+                    // Resolve focused pane workspace once at open-time — not per draw-frame —
+                    // to avoid filesystem traversal in the egui hot path.
+                    self.palette_workspace_root = None;
+                    self.palette_workspace_root = self.effective_commands_workspace_root();
+                    log::info!(
+                        "palette: opened, focused workspace = {:?}",
+                        self.palette_workspace_root
+                    );
+                    // The palette is a switcher for what you are working
+                    // on, so it lists only notes open in an editor pane —
+                    // never the whole notes dir. Cmd+O's picker remains
+                    // the browse-everything surface. No disk scan here.
+                    let palette_notes = self.open_note_entries();
+                    log::info!("palette: loaded {} open note(s)", palette_notes.len());
+                    self.palette_notes = palette_notes;
+                    // Resolve user commands once at open-time (re-read each open
+                    // → hot reload). Mirrors `plexi run` precedence exactly.
+                    self.palette_commands =
+                        crate::cli::resolve_user_commands(self.palette_workspace_root.as_deref());
+                    log::info!(
+                        "palette: loaded {} user command(s)",
+                        self.palette_commands.len()
+                    );
+                } else {
+                    self.palette_workspace_root = None;
+                    self.palette_notes.clear();
+                    self.palette_commands.clear();
+                }
+            }
+            Action::RenamePane => {
+                self.open_rename_for_focused();
+            }
+            Action::HidePane => {
+                let win = &self.windows[self.active_window];
+                let target = win
+                    .focused_pane
+                    .and_then(|tile| Self::find_pane_in_tile(&win.tree, tile))
+                    .and_then(|id| win.panes.get(&id).map(|pane| (id, !pane.is_hidden())));
+                if let Some((pane_id, hidden)) = target {
+                    if let Err(error) = self.set_pane_hidden(pane_id, hidden) {
+                        log::warn!("pane_hide: {error}");
+                    }
+                }
+            }
+            Action::SwitchContext(n) => {
+                // Map display position n (0-indexed) to the actual router
+                // index through the same top-level order the sidebar
+                // renders, so Cmd+1..9 stays pinned to the numbered rows
+                // regardless of how many subcontexts exist.
+                let active_order: Vec<usize> = self
+                    .router
+                    .top_level_order()
+                    .into_iter()
+                    .filter(|&i| !self.router.get(i).parked)
+                    .collect();
+                if let Some(&router_idx) = active_order.get(n) {
+                    let target_ctx_id = self.router.get(router_idx).context_id;
+                    log::info!(
+                        "SwitchContext: display_pos={} → router_idx={} context_id={target_ctx_id}",
+                        n + 1,
+                        router_idx
+                    );
+                    self.switch_workspace(router_idx);
+                } else {
+                    log::info!(
+                        "SwitchContext: display_pos={} unmapped (active top-level count={})",
+                        n + 1,
+                        active_order.len()
+                    );
+                }
+            }
+            Action::NextTab => {
+                self.cycle_tab(true);
+                log::info!("tab: next — window={}", self.active_window);
+            }
+            Action::PrevTab => {
+                self.cycle_tab(false);
+                log::info!("tab: prev — window={}", self.active_window);
+            }
+            Action::NextContext => {
+                // Cycle the sidebar's own enumeration, not raw router
+                // indices: masters only, unparked, wrapping at both ends.
+                if let Some(idx) = self.router.cycle_top_level(true) {
+                    log::info!("context: next — idx={}", idx);
+                    self.switch_workspace(idx);
+                }
+            }
+            Action::PrevContext => {
+                if let Some(idx) = self.router.cycle_top_level(false) {
+                    log::info!("context: prev — idx={}", idx);
+                    self.switch_workspace(idx);
+                }
+            }
+            Action::MoveContextUp => {
+                let active = self.router.active_idx();
+                let ctx_id = self.router.active().context_id;
+                if self.router.reorder_top_level(active, ContextMove::Up) {
+                    log::info!("context: moved up — id={ctx_id}");
+                    self.mark_workspace_dirty();
+                }
+            }
+            Action::MoveContextDown => {
+                let active = self.router.active_idx();
+                let ctx_id = self.router.active().context_id;
+                if self.router.reorder_top_level(active, ContextMove::Down) {
+                    log::info!("context: moved down — id={ctx_id}");
+                    self.mark_workspace_dirty();
+                }
+            }
+            Action::IncreasePaneFontSize => {
+                self.adjust_active_or_remembered_pane_font_size(1.0);
+            }
+            Action::DecreasePaneFontSize => {
+                self.adjust_active_or_remembered_pane_font_size(-1.0);
+            }
+            Action::ResetPaneFontSize => {
+                self.reset_active_or_remembered_pane_font_size();
+            }
+            Action::UiScaleUp => self.set_ui_scale(ui_scale::step_up(self.ui_scale)),
+            Action::UiScaleDown => self.set_ui_scale(ui_scale::step_down(self.ui_scale)),
+            Action::UiScaleReset => self.set_ui_scale(ui_scale::reset()),
+            Action::ScrollUp => {
+                self.scroll_focused_pane(3);
+            }
+            Action::ScrollDown => {
+                self.scroll_focused_pane(-3);
+            }
+            Action::CloseApp => {
+                self.close_focused_app();
+            }
+            Action::NextBlockedAgent => {
+                self.summon_decision_overlay();
+            }
+            Action::FocusApproval => {
+                self.focus_approval();
+            }
+            Action::OpenAgents => self.open_agents_pane(),
+            Action::OpenFileBrowser => {
+                self.open_file_browser();
+            }
+            Action::OpenQuickNote => {
+                self.open_quick_note_modal();
+            }
+            Action::OpenConfig => {
+                let path = crate::config::ensure_config_file();
+                self.open_config_in_editor(path);
+            }
+            Action::ReloadConfig => {
+                self.reload_config();
+            }
+            Action::OpenSecretsManager => {
+                self.open_secrets_manager();
+            }
+            Action::OpenAssistant => {
+                self.open_assistant_pane();
+            }
+            Action::RenameContext => {
+                self.open_context_rename(self.router.active_idx());
+            }
+            Action::ToggleAttentionQueue => {
+                self.toggle_attention_queue_list();
+            }
+            Action::ZoomIn => {
+                self.wrap_selection_or_zoom_in();
+            }
+            Action::ForceReloadApp => {
+                self.force_reload_focused_app();
+            }
+            Action::NewPageRight => {
+                if self.windows[self.active_window].panes.is_empty()
+                    || self.windows[self.active_window].tree.root.is_none()
+                {
+                    self.reset_active_context();
+                } else {
+                    self.new_page_right();
+                }
+                self.mark_workspace_dirty();
+            }
+            Action::NewContext => {
+                self.new_context();
+                self.mark_workspace_dirty();
+            }
+            Action::NewChildContext => {
+                self.new_child_context_from_keyboard();
+            }
+            Action::PushPaneToSubcontext => {
+                self.push_pane_to_subcontext(None, None);
+            }
+            Action::SetContextRootFromCwd => {
+                let active = self.active_window;
+                if let Some(tile_id) = self.windows[active].focused_pane {
+                    if let Some(cwd) = self.windows[active].get_focused_pane_cwd(tile_id) {
+                        log::info!("SetContextRootFromCwd: setting root to {}", cwd.display());
+                        self.set_context_root(cwd, None);
+                    } else {
+                        log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
+                    }
+                }
+            }
+            Action::ParkContext => {
+                self.toggle_park_active_context();
+            }
+            Action::ToggleMinimap => {
+                self.minimap.toggle();
+                log::info!("minimap: visible={}", self.minimap.visible);
+            }
+            Action::OpenScratchpad => {
+                log::info!("scratchpad: Cmd+Shift+Space — opening");
+                self.open_scratchpad();
+            }
+            Action::OpenNotesPicker => {
+                log::info!("notes_picker: Cmd+O — opening picker");
+                self.open_notes_picker();
+            }
+            Action::CloseContext => {
+                let _ = self.close_context_action(self.router.active().context_id);
+            }
+            Action::ContextZoomOut => {
+                self.zoom_out_or_close_surface();
+            }
+            Action::RunUserCommand(ref name) => {
+                log::info!("keys: executing user command binding 'run:{name}'");
+                let _ = self.run_user_command_by_name(name);
+            }
+        }
     }
+
     /// Adjust the font size of the active pane in Columns, or the remembered active pane
     /// of the selected context while Tree Atlas is visible.
     pub(crate) fn adjust_active_or_remembered_pane_font_size(&mut self, delta: f32) {

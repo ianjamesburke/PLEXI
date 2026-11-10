@@ -1,4 +1,18 @@
+# Palette "Reset UI scale" must do what Cmd+Shift+0 does: start from a
+# non-default scale, run the row from the open palette, assert exactly 1.00.
 size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+equals" }
+
+[[steps]]
+key = { target = "host", value = "cmd+shift+equals" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { ui_scale = 1.2 }
 
 [[steps]]
 key = { target = "host", value = "cmd+p" }
@@ -20,3 +34,9 @@ shot = "command-palette-scale.png"
 
 [[steps]]
 key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+assert = { ui_scale = 1.0 }

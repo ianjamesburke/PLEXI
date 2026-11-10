@@ -607,6 +607,8 @@ pub struct AssertSpec {
     /// Portal panes across all windows.
     pub portal_count: Option<usize>,
     pub sidebar: Option<bool>,
+    /// App-wide UI scale (headless backend only), e.g. `1.0` after Reset UI scale.
+    pub ui_scale: Option<f32>,
     /// Whether the target pane currently exists.
     pub exists: Option<bool>,
     /// Whether the target pane is the active focused pane.
@@ -2106,6 +2108,12 @@ impl LiveBackend {
                 "sidebar state is not exposed by the live pane metadata API",
             ));
         }
+        if spec.ui_scale.is_some() {
+            return Err(SceneError::new(
+                "unsupported_live_assertion",
+                "ui_scale is not exposed by the live pane metadata API",
+            ));
+        }
         let host = self.host_state();
         let mut failures = Vec::new();
         if let Some(expected) = spec
@@ -3512,6 +3520,10 @@ impl HeadlessBackend {
         }
         if let Some(v) = spec.sidebar {
             expect("sidebar", v.to_string(), host.sidebar.to_string());
+        }
+        if let Some(v) = spec.ui_scale {
+            let actual = self.h.with_app(|app| app.ui_scale);
+            expect("ui_scale", format!("{v:.2}"), format!("{actual:.2}"));
         }
         if let Some(expected) = spec.exists {
             let target = spec.target.as_deref().ok_or_else(|| {

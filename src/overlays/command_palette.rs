@@ -258,13 +258,13 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
         name: "Split right",
-        description: "Open a new terminal beside the focused pane",
+        description: "Split right: a new terminal, or a new copy of the focused app",
         search_text: "split right new terminal shell console pane vsplit vertical",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitDown),
         name: "Split down",
-        description: "Open a new terminal below the focused pane",
+        description: "Split down: a new terminal, or a new copy of the focused app",
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
@@ -336,7 +336,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ToggleAttentionQueue),
         name: "Review notifications",
-        description: "Open the attention queue list",
+        description: "Open or close the attention queue list",
         search_text: "review notifications notification attention queue alerts inbox pending",
     },
     PaletteCommandEntry {
@@ -403,13 +403,13 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenameContext), name: "Rename context", description: "Rename the selected context", search_text: "rename context workspace" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::CloseContext), name: "Close context", description: "Close the selected context (confirmation required)", search_text: "close delete context workspace" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ParkContext), name: "Park or unpark context", description: "Park or restore the selected context", search_text: "park unpark restore context workspace" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ContextZoomOut), name: "Go to parent context", description: "Return to the parent context", search_text: "parent context zoom out back" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ContextZoomOut), name: "Go to parent context", description: "Close the open overlay, else return to the parent context", search_text: "parent context zoom out back" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the selected pane", search_text: "close pane tab" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and app back-stacks first)", search_text: "close pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane", search_text: "zoom restore pane fullscreen" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane (dives into an agent's children first)", search_text: "zoom restore pane fullscreen" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NextTab), name: "Next tab", description: "Focus the next tab", search_text: "next tab forward" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::PrevTab), name: "Previous tab", description: "Focus the previous tab", search_text: "previous tab back" },
@@ -3787,17 +3787,21 @@ mod tests {
     #[test]
     fn every_registered_palette_host_command_reaches_shared_dispatcher() {
         let mut h = crate::testing::HostHarness::new();
-        let expected: Vec<_> = PALETTE_COMMANDS.iter().filter_map(|entry| {
-            if let PaletteCommand::Host(action) = &entry.command {
-                Some(action.clone())
-            } else {
-                None
-            }
-        }).collect();
+        let expected: Vec<_> = PALETTE_COMMANDS
+            .iter()
+            .filter_map(|entry| {
+                if let PaletteCommand::Host(action) = &entry.command {
+                    Some(action.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert!(!expected.is_empty());
         crate::app::HOST_ACTION_PROBE.with(|probe| *probe.borrow_mut() = Some(Vec::new()));
         for action in &expected {
-            h.app.run_palette_command(PaletteCommand::Host(action.clone()));
+            h.app
+                .run_palette_command(PaletteCommand::Host(action.clone()));
         }
         let actual = crate::app::HOST_ACTION_PROBE.with(|probe| probe.borrow_mut().take().unwrap());
         assert_eq!(actual, expected);
@@ -3882,6 +3886,159 @@ mod tests {
             egui::Modifiers::COMMAND | egui::Modifiers::ALT,
         );
         assert_eq!(font(&h, pane), initial);
+    }
+
+    /// Open the palette, type `query`, and press Enter through the real
+    /// frame path so the open-palette selection code runs end to end.
+    fn run_open_palette(h: &mut crate::testing::HostHarness, query: &str) {
+        h.app.show_command_palette = true;
+        h.app.palette_query = query.to_string();
+        h.app.sync_command_palette_focus();
+        h.run_frames(3);
+        assert!(
+            h.app.show_command_palette,
+            "palette must stay open for {query:?}"
+        );
+        h.press_key(egui::Key::Enter, egui::Modifiers::NONE);
+    }
+
+    #[test]
+    fn open_palette_reset_ui_scale_row_restores_scale() {
+        let mut h = crate::testing::HostHarness::new();
+        scale_shortcut(&mut h, egui::Key::Equals);
+        scale_shortcut(&mut h, egui::Key::Equals);
+        assert!(h.app.ui_scale > 1.0);
+        h.app.ui_scale_persist_at = None;
+        run_open_palette(&mut h, "reset ui scale");
+        assert_eq!(h.app.ui_scale, 1.0);
+        assert!(!h.app.show_command_palette);
+        assert!(
+            h.app.ui_scale_persist_at.is_some(),
+            "palette scale change must schedule persistence like the shortcut"
+        );
+    }
+
+    #[test]
+    fn open_palette_reset_text_size_row_restores_focused_pane_font() {
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane).run_frames(2);
+        let font = |h: &crate::testing::HostHarness| {
+            let crate::host::pane::Pane::App(app) = &h.app.windows[0].panes[&pane] else {
+                panic!("expected app pane")
+            };
+            let crate::host::pane::AppRuntime::Builtin(b) = &app.runtime else {
+                panic!("expected builtin")
+            };
+            b.font_size().unwrap()
+        };
+        let initial = font(&h);
+        h.press_key(egui::Key::Equals, egui::Modifiers::COMMAND);
+        h.press_key(egui::Key::Equals, egui::Modifiers::COMMAND);
+        assert_eq!(font(&h), initial + 2.0);
+        run_open_palette(&mut h, "reset text size");
+        assert_eq!(font(&h), initial);
+        assert!(!h.app.show_command_palette);
+    }
+
+    #[test]
+    fn palette_ui_scale_up_clamps_at_maximum_and_schedules_persist() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        for _ in 0..20 {
+            palette_action(&mut h, Action::UiScaleUp);
+        }
+        assert_eq!(h.app.ui_scale, crate::app::ui_scale::UI_SCALE_MAX);
+        assert!(h.app.ui_scale_persist_at.is_some());
+        palette_action(&mut h, Action::UiScaleUp);
+        assert_eq!(h.app.ui_scale, 2.0);
+    }
+
+    #[test]
+    fn palette_split_on_terminal_pane_adds_a_terminal() {
+        use crate::host::keys::Action;
+        for action in [Action::SplitRight, Action::SplitDown] {
+            let mut h = crate::testing::HostHarness::new();
+            h.add_focused_terminal();
+            let before = h.pane_count();
+            palette_action(&mut h, action.clone());
+            assert_eq!(h.pane_count(), before + 1, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn palette_split_on_app_pane_mirrors_the_app_not_a_terminal() {
+        use crate::host::keys::Action;
+        for action in [Action::SplitRight, Action::SplitDown] {
+            let mut h = crate::testing::HostHarness::new();
+            let pane = h.add_test_pane();
+            h.focus_pane(pane).run_frames(2);
+            palette_action(&mut h, action.clone());
+            let terminals = h.app.windows[0]
+                .panes
+                .values()
+                .filter(|p| matches!(p, crate::host::pane::Pane::Terminal(_)))
+                .count();
+            assert_eq!(
+                terminals, 0,
+                "{action:?} on an app pane must mirror the app (shortcut behavior), never open a terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_review_notifications_toggles_like_the_shortcut() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        assert!(!h.app.attention_queue.open);
+        palette_action(&mut h, Action::ToggleAttentionQueue);
+        assert!(h.app.attention_queue.open);
+        palette_action(&mut h, Action::ToggleAttentionQueue);
+        assert!(!h.app.attention_queue.open);
+        h.press_key(egui::Key::I, egui::Modifiers::COMMAND);
+        assert!(h.app.attention_queue.open);
+        palette_action(&mut h, Action::ToggleAttentionQueue);
+        assert!(!h.app.attention_queue.open);
+    }
+
+    #[test]
+    fn palette_close_pane_runs_the_shortcut_ladder_first_step() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane).run_frames(2);
+        let before = h.pane_count();
+        h.app.attention_queue.open = true;
+        palette_action(&mut h, Action::ClosePane);
+        assert!(
+            !h.app.attention_queue.open,
+            "first ladder step closes the open attention queue"
+        );
+        assert_eq!(h.pane_count(), before, "the pane survives the first step");
+        h.app.show_shortcuts = true;
+        palette_action(&mut h, Action::ClosePane);
+        assert!(!h.app.show_shortcuts);
+        assert_eq!(h.pane_count(), before);
+    }
+
+    #[test]
+    fn palette_go_to_parent_context_closes_open_surface_first() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        h.app.attention_queue.open = true;
+        palette_action(&mut h, Action::ContextZoomOut);
+        assert!(!h.app.attention_queue.open);
+    }
+
+    #[test]
+    fn palette_close_context_refuses_the_only_context() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        let contexts = h.app.router.len();
+        assert_eq!(contexts, 1);
+        palette_action(&mut h, Action::CloseContext);
+        assert_eq!(h.app.router.len(), contexts);
+        assert!(h.app.pending_context_close.is_none());
     }
 
     #[test]
