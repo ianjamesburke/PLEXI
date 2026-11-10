@@ -170,7 +170,11 @@ fn resolve_default_text(
                 fills.push((rect.rect.intersect(clip), rect.fill));
             }
             egui::Shape::Text(text) if !authored && !text.galley.job.text.is_empty() => {
-                let point = text.galley.rect.translate(text.pos.to_vec2()).center();
+                let bounds = text.galley.rect.translate(text.pos.to_vec2());
+                if !clip.intersects(bounds) {
+                    return;
+                }
+                let point = bounds.center();
                 let mut layers = Vec::new();
                 for (rect, fill) in fills.iter().rev() {
                     if rect.contains(point) {

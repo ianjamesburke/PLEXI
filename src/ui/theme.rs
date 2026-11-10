@@ -111,7 +111,6 @@ impl Colors {
         luminance(self.terminal_bg) < 0.179
     }
 
-
     /// Readable foreground for text drawn on `fill` (accent buttons, danger
     /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
     /// has the higher WCAG contrast ratio against the fill; if neither
@@ -1135,8 +1134,8 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 /// text edits) inherits the Plexi look from here instead of stock egui — this
 /// is the single place where the default-egui appearance is retired.
 pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
-    let dark_mode = colors.is_dark();
     use crate::ui::style as tokens;
+    let dark_mode = colors.is_dark();
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.global_style()).clone();
     style.visuals = if dark_mode {

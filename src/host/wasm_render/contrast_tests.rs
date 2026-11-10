@@ -6,7 +6,7 @@ use crate::ui::theme::{
 fn widget_tree() -> UiTree {
     crate::host::wasm_python::decode_ui_tree(&serde_json::json!({
         "root":0,"nodes":[
-            {"id":0,"key":"root","data":{"type":"Column","children":[1,3,4,5,6,7,8,9,10,12,13],"gap":8.0}},
+            {"id":0,"key":"root","data":{"type":"Column","children":[1,3,4,5,6,7,8,14,15,16,17,9,10,12,13],"gap":8.0}},
             {"id":1,"key":"card","data":{"type":"Padding","card":true,"child":2,"top":12,"bottom":12,"left":12,"right":12}},
             {"id":2,"key":"card-text","data":{"type":"Text","text":"Default Card"}},
             {"id":3,"key":"ghost","data":{"type":"Button","label":"Ghost task","style":"ghost","on_click":"pick"}},
@@ -19,6 +19,10 @@ fn widget_tree() -> UiTree {
             {"id":10,"key":"list","data":{"type":"ListView","items":[11],"selected":0,"on_select":"pick"}},
             {"id":11,"key":"list-text","data":{"type":"Text","text":"Selected row"}},
             {"id":12,"key":"hint","data":{"type":"TextInput","value":"","placeholder":"Input placeholder","on_change":"hint"}},
+            {"id":14,"key":"accent-badge","data":{"type":"Badge","text":"Accent badge","color":"accent"}},
+            {"id":15,"key":"success-badge","data":{"type":"Badge","text":"Success badge","color":"success"}},
+            {"id":16,"key":"warning-badge","data":{"type":"Badge","text":"Warning badge","color":"warning"}},
+            {"id":17,"key":"danger-badge","data":{"type":"Badge","text":"Danger badge","color":"danger"}},
             {"id":13,"key":"footer","data":{"type":"FooterKeys","entries":[{"keys":["Enter"],"description":"Open"}]}}
         ]
     }).to_string()).unwrap()
@@ -151,5 +155,64 @@ fn app_default_text_contrast_preserves_authored_colors() {
         );
         assert!(contrast(luminance(fg), luminance(colors.terminal_bg)) < 4.5,
             "negative control must stay low contrast; default correction must not change explicit artwork");
+    }
+}
+
+#[test]
+fn app_default_text_contrast_hover_and_press() {
+    for name in preset_names() {
+        let colors = Colors::from_config(&preset_colors(name).unwrap());
+        let ctx = egui::Context::default();
+        setup_fonts(&ctx);
+        setup_style(&ctx, &colors);
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let tree = widget_tree();
+        let frame = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    render_ui_tree_with_surface(ui, &tree, &colors, None, None, 0);
+                },
+            )
+        };
+        let output = frame(vec![]);
+        for label in [
+            "Ghost task",
+            "Primary task",
+            "Secondary task",
+            "Danger task",
+            "Disabled task",
+            "Selected row",
+        ] {
+            let point = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == label => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {label}"));
+            for pressed in [false, true, false] {
+                let output = frame(vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                assert_paint_contrast(&output.shapes, &format!("{name} {label} pressed={pressed}"));
+            }
+        }
     }
 }
