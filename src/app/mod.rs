@@ -4404,7 +4404,7 @@ impl PlexiApp {
                     return;
                 }
                 if self.show_changelog {
-                    self.show_changelog = false;
+                    self.close_changelog();
                     return;
                 }
                 if self.show_shortcuts {

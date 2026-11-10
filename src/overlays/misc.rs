@@ -292,6 +292,34 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn toggle_changelog(&mut self) {
+        if self.show_changelog {
+            self.close_changelog();
+        } else {
+            self.show_changelog = true;
+            self.push_focus_layer(crate::app::FocusKind::Changelog);
+            log::info!("changelog: opened");
+        }
+    }
+
+    pub(crate) fn close_changelog(&mut self) {
+        if self.show_changelog {
+            self.show_changelog = false;
+            self.reconcile_focus_layer(crate::app::FocusKind::Changelog, false);
+            log::info!("changelog: closed");
+        }
+    }
+
+    pub(crate) fn changelog_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            self.close_changelog();
+        }
+        crate::app::app_trait::KeyDisposition::Consumed
+    }
+
     pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_changelog {
             return;
@@ -301,7 +329,6 @@ impl PlexiApp {
         let response = crate::ui::overlay::ModalShell::centered("changelog")
             .title("Changelog")
             .width(560.0)
-            .escape(true)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
                 if let Some(ref latest) = self.update_available.clone() {
                     egui::Frame::new()
@@ -380,7 +407,7 @@ impl PlexiApp {
                 }
             });
         if response.dismissed {
-            self.show_changelog = false;
+            self.close_changelog();
         }
     }
 
