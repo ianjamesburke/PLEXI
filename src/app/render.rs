@@ -115,23 +115,6 @@ impl PlexiApp {
                 }
             }
         }
-        let now = std::time::Instant::now();
-        if !self.quit_coordinator.is_active()
-            && self.workspace_dirty
-            && workspace_save_due(self.last_workspace_save, now)
-            && self.workspace_save_retry_at.is_none_or(|retry_at| now >= retry_at)
-        {
-            if self.save_workspace_now() {
-                self.workspace_dirty = false;
-                self.workspace_save_retry_at = None;
-                log::debug!("workspace: debounce flush after churn");
-            } else {
-                let delay = std::time::Duration::from_secs(30);
-                self.workspace_save_retry_at = Some(now + delay);
-                self.schedule_workspace_save_wake(delay);
-            }
-            self.last_workspace_save = now;
-        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::PreambleRuntimePoll,
@@ -163,6 +146,23 @@ impl PlexiApp {
             self.update_quit_pending = false;
             self.request_quit(crate::app::quit::ExitReason::UpdateRestart);
             return;
+        }
+        let now = std::time::Instant::now();
+        if !self.quit_coordinator.is_active()
+            && self.workspace_dirty
+            && workspace_save_due(self.last_workspace_save, now)
+            && self.workspace_save_retry_at.is_none_or(|retry_at| now >= retry_at)
+        {
+            if self.save_workspace_now() {
+                self.workspace_dirty = false;
+                self.workspace_save_retry_at = None;
+                log::debug!("workspace: debounce flush after churn");
+            } else {
+                let delay = std::time::Duration::from_secs(30);
+                self.workspace_save_retry_at = Some(now + delay);
+                self.schedule_workspace_save_wake(delay);
+            }
+            self.last_workspace_save = now;
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,

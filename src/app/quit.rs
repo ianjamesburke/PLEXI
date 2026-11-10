@@ -603,6 +603,23 @@ mod tests {
         assert!(h.app.quit_coordinator.hide_requested);
     }
 
+    #[test]
+    fn host_stop_does_not_debounce_save_before_its_final_save() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        h.app.workspace_dirty = true;
+        h.app.last_workspace_save = Instant::now() - Duration::from_secs(2);
+        h.inject_ipc(crate::protocol::AppRequest::Shutdown);
+        h.hidden_frame(); // coordinator saves and hides, but does not exit yet
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        assert!(path.exists());
+        assert!(
+            !path.with_extension("json.prev").exists(),
+            "the debounce must not create an extra generation before final save"
+        );
+        assert!(h.app.quit_coordinator.hide_requested);
+    }
+
     fn bind_fake_socket(dir: &Path, name: &str) -> BoundSocket {
         let path = dir.join(name);
         std::fs::write(&path, b"").expect("create stand-in socket");
