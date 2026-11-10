@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
+members = ["deps/eframe-0.34.3", "deps/egui-wgpu-0.34.3", "crates/distribution", "tools/gen_schema", "tools/gen_cli_docs", "tools/gen_config_docs", "sdk/wasm", "crates/daw-model", "crates/daw-engine", "crates/daw-bundle", "crates/daw-tools", "crates/video-model"]
 exclude = ["apps/wasm-poc"]
 resolver = "2"
 
@@ -211,6 +211,9 @@ plexi-daw-model = { path = "crates/daw-model", features = ["gate"] }
 plexi-daw-engine = { path = "crates/daw-engine" }
 
 [patch.crates-io]
+# Render requested host captures without requiring a composited window drawable.
+eframe = { path = "deps/eframe-0.34.3" }
+egui-wgpu = { path = "deps/egui-wgpu-0.34.3" }
 # Vendored because accesskit_consumer 0.38 still panics when a root-change
 # update removes the stale focused node before global validation.
 accesskit_consumer = { path = "deps/accesskit_consumer-0.38.0" }
