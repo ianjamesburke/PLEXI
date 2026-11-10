@@ -573,6 +573,18 @@ fn tactile_button(
         .graphics(|g| g.get(layer).map_or(0, |p| p.all_entries().len()));
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let response = ui.add(button);
+    // Glyph raster bounds can round beyond a fractional hit rectangle. Keep
+    // every emitted shape within the control's allocated box at all scales.
+    ui.ctx().graphics_mut(|graphics| {
+        if let Some(list) = graphics.get_mut(layer) {
+            let end = list.all_entries().len();
+            for index in start..end {
+                list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                    entry.clip_rect = entry.clip_rect.intersect(response.rect);
+                });
+            }
+        }
+    });
     let amount = style::press_amount(&response);
     if response.hovered() && ui.is_enabled() && amount == 0.0 {
         ui.ctx().graphics_mut(|g| {
