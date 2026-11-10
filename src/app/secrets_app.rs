@@ -5,9 +5,8 @@ use crate::ui::{labels, row, style};
 use crate::workspace::secrets::manager::{self, Mutation, SecretEntry, SecretTarget};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
+    mpsc, Arc,
 };
 
 struct PendingImport {
@@ -766,11 +765,9 @@ mod tests {
             "canary-app-second"
         );
         app.delete_selected();
-        assert!(
-            crate::workspace::secrets::system_store()
-                .get(&account)
-                .is_none()
-        );
+        assert!(crate::workspace::secrets::system_store()
+            .get(&account)
+            .is_none());
         let fixture = cwd.path().join("fixture.env");
         let bytes = b"IMPORTED_APP_TOKEN=canary-app-import\n";
         std::fs::write(&fixture, bytes).unwrap();
@@ -926,24 +923,18 @@ mod tests {
                     builtin.as_any_mut().downcast_mut::<SecretsApp>()
                 })
                 .expect("hotkey opens Secrets");
-            assert!(
-                secrets
-                    .entries
-                    .iter()
-                    .any(|entry| entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global)
-            );
-            assert!(
-                secrets
-                    .entries
-                    .iter()
-                    .any(|entry| entry.name == "GITHUB_TOKEN" && entry.target == workspace)
-            );
-            assert!(
-                secrets
-                    .entries
-                    .iter()
-                    .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder)
-            );
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global));
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "GITHUB_TOKEN" && entry.target == workspace));
+            assert!(secrets
+                .entries
+                .iter()
+                .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder));
             secrets.entries.retain(|entry| {
                 (entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global)
                     || (entry.name == "GITHUB_TOKEN" && entry.target == workspace)
