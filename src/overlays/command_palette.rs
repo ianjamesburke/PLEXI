@@ -1855,8 +1855,7 @@ impl PlexiApp {
     }
 
     /// Execute a palette interaction after keyboard and mouse have resolved
-    /// the same stable entry action. Host-wide action unification remains
-    /// deliberately outside PAL-05.
+    /// the same stable entry action.
     fn run_palette_selection(&mut self, action: PaletteAction) {
         self.show_command_palette = false;
         self.palette_query.clear();
@@ -2001,169 +2000,8 @@ impl PlexiApp {
 
     fn run_palette_host_binding(&mut self, action: crate::host::keys::Action) {
         log::info!("palette: executing host binding {action:?}");
-        match action {
-            crate::host::keys::Action::SplitRight => {
-                self.windows[self.active_window].clear_zoom();
-                self.split_focused(false, None, false, false, None);
-                self.mark_workspace_dirty();
-            }
-            crate::host::keys::Action::SplitDown => {
-                self.windows[self.active_window].clear_zoom();
-                self.split_focused(true, None, false, false, None);
-                self.mark_workspace_dirty();
-            }
-            crate::host::keys::Action::NextBlockedAgent => {
-                self.next_blocked_agent();
-            }
-            crate::host::keys::Action::FocusApproval => {
-                self.focus_approval();
-            }
-            crate::host::keys::Action::OpenAgents => self.open_agents_pane(),
-            crate::host::keys::Action::OpenSecretsManager => self.open_secrets_manager(),
-            crate::host::keys::Action::OpenConfig => {
-                let path = crate::config::ensure_config_file();
-                self.open_config_in_editor(path);
-            }
-            crate::host::keys::Action::ReloadConfig => self.reload_config(),
-            crate::host::keys::Action::ToggleShortcuts => {
-                self.show_shortcuts = !self.show_shortcuts;
-            }
-            crate::host::keys::Action::OpenNotesPicker => self.open_notes_picker(),
-            crate::host::keys::Action::OpenFileBrowser => self.open_file_browser(),
-            crate::host::keys::Action::OpenQuickNote => {
-                self.open_quick_note_modal();
-            }
-            crate::host::keys::Action::OpenScratchpad => {
-                self.open_scratchpad();
-            }
-            crate::host::keys::Action::NewContext => {
-                self.new_context();
-                self.mark_workspace_dirty();
-            }
-            crate::host::keys::Action::RenameContext => {
-                self.open_context_rename(self.router.active_idx())
-            }
-            crate::host::keys::Action::ParkContext => self.toggle_park_active_context(),
-            crate::host::keys::Action::ContextZoomOut => {
-                self.zoom_out_of_context();
-            }
-            crate::host::keys::Action::NextTab => { self.cycle_tab(true); }
-            crate::host::keys::Action::PrevTab => { self.cycle_tab(false); }
-            crate::host::keys::Action::NewTab => {
-                self.new_tab(self.active_window, None, false, None, false, true);
-                self.mark_workspace_dirty();
-            }
-            crate::host::keys::Action::NewPageRight => {
-                if self.windows[self.active_window].panes.is_empty()
-                    || self.windows[self.active_window].tree.root.is_none()
-                {
-                    self.reset_active_context();
-                } else {
-                    self.new_page_right();
-                }
-                self.mark_workspace_dirty();
-            }
-            crate::host::keys::Action::RenamePane => self.open_rename_for_focused(),
-            crate::host::keys::Action::HidePane => self.toggle_palette_focused_pane_hidden(),
-            crate::host::keys::Action::ToggleZoom => self.toggle_palette_zoom(),
-            crate::host::keys::Action::NavBackApp => {
-                if !self.try_nav_back_focused() {
-                    self.step_focus_history_back();
-                }
-            }
-            crate::host::keys::Action::ClosePane => self.close_palette_focused_pane(),
-            crate::host::keys::Action::CloseContext => self.close_palette_active_context(),
-            crate::host::keys::Action::ToggleAttentionQueue => {
-                self.sync_attention_queue();
-                self.attention_queue.open = true;
-                log::info!(
-                    "attention_queue: opened source=palette bars={}",
-                    self.attention_queue.items.len()
-                );
-            }
-            crate::host::keys::Action::ZoomIn => {
-                self.wrap_selection_or_zoom_in();
-            }
-            other => log::warn!("palette: unsupported host binding {other:?}"),
-        }
-    }
-
-    fn toggle_palette_focused_pane_hidden(&mut self) {
-        let win = &mut self.windows[self.active_window];
-        if let Some(tile) = win.focused_pane {
-            if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(tile) {
-                if let Some(pane) = win.panes.get_mut(pane_id) {
-                    let hidden = !pane.is_hidden();
-                    pane.set_hidden(hidden);
-                    log::info!("palette: pane_hide pane={pane_id} hidden={hidden}");
-                    self.mark_workspace_dirty();
-                }
-            }
-        }
-    }
-
-    fn toggle_palette_zoom(&mut self) {
-        let (tile, portal_target) = {
-            let win = &self.windows[self.active_window];
-            let target = win
-                .focused_pane
-                .and_then(|tile_id| win.tree.tiles.get(tile_id))
-                .and_then(|entry| match entry {
-                    egui_tiles::Tile::Pane(pane_id) => Some(*pane_id),
-                    _ => None,
-                })
-                .and_then(|pane_id| win.panes.get(&pane_id))
-                .and_then(crate::host::pane::Pane::portal_target);
-            (win.focused_pane, target)
-        };
-        if let Some(child_context_id) = portal_target {
-            if let Some(context_idx) = self
-                .router
-                .position(|context| context.context_id == child_context_id)
-            {
-                let current_context_id = self.router.active().context_id;
-                let current_window_id = self.windows[self.active_window].window_id;
-                self.router
-                    .push_depth(current_context_id, current_window_id, tile);
-                self.switch_workspace(context_idx);
-            }
-        } else if let Some(tile) = tile {
-            let win = &mut self.windows[self.active_window];
-            if win.zoomed_pane == Some(tile) {
-                win.clear_zoom();
-            } else {
-                win.zoom_to(tile);
-            }
-            log::info!(
-                "palette: zoom toggled window={} tile={tile:?}",
-                win.window_id
-            );
-        }
-    }
-
-    fn close_palette_focused_pane(&mut self) {
-        if self.confirm_close() {
-            self.pending_close = true;
-        } else {
-            self.execute_close_pane();
-            self.mark_workspace_dirty();
-        }
-    }
-
-    fn close_palette_active_context(&mut self) {
-        let ctx_id = self.router.active().context_id;
-        if self.router.len() <= 1 {
-            log::info!("palette: refusing to close only context");
-            return;
-        }
-        let state = self.build_context_close_state(ctx_id);
-        if state.items.is_empty() || !self.config.confirm_context_close.unwrap_or(true) {
-            self.delete_context(self.router.active_idx());
-            self.mark_workspace_dirty();
-        } else {
-            log::info!("palette: close context={ctx_id} requires confirmation");
-            self.pending_context_close = Some(state);
-        }
+        let ctx = self.ctx.clone();
+        self.dispatch_host_action(action, &ctx);
     }
 
     /// Execute a user-authored command. Stepped commands (`steps = [...]`) or
@@ -3944,6 +3782,87 @@ mod tests {
             .focused_pane
             .and_then(|tile| h.app.windows[1].tree.tiles.get(tile));
         assert!(matches!(focused, Some(egui_tiles::Tile::Pane(11))));
+    }
+
+    fn scale_shortcut(h: &mut crate::testing::HostHarness, key: egui::Key) {
+        h.press_key(key, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);
+    }
+
+    fn palette_action(h: &mut crate::testing::HostHarness, action: crate::host::keys::Action) {
+        h.app.run_palette_command(PaletteCommand::Host(action));
+    }
+
+    #[test]
+    fn palette_reset_ui_scale_matches_shortcut() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        scale_shortcut(&mut h, egui::Key::Equals);
+        assert!(h.app.ui_scale > 1.0);
+        palette_action(&mut h, Action::UiScaleReset);
+        assert_eq!(h.app.ui_scale, 1.0);
+        palette_action(&mut h, Action::UiScaleUp);
+        assert!(h.app.ui_scale > 1.0);
+        scale_shortcut(&mut h, egui::Key::Num0);
+        assert_eq!(h.app.ui_scale, 1.0);
+        palette_action(&mut h, Action::UiScaleUp);
+        palette_action(&mut h, Action::UiScaleReset);
+        assert_eq!(h.app.ui_scale, 1.0);
+    }
+
+    #[test]
+    fn palette_increase_ui_scale_matches_shortcut() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        scale_shortcut(&mut h, egui::Key::Equals);
+        let expected = h.app.ui_scale;
+        scale_shortcut(&mut h, egui::Key::Num0);
+        palette_action(&mut h, Action::UiScaleUp);
+        assert_eq!(h.app.ui_scale, expected);
+    }
+
+    #[test]
+    fn palette_decrease_ui_scale_matches_shortcut() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        scale_shortcut(&mut h, egui::Key::Minus);
+        let expected = h.app.ui_scale;
+        scale_shortcut(&mut h, egui::Key::Num0);
+        palette_action(&mut h, Action::UiScaleDown);
+        assert_eq!(h.app.ui_scale, expected);
+    }
+
+    #[test]
+    fn palette_text_size_commands_match_shortcuts() {
+        use crate::host::keys::Action;
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane).run_frames(2);
+        fn font(h: &crate::testing::HostHarness, pane: u64) -> f32 {
+            let crate::host::pane::Pane::App(app) = &h.app.windows[0].panes[&pane] else {
+                panic!("expected app pane")
+            };
+            let crate::host::pane::AppRuntime::Builtin(b) = &app.runtime else {
+                panic!("expected builtin")
+            };
+            b.font_size().unwrap()
+        }
+        let initial = font(&h, pane);
+        h.press_key(egui::Key::Equals, egui::Modifiers::COMMAND);
+        let increased = font(&h, pane);
+        assert_eq!(increased, initial + 1.0);
+        palette_action(&mut h, Action::ResetPaneFontSize);
+        assert_eq!(font(&h, pane), initial);
+        palette_action(&mut h, Action::IncreasePaneFontSize);
+        assert_eq!(font(&h, pane), increased);
+        h.press_key(egui::Key::Minus, egui::Modifiers::COMMAND);
+        let decreased = font(&h, pane);
+        palette_action(&mut h, Action::DecreasePaneFontSize);
+        assert_eq!(font(&h, pane), decreased - 1.0);
+        h.press_key(
+            egui::Key::Num0,
+            egui::Modifiers::COMMAND | egui::Modifiers::ALT,
+        );
+        assert_eq!(font(&h, pane), initial);
     }
 
     #[test]

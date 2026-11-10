@@ -1,0 +1,22 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "reset ui scale" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Reset UI scale" }
+
+[[steps]]
+shot = "command-palette-scale.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }

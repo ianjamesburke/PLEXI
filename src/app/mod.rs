@@ -4181,6 +4181,104 @@ impl eframe::App for PlexiApp {
         ));
         router_input.give_back(ctx);
         for action in poll_actions_result {
+            self.dispatch_host_action(action, ctx);
+        }
+
+        if self.quit_coordinator.blocks_input() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
+        // macOS can deliver both Cmd+Q and a close event in one pass. Always
+        // cancel eframe's close; the coordinator owns saving, hiding and exit.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            crate::platform::logging::mark_ui_phase(
+                &self.ui_phase,
+                crate::platform::logging::UiPhase::CloseRequest,
+            );
+            quit::trace("close_request");
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.prepare_user_quit()
+                && (self.quitting || !self.confirm_quit() || self.quit_press_count == 0)
+            {
+                self.request_quit(quit::ExitReason::WindowClosed);
+            }
+        }
+        if self.quit_coordinator.blocks_input() {
+            return;
+        }
+
+        // Ownership-transfer (stint 0387): if the focused pane is a terminal
+        // and no overlay owns input, take this frame's keyboard events out of
+        // `ctx` *before* the render pass and hand them to that terminal. Doing
+        // this before `render_panels` is what prevents egui's own render-time
+        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
+        // swallowing a key before the terminal processes it. `poll_actions`
+        // above already claimed global hotkeys from the same buffer, so the
+        // terminal only ever sees what the global allowlist left behind.
+        // Bare Escape while zoomed goes to the pane with no layout change
+        // (stint 0898: Cmd+Enter is the only zoom toggle).
+        let focused_terminal_input = self.take_focused_terminal_input(ctx);
+        // Host focus (keyboard nav, a click handled before this pass) is
+        // already current. egui focus still belongs to last frame until
+        // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
+        // an editor that just lost the pane cannot insert this frame's text.
+        crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
+        // Every surface that paints an approval-capable button (sidebar
+        // Needs-you row, approval banner) registers its bounds this frame.
+        self.approval_buttons.clear();
+        self.render_panels(ui, focused_terminal_input);
+        self.draw_attention_queue_and_decision_overlay(ctx);
+        self.draw_keychain_recovery_banner(ctx);
+
+        // Detect genuine pane focus transitions, and periodically bank long
+        // same-pane sessions so Stats has live data without keystroke tracking.
+        self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
+
+        // Last step of every frame: project the derived input owner onto egui
+        // widget focus (stint 0429). Everything above may change host focus
+        // state; nothing after this may touch egui focus.
+        self.reconcile_egui_focus(ctx);
+        if let Some(start) = ui_profile_start {
+            crate::platform::ui_profile::end_frame(start.elapsed());
+        }
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::RendererPresent,
+        );
+    }
+
+    fn on_exit(&mut self) {
+        crate::platform::logging::mark_ui_phase(
+            &self.ui_phase,
+            crate::platform::logging::UiPhase::Exit,
+        );
+        quit::trace("on_exit_begin");
+        log::info!("quit_phase: on_exit begin");
+        self.flush_ui_scale_persist_now();
+        self.bank_final_focus_segment();
+        log::info!("quit_phase: on_exit complete");
+        // Backend teardown can call on_exit before destroying its window.
+        // Normal quit never gets here: it hides, yields, and exits from logic.
+        // On unexpected backend teardown we must still preserve durability.
+        while !self.persist_quit_state() {
+            log::error!("quit: backend teardown waiting for durable workspace save");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        self.begin_quit_cleanup();
+        quit::exit_host(
+            self.quit_coordinator.reason.unwrap_or(quit::ExitReason::WindowClosed),
+        );
+    }
+}
+
+fn read_display_version() -> String {
+    crate::distribution::version_text().to_string()
+}
+
+impl PlexiApp {
+
+    /// Dispatch host actions from both shortcuts and the command palette.
+    pub(crate) fn dispatch_host_action(&mut self, action: Action, ctx: &egui::Context) {
             match action {
                 Action::SplitHorizontal | Action::SplitVertical => {
                     let vertical = matches!(action, Action::SplitVertical);
@@ -4192,7 +4290,7 @@ impl eframe::App for PlexiApp {
                                 self.split_focused(vertical, None, false, false, None);
                             }
                         }
-                        continue;
+                        return;
                     }
                     self.windows[self.active_window].clear_zoom();
                     self.split_focused(vertical, None, false, false, None);
@@ -4279,22 +4377,22 @@ impl eframe::App for PlexiApp {
                 Action::ClosePane => {
                     if self.show_ui_gallery {
                         self.show_ui_gallery = false;
-                        continue;
+                        return;
                     }
                     if self.show_changelog {
                         self.show_changelog = false;
-                        continue;
+                        return;
                     }
                     if self.show_shortcuts {
                         self.show_shortcuts = false;
-                        continue;
+                        return;
                     }
                     if self.attention_queue.decision_overlay.is_some()
                         || self.attention_queue.open
                         || self.zoom.level != zoom::ZoomLevel::Columns
                     {
                         self.zoom_out_or_close_surface();
-                        continue;
+                        return;
                     }
                     // If the focused app pane has a non-empty nav stack
                     // (via PushNav), Escape routes NavBack to the app
@@ -4598,100 +4696,7 @@ impl eframe::App for PlexiApp {
                     let _ = self.run_user_command_by_name(name);
                 }
             }
-        }
-
-        if self.quit_coordinator.blocks_input() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            return;
-        }
-        // macOS can deliver both Cmd+Q and a close event in one pass. Always
-        // cancel eframe's close; the coordinator owns saving, hiding and exit.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            crate::platform::logging::mark_ui_phase(
-                &self.ui_phase,
-                crate::platform::logging::UiPhase::CloseRequest,
-            );
-            quit::trace("close_request");
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if self.prepare_user_quit()
-                && (self.quitting || !self.confirm_quit() || self.quit_press_count == 0)
-            {
-                self.request_quit(quit::ExitReason::WindowClosed);
-            }
-        }
-        if self.quit_coordinator.blocks_input() {
-            return;
-        }
-
-        // Ownership-transfer (stint 0387): if the focused pane is a terminal
-        // and no overlay owns input, take this frame's keyboard events out of
-        // `ctx` *before* the render pass and hand them to that terminal. Doing
-        // this before `render_panels` is what prevents egui's own render-time
-        // widget machinery (allocate_painter's built-in Cmd+A select-all) from
-        // swallowing a key before the terminal processes it. `poll_actions`
-        // above already claimed global hotkeys from the same buffer, so the
-        // terminal only ever sees what the global allowlist left behind.
-        // Bare Escape while zoomed goes to the pane with no layout change
-        // (stint 0898: Cmd+Enter is the only zoom toggle).
-        let focused_terminal_input = self.take_focused_terminal_input(ctx);
-        // Host focus (keyboard nav, a click handled before this pass) is
-        // already current. egui focus still belongs to last frame until
-        // `reconcile_egui_focus` at the end of `ui`. Publish the owner now so
-        // an editor that just lost the pane cannot insert this frame's text.
-        crate::app::input_owner::publish_frame_input_owner(ctx, self.host_input_owner());
-        // Every surface that paints an approval-capable button (sidebar
-        // Needs-you row, approval banner) registers its bounds this frame.
-        self.approval_buttons.clear();
-        self.render_panels(ui, focused_terminal_input);
-        self.draw_attention_queue_and_decision_overlay(ctx);
-        self.draw_keychain_recovery_banner(ctx);
-
-        // Detect genuine pane focus transitions, and periodically bank long
-        // same-pane sessions so Stats has live data without keystroke tracking.
-        self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
-
-        // Last step of every frame: project the derived input owner onto egui
-        // widget focus (stint 0429). Everything above may change host focus
-        // state; nothing after this may touch egui focus.
-        self.reconcile_egui_focus(ctx);
-        if let Some(start) = ui_profile_start {
-            crate::platform::ui_profile::end_frame(start.elapsed());
-        }
-        crate::platform::logging::mark_ui_phase(
-            &self.ui_phase,
-            crate::platform::logging::UiPhase::RendererPresent,
-        );
     }
-
-    fn on_exit(&mut self) {
-        crate::platform::logging::mark_ui_phase(
-            &self.ui_phase,
-            crate::platform::logging::UiPhase::Exit,
-        );
-        quit::trace("on_exit_begin");
-        log::info!("quit_phase: on_exit begin");
-        self.flush_ui_scale_persist_now();
-        self.bank_final_focus_segment();
-        log::info!("quit_phase: on_exit complete");
-        // Backend teardown can call on_exit before destroying its window.
-        // Normal quit never gets here: it hides, yields, and exits from logic.
-        // On unexpected backend teardown we must still preserve durability.
-        while !self.persist_quit_state() {
-            log::error!("quit: backend teardown waiting for durable workspace save");
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        self.begin_quit_cleanup();
-        quit::exit_host(
-            self.quit_coordinator.reason.unwrap_or(quit::ExitReason::WindowClosed),
-        );
-    }
-}
-
-fn read_display_version() -> String {
-    crate::distribution::version_text().to_string()
-}
-
-impl PlexiApp {
     /// Adjust the font size of the active pane in Columns, or the remembered active pane
     /// of the selected context while Tree Atlas is visible.
     pub(crate) fn adjust_active_or_remembered_pane_font_size(&mut self, delta: f32) {
