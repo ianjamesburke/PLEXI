@@ -2374,6 +2374,7 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
                 format!("{prefix}.{key}")
             };
             if (name == "ai.client" && value.as_str().is_some_and(|v| v.trim().is_empty()))
+                || (name == "notifications.sound" && value.as_str() == Some("") && global.and_then(|table| table.get(key)).is_none())
                 || ignored.iter().any(|ignored| name == *ignored || name.starts_with(&format!("{ignored}."))) {
                 continue;
             }
@@ -2413,6 +2414,9 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
     let global_config = PlexiConfig::load_from_path(&config_path()).unwrap_or_default();
     let workspace_config = PlexiConfig::load_from_path(&workspace_path).unwrap_or_default();
     let global_bindings = crate::host::keys::build_key_bindings(global_config.keybindings.as_ref());
+    if global_config.theme.as_ref().and_then(|theme| theme.preset.as_ref()).is_some() {
+        ignored.push("theme_preset".to_owned());
+    }
     let resolved_global_theme = crate::ui::theme::resolve_theme_config(&global_config);
     let mut merged_config = global_config;
     merged_config.overlay(workspace_config);
@@ -2433,6 +2437,19 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
     ] { global.entry(key).or_insert(toml::Value::Boolean(default)); }
     let ai_defaults = AiConfig::default();
     for (section, key, default) in [
+        ("attention", "style", toml::Value::String("normal".to_owned())),
+        ("attention", "intensity", toml::Value::Float(1.0)),
+        ("attention", "dock", toml::Value::String("badge".to_owned())),
+        ("theme", "state_preset", toml::Value::String("okabe-ito".to_owned())),
+        ("theme", "pip_dim", toml::Value::Float(0.72)),
+        ("log", "level", toml::Value::String("info".to_owned())),
+        ("log", "retention_days", toml::Value::Integer(30)),
+        ("agents", "os_notifications", toml::Value::Boolean(true)),
+        ("agents", "stalled_after_secs", toml::Value::Integer(120)),
+        ("agents", "stale_failure_hours", toml::Value::Integer(crate::agent::fleet::DEFAULT_STALE_FAILURE_HOURS as i64)),
+        ("agents", "palette_agent_results", toml::Value::Boolean(false)),
+        ("agents", "restore_mode", toml::Value::String("lazy".to_owned())),
+        ("agents", "standby_scrollback_lines", toml::Value::Integer(PlexiConfig::default().standby_scrollback_lines() as i64)),
         ("effects", "ghost", toml::Value::Boolean(true)),
         ("effects", "ghost_opacity", toml::Value::Float(EffectsConfig::default().unfocused_opacity().unwrap_or(0.75) as f64)),
         ("notifications", "enabled", toml::Value::Boolean(true)),
@@ -2446,8 +2463,24 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
         let section = global.entry(section).or_insert_with(|| toml::Value::Table(toml::Table::new()));
         if let Some(table) = section.as_table_mut() { table.entry(key).or_insert(default); }
     }
+    global.entry("pane_gap").or_insert(toml::Value::Float(4.0));
+    global.entry("pane_corner_radius").or_insert(toml::Value::Integer(crate::ui::style::RADIUS_PANE.nw as i64));
+    global.entry("pane_title_font_size").or_insert(toml::Value::Float(12.0));
+    let modes = PlexiConfig::default().resolved_model_modes();
+    for (mode, resolved) in [("fast", modes.fast), ("slow", modes.slow)] {
+        let models = global.entry("models").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(models) = models.as_table_mut() {
+            let mode = models.entry(mode).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let Some(mode) = mode.as_table_mut() {
+                mode.entry("provider").or_insert(toml::Value::String(resolved.provider));
+                mode.entry("model").or_insert(toml::Value::String(resolved.model));
+                mode.entry("thinking").or_insert(toml::Value::String(resolved.thinking));
+            }
+        }
+    }
     let legacy_preset = global.get("theme_preset").and_then(toml::Value::as_str)
         .unwrap_or(crate::ui::theme::DEFAULT_PRESET).to_owned();
+    global.entry("theme_preset").or_insert(toml::Value::String(legacy_preset.clone()));
     let theme = global.entry("theme").or_insert_with(|| toml::Value::Table(toml::Table::new()));
     if let Some(theme) = theme.as_table_mut() {
         theme.entry("preset").or_insert(toml::Value::String(legacy_preset));
@@ -3512,6 +3545,34 @@ mod tests {
         std::fs::write(&path, "ui_scale = 1.5\n[terminal]\nminimum_contrast = 4.0\n[permissions]\nsoft_grant_days = 10\n[cloud]\nretain_local_history = true\n").unwrap();
         let keys: Vec<_> = workspace_config_shadows(workspace.path(), None).into_iter().map(|(key, _)| key).collect();
         for key in ["ui_scale", "terminal.minimum_contrast", "permissions.soft_grant_days", "cloud.retain_local_history"] { assert!(keys.contains(&key.to_owned()), "missing {key}: {keys:?}"); }
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_model_defaults() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let defaults = PlexiConfig::default().resolved_model_modes();
+        let text = format!("[models.fast]\nprovider = \"{}\"\nmodel = \"{}\"\nthinking = \"{}\"\n", defaults.fast.provider, defaults.fast.model, defaults.fast.thinking);
+        std::fs::write(&path, text).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[models.fast]\nmodel = \"another-model\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "models.fast.model"));
+    }
+
+    #[test]
+    fn workspace_legacy_theme_preset_does_not_override_global_theme_table() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "theme_preset = \"plexi-night\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
     }
 
     #[test]
