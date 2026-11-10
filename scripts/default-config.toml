@@ -71,7 +71,7 @@ minimum_contrast = 3.0
 
 # [cloud]
 # Local use never needs an account. Signing in only links this desktop to
-# relay and cloud features. Unset, local ledger rows and assistant
+# cloud features. Unset, local ledger rows and assistant
 # conversations are kept.
 # retain_local_history = false
 
@@ -142,7 +142,7 @@ tips = true
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. Unset / "none" = login/signup fail closed. An account is
 # optional: local use never needs one. A session only links this desktop to
-# relay and cloud features.
+# cloud features.
 # account_backend = "none"
 # Accounts service host the device-flow login talks to. Defaults to plexiapp.com.
 # account_url     = "https://plexiapp.com"

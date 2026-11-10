@@ -503,6 +503,17 @@ fn key_diagnostics(table: &toml::Table, path: &Path, path_str: &str) -> Vec<Conf
         }
     }
 
+    if table
+        .get("experiments")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|t| t.contains_key("relay"))
+    {
+        diags.push(ConfigDiagnostic::InvalidValue {
+            path: path_str.clone(),
+            key: "experiments.relay".into(),
+            error: "was removed; delete this key".into(),
+        });
+    }
     if table.contains_key("experiments") {
         if let Err(error) = experiments_from_path(path) {
             diags.push(ConfigDiagnostic::ParseError {
@@ -1108,15 +1119,14 @@ pub struct MarketplaceConfig {
 /// Cloud link settings (`[cloud]`).
 ///
 /// An account is optional. Local use never requires one; a session only links
-/// this desktop to relay and cloud features. This section does not change that.
+/// this desktop to cloud features. This section does not change that.
 /// The one flag here decides whether the retention job may also delete local
 /// ledger rows and assistant conversations.
 #[derive(Deserialize, Default, Clone)]
 pub struct CloudConfig {
     /// When `true`, delete local `ai-ledger.jsonl` rows and assistant
     /// conversation files older than 30 days. Unset or `false` keeps them.
-    /// Relay registry rows, queued-envelope metadata, and logs Plexi controls
-    /// are pruned either way.
+    /// Logs Plexi controls are pruned either way.
     pub retain_local_history: Option<bool>,
 }
 
@@ -1927,8 +1937,12 @@ pub fn experiments_from_path(
     let Some(table) = value.get("experiments") else {
         return Ok(Default::default());
     };
+    let mut table = table.clone();
+    if let Some(entries) = table.as_table_mut() {
+        entries.remove("relay");
+    }
     let table: std::collections::BTreeMap<String, bool> =
-        table.clone().try_into().map_err(|e| {
+        table.try_into().map_err(|e| {
             format!(
                 "[experiments] in {} must map names to true/false: {e}",
                 path.display()

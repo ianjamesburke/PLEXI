@@ -20,7 +20,6 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "ledger",
             "needs-you",
             "permissions",
-            "relay",
         ],
     ),
     (
@@ -459,6 +458,15 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn removed_relay_is_not_a_command_or_experiment() {
+        assert!(Cli::command().find_subcommand("relay").is_none());
+        let args = vec!["plexi".to_string(), "relay".to_string()];
+        let diagnostic = unknown_command_help(&args, &Cli::command()).unwrap();
+        assert!(diagnostic.contains("unknown command 'relay'"));
+        assert!(ReleaseFeature::from_key("relay").is_none());
+    }
+
     fn sub_at<'a>(cmd: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
         path.iter().fold(cmd, |c, name| {
             c.find_subcommand(name)
@@ -507,7 +515,6 @@ mod tests {
         let top = visible_subs(&cmd);
         for name in [
             "assistant",
-            "relay",
             "changes",
             "ledger",
             "command-view",
@@ -618,7 +625,6 @@ mod tests {
                 ReleaseFeature::ChangeSets,
             ),
             (&["plexi", "ledger"], ReleaseFeature::Ledger),
-            (&["plexi", "relay", "status"], ReleaseFeature::Relay),
             (
                 &["plexi", "account", "status"],
                 ReleaseFeature::CloudAccount,
@@ -679,20 +685,6 @@ mod tests {
         ] {
             assert_eq!(blocked(args, &[]), None, "{args:?}");
         }
-    }
-
-    #[test]
-    fn a_hidden_command_explains_how_to_turn_it_on() {
-        let mut cmd = all_off();
-        let relay = cmd.find_subcommand_mut("relay").unwrap();
-        let help = relay.render_long_help().to_string();
-        assert!(
-            help.contains(
-                "relay is an experiment. Turn it on with: plexi experiments enable relay"
-            ),
-            "{help}"
-        );
-        assert!(!help.contains("pair"), "{help}");
     }
 
     #[test]

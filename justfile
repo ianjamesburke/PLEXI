@@ -58,7 +58,6 @@ test:
         --skip daw \
         --skip cloud \
         --skip account:: \
-        --skip relay \
         --skip marketplace \
         --skip ledger \
         --skip routine \

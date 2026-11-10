@@ -4,7 +4,7 @@ Reference branch `plexi-v1-integration`. Do not merge it. Replay these choices w
 
 The branch started at alpha `58c32232` (`Port Assistant token ledger and run tags onto alpha (#2710)`). That tree matches PR #2710 head `7708f965`. Do not merge #2710 again. #2707 is superseded by #2715–#2717; skip it. The refreshed tree includes alpha `60060531` (`test(e2e): chess permission gate check on alpha (W16) (#2714)`). See "Refresh onto alpha 60060531" below.
 
-The gate does not get weaker at any step. An agent-originated approval stays refused. A terminal resolve stays refused. A phone approve never grants a permission.
+The gate does not get weaker at any step. An agent-originated approval stays refused. A terminal resolve stays refused.
 
 ## Train
 
@@ -14,11 +14,11 @@ Fast-forward. Chess harness isolation only.
 
 ### #2703 `85f58036`
 
-Clean. Cloud accounts, retention, and the phone shell's token auth.
+Clean. Cloud accounts and retention.
 
 ### #2704 `e215a118` onto #2703
 
-Keep both CLIs: `LedgerCmd` and `NeedsYouCmd`. Help's AI group names `ledger` and `needs-you`. `main` imports both. The phone page keeps #2703 token auth and adds the Needs you list (`refreshNeeds`, `#needs-you`).
+Keep both CLIs: `LedgerCmd` and `NeedsYouCmd`. Help's AI group names `ledger` and `needs-you`. `main` imports both.
 
 ### #2713 `3965f094` onto #2704
 
@@ -74,7 +74,7 @@ Clean. Human driver scripts.
 
 The integration merged #2718's head and took permission-core files from the earlier resolution `753457e4` (grant store, `permissions_cli` list/reset/revoke/allow, host seal store). Then it put #2725's `Option<LedgerCmd>` back. `PermissionsCmd` is the grant-store surface. It does not call `assistant_permission_cli`. An agent `allow` or `reset` files Needs you and leaves the decision unchanged.
 
-`Cargo.toml` declares `ring` once. The phone link and the folder-secret AES fallback share that dependency.
+`Cargo.toml` declares `ring` once for the folder-secret AES fallback.
 
 ### One seal key (#2713 journal + #2718 host store)
 
@@ -94,11 +94,9 @@ Load:
 
 ### #2708 `3df2cee4` onto #2718
 
-Phone and relay files follow the previous integration resolution at `03164835`, which is #2708's phone stack plus the #2703 relay pieces that stack already had. `services/relay/relay.py` and `test_relay.py` are that resolution, not a raw take of #2708, because the raw PR drops relay behavior the earlier cloud PR added.
 
-`needs-you resolve --from-phone` calls `needs_you_cli(..., from_phone: true)`. The host refuses an approval and a permission widen (`phone_blocked`: integrity, or approve when `phone_may_approve` is false). A phone turn's JSON has no approval, grant, or permission field. A terminal resolve without `--from-phone` still goes through `assistant_permission_cli` and is refused. Questions and blocked runs can still be answered.
 
-`assistant_send_result` / `assistant_send_cli` take `text`, `head`, `request_id`, `pane_id`, `context_id`, `client`, `kind`, `conversation`, `join_desktop`, `status_for`. `SubmitAssistantTurn` has those fields. `submit_external_turn` takes `conversation_id`, `join_desktop`, and `status_for`. The default `submit_tagged_turn` forwards the three phone fields as none / false / none. The Assistant override joins the desktop transcript and passes `client` and `kind`.
+`assistant_send_result` / `assistant_send_cli` take `text`, `head`, `request_id`, `pane_id`, `context_id`, `client`, `kind`, `conversation`, `join_desktop`, `status_for`. `SubmitAssistantTurn` has those fields. `submit_external_turn` takes `conversation_id`, `join_desktop`, and `status_for`. The default `submit_tagged_turn` forwards the three external-turn fields as none / false / none. The Assistant override joins the desktop transcript and passes `client` and `kind`.
 
 Harness and send-test initializers include `head`, `client`, `kind`, `conversation_id`, `join_desktop`, and `status_for`. `NeedsYouKind::PermissionChange` is stored like a question: it must not carry a pending grant. The widen is applied from `run_tag` on a desktop resolve.
 
@@ -107,12 +105,12 @@ Harness and send-test initializers include `head`, `client`, `kind`, `conversati
 Keep change sets and everything already on the stack.
 
 - `Changes` command and `ChangesCmd` (including `profile`) sit beside `Secret`. `SkillCmd` stays its own enum.
-- Help AI group: `ai`, `assistant`, `changes`, `command-view`, `ledger`, `needs-you`, `permissions`, `relay`.
+- Help AI group: `ai`, `assistant`, `changes`, `command-view`, `ledger`, `needs-you`, `permissions`.
 - `AssistantCmd` has `Open` and `Tool`. `assistant_tool_cli` is added. The 10-argument `assistant_send_*` stays.
 - `cli/mod.rs` exports both `changes::*` and `connector::*`, and both `assistant_tool_cli` and `needs_you_cli`.
 - `handle_assistant_host_tool` keeps `host.introspect` and `host.permissions.*`, and adds `host.editors.list`.
 - Schema and PGAP docs keep `open_assistant_head`, `command_view`, `agent_queue`, needs-you, and permissions, and add `assistant_host_tool`.
-- Docs skip list adds `changes` and keeps `needs-you` and `relay`.
+- Docs skip list adds `changes` and keeps `needs-you` and `needs-you`.
 
 ### #2721 `99bfa538`
 
@@ -130,7 +128,6 @@ Clean. `scripts/v1-acceptance.sh` lands on the integrated tree.
 
 ### Installed-script profile and audit text
 
-A channel-named binary ignores `PLEXI_CHANNEL`. `scripts/needs-you-e2e.sh` and `services/relay/e2e_installed.sh` resolve the profile from the binary name the same way `needs-you-persist-e2e.sh` already did. `scripts/folder-secrets-e2e.sh` accepts an escaped `"kind":"ask"` in the sealed audit. `scripts/permission-gate-e2e.sh` and `scripts/no-self-approval-e2e.sh` restore `config.toml` on exit so a later ledger run still sees `backend = "openrouter"`. `permissions allow` from an agent answers `needs_you` and does not grant; `expect_denied` accepts that reply. `pane click --` keeps a negative coordinate from being parsed as a flag.
 
 `scripts/needs-you-e2e.sh` and `scripts/needs-you-persist-e2e.sh` assert that a terminal resolve does not approve. The item stays open. A desktop click is still the grant. Those two scripts and `scripts/folder-secrets-e2e.sh` start a private session bus so the host seal key can be stored and the journal or audit can be written. Folder values stay on the encrypted-file backend.
 
@@ -150,7 +147,7 @@ Stacked signatures cross `clippy::too_many_arguments` only after the train is to
 
 ## Refresh onto alpha 60060531
 
-Alpha `60060531` is #2714 plus the squashed #2703 and #2709 commits. The sealed phone relay stays (ciphertext, not the plaintext threat-model wording from the #2703 squash). `scripts/permission-gate-e2e.sh` keeps the `config.toml` restore. `docs/security/cloud-hosting-guardrails.md` keeps the retention paragraph once.
+Alpha `60060531` is #2714 plus the squashed #2703 and #2709 commits. `scripts/permission-gate-e2e.sh` keeps the `config.toml` restore. `docs/security/cloud-hosting-guardrails.md` keeps the retention paragraph once.
 
 Rebased heads that only replayed ledger and cloud onto a feature already on this branch were recorded without replacing the integrated CLI: #2704 `25569f7e`, #2711 `dda2318c`, #2712 `24af8306` (plus the socket chunk below), #2719 `16684196`, #2722 `bb3700c9`, #2728 `44bb6b6e`.
 
@@ -168,7 +165,6 @@ A human Allow once spends exactly one folder-secret read (`approve_pending(Once)
 
 ### #2728 `44bb6b6e`
 
-Terminal `needs-you resolve` stays on `assistant_permission_cli` and is refused. `--from-phone` still may answer a question or a blocked run and must not grant. The skill keeps the sentence that names those commands as refused. It does not drop the Needs you bullet.
 
 ### #2724 `21de6363`
 
@@ -176,7 +172,7 @@ Terminal `needs-you resolve` stays on `assistant_permission_cli` and is refused.
 
 ### #2708 `e8cbed6c`
 
-`ignores_unrelated_files` proves the watcher saw `config.toml` before it asserts that another file stays quiet. The sealed relay already keeps the 30-day pairing retention and stores no message body.
+`ignores_unrelated_files` proves the watcher saw `config.toml` before it asserts that another file stays quiet.
 
 ### #2700 `4808ad65` and #2718 `f2c2e4b3`
 

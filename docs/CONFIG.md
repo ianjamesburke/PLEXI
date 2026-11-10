@@ -17,7 +17,7 @@ assistant = true
 
 Manage the table with `plexi experiments list`, `plexi experiments enable <name>`, and `plexi experiments disable <name>`. Those edit config.toml in place and keep your comments and other keys. When the host reads an experiment at runtime, enabling it prints `restart required: run `plexi host restart``. An unknown name is a config error that lists the valid names; `plexi experiments`, `plexi config`, and `--help` still run so you can fix it.
 
-Experiments are read from the global config only. A workspace `.plexi` config that sets `[experiments]` has no effect, so a cloned repository can never switch on the relay, cloud, or agent surfaces for you.
+Experiments are read from the global config only. A workspace `.plexi` config that sets `[experiments]` has no effect, so a cloned repository can never switch on the cloud or agent surfaces for you.
 
 `plexi skill install` and `plexi completions` snapshot the enabled set when they run; rerun them after changing an experiment.
 
@@ -315,9 +315,8 @@ minimum_contrast = 3.0
 
 # [cloud]
 # Local use never needs an account. Signing in only links this desktop to
-# relay and cloud features. Unset, local ledger rows and assistant
-# conversations are kept. Relay registry rows, queued envelopes, and the log
-# archives above are still pruned.
+# cloud features. Unset, local ledger rows and assistant conversations are kept.
+# The log archives above are still pruned.
 # retain_local_history = false
 
 # [keybindings]
@@ -345,7 +344,7 @@ tips = true
 # submit_url      = "https://plexiapp.com/registry/v1/submit"
 # Account/auth backend. "plexi" enables plexiapp.com accounts; unset / "none" =
 # login fails closed. An account is optional: local use never needs one. A
-# session only links this desktop to relay and cloud features.
+# session only links this desktop to cloud features.
 # account_backend = "plexi"
 # Accounts service base URL. Unset = the official plexiapp.com service. Override
 # only to point `plexi account login` at a private deployment.

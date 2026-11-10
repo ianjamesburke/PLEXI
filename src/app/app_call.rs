@@ -161,7 +161,7 @@ impl PlexiApp {
                 }
             }
             "resolve" => {
-                // No CLI, socket, or phone path resolves. A real pointer click
+                // No CLI or socket path resolves. A real pointer click
                 // on the desktop banner or the pairing sheet is what grants.
                 let id = pending_id.map(String::as_str).unwrap_or("");
                 let _choice = choice.map(String::as_str).unwrap_or("");
@@ -254,7 +254,7 @@ impl PlexiApp {
         };
         let body = match op {
             "list" => {
-                let items = crate::broker::gate::needs_you_phone_items(&monitor.list_needs_you());
+                let items = monitor.list_needs_you();
                 log::info!("needs_you: host list count={}", items.len());
                 serde_json::json!({"ok": true, "items": items})
             }
@@ -938,7 +938,7 @@ impl PlexiApp {
     }
 
     /// Resolve a Needs-you record from a desktop click or key. Synthetic
-    /// input, sockets and phones never reach this: it is the single guarded
+    /// input and sockets never reach this: it is the single guarded
     /// desktop path shared by the recovery banner and the attention review.
     /// Resolving a record never mints an app grant.
     pub(crate) fn resolve_from_desktop(

@@ -293,30 +293,6 @@ pane count (`--json` is supported).
 <!-- experiment: assistant -->
 - `plexi assistant permission resolve`: Resolve one pending request: once, session, always, or deny
 <!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay`: Pair a phone through the Plexi relay and deliver its messages to this desktop
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay connect`: Connect outbound to a phone relay and forward paired messages to the Assistant
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay confirm`: Confirm a phone that redeemed the pairing code shown by `relay connect`
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay revoke`: Revoke a paired phone
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay pair`: Start a pairing code for another phone
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay enable`: Remember the relay URL and connect it from the host on startup
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay disable`: Stop connecting to the relay when the host starts
-<!-- /experiment -->
-<!-- experiment: relay -->
-- `plexi relay status`: Print the desktop's relay status
-<!-- /experiment -->
 <!-- experiment: command_view -->
 - `plexi command-view`: Show every registered agent and its runs
 <!-- /experiment -->
@@ -507,7 +483,7 @@ pane count (`--json` is supported).
 - `plexi app call`: Call a tool an app exposes and print its JSON result
 - `plexi app tools`: Snapshot the live tool registry exposed by running app panes in the current context
 <!-- experiment: cloud_account -->
-- `plexi account`: Optional account that links this desktop to relay and cloud features
+- `plexi account`: Optional account that links this desktop to cloud features
 <!-- /experiment -->
 <!-- experiment: cloud_account -->
 - `plexi account status`: Show whether you are logged in

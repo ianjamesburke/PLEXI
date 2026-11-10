@@ -103,14 +103,14 @@ impl NeedsYouKind {
     /// The one rule for who may settle an item of this kind.
     ///
     /// A real click in the host window may approve or deny every kind.
-    /// Every other surface (command socket, terminal, agent pane, phone) may
+    /// Every other surface (command socket, terminal, agent pane) may
     /// never approve, and may not deny an integrity alert or a keychain
     /// prompt: acknowledging a seal fault or declining Keychain recovery is a
     /// decision for the person at the desktop.
     pub fn surface_may_resolve(self, surface: ResolveSurface, approve: bool) -> bool {
         match surface {
             ResolveSurface::Desktop => true,
-            ResolveSurface::Socket | ResolveSurface::Phone => {
+            ResolveSurface::Socket => {
                 !approve && !matches!(self, Self::Integrity | Self::Keychain)
             }
         }
@@ -125,8 +125,6 @@ pub enum ResolveSurface {
     Desktop,
     /// The command socket: a terminal, an agent pane, or any script.
     Socket,
-    /// A paired phone over the relay.
-    Phone,
 }
 
 impl ResolveSurface {
@@ -134,7 +132,6 @@ impl ResolveSurface {
         match self {
             Self::Desktop => "desktop",
             Self::Socket => "socket",
-            Self::Phone => "phone",
         }
     }
 }
@@ -396,24 +393,6 @@ pub enum PermissionMutation {
     Rejected { entry_id: String, error: String },
 }
 
-pub fn needs_you_phone_items(items: &[NeedsYouRecord]) -> Vec<serde_json::Value> {
-    items
-        .iter()
-        .map(|item| {
-            let mut value = serde_json::to_value(item).unwrap_or_else(|_| serde_json::json!({}));
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "phone_can_approve".to_string(),
-                    serde_json::Value::Bool(
-                        item.kind.surface_may_resolve(ResolveSurface::Phone, true),
-                    ),
-                );
-            }
-            value
-        })
-        .collect()
-}
-
 /// One painted permission-sheet button, in window points.
 #[derive(Debug, Clone)]
 struct SheetButton {
@@ -494,8 +473,6 @@ pub struct PermissionMonitor {
     question_tokens: Mutex<BTreeMap<String, String>>,
     /// Serializes list, expiry, and resolve so one terminal receipt wins.
     needs_resolve: Mutex<()>,
-    /// Pairing codes waiting for a desktop click. Not tool grants.
-    pairing_codes: Mutex<Vec<String>>,
     /// Painted permission-sheet buttons, so a real pointer click can find
     /// "Allow once" when the accesskit tree has not published that label.
     sheet_buttons: Mutex<Vec<SheetButton>>,
@@ -880,7 +857,6 @@ impl PermissionMonitor {
             continuations: Mutex::new(BTreeMap::new()),
             question_tokens: Mutex::new(BTreeMap::new()),
             needs_resolve: Mutex::new(()),
-            pairing_codes: Mutex::new(Vec::new()),
             sheet_buttons: Mutex::new(Vec::new()),
             sheet_open_epoch: AtomicU64::new(0),
             sheet_published_epoch: AtomicU64::new(0),
@@ -1490,7 +1466,6 @@ impl PermissionMonitor {
                     )
                 }
             }
-            ResolveSurface::Phone => false,
         };
         if !surface_allowed {
             log::info!(
@@ -1716,7 +1691,7 @@ impl PermissionMonitor {
     }
 
     /// Resolve one item from `surface`. The single entry point for every
-    /// surface: the desktop click, the command socket and the phone relay all
+    /// surface: the desktop click and the command socket both
     /// come through here, and `NeedsYouKind::surface_may_resolve` decides. A
     /// refused decision leaves the item open and audits `refused_resolve`. For
     /// an unknown id a non-desktop approve is still refused; a deny reports
@@ -3635,34 +3610,15 @@ impl PermissionMonitor {
     }
 
     pub fn list_pending(&self) -> Vec<PendingView> {
-        let mut rows: Vec<PendingView> = self
-            .pending
+        self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .map(pending_view)
-            .collect();
-        for code in self
-            .pairing_codes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-        {
-            rows.push(pairing_view(code));
-        }
-        rows
+            .collect()
     }
 
     pub fn show_pending(&self, id: &str) -> Option<PendingView> {
-        if self
-            .pairing_codes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .any(|code| code == id)
-        {
-            return Some(pairing_view(id));
-        }
         self.pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -3695,31 +3651,6 @@ impl PermissionMonitor {
             revision_after: String::new(),
         });
         log::info!("permission_monitor: refused resolve pending={pending_id}");
-    }
-
-    /// Remember a pairing code until the person clicks the desktop sheet.
-    /// The code is not logged and the click is not a tool grant.
-    pub fn track_pairing_code(&self, code: &str) {
-        if code.is_empty() {
-            return;
-        }
-        let mut codes = self
-            .pairing_codes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if codes.len() == 1 && codes[0] == code {
-            return;
-        }
-        codes.clear();
-        codes.push(code.to_string());
-        log::info!("permission_monitor: pairing confirmation waiting for a click");
-    }
-
-    pub fn clear_pairing_code(&self, code: &str) {
-        self.pairing_codes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|item| item != code);
     }
 
     /// Start one paint. Buttons published earlier belong to the previous frame.
@@ -4294,20 +4225,6 @@ impl serde::Serialize for AuditFact {
     }
 }
 
-fn pairing_view(code: &str) -> PendingView {
-    PendingView {
-        pending_request_id: code.to_string(),
-        actor_id: "phone".to_string(),
-        tool: "relay.pair".to_string(),
-        resource_id: None,
-        args_fingerprint: String::new(),
-        input_summary: "confirm this phone".to_string(),
-        allow_tool: false,
-        context_id: None,
-        instance_id: None,
-    }
-}
-
 fn pending_view(row: &Pending) -> PendingView {
     PendingView {
         pending_request_id: row.id.clone(),
@@ -4739,22 +4656,6 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn pairing_code_is_listed_until_the_click_clears_it() {
-        let monitor = PermissionMonitor::ephemeral();
-        assert!(monitor.list_pending().is_empty());
-        monitor.track_pairing_code("481516");
-        monitor.track_pairing_code("481516");
-        let listed = monitor.list_pending();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].pending_request_id, "481516");
-        assert_eq!(listed[0].tool, "relay.pair");
-        assert!(monitor.approve_pending("481516", ApprovalChoice::Once).is_err());
-        assert_eq!(monitor.list_pending().len(), 1);
-        monitor.clear_pairing_code("481516");
-        assert!(monitor.list_pending().is_empty());
-    }
-
-    #[test]
     fn only_the_desktop_approves_and_seal_items_need_the_desktop_to_deny() {
         use NeedsYouKind as K;
         let all = [
@@ -4768,7 +4669,7 @@ mod tests {
         for kind in all {
             assert!(kind.surface_may_resolve(ResolveSurface::Desktop, true), "{kind:?}");
             assert!(kind.surface_may_resolve(ResolveSurface::Desktop, false), "{kind:?}");
-            for surface in [ResolveSurface::Socket, ResolveSurface::Phone] {
+            for surface in [ResolveSurface::Socket] {
                 assert!(
                     !kind.surface_may_resolve(surface, true),
                     "{surface:?} must never approve {kind:?}"
@@ -4781,24 +4682,6 @@ mod tests {
                 );
             }
         }
-        let items = needs_you_phone_items(&[NeedsYouRecord {
-            id: "ny-1".to_string(),
-            kind: NeedsYouKind::Question,
-            actor: "agent:chess".to_string(),
-            resource: "chess.play".to_string(),
-            summary: "which file".to_string(),
-            created_at: 0,
-            expires_at: None,
-            run_tag: None,
-            resolution: None,
-            details: None,
-            answer: None,
-        }]);
-        assert_eq!(
-            items[0]["phone_can_approve"],
-            serde_json::json!(false),
-            "a phone no longer answers questions"
-        );
     }
 
     #[test]
@@ -4818,7 +4701,7 @@ mod tests {
         };
         let question = file(NeedsYouKind::Question);
         let integrity = file(NeedsYouKind::Integrity);
-        for surface in [ResolveSurface::Socket, ResolveSurface::Phone] {
+        for surface in [ResolveSurface::Socket] {
             assert_eq!(
                 monitor.resolve_needs_you_from(&question, true, surface),
                 Err(NeedsYouResolveError::Refused)

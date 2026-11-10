@@ -1695,19 +1695,6 @@ impl AppRuntime {
         }
     }
 
-    pub fn offer_relay_pairing(&mut self, code: &str, fingerprint: &str) -> bool {
-        match self {
-            AppRuntime::Builtin(app) => app.offer_relay_pairing(code, fingerprint),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
-        }
-    }
-
-    pub fn clear_relay_pairing_sheet(&mut self) {
-        if let AppRuntime::Builtin(app) = self {
-            app.clear_relay_pairing_sheet();
-        }
-    }
-
     pub fn take_config_saved(&mut self) -> bool {
         match self {
             AppRuntime::Builtin(app) => app.take_config_saved(),

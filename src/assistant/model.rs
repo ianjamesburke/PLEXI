@@ -130,7 +130,7 @@ pub struct PendingPermission {
     pub actor_id: String,
     pub resource_id: String,
     pub pending_request_id: String,
-    /// Set when a phone or CLI turn opened the sheet. Desktop asks leave this
+    /// Set when an external turn opened the sheet. Desktop asks leave this
     /// empty so the sheet copy stays the desktop sentence.
     pub source: Option<String>,
 }
@@ -278,8 +278,6 @@ pub enum AssistantEffect {
     SetSessionEffort(Option<ReasoningEffort>),
     ListConversations,
     ResumeConversation(String),
-    /// `/phone`: open the newest phone conversation in this workspace.
-    ResumePhoneConversation,
     ShowHistory,
     RewindConversation(String),
     CompactConversation,
@@ -855,7 +853,6 @@ impl AssistantModel {
             "settings" | "config" => vec![AssistantEffect::ShowSettings],
             "resume" if cmd.args.is_empty() => vec![AssistantEffect::ListConversations],
             "resume" => vec![AssistantEffect::ResumeConversation(cmd.args.clone())],
-            "phone" => vec![AssistantEffect::ResumePhoneConversation],
             "history" => vec![AssistantEffect::ShowHistory],
             "rewind" if cmd.args.is_empty() => {
                 self.turns.push(Turn::now(

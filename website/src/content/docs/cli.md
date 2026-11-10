@@ -58,7 +58,7 @@ Submit through the same composer, model, and permission path as the desktop Assi
 | `--request-id` | string | no |  |
 | `--pane-id` | string | no | Target pane id or name |
 | `--context-id` | string | no | Target context id or name |
-| `--conversation` | string | no | Caller-owned conversation. A phone session passes one stable id. Omit to start a new conversation that is not the desktop transcript |
+| `--conversation` | string | no | Caller-owned conversation identifier. Omit to start a new conversation that is not the desktop transcript |
 | `--desktop` | flag | no | Append this turn to the desktop Assistant conversation |
 | `--status-for` | string | no | Read the outcome of a turn that already returned waiting_for_permission. Does not submit a new prompt |
 | `--client` | string | no | Ledger client tag for this run. Omitted uses `[ai] client` |
@@ -105,64 +105,6 @@ Resolve one pending request: once, session, always, or deny. The host refuses ev
 |---|---|---|---|
 | `<id>` | string | yes |  |
 | `--choice` | string | yes |  |
-
-## `plexi relay`
-
-Pair a phone through the Plexi relay and deliver its messages to this desktop
-
-| Subcommand | Description |
-|---|---|
-| `connect` | Connect outbound to a phone relay and forward paired messages to the Assistant |
-| `confirm` | Confirm a phone that redeemed the pairing code shown by `relay connect` |
-| `revoke` | Revoke a paired phone. It must pair again and be confirmed |
-| `pair` | Start a pairing code for another phone. Phones already paired stay paired |
-| `enable` | Remember the relay URL and connect it from the host on startup |
-| `disable` | Stop connecting to the relay when the host starts |
-| `status` | Print the desktop's relay status |
-
-### `plexi relay connect`
-
-Connect outbound to a phone relay and forward paired messages to the Assistant
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
-
-### `plexi relay confirm`
-
-Confirm a phone that redeemed the pairing code shown by `relay connect`
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<pairing_id>` | string | no | Pairing id. Omit to confirm the phone currently waiting |
-
-### `plexi relay revoke`
-
-Revoke a paired phone. It must pair again and be confirmed
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<device_id>` | string | yes | Device id printed when the phone was confirmed |
-
-### `plexi relay pair`
-
-Start a pairing code for another phone. Phones already paired stay paired
-
-### `plexi relay enable`
-
-Remember the relay URL and connect it from the host on startup
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--url` | string | no | Relay websocket URL (`ws://` locally, `wss://` in production) |
-
-### `plexi relay disable`
-
-Stop connecting to the relay when the host starts
-
-### `plexi relay status`
-
-Print the desktop's relay status
 
 ## `plexi command-view`
 
@@ -1425,7 +1367,7 @@ Example: plexi app tools Example: plexi app tools --json Example: plexi app tool
 
 ## `plexi account`
 
-Optional account that links this desktop to relay and cloud features.
+Optional account that links this desktop to cloud features.
 
 Free apps install without an account. Login requires the accounts backend enabled (`[marketplace].account_backend = "plexi"`); otherwise it fails closed with a clear message.
 
@@ -2057,7 +1999,7 @@ Emits a `mcpServers` JSON block pointing at this instance's host MCP server (rea
 
 List everything waiting on you.
 
-One host record covers click approvals, agent questions, and blocked runs. The desktop badge and the phone page read that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
+One host record covers click approvals, agent questions, and blocked runs. The desktop badge reads that record. `resolve --approve` on a click approval is refused. `--deny` still denies.
 
 | Subcommand | Description |
 |---|---|
@@ -2140,7 +2082,6 @@ Resolve one item. Approving a click approval is refused; deny still denies it
 | `<id>` | string | yes |  |
 | `--approve` | flag | no | Approve the item. A click approval stays open |
 | `--deny` | flag | no | Deny the item |
-| `--from-phone` | flag | no | Accepted so a paired phone can call resolve. The host still refuses an approval. Only a desktop Allow once click grants |
 
 ## `plexi permissions`
 

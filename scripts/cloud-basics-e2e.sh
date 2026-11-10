@@ -25,7 +25,6 @@ else
   BIN="plexi-pr-${PR}"
   if ! command -v "$BIN" >/dev/null 2>&1; then
     echo "FAIL retention: $BIN is not on PATH. Run: just pr-install ${PR}"
-    echo "FAIL relay-canary: skipped"
     echo "FAIL no-account: skipped"
     exit 1
   fi
@@ -47,7 +46,6 @@ CHANNEL_DIR=".${BIN_NAME}"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-work.XXXXXX")"
 HOST_STARTED=0
 RETENTION="FAIL"
-CANARY="FAIL"
 ACCOUNT="FAIL"
 
 cleanup() {
@@ -62,7 +60,6 @@ trap cleanup EXIT
 
 if [[ "$PROFILE" == "$REAL_HOME"/* || "$PROFILE" == "$REAL_HOME" ]]; then
   echo "FAIL retention: profile resolved inside the real home ($PROFILE)"
-  echo "FAIL relay-canary: skipped"
   echo "FAIL no-account: skipped"
   exit 1
 fi
@@ -123,205 +120,6 @@ show_thoughts = true
 active_conversation = "old-conv"
 EOF
 
-echo "=== relay canary ==="
-CANARY_MARK="CANARY-plexi-relay-9f3a2c1b"
-RELAY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/plexi-cloud-e2e-relay.XXXXXX")"
-if python3 - "$ROOT" "$RELAY_DIR" "$CANARY_MARK" <<'PY'
-import json, logging, os, socket, sqlite3, sys, threading, urllib.error, urllib.request
-from pathlib import Path
-
-root, relay_dir, canary = sys.argv[1:4]
-sys.path.insert(0, str(Path(root) / "services" / "relay"))
-import relay
-
-log_path = Path(relay_dir) / "relay.log"
-state_path = str(Path(relay_dir) / "registry.sqlite")
-static = Path(root) / "clients" / "phone-web" / "static"
-relay.install_log_guard()
-handler = logging.FileHandler(log_path)
-handler.setFormatter(logging.Formatter("%(message)s"))
-relay.log.addHandler(handler)
-
-box = relay.Relay(public_origin="http://127.0.0.1", state_path=state_path)
-server = relay.build_server("127.0.0.1", 0, box, static)
-thread = threading.Thread(target=server.serve_forever, daemon=True)
-thread.start()
-port = server.server_address[1]
-base = f"http://127.0.0.1:{port}"
-
-def exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise ConnectionError("socket closed")
-        buf += chunk
-    return buf
-
-def ws_send(sock, payload, opcode=0x1):
-    mask = os.urandom(4)
-    masked = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
-    length = len(payload)
-    if length < 126:
-        header = bytes([0x80 | opcode, 0x80 | length])
-    elif length < 65536:
-        header = bytes([0x80 | opcode, 0x80 | 126]) + length.to_bytes(2, "big")
-    else:
-        header = bytes([0x80 | opcode, 0x80 | 127]) + length.to_bytes(8, "big")
-    sock.sendall(header + mask + masked)
-
-def ws_recv(sock):
-    head = exact(sock, 2)
-    opcode = head[0] & 0x0F
-    length = head[1] & 0x7F
-    if length == 126:
-        length = int.from_bytes(exact(sock, 2), "big")
-    elif length == 127:
-        length = int.from_bytes(exact(sock, 8), "big")
-    payload = exact(sock, length) if length else b""
-    return opcode, payload
-
-def http(method, url, body=None, cookie=None):
-    data = None if body is None else json.dumps(body).encode()
-    headers = {"Content-Type": "application/json"} if body is not None else {}
-    if cookie:
-        headers["Cookie"] = f"{relay.COOKIE}={cookie}"
-    request = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            raw = response.read().decode()
-            set_cookie = response.headers.get("Set-Cookie")
-            status = response.status
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode()
-        set_cookie = exc.headers.get("Set-Cookie") if exc.headers else None
-        status = exc.code
-    token = None
-    if set_cookie:
-        for part in set_cookie.split(";"):
-            name, _, value = part.strip().partition("=")
-            if name == relay.COOKIE and value:
-                token = value
-    return status, json.loads(raw or "{}"), token
-
-try:
-    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
-    key = __import__("base64").b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /v1/desktop HTTP/1.1\r\n"
-            f"Host: 127.0.0.1:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        ).encode()
-    )
-    raw = b""
-    while b"\r\n\r\n" not in raw:
-        raw += sock.recv(4096)
-    if b"101" not in raw.split(b"\r\n", 1)[0]:
-        raise SystemExit(f"websocket upgrade failed: {raw[:200]!r}")
-    ws_send(sock, json.dumps({
-        "type": "hello",
-        "host_id": "host-e2e",
-        "host_token": "host-token-e2e-not-logged",
-        "host_label": "desk",
-        "protocol": 1,
-    }).encode())
-    opcode, payload = ws_recv(sock)
-    hello = json.loads(payload.decode())
-    if hello.get("type") != "hello_ok":
-        raise SystemExit(f"hello failed: {hello}")
-    ws_send(sock, json.dumps({"type": "pair_start"}).encode())
-    issued = json.loads(ws_recv(sock)[1].decode())
-    status, pending, _ = http("POST", f"{base}/api/pair", {"code": issued["code"], "label": "pixel"})
-    if status != 202:
-        raise SystemExit(f"pair failed: {status} {pending}")
-    if json.loads(ws_recv(sock)[1].decode()).get("type") != "pair_pending":
-        raise SystemExit("missing pair_pending")
-    ws_send(sock, json.dumps({"type": "pair_confirm", "pairing_id": issued["pairing_id"]}).encode())
-    if json.loads(ws_recv(sock)[1].decode()).get("type") != "pair_confirmed":
-        raise SystemExit("pair was not confirmed")
-    status, polled, cookie = http("GET", f"{base}/api/pair/{issued['pairing_id']}")
-    if polled.get("status") != "confirmed" or not cookie:
-        raise SystemExit(f"pair poll failed: {status} {polled}")
-    # V1-13: the canary string is absent from relay logs. A relay that still
-    # accepts type=text is checked with that plaintext turn. A relay that
-    # rejects plaintext (the encrypted relay is right to) is checked with a
-    # sealed envelope whose body does not contain the canary.
-    plaintext = {
-        "schema_version": 1,
-        "request_id": "req-canary",
-        "content": [{"type": "text", "text": canary}],
-    }
-    if relay.validate_envelope(plaintext) == "plaintext_rejected":
-        try:
-            import phone_crypto
-            sealed = phone_crypto.opaque_body(canary)
-        except Exception:
-            sealed = __import__("base64").urlsafe_b64encode(os.urandom(48)).decode().rstrip("=")
-        if canary in sealed:
-            raise SystemExit("sealed body leaked the canary")
-        turn = {
-            "schema_version": 1,
-            "request_id": "req-canary",
-            "content": [{"type": "sealed", "body": sealed}],
-        }
-        reply_text = sealed
-        print("relay rejected plaintext; posted a sealed envelope", file=sys.stderr)
-    else:
-        turn = plaintext
-        reply_text = canary
-    status, queued, _ = http(
-        "POST",
-        f"{base}/api/turns",
-        turn,
-        cookie=cookie,
-    )
-    if status != 202:
-        raise SystemExit(f"turn failed: {status} {queued}")
-    delivered = json.loads(ws_recv(sock)[1].decode())
-    ws_send(sock, json.dumps({
-        "type": "reply",
-        "delivery_id": delivered["delivery_id"],
-        "request_id": "req-canary",
-        "state": "succeeded",
-        "reply": reply_text,
-    }).encode())
-finally:
-    server.shutdown()
-    server.server_close()
-    handler.flush()
-
-blob = log_path.read_bytes()
-for candidate in Path(relay_dir).iterdir():
-    if candidate.is_file():
-        blob += b"\n" + candidate.read_bytes()
-if canary.encode() in blob:
-    raise SystemExit("canary appeared in a relay log or database file")
-conn = sqlite3.connect(state_path)
-try:
-    tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    for table in tables:
-        for row in conn.execute(f"SELECT * FROM {table}"):
-            rendered = " ".join("" if value is None else str(value) for value in row)
-            if canary in rendered:
-                raise SystemExit(f"canary stored in {table}")
-        columns = [info[1] for info in conn.execute(f"PRAGMA table_info({table})")]
-        if "body" in columns or "content" in columns or "text" in columns:
-            raise SystemExit(f"{table} has a content column: {columns}")
-finally:
-    conn.close()
-print("relay canary absent from logs and database rows")
-PY
-then
-  CANARY="PASS"
-else
-  CANARY="FAIL"
-fi
-rm -rf "$RELAY_DIR"
-
 echo "=== host retention and no-account ==="
 if "$BIN_PATH" host start --background --ephemeral --timeout-secs 90; then
   HOST_STARTED=1
@@ -381,10 +179,9 @@ PY
 fi
 
 echo "CHECK retention: $RETENTION"
-echo "CHECK relay-canary: $CANARY"
 echo "CHECK no-account: $ACCOUNT"
 
-if [[ "$RETENTION" == PASS && "$CANARY" == PASS && "$ACCOUNT" == PASS ]]; then
+if [[ "$RETENTION" == PASS && "$ACCOUNT" == PASS ]]; then
   exit 0
 fi
 exit 1

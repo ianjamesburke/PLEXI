@@ -25,16 +25,15 @@
 # shim. The owning PR applies the one-line in scripts/e2e/plexi-bin.md.
 #
 # Linux: private Xvfb, a temp HOME, PLEXI_KEYCHAIN_PATH pointed at a throwaway
-# file, a local Docker relay when the phone script is present, and the mock
-# OpenRouter unless OPENROUTER_API_KEY is already set. config.toml is
+# file, and mock OpenRouter unless OPENROUTER_API_KEY is already set. config.toml is
 # snapshotted from scripts/default-config.toml and restored after every item
-# so a gate or relay rewrite of [ai] backend cannot poison the ledger item.
+# so a gate rewrite of [ai] backend cannot poison the ledger item.
 # Between items the harness reaps Xvfb processes the item started. An
 # xvfb-run left on :99 with an auth cookie makes xdpyinfo report that display
 # down, and the next script then starts a host on a server it does not own.
 #
 # Before any item, a preflight installs or verifies VM dependencies:
-# Python Pillow (V1-02 board clicks), Docker (V1-08 relay), tesseract
+# Python Pillow (V1-02 board clicks), tesseract
 # (V1-11 reads the command pane), and an unlocked gnome-keyring on a private
 # session bus (the Linux journal / sealed audit). A dependency that cannot
 # be made to work is ENV-FAIL on the items that need it, not a product FAIL.
@@ -142,9 +141,7 @@ XVFB_PID=""
 MOCK_PID=""
 DISPLAY_NUM=""
 KEYRING_PID=""
-DOCKERD_PID=""
 PREFLIGHT_PILLOW_ERR=""
-PREFLIGHT_DOCKER_ERR=""
 PREFLIGHT_SECRETS_ERR=""
 PREFLIGHT_TESSERACT_ERR=""
 
@@ -163,9 +160,6 @@ cleanup() {
   fi
   if [[ -n "${DBUS_SESSION_BUS_PID:-}" ]]; then
     kill "$DBUS_SESSION_BUS_PID" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$DOCKERD_PID" ]]; then
-    sudo -n kill "$DOCKERD_PID" >/dev/null 2>&1 || kill "$DOCKERD_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" >/dev/null 2>&1 || true
@@ -324,9 +318,6 @@ preflight_apt() {
   if ! command -v dbus-launch >/dev/null 2>&1; then
     need+=(dbus-x11)
   fi
-  if ! command -v docker >/dev/null 2>&1; then
-    need+=(docker.io)
-  fi
   if ! command -v tesseract >/dev/null 2>&1; then
     need+=(tesseract-ocr tesseract-ocr-eng)
   fi
@@ -482,67 +473,12 @@ preflight_secrets_cleanup_failed() {
   unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID PLEXI_V1_SECRETS_READY || true
 }
 
-preflight_docker() {
-  local log="$EVID/preflight-docker.log"
-  : >"$log"
-  if ! command -v docker >/dev/null 2>&1; then
-    PREFLIGHT_DOCKER_ERR="docker is not installed (log $EVID/preflight-apt.log)"
-    return 1
-  fi
-  if docker info >/dev/null 2>&1; then
-    return 0
-  fi
-  # The package may be installed while the daemon is not running. This VM
-  # has no systemd, so start dockerd directly. vfs is the fallback when the
-  # default storage driver cannot mount inside a container.
-  local driver
-  for driver in "" vfs; do
-    local -a args=(--host=unix:///var/run/docker.sock --iptables=false)
-    if [[ -n "$driver" ]]; then
-      args+=(--storage-driver="$driver")
-    fi
-    if [[ -n "$DOCKERD_PID" ]]; then
-      sudo -n kill "$DOCKERD_PID" >/dev/null 2>&1 || true
-      wait "$DOCKERD_PID" 2>/dev/null || true
-      DOCKERD_PID=""
-    fi
-    sudo -n dockerd "${args[@]}" >>"$log" 2>&1 &
-    DOCKERD_PID=$!
-    local i
-    for i in $(seq 1 40); do
-      if [[ -S /var/run/docker.sock ]]; then
-        sudo -n chmod 666 /var/run/docker.sock >>"$log" 2>&1 || true
-      fi
-      if docker info >/dev/null 2>&1; then
-        return 0
-      fi
-      if ! kill -0 "$DOCKERD_PID" 2>/dev/null; then
-        # dockerd often daemonizes and the sudo parent exits. A live socket
-        # is still success.
-        if docker info >/dev/null 2>&1; then
-          return 0
-        fi
-        break
-      fi
-      sleep 0.5
-    done
-  done
-  if docker info >/dev/null 2>&1; then
-    return 0
-  fi
-  PREFLIGHT_DOCKER_ERR="dockerd did not become ready (log $log)"
-  return 1
-}
-
 run_preflight() {
   preflight_apt || true
   if python3 -c 'from PIL import Image' >/dev/null 2>&1; then
     PREFLIGHT_PILLOW_ERR=""
   else
     PREFLIGHT_PILLOW_ERR="python3-pil is not importable (log $EVID/preflight-apt.log)"
-  fi
-  if preflight_docker; then
-    PREFLIGHT_DOCKER_ERR=""
   fi
   if preflight_secrets; then
     PREFLIGHT_SECRETS_ERR=""
@@ -730,10 +666,6 @@ else
   unset OPENROUTER_API_KEY || true
 fi
 
-# Phone tests talk to the relay container the feature script starts locally.
-# Drop any ambient staging URL so a landed script cannot leave the machine.
-unset PLEXI_RELAY_URL RELAY_URL RELAY_BASE_URL || true
-
 declare -a ROWS=()
 N_PASS=0
 N_FAIL=0
@@ -767,11 +699,6 @@ env_blocked() {
     V1-02)
       if [[ -n "$PREFLIGHT_PILLOW_ERR" ]]; then
         why="Pillow: $PREFLIGHT_PILLOW_ERR"
-      fi
-      ;;
-    V1-08)
-      if [[ -n "$PREFLIGHT_DOCKER_ERR" ]]; then
-        why="Docker: $PREFLIGHT_DOCKER_ERR"
       fi
       ;;
     V1-04|V1-05|V1-06|V1-15)
@@ -1555,11 +1482,6 @@ if [[ -z "$PREFLIGHT_PILLOW_ERR" ]]; then
 else
   echo "preflight pillow ENV-FAIL $PREFLIGHT_PILLOW_ERR"
 fi
-if [[ -z "$PREFLIGHT_DOCKER_ERR" ]]; then
-  echo "preflight docker ok"
-else
-  echo "preflight docker ENV-FAIL $PREFLIGHT_DOCKER_ERR"
-fi
 if [[ -z "$PREFLIGHT_SECRETS_ERR" ]]; then
   echo "preflight secret-service ok (gnome-keyring login unlocked)"
 else
@@ -1581,7 +1503,6 @@ with_config item_v1_01
 #   V1-05 #2704 scripts/needs-you-e2e.sh + #2713 scripts/needs-you-persist-e2e.sh
 #   V1-06 #2705/#2719 scripts/folder-secrets-e2e.sh (same path)
 #   V1-07 #2710 scripts/e2e/ledger/run.sh
-#   V1-08 #2708 services/relay/e2e_installed.sh
 #   V1-09 #2706 scripts/e2e_agents_api_installed.sh
 #   V1-10 #2715 scripts/multi-lead-e2e.sh + #2716 scripts/headless-queue-e2e.sh
 #   V1-11 #2717 scripts/command-view-steer-e2e.sh (#2707 command-view-e2e.sh superseded)
@@ -1595,7 +1516,6 @@ with_config run_one V1-04 1 --probe permissions -- scripts/permissions-seal-e2e.
 with_config run_one V1-05 1 --probe needs-you -- scripts/needs-you-e2e.sh scripts/needs-you-persist-e2e.sh
 with_config run_one V1-06 1 -- scripts/folder-secrets-e2e.sh
 with_config run_one V1-07 0 --probe ledger -- scripts/e2e/ledger/run.sh
-with_config run_one V1-08 1 -- services/relay/e2e_installed.sh
 with_config run_one V1-09 1 --probe agent head -- scripts/e2e_agents_api_installed.sh
 with_config run_one V1-10 1 --probe agent head -- scripts/multi-lead-e2e.sh scripts/headless-queue-e2e.sh
 with_config run_one V1-11 1 --probe command-view -- --any scripts/command-view-steer-e2e.sh scripts/command-view-e2e.sh
