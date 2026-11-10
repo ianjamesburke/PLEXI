@@ -1,0 +1,63 @@
+build-cache: slot=/Users/ianburke/.cache/plexi-build/0efadbfd28de9e67/slot-0 retained_bytes=41560757769 wait_seconds=1.410
+bash scripts/cargo-with-lease.sh env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID python3 scripts/cargo-channel-inputs.py test --bin plexi -- app::quit::tests --nocapture < /dev/null
+cargo-lease: {"channel": null, "command": ["env", "-u", "PLEXI_CHANNEL", "-u", "PLEXI_CONTEXT_ROOT", "-u", "PLEXI_CONTEXT_ID", "-u", "PLEXI_CONTEXT_NAME", "-u", "PLEXI_SOCKET", "-u", "PLEXI_RUNNING", "-u", "PLEXI_PANE_ID", "python3", "scripts/cargo-channel-inputs.py", "test", "--bin", "plexi", "--", "app::quit::tests", "--nocapture"], "cwd": "/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/stint-1200-shutdown", "event": "request", "id": "3feecab8-6629-4a77-82c7-811e2fc538f1", "pid": 2672, "profile": "dev/test", "schema": 1, "target": "/Users/ianburke/.cache/plexi-build/0efadbfd28de9e67/slot-0/target", "time": 1794277790.846713}
+cargo-lease: {"channel": null, "command": ["env", "-u", "PLEXI_CHANNEL", "-u", "PLEXI_CONTEXT_ROOT", "-u", "PLEXI_CONTEXT_ID", "-u", "PLEXI_CONTEXT_NAME", "-u", "PLEXI_SOCKET", "-u", "PLEXI_RUNNING", "-u", "PLEXI_PANE_ID", "python3", "scripts/cargo-channel-inputs.py", "test", "--bin", "plexi", "--", "app::quit::tests", "--nocapture"], "cwd": "/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/stint-1200-shutdown", "event": "acquire", "id": "3feecab8-6629-4a77-82c7-811e2fc538f1", "pid": 2672, "profile": "dev/test", "queue_seconds": 15.714637083001435, "schema": 1, "target": "/Users/ianburke/.cache/plexi-build/0efadbfd28de9e67/slot-0/target", "time": 1794277806.561384}
+cargo-channel-input: workspace=/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/stint-1200-shutdown input=missing
+   Compiling plexi v0.4.3 (/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/stint-1200-shutdown)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+  = note: the `linker_messages` lint ignores `-D warnings`
+
+warning: `plexi` (bin "plexi" test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 12s
+     Running unittests src/main.rs (/Users/ianburke/.cache/plexi-build/0efadbfd28de9e67/slot-0/target/debug/deps/plexi-03169597ec777426)
+
+running 9 tests
+test app::quit::tests::quit_reasons_preserve_window_host_stop_and_update_grace ... ok
+test app::quit::tests::a_recorded_socket_is_the_one_teardown_releases ... ok
+quit_trace: pid=3351 elapsed_us=0 phase=save_begin
+quit_trace: pid=3351 elapsed_us=3 phase=save_begin
+quit_trace: pid=3351 elapsed_us=3621 phase=save_begin
+quit_trace: pid=3351 elapsed_us=10177 phase=save_failed
+
+thread 'app::quit::tests::quit_save_failure_stays_dirty_and_retries' (24296766) panicked at src/app/quit.rs:279:9:
+a failed final save must remain pending even if initially clean
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+quit_trace: pid=3351 elapsed_us=13549 phase=confirmation_accepted
+quit_trace: pid=3351 elapsed_us=16210 phase=save_begin
+quit_trace: pid=3351 elapsed_us=20117 phase=save_failed
+quit_trace: pid=3351 elapsed_us=24460 phase=save_ok
+
+thread 'app::quit::tests::quit_confirmation_does_not_close_after_failed_save' (24296764) panicked at src/app/quit.rs:297:9:
+failed durability must not allow eframe to destroy the window
+quit_trace: pid=3351 elapsed_us=24913 phase=save_begin
+quit_trace: pid=3351 elapsed_us=28574 phase=save_ok
+quit_trace: pid=3351 elapsed_us=47064 phase=save_ok
+quit_trace: pid=3351 elapsed_us=49344 phase=save_begin
+test app::quit::tests::quit_save_persists_a_later_dirty_mutation ... ok
+test app::quit::tests::quit_save_failure_stays_dirty_and_retries ... FAILED
+test app::quit::tests::quit_confirmation_does_not_close_after_failed_save ... FAILED
+test app::quit::tests::release_is_quiet_when_the_socket_is_already_gone ... ok
+test app::quit::tests::release_leaves_a_socket_another_host_has_rebound ... ok
+test app::quit::tests::release_removes_the_socket_this_process_bound ... ok
+quit_trace: pid=3351 elapsed_us=65934 phase=save_ok
+
+thread 'app::quit::tests::quit_save_is_not_duplicated_by_a_second_quit_path' (24296767) panicked at src/app/quit.rs:254:9:
+assertion `left == right` failed: an unchanged quit must not write another workspace generation
+  left: SystemTime { tv_sec: 1794277879, tv_nsec: 988778189 }
+ right: SystemTime { tv_sec: 1794277879, tv_nsec: 950947112 }
+test app::quit::tests::quit_save_is_not_duplicated_by_a_second_quit_path ... FAILED
+
+failures:
+
+failures:
+    app::quit::tests::quit_confirmation_does_not_close_after_failed_save
+    app::quit::tests::quit_save_failure_stays_dirty_and_retries
+    app::quit::tests::quit_save_is_not_duplicated_by_a_second_quit_path
+
+test result: FAILED. 6 passed; 3 failed; 0 ignored; 0 measured; 3813 filtered out; finished in 0.14s
+
+error: test failed, to rerun pass `--bin plexi`
+cargo-lease: {"channel": null, "command": ["env", "-u", "PLEXI_CHANNEL", "-u", "PLEXI_CONTEXT_ROOT", "-u", "PLEXI_CONTEXT_ID", "-u", "PLEXI_CONTEXT_NAME", "-u", "PLEXI_SOCKET", "-u", "PLEXI_RUNNING", "-u", "PLEXI_PANE_ID", "python3", "scripts/cargo-channel-inputs.py", "test", "--bin", "plexi", "--", "app::quit::tests", "--nocapture"], "cwd": "/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/stint-1200-shutdown", "event": "finish", "execution_seconds": 73.44870412501041, "id": "3feecab8-6629-4a77-82c7-811e2fc538f1", "pid": 2672, "profile": "dev/test", "queue_seconds": 15.714637083001435, "result": 101, "schema": 1, "target": "/Users/ianburke/.cache/plexi-build/0efadbfd28de9e67/slot-0/target", "time": 1794277880.0100439}
+error: recipe `test-host` failed on line 71 with exit code 101

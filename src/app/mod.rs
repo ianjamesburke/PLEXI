@@ -218,6 +218,7 @@ pub struct PlexiApp {
     pub(crate) ui_gallery_show_text_modal: bool,
     pub(crate) ui_gallery_modal_buf: String,
     pub(crate) quitting: bool,
+    pub(crate) quit_coordinator: quit::QuitCoordinator,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
@@ -1705,6 +1706,7 @@ impl PlexiApp {
                     ui_gallery_show_text_modal: false,
                     ui_gallery_modal_buf: String::new(),
                     quitting: false,
+                    quit_coordinator: quit::QuitCoordinator::default(),
                     quit_press_count: 0,
                     quit_last_press: None,
                     config: config.clone(),
@@ -1981,6 +1983,7 @@ impl PlexiApp {
             ui_gallery_show_text_modal: false,
             ui_gallery_modal_buf: String::new(),
             quitting: false,
+            quit_coordinator: quit::QuitCoordinator::default(),
             quit_press_count: 0,
             quit_last_press: None,
             config,
@@ -2950,6 +2953,7 @@ impl PlexiApp {
             ui_gallery_show_text_modal: false,
             ui_gallery_modal_buf: String::new(),
             quitting: false,
+            quit_coordinator: quit::QuitCoordinator::default(),
             quit_press_count: 0,
             quit_last_press: None,
             config,
@@ -3468,6 +3472,15 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if raw_input.viewport().close_requested() {
+            quit::trace("close_input_delivered");
+        }
+        if raw_input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Q, pressed: true, modifiers, .. } if modifiers.command)) {
+            quit::trace("quit_key_input_delivered");
+        }
+        if self.quit_coordinator.blocks_input() {
+            return;
+        }
         self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
@@ -3535,6 +3548,9 @@ impl eframe::App for PlexiApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.service_quit(frame) {
+            return;
+        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::Logic,
@@ -3551,6 +3567,9 @@ impl eframe::App for PlexiApp {
             ctx.request_repaint();
         }
         self.update_preamble(ctx);
+        if self.service_quit(frame) {
+            return;
+        }
         self.apply_ui_scale(ctx);
         crate::platform::titlebar::update_metrics(ctx, frame);
         self.flush_ui_scale_persist();
@@ -3804,6 +3823,10 @@ impl eframe::App for PlexiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.quit_coordinator.blocks_input() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
         let _sheet_frame = SheetButtonFrame::begin();
         let ctx = &ui.ctx().clone();
         let ui_profile_start = crate::platform::ui_profile::enabled().then(std::time::Instant::now);
@@ -4323,19 +4346,11 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ToggleZoom => self.toggle_pane_zoom(),
                 Action::Quit => {
+                    quit::trace("quit_action");
                     if !self.prepare_user_quit() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     } else if !self.confirm_quit() {
-                        self.quitting = true;
-                        // Closing the viewport is the last frame this host
-                        // will run — a debounced `mark_workspace_dirty()`
-                        // never gets a later tick to flush, so quit paths
-                        // save synchronously (stint 0548).
-                        if self.save_workspace_now() {
-                            self.workspace_dirty = false;
-                            log::info!("workspace: synchronous save (quit)");
-                        }
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.request_quit(quit::ExitReason::WindowClosed);
                     } else {
                         let now = std::time::Instant::now();
                         let elapsed = self
@@ -4350,12 +4365,7 @@ impl eframe::App for PlexiApp {
                         if self.quit_press_count >= 3 {
                             self.quit_press_count = 0;
                             self.quit_last_press = None;
-                            self.quitting = true;
-                            if self.save_workspace_now() {
-                                self.workspace_dirty = false;
-                                log::info!("workspace: synchronous save (quit)");
-                            }
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            self.request_quit(quit::ExitReason::WindowClosed);
                         }
                     }
                 }
@@ -4596,50 +4606,27 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Handle window close request (X button or macOS Cmd+Q OS event).
-        //
-        // On macOS, Cmd+Q fires BOTH a keyboard event (consumed by keys.rs →
-        // Action::Quit → triple-tap) AND a close_requested viewport event in the
-        // same frame. Without CancelClose here, the OS close wins the race,
-        // quitting immediately and bypassing the triple-tap entirely.
-        //
-        // We distinguish the two sources by whether a keyboard quit flow is in
-        // progress (quit_press_count > 0):
-        //   - quit_press_count > 0 → Cmd+Q initiated; cancel the OS close and let
-        //     the triple-tap flow own the quit path.
-        //   - quit_press_count == 0 → X button or system quit; save and allow close
-        //     immediately (no triple-tap for deliberate window close gestures).
-        //   - quitting == true → triple-tap completed; save and allow close.
+        if self.quit_coordinator.blocks_input() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            return;
+        }
+        // macOS can deliver both Cmd+Q and a close event in one pass. Always
+        // cancel eframe's close; the coordinator owns saving, hiding and exit.
         if ctx.input(|i| i.viewport().close_requested()) {
             crate::platform::logging::mark_ui_phase(
                 &self.ui_phase,
                 crate::platform::logging::UiPhase::CloseRequest,
             );
-            log::info!(
-                "quit_phase: close_request quitting={} quit_press_count={}",
-                self.quitting,
-                self.quit_press_count
-            );
-            if !self.prepare_user_quit() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else if self.quitting {
-                // Triple-tap already completed and the window is closing this
-                // frame — no later tick will run the debounce flush, so save
-                // synchronously (stint 0548).
-                if self.save_workspace_now() {
-                    self.workspace_dirty = false;
-                    log::info!("workspace: synchronous save (quit)");
-                }
-            } else if self.confirm_quit() && self.quit_press_count > 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else {
-                // X button / system close with no triple-tap in progress —
-                // the window closes immediately, same reasoning as above.
-                if self.save_workspace_now() {
-                    self.workspace_dirty = false;
-                    log::info!("workspace: synchronous save (quit)");
-                }
+            quit::trace("close_request");
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.prepare_user_quit()
+                && (self.quitting || !self.confirm_quit() || self.quit_press_count == 0)
+            {
+                self.request_quit(quit::ExitReason::WindowClosed);
             }
+        }
+        if self.quit_coordinator.blocks_input() {
+            return;
         }
 
         // Ownership-transfer (stint 0387): if the focused pane is a terminal
@@ -4687,14 +4674,22 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::Exit,
         );
+        quit::trace("on_exit_begin");
         log::info!("quit_phase: on_exit begin");
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();
         log::info!("quit_phase: on_exit complete");
-        // eframe stops here: it has destroyed the window but will only end the
-        // process on a later winit event that a chrome close need never send
-        // (see `quit`). Finish the quit ourselves.
-        quit::exit_host(quit::ExitReason::WindowClosed);
+        // Backend teardown can call on_exit before destroying its window.
+        // Normal quit never gets here: it hides, yields, and exits from logic.
+        // On unexpected backend teardown we must still preserve durability.
+        while !self.persist_quit_state() {
+            log::error!("quit: backend teardown waiting for durable workspace save");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        self.begin_quit_cleanup();
+        quit::exit_host(
+            self.quit_coordinator.reason.unwrap_or(quit::ExitReason::WindowClosed),
+        );
     }
 }
 

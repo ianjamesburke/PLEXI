@@ -115,22 +115,6 @@ impl PlexiApp {
                 }
             }
         }
-        let now = std::time::Instant::now();
-        if self.workspace_dirty
-            && workspace_save_due(self.last_workspace_save, now)
-            && self.workspace_save_retry_at.is_none_or(|retry_at| now >= retry_at)
-        {
-            if self.save_workspace_now() {
-                self.workspace_dirty = false;
-                self.workspace_save_retry_at = None;
-                log::debug!("workspace: debounce flush after churn");
-            } else {
-                let delay = std::time::Duration::from_secs(30);
-                self.workspace_save_retry_at = Some(now + delay);
-                self.schedule_workspace_save_wake(delay);
-            }
-            self.last_workspace_save = now;
-        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::PreambleRuntimePoll,
@@ -146,21 +130,10 @@ impl PlexiApp {
             self.drain_pane_cmd_channel()
         });
         if self.shutdown_requested {
-            // `plexi host stop`'s clean-shutdown path (AppRequest::Shutdown).
-            // This one cannot route through the window-close path: a hidden or
-            // occluded host runs no `App::ui` pass at all, so the close request
-            // would never be seen. Save synchronously, then exit successfully
-            // so launchd also treats this as a clean stop.
-            log::info!("host: shutdown requested — saving workspace and exiting");
-            if self.save_workspace_now() {
-                self.workspace_dirty = false;
-                log::info!("workspace: synchronous save (shutdown)");
-            }
-            // `on_exit` never runs on this path — exiting from mid-frame is
-            // what makes it reliable — so close the focus segment here, the
-            // same way the window-close path does from `on_exit`.
-            self.bank_final_focus_segment();
-            crate::app::quit::exit_host(crate::app::quit::ExitReason::HostStop);
+            crate::app::quit::trace("host_stop_received");
+            self.shutdown_requested = false;
+            self.request_quit(crate::app::quit::ExitReason::HostStop);
+            return;
         }
         if let Some(rx) = &self.update_rx {
             if let Ok(version) = rx.try_recv() {
@@ -169,29 +142,27 @@ impl PlexiApp {
             }
         }
         if self.update_quit_pending {
+            crate::app::quit::trace("update_restart_received");
+            self.update_quit_pending = false;
+            self.request_quit(crate::app::quit::ExitReason::UpdateRestart);
+            return;
+        }
+        let now = std::time::Instant::now();
+        if !self.quit_coordinator.is_active()
+            && self.workspace_dirty
+            && workspace_save_due(self.last_workspace_save, now)
+            && self.workspace_save_retry_at.is_none_or(|retry_at| now >= retry_at)
+        {
             if self.save_workspace_now() {
                 self.workspace_dirty = false;
-                log::info!("workspace: synchronous save (update-quit)");
+                self.workspace_save_retry_at = None;
+                log::debug!("workspace: debounce flush after churn");
+            } else {
+                let delay = std::time::Duration::from_secs(30);
+                self.workspace_save_retry_at = Some(now + delay);
+                self.schedule_workspace_save_wake(delay);
             }
-            log::info!("ui: restarting for update");
-            let result = crate::distribution::installed()
-                .and_then(|r| {
-                    r.ok_or_else(|| "no managed installation available for restart".to_string())
-                })
-                .and_then(|r| {
-                    plexi_distribution::transaction::schedule_restart(&r, std::process::id())
-                        .map_err(|e| e.to_string())
-                });
-            match result {
-                Ok(()) => {
-                    self.bank_final_focus_segment();
-                    crate::app::quit::exit_host(crate::app::quit::ExitReason::UpdateRestart);
-                }
-                Err(error) => {
-                    self.update_quit_pending = false;
-                    log::error!("update restart failed: {error}");
-                }
-            }
+            self.last_workspace_save = now;
         }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
