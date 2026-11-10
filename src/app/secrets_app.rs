@@ -689,7 +689,7 @@ mod tests {
                 );
             });
             h.run_steps(4);
-            h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-before.png"))
+            h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_before")))
                 .unwrap();
             // The stock ComboBox does not expose its selected text as an accessibility node.
             let selector = egui::pos2(70.0, 255.0);
@@ -727,7 +727,7 @@ mod tests {
                     .max_by(|a, b| a.top().total_cmp(&b.top()))
                     .unwrap();
                 assert_eq!(current_workspace, workspace);
-                h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-{name}.png"))
+                h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_{name}")))
                     .unwrap();
             }
         }

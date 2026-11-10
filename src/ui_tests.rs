@@ -661,6 +661,7 @@ mod tests {
             for scale in [1.0, 2.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 1000.0, scale);
                 apply_fixture_theme(&mut h, theme);
+                add_focused_pane(&mut h);
                 h.with_app_mut(|app| app.show_ui_gallery = true);
                 h.run_steps(4);
                 for section in ["Buttons and chips", "Sidebar rows"] {
