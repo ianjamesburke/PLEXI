@@ -65,7 +65,10 @@ pub fn form_fields<'a>(
 /// Renders one arg/flag field. When `want_focus` is true and this field is
 /// a text input, it requests keyboard focus and returns true so the caller
 /// stops offering focus to later fields.
-#[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "legacy controls await kit replacements"
+)]
 fn render_field(
     ui: &mut egui::Ui,
     colors: &crate::ui::theme::Colors,

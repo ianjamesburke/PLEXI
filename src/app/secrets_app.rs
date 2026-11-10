@@ -279,7 +279,10 @@ impl SecretsApp {
         }
     }
 
-    #[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn scope_picker(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         labels::description_label(ui, "Scope", colors);
         ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
@@ -664,7 +667,10 @@ mod tests {
                 &crate::config::workspace_channel_dir(),
             )
             .unwrap();
-            assert!(matches!(manager::workspace_target(root.path()).unwrap(), Some(SecretTarget::Workspace { .. })));
+            assert!(matches!(
+                manager::workspace_target(root.path()).unwrap(),
+                Some(SecretTarget::Workspace { .. })
+            ));
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
@@ -684,13 +690,19 @@ mod tests {
                 );
             });
             h.run_steps(4);
-            h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-before.png")).unwrap();
+            h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-before.png"))
+                .unwrap();
             // The stock ComboBox does not expose its selected text as an accessibility node.
             let selector = egui::pos2(70.0, 255.0);
             for pressed in [true, false] {
                 h.harness().input_mut().events.extend([
                     egui::Event::PointerMoved(selector),
-                    egui::Event::PointerButton { pos: selector, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                    egui::Event::PointerButton {
+                        pos: selector,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
                 ]);
                 h.step();
             }

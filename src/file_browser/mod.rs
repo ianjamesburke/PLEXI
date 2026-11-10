@@ -2553,7 +2553,10 @@ impl FileBrowserApp {
             .collect()
     }
 
-    #[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn draw_toolbar(
         &mut self,
         ui: &mut egui::Ui,
