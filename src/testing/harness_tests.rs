@@ -8615,8 +8615,75 @@ mod routine_firing {
     }
 
     #[test]
+    fn routine_firing_experiment_gate_and_disabled_log() {
+        const CHILD: &str = "PLEXI_ROUTINE_GATE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "testing::harness_tests::routine_firing::routine_firing_experiment_gate_and_disabled_log", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let logs = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                logs.matches("scheduler: routines are disabled; routines.toml ignored")
+                    .count(),
+                1,
+                "{logs}"
+            );
+            return;
+        }
+        struct Logger;
+        impl log::Log for Logger {
+            fn enabled(&self, metadata: &log::Metadata) -> bool {
+                metadata.level() <= log::Level::Info
+            }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    eprintln!("{}", record.args());
+                }
+            }
+            fn flush(&self) {}
+        }
+        log::set_boxed_logger(Box::new(Logger)).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        root_default_context(&mut h, root.path());
+        add_focused_app_pane(&mut h, 0, root.path());
+        write_routines(
+            root.path(),
+            "[[routine]]\nname = \"gate\"\ncommand = \"true\"\nschedule = \"every 2 hours\"\n",
+        );
+        let _disabled = crate::release::set_test_experiments(&[]);
+        h.app.tick_scheduler();
+        h.app.tick_scheduler();
+        assert!(
+            terminal_pane_ids(&h, 0).is_empty(),
+            "disabled routines must not spawn a pane"
+        );
+        assert!(
+            h.app.scheduler.entries.is_empty(),
+            "disabled routines must not load"
+        );
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "enabled routine must fire"
+        );
+    }
+
+    #[test]
     fn routine_fires_into_named_context_and_restores_focus() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8662,6 +8729,8 @@ mod routine_firing {
     fn spawn_pane_context_name_lands_in_named_context() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8715,6 +8784,8 @@ mod routine_firing {
     fn spawn_pane_unknown_context_name_errors() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8756,6 +8827,8 @@ mod routine_firing {
     #[test]
     fn routine_empty_context_fires_into_active_context() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8781,6 +8854,8 @@ mod routine_firing {
     #[test]
     fn routine_missing_context_skips_notifies_once() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
@@ -8822,6 +8897,8 @@ mod routine_firing {
     #[test]
     fn startup_does_not_stampede_with_persisted_last_fire() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8858,6 +8935,8 @@ mod routine_firing {
     fn startup_fires_when_persisted_last_fire_is_stale_or_absent() {
         // Stale persisted state → fires once.
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -8906,6 +8985,8 @@ mod routine_firing {
     #[test]
     fn overlap_guard_skips_streaks_and_reaps_on_close() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
@@ -8993,6 +9074,8 @@ mod routine_firing {
     #[test]
     fn ephemeral_bare_command_run_blocks_refire_without_activity_sample() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -9039,6 +9122,8 @@ mod routine_firing {
     #[test]
     fn nonephemeral_exited_shell_reaps_and_refires() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());
@@ -9091,6 +9176,8 @@ mod routine_firing {
     #[test]
     fn ephemeral_routine_pane_closes_on_exit_and_nonephemeral_stays() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_app_pane(&mut h, 0, root.path());

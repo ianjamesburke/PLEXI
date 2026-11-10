@@ -5891,6 +5891,20 @@ impl PlexiApp {
     }
 
     pub(crate) fn tick_scheduler(&mut self) {
+        if !crate::release::feature_enabled(crate::release::ReleaseFeature::Routines) {
+            if !self.scheduler.disabled_file_logged
+                && self.router.iter().any(|ctx| {
+                    ctx.root
+                        .join(crate::host::scheduler::routines_file())
+                        .is_file()
+                })
+            {
+                log::info!("scheduler: routines are disabled; routines.toml ignored");
+                self.scheduler.disabled_file_logged = true;
+            }
+            return;
+        }
+
         // Load routines from every context root
         let roots: Vec<std::path::PathBuf> =
             self.router.iter().map(|ctx| ctx.root.clone()).collect();
