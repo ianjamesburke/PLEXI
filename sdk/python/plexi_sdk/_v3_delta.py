@@ -14,6 +14,22 @@ key. This module owns both halves of that contract:
 
 from __future__ import annotations
 
+# Wire type aliases map to their child field and whether it contains a list.
+# Keep this aligned with decode_node_data and validate_python_ui_tree in the host.
+CONTAINER_FIELDS = {
+    **dict.fromkeys(("column", "row", "datatable", "data_table", "table"), ("children", True)),
+    **dict.fromkeys(("listview", "list_view", "list-view"), ("items", True)),
+    **dict.fromkeys(("scroll", "padding", "card", "pinned"), ("child", False)),
+}
+
+
+def child_refs(data: dict) -> list:
+    spec = CONTAINER_FIELDS.get(data.get("type", "").lower())
+    if spec is None:
+        return []
+    field, many = spec
+    return data.get(field, []) if many else [data.get(field)]
+
 
 class DeltaApplyError(Exception):
     """A ``tree_delta`` could not be applied to the previous tree.
@@ -77,13 +93,7 @@ def validate_tree(tree: dict) -> None:
         raise DeltaApplyError("tree root is not present in its arena")
     for node in nodes:
         data = node.get("data", {})
-        kind = data.get("type", "").lower()
-        refs = (
-            data.get("children", []) if kind in ("column", "row", "datatable") else
-            data.get("items", []) if kind == "listview" else
-            [data.get("child")] if kind in ("scroll", "padding", "pinned") else []
-        )
-        if any(ref not in known_ids for ref in refs):
+        if any(ref not in known_ids for ref in child_refs(data)):
             raise DeltaApplyError(f"tree node {node.get('id')} references a missing child")
 
 
