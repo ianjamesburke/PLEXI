@@ -44,6 +44,22 @@ pub fn escalation_color(
     }
 }
 
+/// State color shared by terminal and app pane outlines.
+pub fn pane_state_color(pane: &crate::host::pane::Pane, colors: &Colors) -> Option<egui::Color32> {
+    if let Some(terminal) = pane.as_terminal() {
+        if terminal.exited && terminal.exit_status.as_ref().is_some_and(|status| status.is_failure()) {
+            return Some(colors.state_error);
+        }
+        if terminal.standby_session.is_some() {
+            return Some(colors.state_needs_you);
+        }
+        if terminal.agent.is_some() || terminal.reported_7501.is_some() || terminal.observed_agent.is_some() {
+            return Some(dot_color_from_time(&terminal.effective_agent_state().0, colors, 0.0, 0));
+        }
+    }
+    pane.effective_activity().map(|state| dot_color_from_time(state, colors, 0.0, 0))
+}
+
 /// Compact uppercase status badge label for a pane's escalation state.
 pub fn escalation_label(state: Option<&AgentState>, is_error: bool) -> Option<&'static str> {
     if is_error {
@@ -317,6 +333,12 @@ pub fn paint_attention_chrome(
     identity: egui::Id,
     needs_you: bool,
 ) {
+    paint_attention_effect(painter, rect, color, identity, needs_you, true);
+}
+
+pub fn paint_attention_effect(
+    painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, identity: egui::Id, needs_you: bool, ring: bool,
+) {
     let key = identity.with("attention_entered");
     let time = painter.ctx().input(|i| i.time);
     if !needs_you {
@@ -331,12 +353,14 @@ pub fn paint_attention_chrome(
         return;
     }
     schedule_attention(painter.ctx(), visual);
-    painter.rect_stroke(
-        rect.shrink(1.0),
-        crate::ui::style::radius_fit(rect.shrink(1.0)),
-        egui::Stroke::new(visual.stroke, color.gamma_multiply(visual.alpha)),
-        egui::StrokeKind::Inside,
-    );
+    if ring {
+        painter.rect_stroke(
+            rect.shrink(1.0),
+            crate::ui::style::radius_fit(rect.shrink(1.0)),
+            egui::Stroke::new(visual.stroke, color.gamma_multiply(visual.alpha)),
+            egui::StrokeKind::Inside,
+        );
+    }
     if visual.loud {
         painter.text(
             rect.center(),

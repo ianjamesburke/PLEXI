@@ -830,20 +830,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         );
                     }
                 });
-                if let Some(sc) = active_status_col {
-                    let border_col = egui::Color32::from_rgba_unmultiplied(
-                        sc.r(),
-                        sc.g(),
-                        sc.b(),
-                        200,
-                    );
-                    ui.painter().rect_stroke(
-                        pane_rect,
-                        style::pane_radius(self.pane_corner_radius, pane_rect),
-                        egui::Stroke::new(1.5_f32, border_col),
-                        egui::StrokeKind::Inside,
-                    );
-                }
+
             });
             // Double-click on portal pane to zoom into the sub-context.
             if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {

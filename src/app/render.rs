@@ -882,6 +882,29 @@ impl PlexiApp {
                     }
                 }
 
+                // State rings are painted after focus, selection, and corner masks so
+                // neither a selection wash nor a focus stroke obscures their color.
+                if zoomed_pane.is_none() {
+                    let selected = self.host.pane_selection(ctx.window_id);
+                    for (&pane_id, pane) in behavior.panes.iter() {
+                        if behavior.off_strip_panes.contains(&pane_id) { continue; }
+                        let Some(rect) = ctx.tree.tiles.find_pane(&pane_id).and_then(|tile| ctx.tree.tiles.rect(tile)) else { continue; };
+                        if !rect.intersects(canvas_full_rect) { continue; }
+                        let color = if pane.as_portal().is_some() {
+                            behavior.portal_info.get(&pane_id).and_then(|preview| crate::ui::activity::context_status_color(&preview.status, &self.colors))
+                        } else {
+                            crate::ui::activity::pane_state_color(pane, &self.colors)
+                        };
+                        if let Some(color) = color {
+                            static LOG_PANE_STATE_RING: std::sync::Once = std::sync::Once::new();
+                            LOG_PANE_STATE_RING.call_once(|| log::info!("pane chrome: painting state rings inside focus and selection rings"));
+                            let outlined = owner_pane == Some(pane_id) || selected.is_some_and(|selection| selection.panes.contains(&pane_id));
+                            crate::ui::style::paint_pane_state_ring(&focus_painter.with_clip_rect(canvas_full_rect), rect,
+                                crate::ui::style::pane_radius(behavior.pane_corner_radius, rect), outlined, color);
+                        }
+                    }
+                }
+
                 // Expire click_flash once FLASH_DUR has elapsed.
                 if let Some(ref flash) = self.click_flash {
                     if flash.started_at.elapsed().as_secs_f32() >= FLASH_DUR {

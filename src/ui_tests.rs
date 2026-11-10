@@ -6517,11 +6517,12 @@ open(out + ".done", "w").close()
                 h.run_steps(3);
                 let (rect, color, accent) = h.with_app(|app| (app.visible_pane_rect(pane).unwrap(), crate::ui::activity::dot_color_from_time(&state, &app.colors, 0.0, 0), app.colors.accent));
                 let shapes = &h.harness().output().shapes;
-                let ring = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == color && r.rect.intersects(rect) => Some(r), _ => None }).next().expect("state-color ring must be painted");
+                let ring = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(r) if r.stroke.color == egui::epaint::ColorMode::Solid(color) && r.points.iter().all(|p| rect.contains(*p)) => Some(r), _ => None }).next().unwrap_or_else(|| panic!("state-color ring must be painted: {state:?}, focused={focused}, paths={:?}", shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(p) if p.closed && p.points.len() == 36 => Some((&p.stroke.color, egui::Rect::from_points(&p.points))), _ => None }).collect::<Vec<_>>()));
                 assert!(ring.stroke.width > 0.0);
                 if focused {
                     let focus = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => Some(r), _ => None }).next().expect("focus ring");
-                    assert!(ring.rect.left() >= focus.rect.left() + focus.stroke.width, "focus and state strokes overlap");
+                    let left = ring.points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - ring.stroke.width / 2.0;
+                    assert!(left + 0.001 >= focus.rect.left() + focus.stroke.width, "focus and state strokes overlap");
                 }
             }
         }
@@ -6536,10 +6537,63 @@ open(out + ".done", "w").close()
             h.run_steps(3);
             let (rect, color, accent) = h.with_app(|app| (app.visible_pane_rect(pane).unwrap(), app.colors.state_blocked, app.colors.accent));
             let radius = crate::ui::style::pane_radius(None, rect).nw as f32;
-            for color in [color, accent] {
-                let shape = h.harness().output().shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == color && r.rect.intersects(rect) => Some(r), _ => None }).next().expect("ring");
-                let inset = shape.rect.left() - rect.left();
-                assert!((shape.corner_radius.nw as f32 + inset - radius).abs() < 0.01, "ring outer curve must share the tile corner center");
+            let focus = h.harness().output().shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => Some(r), _ => None }).next().expect("focus ring");
+            assert_eq!(focus.corner_radius.nw as f32, radius);
+            let ring = h.harness().output().shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(r) if r.stroke.color == egui::epaint::ColorMode::Solid(color) && r.points.iter().all(|p| rect.contains(*p)) => Some(r), _ => None }).next().expect("state ring");
+            assert!((ring.points[0].x - (rect.right() - radius)).abs() < 0.01);
+            assert!((ring.points[8].y - (rect.top() + radius)).abs() < 0.01, "ring curves must share the tile corner center");
+        }
+    }
+
+    #[test]
+    fn screenshot_pane_chrome_state_matrix() {
+        use crate::protocol::AgentState;
+        let states = [
+            ("working", AgentState::Working), ("idle", AgentState::Idle),
+            ("blocked", AgentState::Blocked), ("needs_you", AgentState::NeedsYou),
+            ("interrupted", AgentState::Interrupted), ("failed", AgentState::Failed),
+            ("completed", AgentState::Completed),
+        ];
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for wide in [false, true] {
+                let mut h = PlexiUiHarness::new_sized(1400.0, 800.0);
+                h.step();
+                std::fs::write(crate::config::config_path(), format!("[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| { app.reload_config(); app.sidebar_visible = false; });
+                h.run_steps(3);
+                h.with_app(|app| {
+                    let expected = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
+                    assert_eq!(app.colors.bg_darkest, expected.bg_darkest, "fixture must render the requested theme");
+                });
+                let root = h.workspace_root().to_path_buf();
+                let mut ids = Vec::new();
+                for (name, state) in &states {
+                    let id = add_focused_pane(&mut h);
+                    ids.push(id);
+                    h.with_app_mut(|app| {
+                        let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                            egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                        term.name = Some(format!("{name}: review implementation"));
+                        term.outside_workspace_cached = false;
+                        term.outside_workspace_checked_at = Some(Instant::now());
+                        term.outside_workspace_root = Some(root.clone());
+                        term.agent = Some(crate::protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
+                        app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                    });
+                }
+                h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let win = &mut app.windows[app.active_window];
+                    let tiles: Vec<_> = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+                    win.tree.root = Some(if wide { win.tree.tiles.insert_grid_tile(tiles) } else { win.tree.tiles.insert_horizontal_tile(tiles) });
+                });
+                for (index, (name, _)) in states.iter().enumerate() {
+                    h.focus_pane(ids[index]).unwrap();
+                    h.run_steps(3);
+                    let path = evidence_png!(&format!("_{theme}_{}_{name}", if wide { "wide" } else { "narrow" }));
+                    h.save_screenshot(&path).unwrap();
+                    println!("screenshot: {path}");
+                }
             }
         }
     }

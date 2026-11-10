@@ -105,8 +105,6 @@ pub fn render(
         })
         .or_else(|| tab_activities.get(pane_id).map(|(state, _)| state.clone()));
     let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
-    let border_escalation_color =
-        crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
     let spawned_by_badge = terminal.spawned_by_badge();
     let waiting_results_badge = (!terminal.pending_child_results.is_empty()).then(|| {
         let count = terminal.pending_child_results.len();
@@ -153,8 +151,7 @@ pub fn render(
                 ui.colored_label(exit_color, "[process exited]");
             });
         });
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -266,8 +263,7 @@ pub fn render(
                 });
             },
         );
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
         return (false, tab_action);
     }
 
@@ -296,26 +292,9 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
-    if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+    crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
 
     (false, tab_action)
-}
-
-fn paint_escalation_border(
-    painter: &egui::Painter,
-    pane_rect: egui::Rect,
-    escalation_color: Option<egui::Color32>,
-) {
-    if let Some(col) = escalation_color {
-        let stroke_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 200);
-        painter.rect_stroke(
-            pane_rect,
-            0.0,
-            egui::Stroke::new(1.5_f32, stroke_col),
-            egui::StrokeKind::Inside,
-        );
-    }
 }
 
 /// Recorded geometry from the most recent `render_name_bar_and_tabs` pass for a
@@ -354,6 +333,57 @@ struct NameBarParams<'a> {
     name_font_size: f32,
     spawned_by_badge: Option<&'a str>,
     waiting_results_badge: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeaderStateChip { Full, Icon, Hidden }
+
+struct HeaderAccessories {
+    outside: bool,
+    waiting: bool,
+    provenance: bool,
+    state: HeaderStateChip,
+}
+
+fn header_pip_extent(ctx: &egui::Context, state: Option<&AgentState>) -> f32 {
+    if matches!(state, Some(AgentState::NeedsYou)) {
+        let visual = crate::ui::activity::attention(ctx);
+        if visual.alpha > 0.0 {
+            return TAB_PIP_RADIUS * visual.radius_scale + 1.5 + visual.stroke / 2.0;
+        }
+    }
+    TAB_PIP_RADIUS + 0.7
+}
+
+fn header_accessories(
+    painter: &egui::Painter, width: f32, leading: f32, outside: bool,
+    waiting: Option<&str>, provenance: bool, state: Option<&str>, icon_extent: f32,
+) -> HeaderAccessories {
+    let gap = crate::ui::style::SPACE_XS;
+    let measure = |label: &str| {
+        let galley = painter.layout_no_wrap(label.to_owned(), crate::ui::badge::badge_font(), egui::Color32::PLACEHOLDER);
+        crate::ui::badge::badge_size(galley.size()).x + gap
+    };
+    let mut available = (width - leading).max(0.0);
+    let mut reserve = |needed: f32, requested: bool| {
+        if requested && available >= needed { available -= needed; true } else { false }
+    };
+    let outside = reserve(measure(OUTSIDE_WORKSPACE_BADGE_LABEL), outside);
+    let waiting_visible = waiting.is_some_and(|label| reserve(measure(label), true));
+    let provenance = reserve(crate::ui::style::PROVENANCE_ICON_SIZE + gap, provenance);
+    let state = match state {
+        Some(label) if available >= measure(label) => HeaderStateChip::Full,
+        Some(_) if available >= icon_extent * 2.0 + gap * 2.0 => HeaderStateChip::Icon,
+        _ => HeaderStateChip::Hidden,
+    };
+    HeaderAccessories { outside, waiting: waiting_visible, provenance, state }
+}
+
+fn paint_header_state_icon(ui: &egui::Ui, bar_rect: egui::Rect, right: f32, state: Option<&AgentState>, color: egui::Color32) -> f32 {
+    let extent = header_pip_extent(ui.ctx(), state);
+    let x = right - crate::ui::style::SPACE_XS - extent;
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(x, bar_rect.center().y), TAB_PIP_RADIUS, state, color, false);
+    x - extent - crate::ui::style::SPACE_XS
 }
 
 fn render_name_bar_and_tabs(
@@ -403,6 +433,13 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
+        let extent = header_pip_extent(ui.ctx(), agent_state);
+        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        let layout = header_accessories(ui.painter(), bar_rect.width(), leading, outside_workspace,
+            waiting_results_badge, spawned_by_badge.is_some(), escalation_lbl.filter(|_| escalation_col.is_some()), extent);
+        let outside_workspace = layout.outside;
+        let waiting_results_badge = waiting_results_badge.filter(|_| layout.waiting);
+        let spawned_by_badge = spawned_by_badge.filter(|_| layout.provenance);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
@@ -424,7 +461,7 @@ fn render_name_bar_and_tabs(
         } else {
             None
         };
-        let status_badge_x = if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+        let status_badge_x = if layout.state == HeaderStateChip::Full { if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
             let galley =
                 ui.painter()
                     .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
@@ -432,9 +469,8 @@ fn render_name_bar_and_tabs(
             let x = right_edge - size.x - crate::ui::style::SPACE_XS;
             right_edge = x;
             Some((lbl, col))
-        } else {
-            None
-        };
+        } else { None } } else { None };
+        if layout.state == HeaderStateChip::Icon { right_edge -= extent * 2.0 + crate::ui::style::SPACE_XS * 2.0; }
         let waiting_badge_x = if let Some(lbl) = waiting_results_badge {
             let col = colors.status_badge_color(colors.accent);
             let galley =
@@ -507,7 +543,7 @@ fn render_name_bar_and_tabs(
 
         if let Some(action) = paint_tab_bar(
             ui.ctx(),
-            ui.painter(),
+            &ui.painter().with_clip_rect(tabs_bar_rect),
             TabBarPaintParams {
                 bar_rect: tabs_bar_rect,
                 group,
@@ -528,6 +564,8 @@ fn render_name_bar_and_tabs(
         }
         if let Some((lbl, col)) = status_badge_x {
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
+        } else if layout.state == HeaderStateChip::Icon {
+            paint_right = paint_header_state_icon(ui, bar_rect, paint_right, agent_state, escalation_col.unwrap());
         }
         if let Some((lbl, col)) = waiting_badge_x {
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
@@ -557,6 +595,13 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
+        let extent = header_pip_extent(ui.ctx(), agent_state);
+        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        let layout = header_accessories(ui.painter(), bar_rect.width(), leading, outside_workspace,
+            waiting_results_badge, spawned_by_badge.is_some(), escalation_lbl.filter(|_| escalation_col.is_some()), extent);
+        let outside_workspace = layout.outside;
+        let waiting_results_badge = waiting_results_badge.filter(|_| layout.waiting);
+        let spawned_by_badge = spawned_by_badge.filter(|_| layout.provenance);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
         if let Some(esc_col) = escalation_col {
@@ -571,17 +616,13 @@ fn render_name_bar_and_tabs(
             );
         }
 
-        let pip_space = if agent_state.is_some() || is_error {
-            TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0
-        } else {
-            0.0
-        };
+        let pip_space = leading;
 
-        if is_error {
+        if is_error && bar_rect.width() >= pip_space {
             let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
             crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
-        } else if let Some(state) = agent_state {
-            paint_activity_dot(ui, bar_rect, state, colors);
+        } else if bar_rect.width() >= pip_space {
+            if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
 
         let mut right_edge = bar_rect.right();
@@ -599,8 +640,12 @@ fn render_name_bar_and_tabs(
         } else {
             None
         };
-        if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
-            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
+        if layout.state == HeaderStateChip::Full {
+            if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+                right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
+            }
+        } else if layout.state == HeaderStateChip::Icon {
+            right_edge = paint_header_state_icon(ui, bar_rect, right_edge, agent_state, escalation_col.unwrap());
         }
         if let Some(lbl) = waiting_results_badge {
             right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.status_badge_color(colors.accent));
@@ -869,6 +914,15 @@ mod tests {
             if width == 400.0 { assert!(badge.is_some(), "wide header retains the full chip"); }
             if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
         }
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let extent = header_pip_extent(ui.ctx(), Some(&state));
+            let leading = TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent;
+            let mode = |width| header_accessories(ui.painter(), width, leading, false, None, false, Some("NEEDS YOU"), extent).state;
+            assert!(mode(leading) == HeaderStateChip::Hidden);
+            assert!(mode(leading + extent * 2.0 + crate::ui::style::SPACE_XS * 2.0) == HeaderStateChip::Icon);
+            assert!(mode(400.0) == HeaderStateChip::Full);
+        });
     }
 
     #[test]

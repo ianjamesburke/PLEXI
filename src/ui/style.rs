@@ -64,13 +64,45 @@ pub const RADIUS_BAR: CornerRadius = RADIUS_MEDIUM;
 /// Shared silhouette for pane content and focus outlines.
 pub const RADIUS_PANE: CornerRadius = RADIUS_SMALL;
 /// Focus is independent of the inter-pane gap, including when the gap is zero.
-pub const PANE_FOCUS_WIDTH: f32 = 1.5;
+pub const PANE_FOCUS_WIDTH: f32 = 2.5;
+pub const PANE_STATE_WIDTH: f32 = 1.5;
 
 /// Resolve a configured pane radius, fitting it to small pane rectangles.
 pub fn pane_radius(configured: Option<u8>, rect: egui::Rect) -> CornerRadius {
     let requested = configured.unwrap_or(RADIUS_PANE.nw);
     let max_radius = (rect.width().min(rect.height()).max(0.0) / 2.0) as u8;
     CornerRadius::same(requested.min(max_radius))
+}
+
+/// Paint a ring on the pane silhouette, preserving fractional inset radii.
+pub fn paint_pane_state_ring(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    radius: CornerRadius,
+    focused: bool,
+    color: egui::Color32,
+) {
+    let inset = if focused { PANE_FOCUS_WIDTH } else { 0.0 } + PANE_STATE_WIDTH / 2.0;
+    let center_rect = rect.shrink(inset);
+    if !center_rect.is_positive() { return; }
+    let r = (radius.nw as f32 - inset).max(0.0)
+        .min(center_rect.width().min(center_rect.height()) / 2.0);
+    let centers = [
+        (center_rect.right_top() + egui::vec2(-r, r), -std::f32::consts::FRAC_PI_2),
+        (center_rect.right_bottom() + egui::vec2(-r, -r), 0.0),
+        (center_rect.left_bottom() + egui::vec2(r, -r), std::f32::consts::FRAC_PI_2),
+        (center_rect.left_top() + egui::vec2(r, r), std::f32::consts::PI),
+    ];
+    let mut points = Vec::with_capacity(36);
+    for (center, start) in centers {
+        for step in 0..=8 {
+            let angle = start + step as f32 * std::f32::consts::FRAC_PI_2 / 8.0;
+            points.push(center + egui::Vec2::angled(angle) * r);
+        }
+    }
+    let mut painter = painter.clone();
+    painter.set_opacity(1.0);
+    painter.add(egui::Shape::closed_line(points, egui::Stroke::new(PANE_STATE_WIDTH, color)));
 }
 
 /// Cover the parts of a rectangular pane outside its rounded silhouette.
