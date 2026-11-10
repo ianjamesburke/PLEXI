@@ -258,7 +258,14 @@ impl PlexiApp {
         new_pane_first: bool,
         keep_focus: bool,
     ) -> Option<egui_tiles::TileId> {
-        self.split_with_new_pane_at(self.active_window, new_pane_id, vertical, share, new_pane_first, keep_focus)
+        self.split_with_new_pane_at(
+            self.active_window,
+            new_pane_id,
+            vertical,
+            share,
+            new_pane_first,
+            keep_focus,
+        )
     }
 
     pub(crate) fn split_with_new_pane_at(
@@ -272,10 +279,14 @@ impl PlexiApp {
     ) -> Option<egui_tiles::TileId> {
         let old_window_id = self.windows[target_win].window_id;
         let old_focus = self.windows[target_win].focused_pane;
-        let focused = self.windows[target_win]
-            .find_first_pane_in(self.windows[target_win].focused_pane?)?;
-        let Some(Tile::Pane(source_id)) = self.windows[target_win].tree.tiles.get(focused) else { return None };
-        if !self.windows[target_win].panes.contains_key(source_id) { return None; }
+        let focused =
+            self.windows[target_win].find_first_pane_in(self.windows[target_win].focused_pane?)?;
+        let Some(Tile::Pane(source_id)) = self.windows[target_win].tree.tiles.get(focused) else {
+            return None;
+        };
+        if !self.windows[target_win].panes.contains_key(source_id) {
+            return None;
+        }
         let split_target = match self.windows[target_win].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
             None => focused,

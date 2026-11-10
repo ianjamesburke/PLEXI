@@ -783,7 +783,8 @@ impl PlexiApp {
             log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
             return Some(new_id);
         }
-        let _ = self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
+        let _ =
+            self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
         log::info!("app::{app_id}: launched as split pane {new_id}");
         Some(new_id)
     }
@@ -834,7 +835,8 @@ impl PlexiApp {
             log::info!("app::{app_id}: launch-failed tile inserted as root pane {new_id}");
             return;
         }
-        let _ = self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
+        let _ =
+            self.split_with_new_pane_at(target_win, new_id, vertical, share, new_pane_first, false);
         log::info!("app::{app_id}: launch-failed tile inserted as pane {new_id}");
     }
 
@@ -916,7 +918,9 @@ impl PlexiApp {
             .ok_or_else(|| "manifest does not contain a Python entry".to_string())?;
         // Seed the pane's live context root from the launching context; the
         // render loop refreshes it every frame thereafter (stint 0652).
-        let context_root = self.context_root_for(self.windows[target_win].context_id).ok_or_else(|| "launch context not found".to_string())?;
+        let context_root = self
+            .context_root_for(self.windows[target_win].context_id)
+            .ok_or_else(|| "launch context not found".to_string())?;
         let (mut runtime, app_id) = build_python_runtime(
             config,
             workspace_root.clone(),
@@ -1328,7 +1332,17 @@ impl PlexiApp {
         hint: Option<&str>,
         share: Option<f32>,
     ) {
-        self.open_builtin_app_pane_at(BuiltinPlacement { window: self.active_window, hint, share }, app, permissions, workspace_root, group);
+        self.open_builtin_app_pane_at(
+            BuiltinPlacement {
+                window: self.active_window,
+                hint,
+                share,
+            },
+            app,
+            permissions,
+            workspace_root,
+            group,
+        );
     }
 
     fn open_builtin_app_pane_at(
@@ -1339,7 +1353,11 @@ impl PlexiApp {
         workspace_root: PathBuf,
         group: Option<String>,
     ) {
-        let BuiltinPlacement { window: target_win, hint, share } = placement;
+        let BuiltinPlacement {
+            window: target_win,
+            hint,
+            share,
+        } = placement;
         let app_type_id = app.type_id().to_string();
         let app_name = app.display_name();
         let manifest_id = app_type_id.clone();
@@ -2394,8 +2412,15 @@ impl PlexiApp {
     ) -> Result<Option<PaneId>, String> {
         let follow_file_browser_cwd = cwd_override.is_none();
         self.launch_app_by_id_with_layout_at(
-            IdAppLaunchOptions { target_win: self.active_window, bypass_on_launch: false, follow_file_browser_cwd },
-            id, layout, args, cwd_override,
+            IdAppLaunchOptions {
+                target_win: self.active_window,
+                bypass_on_launch: false,
+                follow_file_browser_cwd,
+            },
+            id,
+            layout,
+            args,
+            cwd_override,
         )
     }
 
@@ -2413,8 +2438,15 @@ impl PlexiApp {
     ) -> Result<Option<PaneId>, String> {
         let follow_file_browser_cwd = cwd_override.is_none();
         self.launch_app_by_id_with_layout_at(
-            IdAppLaunchOptions { target_win: self.active_window, bypass_on_launch: true, follow_file_browser_cwd },
-            id, layout, args, cwd_override,
+            IdAppLaunchOptions {
+                target_win: self.active_window,
+                bypass_on_launch: true,
+                follow_file_browser_cwd,
+            },
+            id,
+            layout,
+            args,
+            cwd_override,
         )
     }
 
@@ -2426,7 +2458,11 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        let IdAppLaunchOptions { target_win, bypass_on_launch, follow_file_browser_cwd } = options;
+        let IdAppLaunchOptions {
+            target_win,
+            bypass_on_launch,
+            follow_file_browser_cwd,
+        } = options;
         // Resolve an implicit Explorer caller before on-launch policy can move focus.
         let cwd_override =
             if id == "file_browser" && follow_file_browser_cwd && cwd_override.is_none() {
@@ -2475,7 +2511,10 @@ impl PlexiApp {
                 ));
             }
             let pane_id = self
-                .open_assistant_pane_with_hint_at(target_win, layout.as_deref().unwrap_or("overlay"))
+                .open_assistant_pane_with_hint_at(
+                    target_win,
+                    layout.as_deref().unwrap_or("overlay"),
+                )
                 .ok_or_else(|| "assistant pane could not be opened".to_string())?;
             log::info!(
                 "launch_app_by_id_with_layout: 'assistant' resolved as builtin pane_id={pane_id}"
@@ -2541,7 +2580,17 @@ impl PlexiApp {
             };
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::AppPermissions::builtin();
-            self.open_builtin_app_pane_at(BuiltinPlacement { window: target_win, hint: Some(&hint), share: None }, app, perms, cwd, group);
+            self.open_builtin_app_pane_at(
+                BuiltinPlacement {
+                    window: target_win,
+                    hint: Some(&hint),
+                    share: None,
+                },
+                app,
+                perms,
+                cwd,
+                group,
+            );
             return Ok(None);
         }
 
@@ -2930,7 +2979,11 @@ impl PlexiApp {
         self.open_assistant_pane_with_hint_at(self.active_window, hint)
     }
 
-    fn open_assistant_pane_with_hint_at(&mut self, target_win: usize, hint: &str) -> Option<PaneId> {
+    fn open_assistant_pane_with_hint_at(
+        &mut self,
+        target_win: usize,
+        hint: &str,
+    ) -> Option<PaneId> {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return None;
@@ -2967,7 +3020,17 @@ impl PlexiApp {
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
         let predicted = self.host.next_pane_id();
-        self.open_builtin_app_pane_at(BuiltinPlacement { window: target_win, hint: Some(hint), share: None }, app, perms, workspace_root, None);
+        self.open_builtin_app_pane_at(
+            BuiltinPlacement {
+                window: target_win,
+                hint: Some(hint),
+                share: None,
+            },
+            app,
+            perms,
+            workspace_root,
+            None,
+        );
         Some(predicted)
     }
 

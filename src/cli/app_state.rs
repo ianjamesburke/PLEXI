@@ -52,16 +52,27 @@ fn caller_label() -> String {
 fn cli_context_root() -> Result<PathBuf, String> {
     let root = match std::env::var_os("PLEXI_PANE_ID") {
         Some(pane) => {
-            let pane_id = pane.to_str().and_then(|v| v.parse::<u64>().ok())
+            let pane_id = pane
+                .to_str()
+                .and_then(|v| v.parse::<u64>().ok())
                 .ok_or_else(|| "PLEXI_PANE_ID is not a valid pane id".to_string())?;
             let content = super::request(
                 serde_json::json!({"type":"get_pane_info", "pane_id":pane_id}),
-                "app-state-scope", "app state scope",
-            ).map_err(|code| format!("cannot query current scope for pane {pane_id} (exit {code})"))?;
+                "app-state-scope",
+                "app state scope",
+            )
+            .map_err(|code| {
+                format!("cannot query current scope for pane {pane_id} (exit {code})")
+            })?;
             let reply: serde_json::Value = serde_json::from_str(&content)
                 .map_err(|error| format!("invalid app state scope reply: {error}"))?;
-            if let Some(error) = reply.get("error").and_then(|v| v.as_str()) { return Err(error.to_string()); }
-            let root = reply.get("context_root").and_then(|v| v.as_str()).filter(|v| !v.is_empty())
+            if let Some(error) = reply.get("error").and_then(|v| v.as_str()) {
+                return Err(error.to_string());
+            }
+            let root = reply
+                .get("context_root")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
                 .ok_or_else(|| "host reply has no current context_root".to_string())?;
             log::info!("app_state: scope pane={pane_id} current_root={root}");
             PathBuf::from(root)
@@ -72,15 +83,23 @@ fn cli_context_root() -> Result<PathBuf, String> {
         }
     };
     if !root.is_dir() {
-        return Err(format!("context root {} does not exist — refusing to create it", root.display()));
+        return Err(format!(
+            "context root {} does not exist — refusing to create it",
+            root.display()
+        ));
     }
     Ok(root)
 }
 
 fn file_context_root(cwd: &Path) -> Result<PathBuf, String> {
-    let root = crate::notes::anchored_root_for(cwd)
-        .ok_or_else(|| "no context file scope: run beneath a directory containing .plexi".to_string())?;
-    log::info!("app_state: file scope cwd={} root={}", cwd.display(), root.display());
+    let root = crate::notes::anchored_root_for(cwd).ok_or_else(|| {
+        "no context file scope: run beneath a directory containing .plexi".to_string()
+    })?;
+    log::info!(
+        "app_state: file scope cwd={} root={}",
+        cwd.display(),
+        root.display()
+    );
     Ok(root)
 }
 
@@ -392,7 +411,10 @@ mod tests {
     fn with_context_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
         use std::io::{BufRead, Write};
         use std::os::unix::net::UnixListener;
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
         let dir = tempdir().unwrap();
         let socket = dir.path().join("state.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -405,12 +427,22 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut line = String::new();
-                        std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                        std::io::BufReader::new(&stream)
+                            .read_line(&mut line)
+                            .unwrap();
                         let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                         assert_eq!(request["type"], "get_pane_info");
-                        stream.write_all(serde_json::json!({"context_root":root}).to_string().as_bytes()).unwrap();
+                        stream
+                            .write_all(
+                                serde_json::json!({"context_root":root})
+                                    .to_string()
+                                    .as_bytes(),
+                            )
+                            .unwrap();
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(5)),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
                     Err(error) => panic!("state scope server: {error}"),
                 }
             }
@@ -430,7 +462,10 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         server.join().unwrap();
-        match result { Ok(value) => value, Err(error) => std::panic::resume_unwind(error) }
+        match result {
+            Ok(value) => value,
+            Err(error) => std::panic::resume_unwind(error),
+        }
     }
 
     #[test]
@@ -460,7 +495,10 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("PLEXI_PANE_ID", v) },
             None => unsafe { std::env::remove_var("PLEXI_PANE_ID") },
         }
-        assert!(result.is_err(), "a pane must ask its host, never use a stale env root: {result:?}");
+        assert!(
+            result.is_err(),
+            "a pane must ask its host, never use a stale env root: {result:?}"
+        );
     }
 
     #[test]
@@ -475,7 +513,8 @@ mod tests {
         h.app.set_context_root(current.path().to_path_buf(), None);
         let reply_path = h.profile_dir().join("pane-scope.json");
         h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
-            pane_id: pane, response_file: reply_path.to_string_lossy().into_owned(),
+            pane_id: pane,
+            response_file: reply_path.to_string_lossy().into_owned(),
         });
         h.hidden_frame();
         let reply = std::fs::read(&reply_path).unwrap();
@@ -483,12 +522,15 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(2));
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(std::time::Duration::from_secs(2));
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut line = String::new();
-                        std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                        std::io::BufReader::new(&stream)
+                            .read_line(&mut line)
+                            .unwrap();
                         let request: serde_json::Value = serde_json::from_str(&line).unwrap();
                         assert_eq!(request["type"], "get_pane_info");
                         assert_eq!(request["pane_id"], pane);
@@ -496,7 +538,9 @@ mod tests {
                         break;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline { break; }
+                        if std::time::Instant::now() >= deadline {
+                            break;
+                        }
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     Err(e) => panic!("scope socket: {e}"),

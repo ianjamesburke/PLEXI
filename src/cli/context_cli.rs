@@ -263,7 +263,10 @@ pub fn context_zoom_out_cli() -> i32 {
 fn context_mutation(payload: serde_json::Value, label: &str) -> i32 {
     match super::request(payload, "context-response", label) {
         Ok(content) => match super::check_reply_error(&content) {
-            Ok(()) => { println!("{content}"); 0 }
+            Ok(()) => {
+                println!("{content}");
+                0
+            }
             Err(code) => code,
         },
         Err(code) => code,
@@ -281,7 +284,10 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    context_mutation(serde_json::json!({"type":"focus_context", "root":root}), "context open")
+    context_mutation(
+        serde_json::json!({"type":"focus_context", "root":root}),
+        "context open",
+    )
 }
 
 /// `plexi context set-root [path]`
@@ -313,7 +319,6 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         print_tip(
             "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
         );
-
     }
     rc
 }
