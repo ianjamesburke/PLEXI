@@ -653,6 +653,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn screenshot_scope_popup_rows_stay_fixed_on_hover() {
+        use egui_kittest::kittest::Queryable;
+
         for theme in ["plexi-dusk", "plexi-dawn"] {
             let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 700.0);
             let root = tempfile::tempdir().unwrap();
