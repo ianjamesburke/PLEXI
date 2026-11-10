@@ -205,7 +205,6 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
 }
 
 impl PlexiApp {
-    #[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
     pub(crate) fn draw_ui_gallery(&mut self, ctx: &egui::Context) {
         if !self.show_ui_gallery {
             return;
@@ -227,12 +226,17 @@ impl PlexiApp {
                 let previous = preview.mode;
                 ui.horizontal_wrapped(|ui| {
                     for mode in UiGalleryDataMode::ALL {
-                        ui.selectable_value(&mut preview.mode, mode, mode.label());
+                        if ui.add(KitButton::new(mode.label(), &colors).kind(ButtonKind::Ghost).selected(preview.mode == mode)).clicked() {
+                            preview.mode = mode;
+                        }
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut preview.narrow, false, "Full width");
-                    ui.selectable_value(&mut preview.narrow, true, "Narrow 320px");
+                    for (narrow, label) in [(false, "Full width"), (true, "Narrow 320px")] {
+                        if ui.add(KitButton::new(label, &colors).kind(ButtonKind::Ghost).selected(preview.narrow == narrow)).clicked() {
+                            preview.narrow = narrow;
+                        }
+                    }
                 });
                 if previous != preview.mode {
                     log::info!("ui_gallery: data_mode={:?}", preview.mode);
