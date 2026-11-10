@@ -2022,8 +2022,13 @@ impl PlexiApp {
     }
 
     pub(crate) fn active_config_workspace_root(&self) -> Option<std::path::PathBuf> {
+        // A workspace root is the context's own root directory; the channel dir
+        // is created on first open. A root whose repo config would be the global
+        // file (HOME) is not a repo.
         let root = &self.router.active().root;
-        root.join(crate::config::workspace_channel_dir()).is_dir().then(|| root.clone())
+        (root.is_dir()
+            && crate::config::workspace_config_path(root) != crate::config::config_path())
+        .then(|| root.clone())
     }
 
     pub(crate) fn effective_commands_workspace_root(&self) -> Option<std::path::PathBuf> {
@@ -4394,6 +4399,36 @@ mod tests {
         h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
         assert!(active_path.exists(), "the row must open the file used by active-context reload");
         assert!(!nested_path.exists(), "a nested pane repo must not receive a config the host will not load");
+    }
+
+    #[test]
+    fn repo_config_row_creates_template_in_plain_repo_without_channel_dir() {
+        let mut h = crate::testing::HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        h.app.set_context_root(root.path().to_path_buf(), None);
+        let channel_dir = root.path().join(crate::config::workspace_channel_dir());
+        let _ = std::fs::remove_dir_all(&channel_dir);
+        assert!(!channel_dir.exists());
+        assert_eq!(h.app.active_config_workspace_root().as_deref(), Some(root.path()));
+        let before = crate::config::PlexiConfig::load_with_workspace(Some(root.path()));
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        let path = crate::config::workspace_config_path(root.path());
+        assert!(path.exists(), "choosing the row must create the template");
+        let after = crate::config::PlexiConfig::load_with_workspace(Some(root.path()));
+        assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
+    }
+
+    #[test]
+    fn repo_config_row_hidden_when_workspace_path_is_the_global_config() {
+        let mut h = crate::testing::HostHarness::new();
+        let home = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(home.path().join(crate::config::workspace_channel_dir()));
+        h.app.set_context_root(home.path().to_path_buf(), None);
+        assert_eq!(crate::config::workspace_config_path(home.path()), crate::config::config_path());
+        assert!(h.app.active_config_workspace_root().is_none());
+        let global_before = std::fs::read(crate::config::config_path()).ok();
+        h.app.run_palette_command(PaletteCommand::OpenWorkspaceConfig);
+        assert_eq!(std::fs::read(crate::config::config_path()).ok(), global_before, "must not create or rewrite the global file as a repo config");
     }
 
     #[test]

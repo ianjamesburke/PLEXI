@@ -7211,9 +7211,24 @@ open(out + ".done", "w").close()
     }
 
     #[test]
-    fn config_chooser_omits_repo_row_outside_workspace() {
+    fn config_chooser_offers_not_created_repo_row_for_plain_repo() {
         let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
         let root = h.workspace_root().to_path_buf();
+        assert!(!root.join(crate::config::workspace_channel_dir()).exists(), "plain repo has no channel dir");
+        h.with_app_mut(|app| {
+            let index = app.router.active_idx();
+            app.router.get_mut(index).root = root.clone();
+            app.windows[app.active_window].path = root;
+        });
+        h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Comma);
+        h.run_steps(3);
+        assert!(h.harness().query_by_label("Open config: this repo (not created yet)").is_some());
+    }
+
+    #[test]
+    fn config_chooser_omits_repo_row_outside_workspace() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
+        let root = h.workspace_root().join("does-not-exist");
         h.with_app_mut(|app| {
             let index = app.router.active_idx();
             app.router.get_mut(index).root = root.clone();
