@@ -6029,6 +6029,11 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
     let kind = data.get("type").and_then(Value::as_str).unwrap_or("");
     let is_card = matches!(kind, "Card" | "card")
         || data.get("card").and_then(Value::as_bool).unwrap_or(false);
+    let text_role = if matches!(kind, "Text" | "text") {
+        decode_text_role(data)?
+    } else {
+        None
+    };
     let key = if is_card {
         if raw_key.starts_with(super::wasm_render::CARD_NODE_KEY_PREFIX) {
             raw_key
@@ -6037,6 +6042,8 @@ fn decode_indexed_node(value: &Value) -> Result<IndexedNode, WasmPythonError> {
         }
     } else if matches!(kind, "DataTable" | "data_table" | "table" | "Table") {
         encode_table_node_key(data, raw_key)?
+    } else if let Some(role) = text_role {
+        role.key(&raw_key)
     } else {
         raw_key
     };
@@ -6114,39 +6121,35 @@ fn encode_table_node_key(
     ))
 }
 
-fn decode_text_color(value: &Value) -> Result<Option<Color>, WasmPythonError> {
+fn decode_text_role(
+    value: &Value,
+) -> Result<Option<super::wasm_render::TextRole>, WasmPythonError> {
+    use super::wasm_render::TextRole;
     match value.get("color") {
-        None | Some(Value::Null) => {
-            if value.get("tone").and_then(Value::as_str) == Some("hint") {
-                return decode_semantic_or_hex_color("muted").map(Some);
-            }
-            Ok(None)
+        None | Some(Value::Null) if value.get("tone").and_then(Value::as_str) == Some("hint") => {
+            Ok(Some(TextRole::Muted))
         }
-        Some(Value::String(s)) if s.is_empty() => Ok(None),
-        Some(Value::String(s)) => decode_semantic_or_hex_color(s).map(Some),
-        Some(other) => decode_color(other).map(Some),
+        Some(Value::String(raw)) if !raw.is_empty() && !raw.starts_with('#') => {
+            TextRole::parse(raw).map(Some).ok_or_else(|| {
+                WasmPythonError::BridgeJson(format!(
+                    "unknown text color '{raw}': expected semantic role or #rrggbb"
+                ))
+            })
+        }
+        _ => Ok(None),
     }
 }
 
-fn decode_semantic_or_hex_color(raw: &str) -> Result<Color, WasmPythonError> {
-    if raw.starts_with('#') {
-        return decode_hex_color(raw);
+fn decode_text_color(value: &Value) -> Result<Option<Color>, WasmPythonError> {
+    // Semantic roles are carried as renderer metadata, never baked into RGBA.
+    if decode_text_role(value)?.is_some() {
+        return Ok(None);
     }
-    let hex = match raw {
-        "accent" => "#7aa2f7",
-        "success" | "green" => "#a6e3a1",
-        "warning" | "yellow" => "#f9e2af",
-        "danger" | "red" => "#f38ba8",
-        "neutral" | "muted" => "#6c7086",
-        "fg" => "#cdd6f4",
-        "text_section" => "#585b70",
-        other => {
-            return Err(WasmPythonError::BridgeJson(format!(
-                "unknown text color '{other}': expected semantic role or #rrggbb"
-            )))
-        }
-    };
-    decode_hex_color(hex)
+    match value.get("color") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.is_empty() => Ok(None),
+        Some(other) => decode_color(other).map(Some),
+    }
 }
 
 fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
@@ -11565,8 +11568,7 @@ execution = "cloud"
         .expect("role Text decodes");
         match role_node {
             UiNodeData::Text(t) => {
-                let c = t.color.expect("accent color");
-                assert_eq!((c.r, c.g, c.b, c.a), (0x7a, 0xa2, 0xf7, 0xff));
+                assert!(t.color.is_none(), "semantic role must not bake in a literal color");
                 assert!(matches!(t.align, Alignment::Center));
             }
             other => panic!("expected Text, got {other:?}"),
@@ -11580,7 +11582,7 @@ execution = "cloud"
         .expect("hint tone Text decodes");
         match hint_node {
             UiNodeData::Text(t) => {
-                assert!(t.color.is_some(), "hint tone must populate muted color");
+                assert!(t.color.is_none(), "hint tone must retain semantic intent");
             }
             other => panic!("expected Text, got {other:?}"),
         }
@@ -11643,5 +11645,52 @@ execution = "cloud"
         assert_eq!(table_meta.rows.len(), 2);
         assert_eq!(table_meta.selected, Some(1));
         assert_eq!(table_meta.on_select.as_deref(), Some("pick_host"));
+    }
+}
+
+#[cfg(test)]
+mod text_role_tests {
+    use super::*;
+
+    #[test]
+    fn semantic_text_roles_survive_full_and_delta_frames() {
+        let base = serde_json::json!({"root":0,"nodes":[
+            {"id":0,"key":"stable-label","data":{"type":"Text","text":"Description","tone":"hint"}}
+        ]});
+        let decoded = decode_python_ui_tree_value(&base).unwrap();
+        assert_eq!(
+            super::super::wasm_render::TextRole::from_key(&decoded.tree.nodes[0].key),
+            Some(super::super::wasm_render::TextRole::Muted)
+        );
+        for color in [
+            "accent",
+            "fg",
+            "success",
+            "warning",
+            "danger",
+            "text_section",
+            "#eeeeee",
+        ] {
+            let changed = serde_json::json!({"id":0,"key":"stable-label",
+                "data":{"type":"Text","text":"Description","color":color}});
+            let patched =
+                apply_tree_delta(&decoded, std::slice::from_ref(&changed), None, None).unwrap();
+            let full =
+                decode_python_ui_tree_value(&serde_json::json!({"root":0,"nodes":[changed]}))
+                    .unwrap();
+            assert_eq!(format!("{:?}", patched.tree), format!("{:?}", full.tree));
+            let node = &patched.tree.nodes[0];
+            let UiNodeData::Text(text) = &node.data else {
+                panic!("text node");
+            };
+            if color.starts_with('#') {
+                assert_eq!(node.key, "stable-label");
+                assert!(text.color.is_some());
+            } else {
+                assert!(node.key.ends_with(":stable-label"));
+                assert!(text.color.is_none());
+                assert!(super::super::wasm_render::TextRole::from_key(&node.key).is_some());
+            }
+        }
     }
 }

@@ -19,6 +19,9 @@ use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, Ui
 
 use crate::render::app_chrome::{self, AppChrome};
 
+mod text_role;
+pub(crate) use text_role::TextRole;
+
 const MAX_DEPTH: u32 = 256;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -144,7 +147,7 @@ fn paint_len(ui: &egui::Ui) -> usize {
 
 /// Default declarative text follows the final painted surface, including
 /// nested cards, transparent ghost buttons, selection, press and disabled
-/// tints. Explicit Text colors and canvas commands remain author-owned.
+/// tints. Literal Text colors and canvas commands remain author-owned.
 /// This runs after containers replace their background placeholders, so the
 /// text cannot accidentally resolve against a workspace or preset backdrop.
 fn resolve_default_text(
@@ -866,9 +869,9 @@ fn render_node(
         UiNodeData::Empty => {}
 
         UiNodeData::Text(t) => {
-            let default_color = ui
-                .visuals()
-                .override_text_color
+            let default_color = TextRole::from_key(&node.key)
+                .map(|role| role.preferred(colors))
+                .or(ui.visuals().override_text_color)
                 .unwrap_or(colors.text_primary);
             let mut rich = RichText::new(&t.text)
                 .size(t.size.unwrap_or(style::TEXT_BODY))

@@ -6,7 +6,7 @@ use crate::ui::theme::{
 fn widget_tree() -> UiTree {
     crate::host::wasm_python::decode_ui_tree(&serde_json::json!({
         "root":0,"nodes":[
-            {"id":0,"key":"root","data":{"type":"Column","children":[1,3,4,5,6,7,8,14,15,16,17,9,10,12,13],"gap":8.0}},
+            {"id":0,"key":"root","data":{"type":"Column","children":[1,3,4,5,6,7,8,14,15,16,17,9,10,12,18,13],"gap":8.0}},
             {"id":1,"key":"card","data":{"type":"Padding","card":true,"child":2,"top":12,"bottom":12,"left":12,"right":12}},
             {"id":2,"key":"card-text","data":{"type":"Text","text":"Default Card"}},
             {"id":3,"key":"ghost","data":{"type":"Button","label":"Ghost task","style":"ghost","on_click":"pick"}},
@@ -23,6 +23,7 @@ fn widget_tree() -> UiTree {
             {"id":15,"key":"success-badge","data":{"type":"Badge","text":"Success badge","color":"success"}},
             {"id":16,"key":"warning-badge","data":{"type":"Badge","text":"Warning badge","color":"warning"}},
             {"id":17,"key":"danger-badge","data":{"type":"Badge","text":"Danger badge","color":"danger"}},
+            {"id":18,"key":"sdk-hint","data":{"type":"Text","text":"SDK default description","tone":"hint"}},
             {"id":13,"key":"footer","data":{"type":"FooterKeys","entries":[{"keys":["Enter"],"description":"Open"}]}}
         ]
     }).to_string()).unwrap()
