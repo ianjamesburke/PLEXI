@@ -191,6 +191,7 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
 }
 
 impl PlexiApp {
+    #[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
     pub(crate) fn draw_ui_gallery(&mut self, ctx: &egui::Context) {
         if !self.show_ui_gallery {
             return;

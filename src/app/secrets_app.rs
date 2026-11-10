@@ -279,6 +279,7 @@ impl SecretsApp {
         }
     }
 
+    #[expect(clippy::disallowed_methods, reason = "legacy controls await kit replacements")]
     fn scope_picker(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         labels::description_label(ui, "Scope", colors);
         ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
