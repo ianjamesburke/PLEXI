@@ -846,6 +846,31 @@ mod tests {
     }
 
     #[test]
+    fn selection_preserves_kind_emphasis_for_all_button_kinds() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        for kind in [
+            ButtonKind::Primary,
+            ButtonKind::Secondary,
+            ButtonKind::Ghost,
+            ButtonKind::Accent,
+            ButtonKind::Danger,
+        ] {
+            let (output, rect) = render(3, None, |ui| {
+                ui.add(KitButton::new("Tab", &colors).kind(kind).selected(true))
+            });
+            let expected = if kind == ButtonKind::Danger {
+                colors.danger
+            } else {
+                colors.accent
+            };
+            assert!(
+                fills_at(&output, rect.center()).contains(&expected),
+                "selected {kind:?}"
+            );
+        }
+    }
+
+    #[test]
     fn label_style_is_preserved_not_flattened() {
         let colors = crate::testing::HostHarness::new().app.colors;
         let (plain, _) = render(2, None, |ui| ui.add(KitButton::new("Label", &colors)));
