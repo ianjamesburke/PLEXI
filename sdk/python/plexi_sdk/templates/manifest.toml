@@ -3,10 +3,10 @@ schema_version = 2
 [launch]
 
 [plugin]
-id = "__APP_ID__"
+id = "__PLUGIN_ID__"
 name = "__DISPLAY_NAME__"
 version = "0.1.0"
-description = "A Plexi app"
+description = "A Plexi plugin"
 watch = true
 
 [plugin.capabilities]
@@ -17,5 +17,5 @@ kind = "python"
 entry = "main.py"
 
 [[contributes.views]]
-id = "__APP_ID__.main"
+id = "__PLUGIN_ID__.main"
 default = true

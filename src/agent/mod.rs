@@ -21,7 +21,7 @@
 //! - **Event subscriptions** always require a persisted user `Allow` grant on
 //!   `plugin_event_stream:<plugin_id>::<event>`. A denied/ungranted subscription
 //!   means the agent never sees the events.
-//! - **App tools** are gated per turn on `plugin_connector:app.<tool_name>`.
+//! - **App tools** are gated per turn on `plugin_connector:plugin.<tool_name>`.
 //!   The agent's `[permissions]` posture participates at the actor tiers, so
 //!   read-only tools in `allow = [...]` work without a user grant, while
 //!   `ask = [...]` tools need an explicit user grant record. Non-allowed
@@ -40,7 +40,7 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
     PermissionRequest, TargetType,
 };
-use crate::host::app_timeline::{PluginTimeline, EventDelivery};
+use crate::host::plugin_timeline::{PluginTimeline, EventDelivery};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
@@ -445,7 +445,7 @@ impl AgentDefinition {
         for (i, sub) in settings.subscriptions.iter().enumerate() {
             let ctx = |e: String| format!("settings.toml: [[subscriptions]] #{}: {e}", i + 1);
             if sub.app.trim().is_empty() {
-                return Err(ctx("'app' must be non-empty".to_string()));
+                return Err(ctx("'plugin' must be non-empty".to_string()));
             }
             if sub.events.is_empty() {
                 return Err(ctx("'events' must be non-empty".to_string()));
@@ -1109,7 +1109,7 @@ pub fn scan_agent_dirs(root: &Path) -> Vec<UnrecognisedAgentDir> {
 /// Assistant UI renders this; until then it is surfaced via the host log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptEntry {
-    /// `"event"` (injected app event), `"agent"` (model text), or `"error"`.
+    /// `"event"` (injected plugin event), `"agent"` (model text), or `"error"`.
     pub role: String,
     pub text: String,
     /// RFC 3339.
@@ -1155,7 +1155,7 @@ fn transcript_info_log_message(agent_id: &str, role: &str, text: &str) -> String
 
 /// Host-level registry of attached agents. Owned by `PlexiApp`, ticked once
 /// per frame. Holds its own broker grant store (same `grants.toml` as the
-/// panes) and the shared app timeline.
+/// panes) and the shared plugin timeline.
 pub struct AgentHost {
     pub agents: Vec<AgentRuntime>,
     pub grant_store: GrantStore,
@@ -1212,7 +1212,7 @@ impl AgentHost {
 
     /// Re-point the host at a (possibly different or newly active) workspace.
     /// Called from `apply_context_transition_effects` — the same choke point
-    /// that rescans the app registry — so agents defined in a workspace that
+    /// that rescans the plugin registry — so agents defined in a workspace that
     /// becomes active after boot are picked up. Detaches every current agent
     /// (removing its timeline subscriptions), keeps the live profile permission
     /// monitor when `grants_dir` is set, and attaches the new root's agents. `None` =
@@ -1262,7 +1262,7 @@ impl AgentHost {
 
     /// Attach an agent: register it as an `ActorType::Agent` actor and create
     /// broker-gated subscriptions for its requested event streams. Every
-    /// event target (`plugin_event_stream:<app>::<event>`) must evaluate to a
+    /// event target (`plugin_event_stream:<plugin>::<event>`) must evaluate to a
     /// persisted user `Allow`; anything else (including posture-only allows)
     /// is refused — subscriptions always need an explicit user grant. The
     /// agent is attached either way; without subscriptions it sees nothing.
@@ -1298,7 +1298,7 @@ impl AgentHost {
             }
             let subscription_id = format!("agent-sub-{}", uuid::Uuid::new_v4());
             self.timeline.lock().unwrap().add_subscription(
-                crate::host::app_timeline::SubscriptionRecord {
+                crate::host::plugin_timeline::SubscriptionRecord {
                     subscription_id: subscription_id.clone(),
                     subscriber_type: ActorType::Agent,
                     subscriber_id: def.id.clone(),
@@ -1390,7 +1390,7 @@ impl AgentHost {
         for d in deliveries {
             let agent = &mut self.agents[agent_idx];
             // Never trigger an agent from its own actions: events it emitted
-            // as the actor, or events an app emitted while servicing one of
+            // as the actor, or events an plugin emitted while servicing one of
             // its tool calls (`caused_by`). Without this, a move → move.played
             // → turn → move feedback loop plays the game against itself.
             let self_caused =
@@ -1436,7 +1436,7 @@ impl AgentHost {
     }
 
     /// Build the broker-gated tool snapshot for an agent: tools visible in
-    /// this workspace whose `plugin_connector:app.<tool_name>` target evaluates
+    /// this workspace whose `plugin_connector:plugin.<tool_name>` target evaluates
     /// to `Allow` for the agent (user grants + the agent's posture tiers).
     fn gated_dispatcher(&self, agent: &AgentRuntime) -> ToolDispatcher {
         // Discovery does not authorize. Posture deny still hides a tool;
@@ -1582,7 +1582,7 @@ impl AgentHost {
         // replaced by the first `reload_workspace` with an active workspace.
         let mut host = Self::new(
             grant_store,
-            crate::host::app_timeline::global(),
+            crate::host::plugin_timeline::global(),
             Arc::new(crate::plexi_ai::broker::LiveAiBroker::with_model_modes(
                 ai_config,
                 model_modes,
@@ -1650,17 +1650,17 @@ default_tier = "medium"
 default_posture = "review"
 
 allow = [
-  "app.chess.current_state",
-  "app.chess.legal_moves",
+  "plugin.chess.current_state",
+  "plugin.chess.legal_moves",
 ]
 
 ask = [
-  "app.chess.make_move",
-  "app.chess.undo_move",
+  "plugin.chess.make_move",
+  "plugin.chess.undo_move",
 ]
 
 [[subscriptions]]
-app = "chess"
+plugin = "chess"
 events = ["game.started", "turn.ready", "move.played", "move.undone", "game.ended"]
 payload = "full"
 trigger = "conversation"
@@ -1842,8 +1842,8 @@ default = "ask"
             let mut harness = crate::testing::HostHarness::new();
             let terminal = harness.add_focused_terminal();
             let sender = harness.app.windows[0].panes.iter()
-                .find_map(|(&id, pane)| pane.as_app().map(|_| id)).unwrap();
-            harness.app.windows[0].panes.get_mut(&sender).unwrap().as_app_mut().unwrap().linked_pane_id = Some(terminal);
+                .find_map(|(&id, pane)| pane.as_view().map(|_| id)).unwrap();
+            harness.app.windows[0].panes.get_mut(&sender).unwrap().as_view_mut().unwrap().linked_pane_id = Some(terminal);
             harness.terminal_backend(terminal).enable_input_tap();
             harness.app.dispatch_run_in_linked_terminal(sender, terminal, SENTINEL.to_string(), true);
             assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
@@ -2170,13 +2170,13 @@ default_tier = "low"
         );
     }
 
-    /// Self-caused deliveries (the agent as actor, or events an app emitted
+    /// Self-caused deliveries (the agent as actor, or events an plugin emitted
     /// while servicing the agent's tool call) must never trigger a turn —
     /// otherwise an agent that moves causes `move.played`/`turn.ready` which
     /// trigger it again, and it plays the game against itself.
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
-        use crate::host::app_timeline::EventDelivery;
+        use crate::host::plugin_timeline::EventDelivery;
         use crate::protocol::PluginEventActor;
 
         let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
@@ -2223,7 +2223,7 @@ default_tier = "low"
             0,
             vec![delivery(
                 2,
-                PluginEventActor::App,
+                PluginEventActor::View,
                 "chess",
                 Some("agent:chess-opponent"),
             )],

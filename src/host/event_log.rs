@@ -17,7 +17,7 @@
 //!   thread so repeated events from the same root never reopen the file.
 //!
 //! The host stamps every event with a `source` field before enqueueing;
-//! apps cannot forge provenance.
+//! plugins cannot forge provenance.
 //!
 //! Drop-on-full policy: if the channel is at capacity (4096 events), the
 //! event is silently discarded and `dropped_count` is incremented. No retry,
@@ -39,14 +39,14 @@ use std::sync::{mpsc, Arc, OnceLock};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
-    /// An app pane was successfully spawned.
+    /// An view pane was successfully spawned.
     ViewOpened {
         plugin_id: String,
         type_id: String,
         pane_id: u64,
         timestamp: String,
     },
-    /// A WASM app runtime was closed.
+    /// A WASM plugin runtime was closed.
     ViewClosed {
         plugin_id: String,
         type_id: String,
@@ -93,7 +93,7 @@ pub enum HostEvent {
         status: String,
         timestamp: String,
     },
-    /// A notification was raised by an app.
+    /// A notification was raised by an plugin.
     NotificationPosted {
         id: String,
         title: String,
@@ -115,14 +115,14 @@ pub enum HostEvent {
     },
     /// A typed pipe was opened.
     PipeOpened {
-        from_app: String,
+        from_plugin: String,
         channel: String,
         mode: String,
         timestamp: String,
     },
     /// A typed pipe was closed.
     PipeClosed {
-        from_app: String,
+        from_plugin: String,
         channel: String,
         timestamp: String,
     },
@@ -136,14 +136,14 @@ pub enum HostEvent {
         context_description: String,
         /// Root path assigned to the context, if any.
         context_root: Option<String>,
-        /// CWD of the departing pane (terminals via proc_info; apps via workspace_root).
+        /// CWD of the departing pane (terminals via proc_info; plugins via workspace_root).
         cwd: Option<String>,
         /// Last OSC 2 title string the process wrote, if any.
         pty_title: Option<String>,
         /// User-assigned pane name, if any.
         pane_name: Option<String>,
-        /// For App panes: the manifest_id (e.g. "gh-issues"). Null for terminals.
-        app_type_id: Option<String>,
+        /// For View panes: the manifest_id (e.g. "gh-issues"). Null for terminals.
+        plugin_type_id: Option<String>,
         /// Why this focus segment was banked: pane_switch, heartbeat, or shutdown.
         reason: Option<String>,
         /// Seconds this pane held focus before the switch.
@@ -198,7 +198,7 @@ pub enum HostEvent {
 /// The on-disk envelope that wraps every event with host-stamped provenance.
 #[derive(Debug, Serialize, Deserialize)]
 struct EventEnvelope {
-    /// Host-stamped provenance. Always set internally — apps cannot forge it.
+    /// Host-stamped provenance. Always set internally — plugins cannot forge it.
     source: String,
     #[serde(flatten)]
     event: HostEvent,
@@ -349,7 +349,7 @@ pub(crate) fn test_take_events() -> Vec<HostEvent> {
 }
 
 
-/// Initialize the global event log. Call once at app startup.
+/// Initialize the global event log. Call once at plugin startup.
 /// Subsequent calls are no-ops (OnceLock guarantees at-most-once init).
 ///
 /// Takes only the global log path — there is no startup-resolved workspace
@@ -448,7 +448,7 @@ mod tests {
         log.emit_scoped(HostEvent::FocusChanged {
             pane_id: 42, context_name: "work".into(), context_description: String::new(),
             context_root: None, cwd: None, pty_title: Some(sentinel.into()),
-            pane_name: Some(sentinel.into()), app_type_id: None, reason: Some("shutdown".into()),
+            pane_name: Some(sentinel.into()), plugin_type_id: None, reason: Some("shutdown".into()),
             duration_secs: 3, timestamp: now_timestamp(),
         }, None);
         let rows = wait_for_line(&path);

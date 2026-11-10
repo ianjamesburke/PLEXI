@@ -14,7 +14,7 @@
 //! the editor cannot write the file back, then moves the file to Trash; the
 //! picker stays open.
 
-use crate::app::text_editor_app::note_path_identity;
+use crate::app::text_editor_view::note_path_identity;
 use crate::app::{FocusKind, PlexiApp};
 use crate::ui::style;
 use crate::ui::{
@@ -134,11 +134,11 @@ impl PlexiApp {
         pane_id: crate::spatial::tiling::PaneId,
     ) -> Option<std::path::PathBuf> {
         let pane = window.panes.get(&pane_id)?;
-        let app_pane = pane.as_app()?;
-        if app_pane.runtime.type_id() != "text-editor" {
+        let view_pane = pane.as_view()?;
+        if view_pane.runtime.type_id() != "text-editor" {
             return None;
         }
-        app_pane.runtime.serialize_state().and_then(|state| {
+        view_pane.runtime.serialize_state().and_then(|state| {
             state
                 .get("path")
                 .and_then(|v| v.as_str())
@@ -292,7 +292,7 @@ impl PlexiApp {
         self.windows.iter().any(|window| {
             window.panes.iter().any(|(&pane_id, pane)| {
                 Self::text_editor_path_for_pane(window, pane_id).as_deref() == Some(identity.as_path())
-                    && pane.as_app().and_then(|app| app.runtime.editor_buffer()).is_some_and(|buffer| buffer.dirty)
+                    && pane.as_view().and_then(|app| app.runtime.editor_buffer()).is_some_and(|buffer| buffer.dirty)
             })
         })
     }
@@ -630,7 +630,7 @@ impl PlexiApp {
             return;
         }
         // Reuse the focused pane only when it's already a text-editor;
-        // terminals and other apps get a new pane instead.
+        // terminals and other plugins get a new pane instead.
         let focused_editor = self.windows[active].focused_pane.and_then(|tile_id| {
             match self.windows[active].tree.tiles.get(tile_id) {
                 Some(egui_tiles::Tile::Pane(id)) => {
@@ -642,10 +642,10 @@ impl PlexiApp {
         match focused_editor {
             Some(pane_id) => {
                 let state = serde_json::json!({ "path": path.to_string_lossy() });
-                if let Some(crate::host::pane::Pane::App(app_pane)) =
+                if let Some(crate::host::pane::Pane::View(view_pane)) =
                     self.windows[active].panes.get_mut(&pane_id)
                 {
-                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut app_pane.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut view_pane.runtime {
                         log::info!("notes_picker: opening {:?} in focused pane", path);
                         app.restore_state(&state);
                         emit_note_opened(&path, Some(&self.router.active().root));
@@ -673,7 +673,7 @@ impl PlexiApp {
         log::info!("notes_picker: opening {:?} in new text-editor pane", path);
         let context_root = self.router.active().root.clone();
         if self
-            .launch_app_by_id_with_layout("text-editor", None, &[path_str], None)
+            .launch_view_by_id_with_layout("text-editor", None, &[path_str], None)
             .is_ok()
         {
             emit_note_opened(&path, Some(&context_root));
@@ -975,11 +975,11 @@ mod tests {
     }
 
     fn replace_with_text_editor(app: &mut PlexiApp, pane_id: u64, path: std::path::PathBuf) {
-        let app_pane = ViewPane {
+        let view_pane = ViewPane {
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorView::new(path),
+                crate::app::text_editor_view::TextEditorView::new(path),
             )),
             workspace_root: std::env::temp_dir(),
             permissions: PluginPermissions::builtin(),
@@ -996,7 +996,7 @@ mod tests {
 
         app.windows[0]
             .panes
-            .insert(pane_id, Pane::App(Box::new(app_pane)));
+            .insert(pane_id, Pane::View(Box::new(view_pane)));
     }
 
     fn state_path(state: &serde_json::Value) -> String {
@@ -1159,7 +1159,7 @@ mod tests {
         let focused_state = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.serialize_state())
             .expect("focused text editor state");
         assert_eq!(
@@ -1202,7 +1202,7 @@ mod tests {
         let focused_state = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.serialize_state())
             .expect("focused text editor state");
         assert!(state_path(&focused_state).ends_with("other.md"));
@@ -1427,7 +1427,7 @@ mod tests {
         let semantic = app.windows[0]
             .panes
             .get(&focused_pane)
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|pane| pane.runtime.semantic_details())
             .expect("focused text editor semantic state");
         assert_eq!(
@@ -1442,15 +1442,15 @@ mod tests {
             .panes
             .get_mut(&focused_pane)
             .expect("focused pane")
-            .as_app_mut()
-            .expect("editor app")
+            .as_view_mut()
+            .expect("editor plugin")
             .runtime;
         let ViewRuntime::Builtin(editor) = runtime else {
             panic!("expected builtin editor")
         };
         let editor = editor
             .as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
+            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
             .expect("text editor");
         assert_eq!(
             editor.test_view().pending_reveal,
@@ -1712,7 +1712,7 @@ mod tests {
         };
         app.notes_picker_entries = vec![
             mk("groceries", "milk and eggs"),
-            mk("project ideas", "groceries app concept"),
+            mk("project ideas", "groceries plugin concept"),
             mk("unrelated", "nothing here"),
         ];
 
@@ -1729,15 +1729,15 @@ mod tests {
             .panes
             .get_mut(&pane_id)
             .expect("editor pane")
-            .as_app_mut()
-            .expect("app pane")
+            .as_view_mut()
+            .expect("view pane")
             .runtime;
         let ViewRuntime::Builtin(editor) = runtime else {
             panic!("expected builtin editor");
         };
         editor
             .as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
+            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
             .expect("text editor")
             .test_set_unsaved(text);
     }

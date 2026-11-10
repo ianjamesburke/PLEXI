@@ -1,4 +1,4 @@
-//! Watches the global and workspace-local app directories for filesystem changes
+//! Watches the global and workspace-local plugin directories for filesystem changes
 //! and emits debounced reload signals so the host can rescan the `PluginRegistry`
 //! without a restart. (#1712)
 //!
@@ -37,7 +37,7 @@ impl Drop for PluginRegistryWatcher {
 
 /// Start watching `dirs`, filtering to those that currently exist.
 ///
-/// Returns `None` if no directories could be watched (e.g. the global apps dir
+/// Returns `None` if no directories could be watched (e.g. the global plugins dir
 /// has never been created). Any `Create`, `Modify`, or `Remove` event in any
 /// watched directory fires a signal on the returned receiver, waking the UI
 /// thread via `wake` so the rescan is not stranded on an idle host.
@@ -89,7 +89,7 @@ pub fn start(
             cancel_thread,
             Duration::from_millis(DEBOUNCE_MS),
             |_| {
-                log::info!("plugin_registry_watcher: apps dir changed, rescanning registry");
+                log::info!("plugin_registry_watcher: plugins dir changed, rescanning registry");
                 reload_tx.send(()).is_ok()
             },
         );

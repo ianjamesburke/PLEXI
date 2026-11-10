@@ -155,7 +155,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     (
         "terminal.minimum_contrast",
         "float",
-        "Minimum text contrast ratio 1.0–21.0; lifts low-contrast app colors, 1.0 = off (default 3.0)",
+        "Minimum text contrast ratio 1.0–21.0; lifts low-contrast plugin colors, 1.0 = off (default 3.0)",
     ),
     // log.*
     ("log.level", "string", "Log level: error, warn, info, debug"),
@@ -192,7 +192,7 @@ pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
     (
         "ai.per_app_daily_usd",
         "float",
-        "Per-app daily spend cap in USD (default 1.00)",
+        "Per-plugin daily spend cap in USD (default 1.00)",
     ),
     (
         "ai.global_daily_usd",

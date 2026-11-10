@@ -1,6 +1,6 @@
 //! AT-P1 acceptance coverage for the single permission monitor.
 //!
-//! Chess cases load `apps/chess` and drive the production assistant turn,
+//! Chess cases load `plugins/chess` and drive the production assistant turn,
 //! host MCP parser, and socket identity handler. They do not call
 //! `chess_domain.play` directly.
 
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::app::app_trait::App;
+use crate::app::view_trait::View;
 use crate::broker::gate::{
     fingerprint_args, gate_log_contains, AdmitRequest, Admission, ApprovalChoice, PermissionMonitor,
 };
@@ -30,14 +30,14 @@ fn play(rev: i64, op: &str, mv: &str, game: &str) -> serde_json::Value {
     })
 }
 
-fn events_since(start: usize) -> Vec<crate::host::app_timeline::PluginEventRecord> {
-    let timeline = crate::host::app_timeline::global();
+fn events_since(start: usize) -> Vec<crate::host::plugin_timeline::PluginEventRecord> {
+    let timeline = crate::host::plugin_timeline::global();
     let timeline = timeline.lock().unwrap();
     timeline.events().iter().skip(start).cloned().collect()
 }
 
 fn event_len() -> usize {
-    crate::host::app_timeline::global()
+    crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
         .events()
@@ -154,12 +154,12 @@ fn assistant_begin(h: &mut HostHarness, assistant: u64, input: &serde_json::Valu
         .join(format!("assistant-{}.json", uuid::Uuid::new_v4()));
     h.assistant_mut(assistant)
         .queue_scripted_tool("chess.play", &input.to_string());
-    App::submit_external_turn(
+    View::submit_external_turn(
         h.assistant_mut(assistant),
         "play the move".to_string(),
         format!("req-{}", uuid::Uuid::new_v4()),
         reply.display().to_string(),
-        crate::app::app_trait::ExternalTurnOpts {
+        crate::app::view_trait::ExternalTurnOpts {
             conversation_id: None,
             join_desktop: true,
             status_for: None,
@@ -227,7 +227,7 @@ fn monitor() -> Arc<PermissionMonitor> {
 /// stop two tests from overwriting the same key; they do not stop a second
 /// chess pane in another harness from withdrawing the bare `chess.play` name
 /// or from receiving a call this harness is not pumping. Move this harness's
-/// window and its router context together, before any app registers tools.
+/// window and its router context together, before any plugin registers tools.
 fn isolate_tool_context(h: &mut HostHarness) {
     static NEXT: AtomicU64 = AtomicU64::new(80_000);
     let context_id = NEXT.fetch_add(1, Ordering::SeqCst);
@@ -255,7 +255,7 @@ fn permission_gate_real_chess_all_ingresses() {
 fn run_ingress(ingress: Ingress) {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let assistant = h.add_assistant_pane();
@@ -592,16 +592,16 @@ fn mcp_call(
 }
 
 #[test]
-fn app_call_waits_for_human_then_dispatches_exactly_once() {
-    assert_waiting_app_call(ApprovalChoice::Once);
+fn plugin_call_waits_for_human_then_dispatches_exactly_once() {
+    assert_waiting_plugin_call(ApprovalChoice::Once);
 }
 
 #[test]
-fn app_call_wait_ends_on_human_denial_without_execution() {
-    assert_waiting_app_call(ApprovalChoice::Deny);
+fn view_call_wait_ends_on_human_denial_without_execution() {
+    assert_waiting_plugin_call(ApprovalChoice::Deny);
 }
 
-fn assert_waiting_app_call(choice: ApprovalChoice) {
+fn assert_waiting_plugin_call(choice: ApprovalChoice) {
     let mut h = HostHarness::new();
     let caller = h.add_test_pane();
     let target = h.add_test_pane();
@@ -668,8 +668,8 @@ fn all_dispatchers_require_monitor() {
     );
     assistant.add_host_tools(
         vec![AiTool {
-            name: "host.apps.open".to_string(),
-            description: "open an app".to_string(),
+            name: "host.views.open".to_string(),
+            description: "open an plugin".to_string(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: Some(1_000),
@@ -682,7 +682,7 @@ fn all_dispatchers_require_monitor() {
     );
     let blocked = assistant.dispatch_call(
         "launch-1".to_string(),
-        "host.apps.open",
+        "host.views.open",
         r#"{"type_id":"chess"}"#.to_string(),
     );
     assert_eq!(blocked.error_code.as_deref(), Some("permission_required"));
@@ -797,10 +797,10 @@ fn all_dispatchers_require_monitor() {
 }
 
 #[test]
-fn app_call_rejects_forged_or_missing_identity() {
+fn plugin_call_rejects_forged_or_missing_identity() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let start = event_len();
@@ -838,7 +838,7 @@ fn app_call_rejects_forged_or_missing_identity() {
 fn chess_receipt_survives_lost_reply() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
@@ -888,10 +888,10 @@ fn chess_receipt_survives_lost_reply() {
 }
 
 #[test]
-fn app_call_and_mcp_are_gated_and_audited() {
+fn plugin_call_and_mcp_are_gated_and_audited() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     let workspace = h.workspace_root();
     let mon = monitor();
@@ -930,15 +930,15 @@ fn app_call_and_mcp_are_gated_and_audited() {
 fn second_chess_pane_routes_by_instance() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let first = h.launch_repo_app("apps/chess", &[]);
-    let again = h.launch_repo_app("apps/chess", &[]);
+    let first = h.launch_repo_view("apps/chess", &[]);
+    let again = h.launch_repo_view("apps/chess", &[]);
     assert_eq!(again, first, "view open chess focuses the open board");
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/chess");
     let second = h
         .app
-        .launch_app_by_path_forced(&path.to_string_lossy(), Some(h.workspace_root()), &[])
+        .launch_view_by_path_forced(&path.to_string_lossy(), Some(h.workspace_root()), &[])
         .expect("forced second chess pane")
         .expect("pane id");
     h.wait_for_first_render(second);
@@ -1012,7 +1012,7 @@ fn chess_panes(h: &HostHarness) -> Vec<u64> {
         .iter()
         .flat_map(|window| window.panes.iter())
         .filter_map(|(id, pane)| {
-            pane.as_app()
+            pane.as_view()
                 .filter(|app| app.manifest_id == "chess")
                 .map(|_| *id)
         })
@@ -1023,7 +1023,7 @@ fn chess_panes(h: &HostHarness) -> Vec<u64> {
 fn gate_denial_reaches_the_host_log() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let start = event_len();
     let denied = socket_call(&mut h, Some(9_999_999), None, &[], play(0, "ghost-log", "e2e4", "game-1"));
     assert_eq!(denied["error_code"], "permission_denied", "{denied}");
@@ -1161,10 +1161,10 @@ fn agents_chess_approval_scene() {
 }
 
 #[test]
-fn list_app_tools_snapshots_live_registry_for_context() {
+fn list_plugin_tools_snapshots_live_registry_for_context() {
     let mut h = HostHarness::new();
     isolate_tool_context(&mut h);
-    let pane = h.launch_repo_app("apps/chess", &[]);
+    let pane = h.launch_repo_view("apps/chess", &[]);
     let ctx = h.app.windows[h.app.active_window].context_id;
     pump_until(&mut h, |_| {
         crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)

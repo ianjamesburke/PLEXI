@@ -9,7 +9,7 @@
 // Build target: wasm32-wasip2 via `cargo component build`.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit/world.wit",
 });
 

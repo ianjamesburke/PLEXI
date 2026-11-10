@@ -630,7 +630,7 @@ fn esc_closes_decision_overlay_without_verdict() {
 
 #[test]
 fn esc_swallowed_when_overlay_open() {
-    use crate::app::app_trait::KeyDisposition;
+    use crate::app::view_trait::KeyDisposition;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -668,7 +668,7 @@ fn esc_swallowed_when_overlay_open() {
     assert_eq!(h.app.attention_queue.ask_count(), 1);
     assert!(h.app.attention_queue.verdicts.is_empty());
 
-    // Also verify via full frame (press_key) that the underlying builtin app pane is NOT closed by Esc.
+    // Also verify via full frame (press_key) that the underlying builtin view pane is NOT closed by Esc.
     h.app.summon_decision_overlay();
     assert!(h.app.attention_queue.decision_overlay.is_some());
     let panes_before = h.state().open_panes.len();
@@ -677,7 +677,7 @@ fn esc_swallowed_when_overlay_open() {
     assert_eq!(
         h.state().open_panes.len(),
         panes_before,
-        "Esc closing decision overlay must not close or reach the underlying app pane"
+        "Esc closing decision overlay must not close or reach the underlying view pane"
     );
 }
 

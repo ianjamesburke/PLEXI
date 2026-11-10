@@ -8,7 +8,7 @@ pub(crate) fn app_focused(ctx: &egui::Context) -> bool {
             let active = objc2_app_kit::NSApplication::sharedApplication(mtm).isActive();
             static OBSERVED: std::sync::Once = std::sync::Once::new();
             OBSERVED
-                .call_once(|| log::info!("attention: native app focus observed active={active}"));
+                .call_once(|| log::info!("attention: native plugin focus observed active={active}"));
             return active;
         }
     }
@@ -239,7 +239,7 @@ mod mac {
         // UNUserNotificationCenter aborts for an unbundled command-line executable.
         if NSBundle::mainBundle().bundleIdentifier().is_none() {
             log::warn!(
-                "attention: notification unavailable outside an installed app bundle pane={id}"
+                "attention: notification unavailable outside an installed plugin bundle pane={id}"
             );
             return;
         }

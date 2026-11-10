@@ -1,6 +1,6 @@
 //! Pack file format — `pack.toml` (#308 Phase 2).
 //!
-//! A pack is a requirements.txt-style list of apps to install. Three sources
+//! A pack is a requirements.txt-style list of plugins to install. Three sources
 //! eat the same shape:
 //!   - `<workspace>/.plexi/pack.toml`           (project-local, Phase 3+)
 //!   - `~/.plexi-<channel>/packs/core.toml`     (channel-level overrides)
@@ -9,7 +9,7 @@
 //! ```toml
 //! schema_version = 1
 //!
-//! [[app]]
+//! [[plugin]]
 //! id      = "stand-up-reminder"
 //! source  = "github:plexi-plugins/stand-up-reminder"
 //! version = "v1.2.0"
@@ -20,8 +20,8 @@
 //! - `github:owner/repo`        → `https://github.com/owner/repo.git`
 //! - `git+https://...`          → literal URL (`git+` stripped)
 //! - `git+ssh://...` / `git+http://...`
-//! - `local:<app-name>`         → bundled-app seed (no clone, host copies
-//!   from `apps/<name>/` baked into the binary)
+//! - `local:<plugin-name>`         → bundled-plugin seed (no clone, host copies
+//!   from `plugins/<name>/` baked into the binary)
 //! - anything else → error (no silent fallthrough).
 //!
 //! The current pack schema version constant is [`PACK_SCHEMA_VERSION`].
@@ -39,15 +39,15 @@ pub struct Pack {
     /// Required; rejected loud if greater than [`PACK_SCHEMA_VERSION`].
     pub schema_version: u32,
     /// Seeding policy. `"always"` = re-seed on every install; `"once"` = seed
-    /// only on first launch (empty apps dir). Defaults to `"once"` if absent.
+    /// only on first launch (empty plugins dir). Defaults to `"once"` if absent.
     #[serde(default)]
     pub reseed: Option<String>,
-    /// One entry per app to install. `[[app]]` table-array.
+    /// One entry per plugin to install. `[[plugin]]` table-array.
     #[serde(default, rename = "plugin")]
-    pub apps: Vec<PackPlugin>,
+    pub plugins: Vec<PackPlugin>,
 }
 
-/// A single `[[app]]` entry within a pack.
+/// A single `[[plugin]]` entry within a pack.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PackPlugin {
     /// Manifest id this entry should install. Required so the resolver can
@@ -71,8 +71,7 @@ impl Pack {
         let pack: Pack = toml::from_str(text).map_err(|e| format!("invalid pack.toml: {e}"))?;
         if pack.schema_version != PACK_SCHEMA_VERSION {
             return Err(format!(
-                "pack schema_version = {} is newer than this Plexi build supports (max {}); \
-                 update Plexi to apply this pack",
+                "pack schema_version = {} is unsupported; use schema_version = {} and [[plugin]]",
                 pack.schema_version, PACK_SCHEMA_VERSION
             ));
         }
@@ -94,8 +93,8 @@ impl Pack {
 pub enum SourceSpec {
     /// Standard git clone target — pass directly to `git clone <url>`.
     Git(String),
-    /// Compile-time-bundled app, identified by its directory name in
-    /// `apps/`. The installer copies the directory tree to the apps dir.
+    /// Compile-time-bundled plugin, identified by its directory name in
+    /// `plugins/`. The installer copies the directory tree to the plugins dir.
     Local(String),
 }
 
@@ -159,11 +158,11 @@ version = "v1.2.0"
 "#;
         let pack = Pack::from_toml_str(raw).expect("pack should parse");
         assert_eq!(pack.schema_version, 1);
-        assert_eq!(pack.apps.len(), 1);
-        assert_eq!(pack.apps[0].id, "stand-up-reminder");
-        assert_eq!(pack.apps[0].source, "github:plexi-plugins/stand-up-reminder");
-        assert_eq!(pack.apps[0].version, "v1.2.0");
-        assert!(pack.apps[0].checksum.is_none());
+        assert_eq!(pack.plugins.len(), 1);
+        assert_eq!(pack.plugins[0].id, "stand-up-reminder");
+        assert_eq!(pack.plugins[0].source, "github:plexi-plugins/stand-up-reminder");
+        assert_eq!(pack.plugins[0].version, "v1.2.0");
+        assert!(pack.plugins[0].checksum.is_none());
     }
 
     #[test]
@@ -179,7 +178,7 @@ checksum = "sha256:deadbeef"
 "#;
         let pack = Pack::from_toml_str(raw).expect("pack should parse");
         assert_eq!(
-            pack.apps[0].checksum.as_deref(),
+            pack.plugins[0].checksum.as_deref(),
             Some("sha256:deadbeef"),
             "optional checksum field must round-trip"
         );

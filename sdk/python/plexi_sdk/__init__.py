@@ -1,7 +1,7 @@
 """Plexi Python SDK.
 
 Apps expose module-level ``init(size, args)``, ``update(event)``, and ``view()``
-functions. The V3AppRuntime drives the event loop: host sends JSON events on
+functions. The PluginRuntime drives the event loop: host sends JSON events on
 stdin, app responds with effects and component trees on stdout.
 
 Python apps are sandboxed. They run through the CPython-in-WASM adapter

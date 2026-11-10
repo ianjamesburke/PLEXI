@@ -18,7 +18,7 @@ pub enum TurnRole {
     Assistant,
     Tool,
     Error,
-    /// An app event delivered through a granted subscription (Phase D3).
+    /// An plugin event delivered through a granted subscription (Phase D3).
     Event,
     /// Output of a slash command the user ran, shared with the model. It
     /// enters the next turn's history as clearly-labelled command output so
@@ -194,7 +194,7 @@ pub struct StreamingState {
     /// this prefix from the broker's final text so only the tail commits.
     pub committed_answer: String,
     /// The model is currently generating a tool call (stint 0467) — the
-    /// longest otherwise-silent stretch of an app-build turn. Cleared when
+    /// longest otherwise-silent stretch of an plugin-build turn. Cleared when
     /// the finished call dispatches (`tool_call_started`) or the turn ends.
     pub tool_progress: Option<ToolArgProgress>,
 }
@@ -243,9 +243,9 @@ pub enum AssistantEffect {
     SessionWrite {
         conversation_id: String,
     },
-    /// `/tools`: list discovered app connector tools with broker decisions.
+    /// `/tools`: list discovered plugin connector tools with broker decisions.
     ListTools,
-    /// `/apps`: list running apps and their exposed connectors.
+    /// `/plugins`: list running plugins and their exposed connectors.
     ListPlugins,
     ListSkills,
     ShowContext,
@@ -857,7 +857,7 @@ impl AssistantModel {
             "rewind" if cmd.args.is_empty() => {
                 self.turns.push(Turn::now(
                     TurnRole::Error,
-                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and apps are untouched.",
+                    "Usage: /rewind <turn:N | checkpoint:ID>. Conversation context only; files and plugins are untouched.",
                 ));
                 vec![AssistantEffect::SessionWrite {
                     conversation_id: self.conversation_id.clone(),
@@ -1290,7 +1290,7 @@ mod tests {
             "progress outside an in-flight turn must be ignored"
         );
 
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me an plugin");
         m.apply_tool_progress(None, 12);
         let p = m.streaming.tool_progress.as_ref().expect("progress set");
         assert_eq!((p.name.as_deref(), p.arg_chars), (None, 12));
@@ -1614,7 +1614,7 @@ mod tests {
             vec![AssistantEffect::ShowAudit]
         );
         assert_eq!(
-            submitted(&mut m, "/revoke app.csv.write_range"),
+            submitted(&mut m, "/revoke plugin.csv.write_range"),
             vec![AssistantEffect::RevokeGrant {
                 target_id: "app.csv.write_range".to_string()
             }]
@@ -1837,7 +1837,7 @@ mod tests {
     #[test]
     fn tool_turn_detail_attaches_and_round_trips() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "edit the app");
+        submitted(&mut m, "edit the plugin");
         tool_started(&mut m, "host.files.edit");
         tool_finished(
             &mut m,
@@ -1860,7 +1860,7 @@ mod tests {
     #[test]
     fn tool_calls_and_queued_message_stay_in_chronological_order() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build me an app");
+        submitted(&mut m, "build me an plugin");
 
         tool_started(&mut m, "host.files.write");
         tool_finished(&mut m, "host.files.write", None, None);
@@ -1870,20 +1870,20 @@ mod tests {
         submitted(&mut m, "also add a footer");
         assert_eq!(m.queued_user_turns, 1);
 
-        tool_started(&mut m, "plexi.app_check");
-        tool_finished(&mut m, "plexi.app_check", None, None);
+        tool_started(&mut m, "plexi.plugin_check");
+        tool_finished(&mut m, "plexi.plugin_check", None, None);
 
         let id = m.conversation_id.clone();
-        m.finish_turn(&id, Ok("Done — app scaffolded.".to_string()));
+        m.finish_turn(&id, Ok("Done — plugin scaffolded.".to_string()));
 
         let roles: Vec<_> = m.turns.iter().map(|t| (t.role, t.text.clone())).collect();
         assert_eq!(
             roles,
             vec![
-                (TurnRole::User, "build me an app".to_string()),
+                (TurnRole::User, "build me an plugin".to_string()),
                 (TurnRole::Tool, "host.files.write".to_string()),
-                (TurnRole::Tool, "plexi.app_check".to_string()),
-                (TurnRole::Assistant, "Done — app scaffolded.".to_string()),
+                (TurnRole::Tool, "plexi.plugin_check".to_string()),
+                (TurnRole::Assistant, "Done — plugin scaffolded.".to_string()),
                 (TurnRole::User, "also add a footer".to_string()),
             ],
             "tool calls and the reply must commit before the queued follow-up, in the order they happened"
@@ -2032,7 +2032,7 @@ mod tests {
     #[test]
     fn streamed_text_flushes_before_tool_rows_and_tail_commits_at_finish() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build the app");
+        submitted(&mut m, "build the plugin");
 
         m.apply_answer_delta("Let me build this for you.");
         m.apply_reasoning_delta("plan the scaffold");
@@ -2064,7 +2064,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                (TurnRole::User, "build the app".to_string()),
+                (TurnRole::User, "build the plugin".to_string()),
                 (
                     TurnRole::Assistant,
                     "Let me build this for you.".to_string()

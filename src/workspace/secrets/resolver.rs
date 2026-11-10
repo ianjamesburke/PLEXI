@@ -57,7 +57,7 @@ impl WorkspaceConfig {
 pub struct WorkspaceSecrets {
     pub fallback: bool,
     #[serde(default)]
-    pub apps: HashMap<String, HashMap<String, String>>,
+    pub plugins: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub default: HashMap<String, String>,
     #[serde(default)]
@@ -99,11 +99,11 @@ impl WorkspaceSecrets {
     }
 
     /// Look up a route for `(plugin_id, canonical_name)`. Returns the friendly
-    /// Keychain name when an explicit `[apps.<plugin_id>]` route exists, or a
+    /// Keychain name when an explicit `[plugins.<plugin_id>]` route exists, or a
     /// `[default]` route otherwise. `None` means no route is defined.
     pub fn route_for(&self, plugin_id: &str, canonical_name: &str) -> Option<&str> {
-        if let Some(app_routes) = self.apps.get(plugin_id) {
-            if let Some(friendly) = app_routes.get(canonical_name) {
+        if let Some(plugin_routes) = self.plugins.get(plugin_id) {
+            if let Some(friendly) = plugin_routes.get(canonical_name) {
                 return Some(friendly.as_str());
             }
         }
@@ -115,7 +115,7 @@ impl WorkspaceSecrets {
 
 #[derive(Debug)]
 pub enum ResolveOutcome {
-    /// Found a value via app/default route or user-scope fallback.
+    /// Found a value via plugin/default route or user-scope fallback.
     Found(Zeroizing<String>),
     /// `fallback = false` and no route defined — surface as a hard in-pane
     /// error. The host should NOT show a "create new" modal.
@@ -184,7 +184,7 @@ pub fn resolve_with_source(
             reason: crate::workspace::secrets::reserved_secret_error(workspace_id),
         };
     }
-    // Step 1+2: workspace route (apps.<id> first, then [default]).
+    // Step 1+2: workspace route (plugins.<id> first, then [default]).
     if let Some(friendly) = router.route_for(plugin_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
         if let Some(value) = store.get(&account) {
@@ -202,7 +202,7 @@ pub fn resolve_with_source(
             let renamed = keychain_workspace_name(workspace_id, canonical);
             if let Some(value) = store.get(&renamed) {
                 log::warn!(
-                    "workspace_secrets: route for '{canonical_name}' (app '{plugin_id}') points at \
+                    "workspace_secrets: route for '{canonical_name}' (plugin '{plugin_id}') points at \
                      legacy spelling '{friendly}' but the keychain account is now '{renamed}' — \
                      resolving anyway; update the route value in .plexi/secrets.toml to '{canonical}'"
                 );
@@ -241,7 +241,7 @@ pub fn resolve_with_source(
     // Step 4: no route + fallback disabled → hard error.
     ResolveWithSourceOutcome::HardMissing {
         reason: format!(
-            "no workspace or route value in .plexi/secrets.toml for app '{plugin_id}' / secret \
+            "no workspace or route value in .plexi/secrets.toml for plugin '{plugin_id}' / secret \
              '{canonical_name}', and fallback = false"
         ),
     }
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_1_app_route_returns_workspace_namespaced_value() {
+    fn layer_1_plugin_route_returns_workspace_namespaced_value() {
         let store = InMemoryKeychain::new();
         store.set("plexi:ws-1:openai_prod", "sk-abc").unwrap();
         let r = router("fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n");
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_2_default_route_used_when_no_app_route() {
+    fn layer_2_default_route_used_when_no_plugin_route() {
         let store = InMemoryKeychain::new();
         store.set("plexi:ws-1:gh_team", "ghp-team").unwrap();
         let r = router("fallback = false\n[default]\nGITHUB_TOKEN = \"gh_team\"\n");
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn same_canonical_name_two_workspaces_returns_different_values() {
         // The whole point of workspace-scoping: same OPENAI_API_KEY in the
-        // app, different bills downstream.
+        // plugin, different bills downstream.
         let store = InMemoryKeychain::new();
         store.set("plexi:work:openai_prod", "sk-work").unwrap();
         store
@@ -617,14 +617,14 @@ mod tests {
     }
 
     #[test]
-    fn app_route_takes_precedence_over_default() {
+    fn plugin_route_takes_precedence_over_default() {
         let store = InMemoryKeychain::new();
-        store.set("plexi:ws-1:per_app", "per-app-val").unwrap();
+        store.set("plexi:ws-1:per_plugin", "per-app-val").unwrap();
         store.set("plexi:ws-1:default_val", "default-val").unwrap();
         let r = router(
             "fallback = false\n\
              [apps.claude-code]\n\
-             OPENAI_API_KEY = \"per_app\"\n\
+             OPENAI_API_KEY = \"per_plugin\"\n\
              [default]\n\
              OPENAI_API_KEY = \"default_val\"\n",
         );

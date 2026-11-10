@@ -87,7 +87,7 @@ impl<'a> HintGroup<'a> {
 pub(crate) enum HintBarMode {
     /// Centered hint rows with `SPACE_MD` top breathing room (used by `ModalShell` overlays).
     ModalFooter,
-    /// Full-width `bg_toolbar` footer band with optional `1px` top border (used by PGAP `FooterKeys` and built-in app footers).
+    /// Full-width `bg_toolbar` footer band with optional `1px` top border (used by PGAP `FooterKeys` and built-in plugin footers).
     PaneFooterBand { divider: bool },
     /// Single-row right-aligned hint groups inside an existing horizontal status bar row (used by `FileBrowserView`).
     InlineStatusBar,

@@ -5,7 +5,7 @@ pub(super) const SCAFFOLD_METADATA_SCHEMA_VERSION: u32 = 1;
 pub(super) const PYTHON_SCAFFOLD_TEMPLATE_VERSION: u32 = 5;
 
 /// Detect the channel config dir name from the running binary name.
-pub(super) fn app_init_config_dir() -> String {
+pub(super) fn plugin_init_config_dir() -> String {
     crate::config::config_dir()
         .file_name()
         .and_then(|n| n.to_str())
@@ -18,9 +18,9 @@ pub(super) fn app_init_config_dir() -> String {
 /// src/cli/AGENTS.md / root AGENTS.md regex-vs-parser rule) to name what's
 /// already occupying the slot, then suggests a single alternative name so the
 /// caller (including the assistant's `build-plexi-plugin` skill) can retry
-/// immediately instead of pivoting to edit a stale/foreign app in place
+/// immediately instead of pivoting to edit a stale/foreign plugin in place
 /// (stint 0428).
-pub(super) fn describe_app_init_collision(plugin_dir: &std::path::Path, name: &str) -> String {
+pub(super) fn describe_plugin_init_collision(plugin_dir: &std::path::Path, name: &str) -> String {
     let manifest_path = plugin_dir.join("manifest.toml");
     let existing = std::fs::read_to_string(&manifest_path)
         .ok()
@@ -49,11 +49,11 @@ pub(super) fn describe_app_init_collision(plugin_dir: &std::path::Path, name: &s
 /// directing the user to pass `--global` or `cd` into a workspace.
 ///
 /// With `--global`: scaffolds directly into the global registry
-/// (`~/.plexi-<channel>/apps/<name>/`).
+/// (`~/.plexi-<channel>/plugins/<name>/`).
 ///
-/// Scaffolds without opening by default. `--open` opens the app in a
+/// Scaffolds without opening by default. `--open` opens the plugin in a
 /// split-right pane after creating it.
-pub fn app_init(
+pub fn plugin_init(
     name: &str,
     lang: &str,
     global: bool,
@@ -74,12 +74,12 @@ pub fn app_init(
     };
 
     if cwd == std::path::Path::new("/") {
-        log::warn!("app_init: rejected at root dir");
-        eprintln!("error: cannot scaffold an app in the root directory.");
+        log::warn!("plugin_init: rejected at root dir");
+        eprintln!("error: cannot scaffold an plugin in the root directory.");
         return 1;
     }
 
-    let channel_dir = app_init_config_dir();
+    let channel_dir = plugin_init_config_dir();
     let plugin_dir = if global {
         crate::app::registry::plugins_dir().join(name)
     } else {
@@ -113,7 +113,7 @@ pub fn app_init(
                     "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
                 );
                 eprintln!(
-                    "  Use --global to create a global app, or cd into a project with a workspace."
+                    "  Use --global to create a global plugin, or cd into a project with a workspace."
                 );
                 return 1;
             }
@@ -121,14 +121,14 @@ pub fn app_init(
     };
 
     let placement = if global { "global" } else { "workspace" };
-    log::info!("app_init: placement={placement} path={}", plugin_dir.display());
+    log::info!("plugin_init: placement={placement} path={}", plugin_dir.display());
 
     if plugin_dir.exists() {
         log::info!(
-            "app_init: name collision at {} — refusing to overwrite existing directory",
+            "plugin_init: name collision at {} — refusing to overwrite existing directory",
             plugin_dir.display()
         );
-        eprintln!("{}", describe_app_init_collision(&plugin_dir, name));
+        eprintln!("{}", describe_plugin_init_collision(&plugin_dir, name));
         return 1;
     }
 
@@ -137,14 +137,14 @@ pub fn app_init(
         return 1;
     }
 
-    // `lang` is constrained by the CLI `value_parser` (see AppCmd::Init); an
+    // `lang` is constrained by the CLI `value_parser` (see PluginCmd::Init); an
     // unlisted value never reaches here. The explicit arms keep the mapping
     // total so a newly added language can't silently fall back to Python.
     let result = match lang {
-        "wasm" => scaffold_wasm_app(&plugin_dir, name),
-        "python" => scaffold_python_app(&plugin_dir, name),
+        "wasm" => scaffold_wasm_view(&plugin_dir, name),
+        "python" => scaffold_python_plugin(&plugin_dir, name),
         other => {
-            log::error!("app_init: no scaffold implemented for --lang '{other}'");
+            log::error!("plugin_init: no scaffold implemented for --lang '{other}'");
             eprintln!("error: no scaffold implemented for --lang '{other}'");
             return 1;
         }
@@ -153,7 +153,7 @@ pub fn app_init(
     match result {
         Ok(()) => {
             if lang != "wasm" {
-                match crate::app::python_env::ensure_app_venv(name, &plugin_dir, &[]) {
+                match crate::app::python_env::ensure_plugin_venv(name, &plugin_dir, &[]) {
                     Ok(python) => {
                         println!("  Python venv: {}", python.display());
                     }
@@ -167,7 +167,7 @@ pub fn app_init(
                         ) {
                             Ok(runtime) => {
                                 log::warn!(
-                                    "app_init[{name}]: Python venv setup failed: {e}; using {} ({})",
+                                    "plugin_init[{name}]: Python venv setup failed: {e}; using {} ({})",
                                     runtime.label,
                                     runtime.version
                                 );
@@ -178,10 +178,10 @@ pub fn app_init(
                             }
                             Err(runtime_err) => {
                                 log::error!(
-                                    "app_init[{name}]: Python environment setup failed: {e}; no fallback runtime: {runtime_err}"
+                                    "plugin_init[{name}]: Python environment setup failed: {e}; no fallback runtime: {runtime_err}"
                                 );
                                 eprintln!(
-                                    "error: app created, but no compatible Python runtime is available."
+                                    "error: plugin created, but no compatible Python runtime is available."
                                 );
                                 eprintln!("  venv setup: {e}");
                                 eprintln!("  fallback: {runtime_err}");
@@ -191,7 +191,7 @@ pub fn app_init(
                     }
                 }
             }
-            println!("Created app '{name}' at {}", plugin_dir.display());
+            println!("Created plugin '{name}' at {}", plugin_dir.display());
             let (channel, profile_dir) = current_scaffold_channel();
             let explicit_plexi = explicit_plexi_command(&channel);
             let explicit_host_plexi = explicit_host_plexi_command(&channel, &profile_dir);
@@ -204,12 +204,12 @@ pub fn app_init(
             } else {
                 if open {
                     let path_str = plugin_dir.to_string_lossy().to_string();
-                    log::info!("app_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
+                    log::info!("plugin_init: opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code =
                         super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
                     if exit_code != 0 {
                         eprintln!(
-                            "warning: app created but could not auto-open (exit {exit_code})"
+                            "warning: plugin created but could not auto-open (exit {exit_code})"
                         );
                         eprintln!(
                             "  Open with: {explicit_host_plexi} view open {}",
@@ -218,7 +218,7 @@ pub fn app_init(
                     }
                 } else {
                     log::info!(
-                        "app_init: created '{name}' without opening path={}",
+                        "plugin_init: created '{name}' without opening path={}",
                         plugin_dir.display()
                     );
                     println!(
@@ -253,28 +253,28 @@ pub fn app_init(
             0
         }
         Err(e) => {
-            eprintln!("error: failed to scaffold app: {e}");
+            eprintln!("error: failed to scaffold plugin: {e}");
             1
         }
     }
 }
 
-/// `uv run` arguments for `plexi plugin test`, built for one app directory.
+/// `uv run` arguments for `plexi plugin test`, built for one plugin directory.
 ///
-/// The runner has to provision its own pytest. Neither the maintained apps
-/// under `apps/` nor a fresh `plexi plugin init` scaffold declares a Python
+/// The runner has to provision its own pytest. Neither the maintained plugins
+/// under `plugins/` nor a fresh `plexi plugin init` scaffold declares a Python
 /// project, so a bare `uv run pytest` resolves against whatever project happens
-/// to sit above the app — which does not depend on pytest — and dies with
+/// to sit above the plugin — which does not depend on pytest — and dies with
 /// `Failed to spawn: pytest`. `--with pytest` makes the command self-contained.
 /// `--no-project` keeps uv from adopting (and materializing a `.venv` for) an
-/// unrelated ancestor project when the app declares none of its own; an app that
+/// unrelated ancestor project when the plugin declares none of its own; an plugin that
 /// does ship a `pyproject.toml` stays in project mode so its declared
 /// dependencies are installed alongside pytest.
 ///
-/// `--python` pins the interpreter to the app venv (`python_env::PYTHON_APP_VENV_VERSION`).
+/// `--python` pins the interpreter to the plugin venv (`python_env::PYTHON_APP_VENV_VERSION`).
 /// Without it uv picks whatever `python3` is on PATH, which on a stock Mac is
 /// older than the SDK's floor and dies importing `plexi_sdk` (`tomllib`).
-fn app_test_uv_args(plugin_dir: &std::path::Path, python: &std::path::Path) -> Vec<String> {
+fn plugin_test_uv_args(plugin_dir: &std::path::Path, python: &std::path::Path) -> Vec<String> {
     let mut args = vec!["run".to_string()];
     if !plugin_dir.join("pyproject.toml").is_file() {
         args.push("--no-project".to_string());
@@ -289,9 +289,9 @@ fn app_test_uv_args(plugin_dir: &std::path::Path, python: &std::path::Path) -> V
     args
 }
 
-/// App id and declared Python dependencies for the app venv, from
+/// App id and declared Python dependencies for the plugin venv, from
 /// `manifest.toml` when it parses, else the directory name and no dependencies.
-fn app_test_identity(plugin_dir: &std::path::Path) -> (String, Vec<String>) {
+fn plugin_test_identity(plugin_dir: &std::path::Path) -> (String, Vec<String>) {
     let manifest = std::fs::read_to_string(plugin_dir.join("manifest.toml"))
         .ok()
         .and_then(|text| toml::from_str::<crate::app::registry::PluginManifest>(&text).ok());
@@ -301,13 +301,13 @@ fn app_test_identity(plugin_dir: &std::path::Path) -> (String, Vec<String>) {
     let id = std::fs::canonicalize(plugin_dir)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "app".to_string());
+        .unwrap_or_else(|| "plugin".to_string());
     (id, Vec::new())
 }
 
-/// Builds the import path for plugin tests, keeping the app's entry module ahead
+/// Builds the import path for plugin tests, keeping the plugin's entry module ahead
 /// of the injected Plexi SDK.
-fn app_test_pythonpath(plugin_dir: &std::path::Path) -> String {
+fn plugin_test_pythonpath(plugin_dir: &std::path::Path) -> String {
     let sdk_paths = crate::config::build_pythonpath(None);
     let mut paths = vec![plugin_dir.to_path_buf()];
     paths.extend(std::env::split_paths(&sdk_paths));
@@ -317,11 +317,11 @@ fn app_test_pythonpath(plugin_dir: &std::path::Path) -> String {
         .into_owned()
 }
 
-/// `plexi plugin test [<app-path>]` — run an app's AppHarness tests via
-/// `uv run` + pytest inside the app directory, on the app's Python venv.
+/// `plexi plugin test [<plugin-path>]` — run an plugin's PluginHarness tests via
+/// `uv run` + pytest inside the plugin directory, on the plugin's Python venv.
 /// Streams pytest output live and returns its exit code so CI and ship
 /// scripts can gate on it.
-pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
+pub fn plugin_test_cli(path: &str, snapshot: bool) -> i32 {
     let raw_dir = std::path::Path::new(path);
     let tests_dir = raw_dir.join("tests");
     if !tests_dir.is_dir() {
@@ -329,21 +329,21 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         eprintln!(
             "error: no tests/ directory in {} — expected {}",
             raw_dir.display(),
-            raw_dir.join("tests").join("test_app.py").display()
+            raw_dir.join("tests").join("test_plugin.py").display()
         );
-        eprintln!("  `plexi plugin init` scaffolds tests/test_app.py for new apps.");
+        eprintln!("  `plexi plugin init` scaffolds tests/test_plugin.py for new plugins.");
         return 1;
     }
 
     let plugin_dir_buf = std::fs::canonicalize(raw_dir).unwrap_or_else(|_| raw_dir.to_path_buf());
     let plugin_dir = plugin_dir_buf.as_path();
-    let (plugin_id, deps) = app_test_identity(plugin_dir);
-    let python = match crate::app::python_env::ensure_app_venv(&plugin_id, plugin_dir, &deps) {
+    let (plugin_id, deps) = plugin_test_identity(plugin_dir);
+    let python = match crate::app::python_env::ensure_plugin_venv(&plugin_id, plugin_dir, &deps) {
         Ok(python) => python,
         Err(e) => {
-            log::error!("app_test:cli[{plugin_id}]: app Python venv setup failed: {e}");
+            log::error!("app_test:cli[{plugin_id}]: plugin Python venv setup failed: {e}");
             eprintln!(
-                "error: could not prepare the Python {} app venv for {}: {e}",
+                "error: could not prepare the Python {} plugin venv for {}: {e}",
                 crate::app::python_env::PYTHON_APP_VENV_VERSION,
                 plugin_dir.display()
             );
@@ -351,7 +351,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
         }
     };
 
-    let uv_args = app_test_uv_args(plugin_dir, &python);
+    let uv_args = plugin_test_uv_args(plugin_dir, &python);
     log::info!(
         "app_test:cli: running `uv {}` in {} (snapshot={snapshot})",
         uv_args.join(" "),
@@ -360,7 +360,7 @@ pub fn app_test_cli(path: &str, snapshot: bool) -> i32 {
 
     let mut cmd = std::process::Command::new("uv");
     cmd.args(&uv_args).current_dir(plugin_dir);
-    cmd.env("PYTHONPATH", app_test_pythonpath(plugin_dir));
+    cmd.env("PYTHONPATH", plugin_test_pythonpath(plugin_dir));
     if snapshot {
         cmd.env("PLEXI_UPDATE_SNAPSHOTS", "1");
     }
@@ -444,7 +444,7 @@ fn write_python_scaffold_support_files(plugin_dir: &std::path::Path, name: &str)
     let python_runtime_version = crate::app::python_env::PYTHON_APP_VENV_VERSION;
     let template_version = PYTHON_SCAFFOLD_TEMPLATE_VERSION;
 
-    let agents = include_str!("../../sdk/python/plexi_sdk/templates/AGENTS.md")
+    let agents = include_str!("../../sdk/python/plexi_sdk/templates/plugin-contract.md")
         .replace("__APP_NAME__", name)
         .replace("__CLI_VERSION__", cli_version)
         .replace("__SDK_VERSION__", &sdk_version)
@@ -492,21 +492,21 @@ pub(super) fn write_scaffold_metadata_file(
     let metadata_path = plugin_dir.join(SCAFFOLD_METADATA_FILE);
     std::fs::write(&metadata_path, metadata)?;
     log::info!(
-        "app_init: wrote scaffold metadata={} generated_by={generated_by} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
+        "plugin_init: wrote scaffold metadata={} generated_by={generated_by} template_version={template_version} sdk_version={sdk_version} channel={channel} profile_dir={profile_dir}",
         metadata_path.display()
     );
     Ok(())
 }
 
-/// Write or refresh `plexi.scaffold.toml` for an existing app directory without
+/// Write or refresh `plexi.scaffold.toml` for an existing plugin directory without
 /// creating or modifying any source files (`plexi plugin init --adopt <dir>`).
-pub fn app_adopt(path: &str) -> i32 {
+pub fn plugin_adopt(path: &str) -> i32 {
     let raw_path = std::path::Path::new(path);
-    let (manifest, _entry_path) = match crate::cli::app_check::load_local_plugin(raw_path) {
+    let (manifest, _entry_path) = match crate::cli::plugin_check::load_local_plugin(raw_path) {
         Ok(loaded) => loaded,
         Err(err) => {
             log::error!(
-                "app_adopt: invalid app directory '{}': {err}",
+                "plugin_adopt: invalid plugin directory '{}': {err}",
                 raw_path.display()
             );
             eprintln!("error: {err}");
@@ -518,12 +518,12 @@ pub fn app_adopt(path: &str) -> i32 {
         Ok(()) => {
             let metadata_path = plugin_dir.join(SCAFFOLD_METADATA_FILE);
             log::info!(
-                "app_adopt: adopted app '{}' at {}",
+                "plugin_adopt: adopted plugin '{}' at {}",
                 manifest.plugin.id,
                 metadata_path.display()
             );
             println!(
-                "Adopted app '{}' — wrote {}",
+                "Adopted plugin '{}' — wrote {}",
                 manifest.plugin.id,
                 metadata_path.display()
             );
@@ -531,7 +531,7 @@ pub fn app_adopt(path: &str) -> i32 {
         }
         Err(e) => {
             log::error!(
-                "app_adopt: failed to write {} in {}: {e}",
+                "plugin_adopt: failed to write {} in {}: {e}",
                 SCAFFOLD_METADATA_FILE,
                 plugin_dir.display()
             );
@@ -543,7 +543,7 @@ pub fn app_adopt(path: &str) -> i32 {
 
 /// `chmod +x` a scaffolded entry point.
 ///
-/// Unix needs it: `main.py` is launched directly, and without the bit the app
+/// Unix needs it: `main.py` is launched directly, and without the bit the plugin
 /// never starts. Windows decides executability from the file extension and has
 /// no mode bits to set, so there is nothing to do.
 #[cfg(unix)]
@@ -559,7 +559,7 @@ fn mark_executable(_path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
-fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
+fn scaffold_python_plugin(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml — shape lives in the template file beside the other scaffold
     // artifacts so it can't silently diverge from the documented manifest. The
     // feature-gated marketplace placeholder is appended in Rust.
@@ -573,7 +573,7 @@ fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<(
     );
     std::fs::write(plugin_dir.join("manifest.toml"), manifest)?;
 
-    // main.py + app/tools.py + app/ui.py — plexi_sdk is injected via PYTHONPATH
+    // main.py + plugin/tools.py + plugin/ui.py — plexi_sdk is injected via PYTHONPATH
     // by the host at launch; do NOT copy plexi_sdk.py alongside (the package uses
     // relative imports that break when imported as a flat single file).
     // main.py is the thin lifecycle wiring; tools and UI live in their own
@@ -581,9 +581,9 @@ fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<(
     // `plexi_sdk.tools`.
     // __DISPLAY_NAME__ is substituted below.
     let display_name = to_title_case(name);
-    let main_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init.py");
-    let tools_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init_tools.py");
-    let ui_template = include_str!("../../sdk/python/plexi_sdk/templates/app_init_ui.py");
+    let main_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init.py");
+    let tools_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_tools.py");
+    let ui_template = include_str!("../../sdk/python/plexi_sdk/templates/plugin_init_ui.py");
     let main_path = plugin_dir.join("main.py");
     std::fs::write(
         &main_path,
@@ -591,7 +591,7 @@ fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<(
             .replace("__CLASS_NAME__", &to_struct_name(name))
             .replace("__DISPLAY_NAME__", &display_name),
     )?;
-    let package_dir = plugin_dir.join("app");
+    let package_dir = plugin_dir.join("plugin");
     std::fs::create_dir_all(&package_dir)?;
     std::fs::write(
         package_dir.join("__init__.py"),
@@ -608,20 +608,20 @@ fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<(
 
     mark_executable(&main_path)?;
 
-    // tests/test_app.py — a working AppHarness example co-located with the app
+    // tests/test_plugin.py — a working PluginHarness example co-located with the plugin
     // so agents learn the test pattern from the scaffold, not from docs.
     let tests_dir = plugin_dir.join("tests");
     std::fs::create_dir_all(&tests_dir)?;
-    let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_app_init.py");
+    let test_template = include_str!("../../sdk/python/plexi_sdk/templates/test_plugin_init.py");
     let test_py = test_template.replace("__DISPLAY_NAME__", &to_title_case(name));
-    std::fs::write(tests_dir.join("test_app.py"), test_py)?;
+    std::fs::write(tests_dir.join("test_plugin.py"), test_py)?;
 
     let fixtures_dir = plugin_dir.join("fixtures");
     std::fs::create_dir_all(&fixtures_dir)?;
     std::fs::write(fixtures_dir.join("state.json"), "{\n  \"count\": 3\n}\n")?;
 
     log::info!(
-        "app_init: wrote python scaffold modules main.py app/tools.py app/ui.py at {}",
+        "plugin_init: wrote python scaffold modules main.py plugin/tools.py plugin/ui.py at {}",
         plugin_dir.display()
     );
 
@@ -630,7 +630,7 @@ fn scaffold_python_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<(
     Ok(())
 }
 
-fn scaffold_wasm_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
+fn scaffold_wasm_view(plugin_dir: &std::path::Path, name: &str) -> io::Result<()> {
     let crate_name = name.replace('-', "_");
     std::fs::write(
         plugin_dir.join("manifest.toml"),
@@ -641,9 +641,9 @@ fn scaffold_wasm_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<()>
     )?;
     std::fs::write(
         plugin_dir.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+        "[workspace]\nmembers = [\"plugin\"]\nresolver = \"2\"\n",
     )?;
-    let crate_dir = plugin_dir.join("app");
+    let crate_dir = plugin_dir.join("plugin");
     std::fs::create_dir_all(crate_dir.join("src"))?;
     std::fs::write(
         crate_dir.join("Cargo.toml"),
@@ -654,7 +654,7 @@ fn scaffold_wasm_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<()>
     std::fs::write(
         crate_dir.join("src/lib.rs"),
         format!(
-            "use plexi_wasm_sdk::{{effects, export_app, ui, App, Effect, InputEvent, KeyEvent, UiActionEvent, UiTree}};\n\nconst INCREMENT: &str = \"increment\";\n\n#[derive(Default)]\nstruct Counter {{ count: u32 }}\n\nimpl App for Counter {{\n    fn init(&mut self, _context: plexi_wasm_sdk::InitContext) -> Vec<Effect> {{\n        vec![effects::set_title(\"{display}\")]\n    }}\n\n    fn update(&mut self, event: InputEvent) -> Vec<Effect> {{\n        let increment = matches!(event, InputEvent::UiAction(UiActionEvent {{ ref handler_id }}) if handler_id == INCREMENT)\n            || matches!(event, InputEvent::Key(KeyEvent {{ ref key, pressed: true, .. }}) if key == \"enter\" || key == \"space\");\n        if increment {{\n            self.count += 1;\n        }}\n        Vec::new()\n    }}\n\n    fn view(&self) -> UiTree {{\n        let mut tree = ui::Tree::new();\n        let count = tree.text(\"count\", format!(\"Count: {{}}\", self.count));\n        let increment = tree.button(\"increment\", \"Increment\", INCREMENT);\n        let root = tree.column(\"root\", [count, increment]);\n        tree.finish(root)\n    }}\n}}\n\nexport_app!(Counter::default());\n",
+            "use plexi_wasm_sdk::{{effects, export_plugin, ui, View, Effect, InputEvent, KeyEvent, UiActionEvent, UiTree}};\n\nconst INCREMENT: &str = \"increment\";\n\n#[derive(Default)]\nstruct Counter {{ count: u32 }}\n\nimpl View for Counter {{\n    fn init(&mut self, _context: plexi_wasm_sdk::InitContext) -> Vec<Effect> {{\n        vec![effects::set_title(\"{display}\")]\n    }}\n\n    fn update(&mut self, event: InputEvent) -> Vec<Effect> {{\n        let increment = matches!(event, InputEvent::UiAction(UiActionEvent {{ ref handler_id }}) if handler_id == INCREMENT)\n            || matches!(event, InputEvent::Key(KeyEvent {{ ref key, pressed: true, .. }}) if key == \"enter\" || key == \"space\");\n        if increment {{\n            self.count += 1;\n        }}\n        Vec::new()\n    }}\n\n    fn view(&self) -> UiTree {{\n        let mut tree = ui::Tree::new();\n        let count = tree.text(\"count\", format!(\"Count: {{}}\", self.count));\n        let increment = tree.button(\"increment\", \"Increment\", INCREMENT);\n        let root = tree.column(\"root\", [count, increment]);\n        tree.finish(root)\n    }}\n}}\n\nexport_plugin!(Counter::default());\n",
             display = to_title_case(name),
         ),
     )?;
@@ -703,18 +703,18 @@ fn scaffold_wasm_app(plugin_dir: &std::path::Path, name: &str) -> io::Result<()>
         )?;
     }
     log::info!(
-        "app_init: created self-contained wasm scaffold path={} entry=target/wasm32-wasip1/release/{crate_name}.wasm",
+        "plugin_init: created self-contained wasm scaffold path={} entry=target/wasm32-wasip1/release/{crate_name}.wasm",
         plugin_dir.display(),
     );
     Ok(())
 }
 
-/// `plexi plugin uninstall <id> [--yes]` — remove an installed app (global or workspace-local).
-pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
+/// `plexi plugin uninstall <id> [--yes]` — remove an installed plugin (global or workspace-local).
+pub fn plugin_uninstall(id: &str, assume_yes: bool) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let Some(installed) = registry.get(id) else {
-        eprintln!("error: app '{id}' not found — run `plexi plugin list` to see installed apps");
+        eprintln!("error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins");
         return 1;
     };
     let plugin_dir = installed.plugin_dir.clone();
@@ -726,15 +726,15 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
         }
     };
     log::info!(
-        "app_uninstall: resolving '{id}' via registry → {:?}",
+        "plugin_uninstall: resolving '{id}' via registry → {:?}",
         plugin_dir
     );
     let core_ids = crate::cli::install_host::core_pack_ids();
     if core_ids.contains(id) {
-        eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");
+        eprintln!("note: '{id}' is a core plugin — it will be re-installed on the next Plexi launch");
     }
     if !assume_yes {
-        eprint!("Remove app '{id}'? [y/N]: ");
+        eprint!("Remove plugin '{id}'? [y/N]: ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
         if io::stdin().read_line(&mut answer).is_err() {
@@ -807,7 +807,7 @@ struct InstallGateDecision {
 }
 
 /// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
-/// Print the trust sheet for a validated app dir or package: identity,
+/// Print the trust sheet for a validated plugin dir or package: identity,
 /// runtime + trust label, size, and every declared capability with its
 /// description (sensitive ones marked). Plain text — no color, so NO_COLOR
 /// holds trivially.
@@ -895,9 +895,9 @@ fn push_wasm_capability_rows(lines: &mut Vec<String>, caps: &[String]) {
     }
 }
 
-/// Host-version gate: block install when the host is too old for the app (or a
+/// Host-version gate: block install when the host is too old for the plugin (or a
 /// declared requirement is malformed); warn when the host is newer than the
-/// app's declared ceiling. Returns an exit code to abort, or `None` to proceed.
+/// plugin's declared ceiling. Returns an exit code to abort, or `None` to proceed.
 pub fn host_version_gate(report: &crate::app::package::PackageReport) -> Option<i32> {
     use crate::app::host_version::{check, current};
     let verdict = check(
@@ -1082,9 +1082,9 @@ fn is_valid_plugin_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
-/// `plexi plugin inspect <path>` — validate a local app dir or `.plexipkg` file
+/// `plexi plugin inspect <path>` — validate a local plugin dir or `.plexipkg` file
 /// and print the trust sheet without installing anything (stint 0016).
-pub fn app_inspect_cli(path: &str) -> i32 {
+pub fn plugin_inspect_cli(path: &str) -> i32 {
     log::info!("app_inspect:cli: path={path}");
     let target = std::path::Path::new(path);
     let report = if target.is_file() {
@@ -1112,16 +1112,16 @@ pub fn app_inspect_cli(path: &str) -> i32 {
 /// `confirm` decides whether the trust sheet + prompt gate runs:
 /// `Interactive` for user-typed installs, `PreApproved` for internal callers
 /// that already gated (or are first-party bundled content).
-pub fn app_install_with_pin(
+pub fn plugin_install_with_pin(
     path: &str,
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    app_install_with_pin_inner(path, pin, confirm, assume_yes, None)
+    plugin_install_with_pin_inner(path, pin, confirm, assume_yes, None)
 }
 
-fn app_install_with_pin_inner(
+fn plugin_install_with_pin_inner(
     path: &str,
     pin: Option<&str>,
     confirm: InstallConfirm,
@@ -1164,7 +1164,7 @@ fn app_install_with_pin_inner(
             }
             InstallConfirm::PreApproved => {
                 log::warn!(
-                    "app::install: pre-approved install of {} proceeding despite validation failure: {e}",
+                    "plugin::install: pre-approved install of {} proceeding despite validation failure: {e}",
                     src.display()
                 );
             }
@@ -1174,7 +1174,7 @@ fn app_install_with_pin_inner(
     let manifest_path = src.join("manifest.toml");
     if !manifest_path.exists() {
         eprintln!("error: no manifest.toml found in {}", src.display());
-        eprintln!("  Is this a Plexi app directory? Run `plexi plugin init <name>` to scaffold one.");
+        eprintln!("  Is this a Plexi plugin directory? Run `plexi plugin init <name>` to scaffold one.");
         return 1;
     }
     let manifest_str = match std::fs::read_to_string(&manifest_path) {
@@ -1196,39 +1196,39 @@ fn app_install_with_pin_inner(
         .get("schema_version")
         .and_then(|v| v.as_integer())
         .unwrap_or(0);
-    if schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION as i64 {
+    if schema_version != crate::app::registry::MANIFEST_SCHEMA_VERSION as i64 {
         eprintln!(
-            "error: manifest.toml schema_version {schema_version} is newer than supported (max {})",
+            "error: manifest.toml schema_version {schema_version} is unsupported; use schema_version {} with [plugin], [runtime] and [[contributes.views]]",
             crate::app::registry::MANIFEST_SCHEMA_VERSION
         );
         return 1;
     }
 
-    let app_section = match manifest.get("app") {
+    let plugin_section = match manifest.get("plugin") {
         Some(a) => a,
         None => {
-            eprintln!("error: manifest.toml is missing [app] section");
+            eprintln!("error: manifest.toml is missing [plugin] section");
             return 1;
         }
     };
-    let plugin_id = match app_section.get("id").and_then(|v| v.as_str()) {
+    let plugin_id = match plugin_section.get("id").and_then(|v| v.as_str()) {
         Some(id) if is_valid_plugin_id(id) => id.to_string(),
         _ => {
-            eprintln!("error: manifest.toml is missing a valid [app].id");
+            eprintln!("error: manifest.toml is missing a valid [plugin].id");
             eprintln!("  (IDs must be non-empty and contain only alphanumeric characters, dots, dashes, or underscores)");
             return 1;
         }
     };
-    let app_version = app_section
+    let plugin_version = plugin_section
         .get("version")
         .and_then(|v| v.as_str())
         .unwrap_or("?");
 
     let dest = crate::app::registry::plugins_dir().join(&plugin_id);
 
-    // Stage the complete tree outside the apps directory, mark it complete, then
+    // Stage the complete tree outside the plugins directory, mark it complete, then
     // swap it in. An interruption leaves the previous install or the new one,
-    // never a missing or half-copied app (stint 1175). Grants bind package
+    // never a missing or half-copied plugin (stint 1175). Grants bind package
     // content, so a changed tree asks for approval again by itself.
     let staging_root = crate::app::install_swap::staging_root();
     crate::app::install_swap::clear_stale_staging(&staging_root, &plugin_id);
@@ -1243,11 +1243,11 @@ fn app_install_with_pin_inner(
         return 1;
     }
     // Write version tracking files (best-effort — never fail the install).
-    write_installed_version(&staging, app_version);
+    write_installed_version(&staging, plugin_version);
     if let Some(pin) = pin {
-        if pin != app_version {
+        if pin != plugin_version {
             eprintln!(
-                "warning: manifest version is {app_version} but pinning to {pin} as requested"
+                "warning: manifest version is {plugin_version} but pinning to {pin} as requested"
             );
         }
         write_pinned_version(&staging, pin);
@@ -1270,11 +1270,11 @@ fn app_install_with_pin_inner(
     }
 
     log::info!(
-        "app::install: installed {plugin_id} v{app_version} from {}",
+        "plugin::install: installed {plugin_id} v{plugin_version} from {}",
         src.display()
     );
     println!(
-        "Installed '{plugin_id}' v{app_version} from {}.",
+        "Installed '{plugin_id}' v{plugin_version} from {}.",
         src.display()
     );
     println!("Run `plexi view open {plugin_id}` to launch it.");
@@ -1289,7 +1289,7 @@ fn remember_wasm_install_review(
         Ok(path) => path,
         Err(e) => {
             log::warn!(
-                "app::install: could not resolve cwd for wasm install review '{}': {e}",
+                "plugin::install: could not resolve cwd for wasm install review '{}': {e}",
                 report.id
             );
             return;
@@ -1304,7 +1304,7 @@ fn remember_wasm_install_review(
         return;
     };
     log::info!(
-        "app::install: wasm review app={} workspace={} required_granted={} optional_granted={} optional_deferred={}",
+        "plugin::install: wasm review plugin={} workspace={} required_granted={} optional_granted={} optional_deferred={}",
         report.id,
         workspace_root.display(),
         summary.required_granted,
@@ -1368,7 +1368,7 @@ fn persist_wasm_install_review(
 }
 
 /// `plexi plugin package <path> [--out <file>]` — build a `.plexipkg` artifact.
-pub fn app_package_cli(path: &str, out: Option<&str>) -> i32 {
+pub fn plugin_package_cli(path: &str, out: Option<&str>) -> i32 {
     log::info!("app_package:cli: path={path} out={out:?}");
     let plugin_dir = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
@@ -1395,26 +1395,26 @@ pub fn app_package_cli(path: &str, out: Option<&str>) -> i32 {
 ///
 /// The trust gate runs here (against the validated package report); the inner
 /// dir install is then `PreApproved` so the user is prompted exactly once.
-pub fn app_install_package(
+pub fn plugin_install_package(
     file: &str,
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
 ) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, false, None)
+    plugin_install_package_inner(file, pin, confirm, assume_yes, false, None)
 }
 
-pub fn app_install_marketplace_package(
+pub fn plugin_install_marketplace_package(
     file: &str,
     pin: Option<&str>,
     confirm: InstallConfirm,
     assume_yes: bool,
     source_metadata: Option<crate::app::marketplace::InstalledRegistrySource>,
 ) -> i32 {
-    app_install_package_inner(file, pin, confirm, assume_yes, true, source_metadata)
+    plugin_install_package_inner(file, pin, confirm, assume_yes, true, source_metadata)
 }
 
-fn app_install_package_inner(
+fn plugin_install_package_inner(
     file: &str,
     pin: Option<&str>,
     confirm: InstallConfirm,
@@ -1468,7 +1468,7 @@ fn app_install_package_inner(
     );
     // Already validated and (when interactive) confirmed above — the inner
     // dir install must not prompt a second time.
-    let code = app_install_with_pin_inner(
+    let code = plugin_install_with_pin_inner(
         &staging.to_string_lossy(),
         pin,
         InstallConfirm::PreApproved,
@@ -1511,7 +1511,7 @@ fn copy_dir_all_inner(
         let rel_path = rel.join(entry.file_name());
         if crate::app::package::is_generated_dev_artifact_rel(&rel_path) {
             log::info!(
-                "app::install: skipping generated dev artifact {}",
+                "plugin::install: skipping generated dev artifact {}",
                 entry_path.display()
             );
             continue;
@@ -1528,7 +1528,7 @@ fn copy_dir_all_inner(
 
 /// Build the `list_plugin_tools` IPC request payload, attaching caller pane/context
 /// env hints when present.
-pub(crate) fn build_list_app_tools_payload(
+pub(crate) fn build_list_plugin_tools_payload(
     plugin_id: Option<&str>,
     context_id: Option<u64>,
 ) -> serde_json::Value {
@@ -1559,14 +1559,14 @@ pub(crate) fn build_list_app_tools_payload(
 /// Best-effort live registry query for `plexi plugin info <id>`. Returns `None`
 /// silently when no host socket is reachable so offline `plexi plugin info` never
 /// fails or prints a socket error.
-fn try_query_live_app_tools_for_info(
+fn try_query_live_plugin_tools_for_info(
     plugin_id: &str,
 ) -> Option<(u64, Vec<crate::plexi_ai::tool_dispatch::LiveToolEntry>)> {
     let socket = super::resolve_command_socket()?;
     if !super::spawn_socket_accepting(&socket) {
         return None;
     }
-    let payload = build_list_app_tools_payload(Some(plugin_id), None);
+    let payload = build_list_plugin_tools_payload(Some(plugin_id), None);
     let content = super::request_with(
         payload,
         "app-tools-response",
@@ -1585,10 +1585,10 @@ fn try_query_live_app_tools_for_info(
 }
 
 /// Format `plexi plugin info <id>` output. Populates `tools` from `live_tools` when
-/// at least one pane of the app is running in the caller's context; otherwise
+/// at least one pane of the plugin is running in the caller's context; otherwise
 /// explicitly labels the section as `manifest-only` (or `static source scan`)
-/// so an unopened app is never misreported as declaring no tools.
-pub(crate) fn format_app_info(
+/// so an unopened plugin is never misreported as declaring no tools.
+pub(crate) fn format_plugin_info(
     m: &crate::app::registry::PluginIdentity,
     plugin_dir: &std::path::Path,
     live_tools: Option<(u64, &[crate::plexi_ai::tool_dispatch::LiveToolEntry])>,
@@ -1648,8 +1648,8 @@ pub(crate) fn format_app_info(
     out
 }
 
-/// `plexi plugin info <id>` — show manifest info and honest tool status for an installed app.
-pub fn app_info(id: &str) -> i32 {
+/// `plexi plugin info <id>` — show manifest info and honest tool status for an installed plugin.
+pub fn plugin_info(id: &str) -> i32 {
     if super::host::plugin_mode_core_only() {
         eprintln!("{}", crate::app::core_only::unavailable(id));
         return 1;
@@ -1659,7 +1659,7 @@ pub fn app_info(id: &str) -> i32 {
         &crate::app::registry::plugins_dir(),
     );
     let Some(installed) = registry.get(id) else {
-        eprintln!("error: app '{id}' not found — run `plexi plugin list` to see installed apps");
+        eprintln!("error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins");
         return 1;
     };
     let plugin_dir = installed
@@ -1667,21 +1667,21 @@ pub fn app_info(id: &str) -> i32 {
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(|| installed.bin_path.clone());
-    let live = try_query_live_app_tools_for_info(id);
+    let live = try_query_live_plugin_tools_for_info(id);
     let live_count = live.as_ref().map(|(_, t)| t.len()).unwrap_or(0);
-    let formatted = format_app_info(
+    let formatted = format_plugin_info(
         &installed.manifest,
         &plugin_dir,
         live.as_ref().map(|(ctx, t)| (*ctx, t.as_slice())),
     );
     print!("{formatted}");
-    log::info!("app_info: id={id} live_tools={live_count}");
+    log::info!("plugin_info: id={id} live_tools={live_count}");
     0
 }
 
 /// `plexi plugin list` — unified alias for `plexi list`.
-pub fn app_list() -> i32 {
-    log::info!("cli: app_list delegating to list_cli (unified)");
+pub fn plugin_list() -> i32 {
+    log::info!("cli: plugin_list delegating to list_cli (unified)");
     super::list::list_cli()
 }
 
@@ -1708,7 +1708,7 @@ pub fn view_list() -> i32 {
 /// `plexi plugin prune --dry-run` reports precisely the legacy installs that a
 /// normal launch will reconcile. The no-flag form performs the same safe,
 /// positively-identified reconciliation for users repairing a stopped profile.
-pub fn app_prune_cli(dry_run: bool) -> i32 {
+pub fn plugin_prune_cli(dry_run: bool) -> i32 {
     let plugins_dir = crate::app::registry::plugins_dir();
     let candidates = crate::cli::install_host::orphaned_pre_v3_first_party_apps(&plugins_dir);
     log::info!(
@@ -1728,17 +1728,17 @@ pub fn app_prune_cli(dry_run: bool) -> i32 {
         println!("quarantined {}", path.display());
     }
     if !all_removed {
-        eprintln!("error: one or more orphaned pre-v3 apps could not be quarantined");
+        eprintln!("error: one or more orphaned pre-v3 plugins could not be quarantined");
         return 1;
     }
     0
 }
 
-/// `plexi view render <app> --size WxH [--state state.json] [--output path] [--png]`
-/// Renders an app headlessly. `app` may be an installed app ID or a local directory path.
+/// `plexi view render <plugin> --size WxH [--state state.json] [--output path] [--png]`
+/// Renders an plugin headlessly. `plugin` may be an installed plugin ID or a local directory path.
 /// Default output: JSON frame tree. With --png: PNG image.
 pub fn view_render(
-    app: &str,
+    plugin: &str,
     size: &str,
     state: Option<&str>,
     output: Option<&str>,
@@ -1785,22 +1785,22 @@ pub fn view_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (plugin_id, plugin_dir, app_bin, capabilities, allowed_hosts) = if std::path::Path::new(app)
+    let (plugin_id, plugin_dir, plugin_bin, capabilities, allowed_hosts) = if std::path::Path::new(plugin)
         .components()
         .count()
         > 1
-        || std::path::Path::new(app).is_dir()
+        || std::path::Path::new(plugin).is_dir()
     {
-        let plugin_dir = match std::path::Path::new(app).canonicalize() {
+        let plugin_dir = match std::path::Path::new(plugin).canonicalize() {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("view_render: could not resolve '{app}': {e}");
-                eprintln!("error: could not resolve '{app}': {e}");
+                log::warn!("view_render: could not resolve '{plugin}': {e}");
+                eprintln!("error: could not resolve '{plugin}': {e}");
                 return 1;
             }
         };
         if !plugin_dir.is_dir() {
-            eprintln!("error: '{app}' is not a directory — expected an app directory containing manifest.toml");
+            eprintln!("error: '{plugin}' is not a directory — expected an plugin directory containing manifest.toml");
             return 1;
         }
         let manifest_path = plugin_dir.join("manifest.toml");
@@ -1810,7 +1810,7 @@ pub fn view_render(
                 log::warn!("view_render: no manifest.toml in {}: {e}", plugin_dir.display());
                 eprintln!("error: no manifest.toml in {}: {e}", plugin_dir.display());
                 eprintln!(
-                    "  Is this a Plexi app directory? Run `plexi plugin init <name>` to scaffold one."
+                    "  Is this a Plexi plugin directory? Run `plexi plugin init <name>` to scaffold one."
                 );
                 return 1;
             }
@@ -1828,7 +1828,7 @@ pub fn view_render(
         };
         if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
             eprintln!(
-                "error: manifest.toml schema_version {} is newer than supported (max {}); update Plexi to render this app",
+                "error: manifest.toml schema_version {} is newer than supported (max {}); update Plexi to render this plugin",
                 manifest.schema_version,
                 crate::app::registry::MANIFEST_SCHEMA_VERSION
             );
@@ -1841,13 +1841,13 @@ pub fn view_render(
         let entry = plugin_dir.join(&manifest.plugin.entry);
         if !entry.exists() {
             eprintln!(
-                "error: app entry '{}' not found in {}",
+                "error: plugin entry '{}' not found in {}",
                 manifest.plugin.entry,
                 plugin_dir.display()
             );
             return 1;
         }
-        log::info!("view_render[{}]: loaded from path '{app}'", manifest.plugin.id);
+        log::info!("view_render[{}]: loaded from path '{plugin}'", manifest.plugin.id);
         (
             manifest.plugin.id,
             plugin_dir,
@@ -1859,9 +1859,9 @@ pub fn view_render(
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let registry = crate::app::registry::PluginRegistry::load(&cwd);
-        match registry.list().into_iter().find(|a| a.manifest.id == app || a.contributes.views.iter().any(|view| view.id == app)) {
+        match registry.list().into_iter().find(|a| a.manifest.id == plugin || a.contributes.views.iter().any(|view| view.id == plugin)) {
             Some(a) => {
-                if let Err(error) = a.contributes.resolve_view(&a.manifest.id, app) {
+                if let Err(error) = a.contributes.resolve_view(&a.manifest.id, plugin) {
                     eprintln!("error: {error}");
                     return 1;
                 }
@@ -1880,24 +1880,24 @@ pub fn view_render(
             }
             None => {
                 eprintln!(
-                    "error: app '{app}' not found — run `plexi plugin list` to see installed apps"
+                    "error: plugin '{plugin}' not found — run `plexi plugin list` to see installed plugins"
                 );
                 return 1;
             }
         }
     };
 
-    if app_bin.extension().and_then(|ext| ext.to_str()) != Some("py") {
+    if plugin_bin.extension().and_then(|ext| ext.to_str()) != Some("py") {
         eprintln!(
-            "error: '{}' is not a Python entry — plexi view render only drives SDK v3 Python apps (CPython-in-WASM)",
-            app_bin.display()
+            "error: '{}' is not a Python entry — plexi view render only drives SDK v3 Python plugins (CPython-in-WASM)",
+            plugin_bin.display()
         );
         return 1;
     }
-    let launch_config = crate::cli::app_check::python_launch_config_from_parts(
+    let launch_config = crate::cli::plugin_check::python_launch_config_from_parts(
         &plugin_id,
         &plugin_dir,
-        &app_bin,
+        &plugin_bin,
         &capabilities,
         &allowed_hosts,
     );
@@ -1968,7 +1968,7 @@ pub fn view_render(
     } else {
         // JSON mode (default): return the semantic UI-node tree
         let json =
-            match serde_json::to_string_pretty(&crate::cli::app_check::ui_tree_to_json(&tree)) {
+            match serde_json::to_string_pretty(&crate::cli::plugin_check::ui_tree_to_json(&tree)) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("error: could not serialize frame: {e}");
@@ -2017,7 +2017,7 @@ pub(crate) enum PluginInstallSpecKind {
 /// Classify the user-provided `plexi plugin install <spec>` target before any
 /// path canonicalization. Source specs such as `github:owner/repo` contain `/`
 /// but are not filesystem paths.
-pub(crate) fn classify_app_install_spec(s: &str) -> PluginInstallSpecKind {
+pub(crate) fn classify_plugin_install_spec(s: &str) -> PluginInstallSpecKind {
     if s.ends_with(".plexipkg") {
         return PluginInstallSpecKind::Package;
     }
@@ -2030,7 +2030,7 @@ pub(crate) fn classify_app_install_spec(s: &str) -> PluginInstallSpecKind {
     PluginInstallSpecKind::MarketplaceId
 }
 
-/// Returns true if `s` looks like a bare app ID (no scheme prefix, no path separators).
+/// Returns true if `s` looks like a bare plugin ID (no scheme prefix, no path separators).
 pub(super) fn is_bare_id(s: &str) -> bool {
     !s.contains(':') && !s.contains('/') && !s.is_empty()
 }
@@ -2047,7 +2047,7 @@ pub(super) fn is_github_shorthand(s: &str) -> bool {
     !owner.is_empty() && !repo.is_empty() && !repo.contains('/')
 }
 
-/// channel apps dir. Source spec follows `packs::parse_source_spec`.
+/// channel plugins dir. Source spec follows `packs::parse_source_spec`.
 fn to_title_case(s: &str) -> String {
     s.split(['-', '_'])
         .map(|w| {
@@ -2075,9 +2075,9 @@ fn to_struct_name(s: &str) -> String {
 
 /// `plexi plugin update [<id>]` — canonical plugin update path.
 ///
-/// Pulls git-backed installed apps in the current workspace-aware registry.
-/// `plexi update apps` delegates to the same implementation for compatibility.
-pub fn app_update_cli(id: Option<&str>) -> i32 {
+/// Pulls git-backed installed plugins in the current workspace-aware registry.
+/// `plexi update plugins` delegates to the same implementation for compatibility.
+pub fn plugin_update_cli(id: Option<&str>) -> i32 {
     log::info!("app_update:cli: delegating to workspace-aware git updater id={id:?}");
     crate::cli::install::update_cli(id)
 }
@@ -2085,7 +2085,7 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
 /// `plexi pane action <pane_id> <action> [args...]`
 ///
 /// Sends a `send_pane_action` message to the host over PLEXI_SOCKET.
-/// The host delivers a `PlexiEvent::Action { action, args }` to the target app pane.
+/// The host delivers a `PlexiEvent::Action { action, args }` to the target view pane.
 /// Returns 0 on success, 1 on error.
 pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
     log::info!("pane_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
@@ -2115,9 +2115,9 @@ pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duratio
 pub(crate) const APP_CALL_APPROVAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(120);
 
-/// `plexi plugin call <plugin_id> <tool> [--input JSON]` — invoke an app tool through
+/// `plexi plugin call <plugin_id> <tool> [--input JSON]` — invoke an plugin tool through
 /// the host's tool dispatcher and print its JSON output on stdout.
-pub fn app_call_cli(
+pub fn plugin_call_cli(
     plugin_id: &str,
     tool: &str,
     input: &str,
@@ -2141,7 +2141,7 @@ pub fn app_call_cli(
     let caller_pane_id = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok());
-    log::info!("app_call:cli: app={plugin_id:?} tool={tool:?} caller_pane={caller_pane_id:?}");
+    log::info!("plugin_call:cli: plugin={plugin_id:?} tool={tool:?} caller_pane={caller_pane_id:?}");
     let mut payload = serde_json::json!({
         "type": "call_plugin_tool",
         "plugin_id": plugin_id,
@@ -2154,7 +2154,7 @@ pub fn app_call_cli(
     }
     if let Some(pane) = target_pane {
         payload["target_pane_id"] = serde_json::json!(pane);
-        log::info!("app_call:cli: target_pane={pane}");
+        log::info!("plugin_call:cli: target_pane={pane}");
     }
     if let Ok(credential) = std::env::var("PLEXI_CALL_CREDENTIAL") {
         if !credential.is_empty() {
@@ -2205,12 +2205,12 @@ pub fn app_call_cli(
     }
 }
 
-/// `plexi plugin tools [--app <plugin_id>] [--context <context_id>] [--json]` —
-/// snapshot the live tool registry exposed by running app panes in the resolved
+/// `plexi plugin tools [--plugin <plugin_id>] [--context <context_id>] [--json]` —
+/// snapshot the live tool registry exposed by running view panes in the resolved
 /// context.
-pub fn app_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
-    log::info!("app_tools:cli: app={plugin_id:?} context={context_id:?} json={json}");
-    let payload = build_list_app_tools_payload(plugin_id, context_id);
+pub fn plugin_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: bool) -> i32 {
+    log::info!("plugin_tools:cli: plugin={plugin_id:?} context={context_id:?} json={json}");
+    let payload = build_list_plugin_tools_payload(plugin_id, context_id);
     let content = match super::request(payload, "app-tools-response", "plugin tools") {
         Ok(content) => content,
         Err(code) => return code,
@@ -2238,8 +2238,8 @@ pub fn app_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: boo
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
     if tools.is_empty() {
-        if let Some(app) = plugin_id {
-            println!("No live tools registered for app '{app}' in context {resolved_ctx}.");
+        if let Some(plugin) = plugin_id {
+            println!("No live tools registered for plugin '{plugin}' in context {resolved_ctx}.");
         } else {
             println!("No live tools registered in context {resolved_ctx}.");
         }
@@ -2249,7 +2249,7 @@ pub fn app_tools_cli(plugin_id: Option<&str>, context_id: Option<u64>, json: boo
     for entry in &tools {
         let ro = if entry.read_only { " [read_only]" } else { "" };
         println!(
-            "  {}  (app: {}, pane: {}){}  {}",
+            "  {}  (plugin: {}, pane: {}){}  {}",
             entry.name, entry.plugin_id, entry.pane_id, ro, entry.description
         );
         println!("    input_schema:  {}", entry.input_schema);
@@ -2516,8 +2516,8 @@ pub fn assistant_send_cli(
 }
 
 #[cfg(test)]
-mod app_install_workspace_tests {
-    use super::{classify_app_install_spec, PluginInstallSpecKind};
+mod plugin_install_workspace_tests {
+    use super::{classify_plugin_install_spec, PluginInstallSpecKind};
     use tempfile::TempDir;
 
     fn write_valid_manifest(dir: &std::path::Path, id: &str) {
@@ -2532,7 +2532,7 @@ mod app_install_workspace_tests {
     }
 
     /// `plexi plugin install <path>` must succeed from a bare directory with no
-    /// `.plexi/` workspace. Install goes to the global channel apps dir — workspace
+    /// `.plexi/` workspace. Install goes to the global channel plugins dir — workspace
     /// resolution is never consulted for path-based installs.
     #[test]
     fn install_from_path_succeeds_without_workspace() {
@@ -2544,9 +2544,9 @@ mod app_install_workspace_tests {
         // No workspace present in src or any ancestor (temp dir) — must return 0.
         // Interactive + --yes: gate prints the trust sheet but never prompts.
         let code =
-            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
+            super::plugin_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
 
-        // Clean up installed app to avoid polluting the apps dir between runs.
+        // Clean up installed plugin to avoid polluting the plugins dir between runs.
         let dest = crate::app::registry::plugins_dir().join(plugin_id);
         let _ = std::fs::remove_dir_all(&dest);
 
@@ -2564,12 +2564,12 @@ mod app_install_workspace_tests {
         let path = src.path().to_string_lossy().to_string();
 
         let code =
-            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
+            super::plugin_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
 
         let dest = crate::app::registry::plugins_dir().join(plugin_id);
         let _ = std::fs::remove_dir_all(&dest);
 
-        assert_eq!(code, 0, "reverse-DNS app ids must install cleanly");
+        assert_eq!(code, 0, "reverse-DNS plugin ids must install cleanly");
     }
 
     #[test]
@@ -2577,7 +2577,7 @@ mod app_install_workspace_tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_string_lossy().to_string();
         let code =
-            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
+            super::plugin_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
         // Must fail with exit code 1 (manifest missing), not a workspace error.
         assert_eq!(code, 1, "missing manifest must return 1");
     }
@@ -2585,15 +2585,15 @@ mod app_install_workspace_tests {
     #[test]
     fn github_source_spec_is_not_classified_as_local_path() {
         assert_eq!(
-            classify_app_install_spec("github:owner/repo"),
+            classify_plugin_install_spec("github:owner/repo"),
             PluginInstallSpecKind::Source
         );
         assert_eq!(
-            classify_app_install_spec("git+file:///tmp/repo"),
+            classify_plugin_install_spec("git+file:///tmp/repo"),
             PluginInstallSpecKind::Source
         );
         assert_eq!(
-            classify_app_install_spec("owner/repo"),
+            classify_plugin_install_spec("owner/repo"),
             PluginInstallSpecKind::LocalPath
         );
     }
@@ -2736,7 +2736,7 @@ mod install_confirm_tests {
         let core_lines = trust_sheet_lines(&report(), TrustLabel::FirstPartyCore);
         assert!(core_lines
             .iter()
-            .any(|line| line == "runtime:      python — First-party core — bundled with Plexi"));
+            .any(|line| line == "runtime:      python — Bundled"));
     }
 
     #[test]
@@ -2861,7 +2861,7 @@ mod install_confirm_tests {
 }
 
 #[cfg(test)]
-mod app_inspect_tests {
+mod plugin_inspect_tests {
     use tempfile::TempDir;
 
     #[test]
@@ -2873,8 +2873,8 @@ mod app_inspect_tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
-        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
-        assert_eq!(code, 0, "valid app dir must inspect cleanly");
+        let code = super::plugin_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 0, "valid plugin dir must inspect cleanly");
     }
 
     #[test]
@@ -2886,15 +2886,15 @@ mod app_inspect_tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("app.wasm"), b"\0asm").unwrap();
-        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
-        assert_eq!(code, 0, "valid wasm app dir must inspect cleanly");
+        let code = super::plugin_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 0, "valid wasm plugin dir must inspect cleanly");
     }
 
     #[test]
     fn inspect_invalid_dir_returns_1() {
         let dir = TempDir::new().unwrap();
         // No manifest — must fail validation, exit non-zero.
-        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
+        let code = super::plugin_inspect_cli(&dir.path().to_string_lossy());
         assert_eq!(code, 1, "dir without manifest must fail inspect");
     }
 }
@@ -2916,7 +2916,7 @@ mod version_pin_tests {
         let src = TempDir::new().unwrap();
         write_manifest(src.path(), "my-app", "1.2.3");
 
-        // Use a temp dir as the plugins_dir root — app_install copies to plugins_dir/my-app.
+        // Use a temp dir as the plugins_dir root — app_install copies to plugins_dir/my-plugin.
         // We can test write_installed_version directly since app_install calls plugins_dir().
         // Instead, call write_installed_version directly and verify the file.
         let dest = TempDir::new().unwrap();
@@ -2948,7 +2948,7 @@ mod version_pin_tests {
             toml::from_str(&std::fs::read_to_string(dir.path().join("manifest.toml")).unwrap())
                 .unwrap();
         let manifest_ver = manifest_val
-            .get("app")
+            .get("plugin")
             .and_then(|a| a.get("version"))
             .and_then(|v| v.as_str())
             .unwrap();
@@ -2966,10 +2966,10 @@ mod version_pin_tests {
     fn marketplace_package_install_records_source_metadata() {
         let profile = TempDir::new().unwrap();
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
-        let app_src = TempDir::new().unwrap();
-        write_manifest(app_src.path(), "reviewed-notes", "0.1.0");
-        let pkg = app_src.path().join("reviewed-notes-0.1.0.plexipkg");
-        crate::app::package::build_package(app_src.path(), Some(&pkg)).unwrap();
+        let plugin_src = TempDir::new().unwrap();
+        write_manifest(plugin_src.path(), "reviewed-notes", "0.1.0");
+        let pkg = plugin_src.path().join("reviewed-notes-0.1.0.plexipkg");
+        crate::app::package::build_package(plugin_src.path(), Some(&pkg)).unwrap();
 
         let metadata = crate::app::marketplace::InstalledRegistrySource {
             schema_version: crate::app::marketplace::MARKETPLACE_SCHEMA_VERSION,
@@ -2983,7 +2983,7 @@ mod version_pin_tests {
             reviewed_native: true,
         };
 
-        let code = super::app_install_marketplace_package(
+        let code = super::plugin_install_marketplace_package(
             &pkg.to_string_lossy(),
             None,
             super::InstallConfirm::PreApproved,
@@ -3005,7 +3005,7 @@ mod version_pin_tests {
 }
 
 #[cfg(test)]
-mod app_test_command_tests {
+mod plugin_test_command_tests {
     use super::*;
     use tempfile::TempDir;
 
@@ -3015,36 +3015,36 @@ mod app_test_command_tests {
         std::path::PathBuf::from(VENV_PYTHON)
     }
 
-    /// The interpreter must be pinned to the app venv. Left to uv, a stock
+    /// The interpreter must be pinned to the plugin venv. Left to uv, a stock
     /// Mac resolves to system Python 3.9 and `plexi_sdk` dies on `tomllib`.
     #[test]
-    fn app_test_pins_the_interpreter_to_the_app_venv() {
+    fn plugin_test_pins_the_interpreter_to_the_plugin_venv() {
         let dir = TempDir::new().unwrap();
-        let args = app_test_uv_args(dir.path(), &venv_python());
+        let args = plugin_test_uv_args(dir.path(), &venv_python());
         let at = args.iter().position(|a| a == "--python").unwrap();
         assert_eq!(args[at + 1], VENV_PYTHON);
     }
 
     #[test]
-    fn app_test_pythonpath_puts_the_app_root_before_the_sdk() {
+    fn plugin_test_pythonpath_puts_the_plugin_root_before_the_sdk() {
         let dir = TempDir::new().unwrap();
-        let pythonpath = app_test_pythonpath(dir.path());
+        let pythonpath = plugin_test_pythonpath(dir.path());
         let mut entries = std::env::split_paths(&pythonpath);
 
         assert_eq!(entries.next().as_deref(), Some(dir.path()));
         assert_eq!(
             entries.collect::<Vec<_>>(),
             std::env::split_paths(&crate::config::build_pythonpath(None)).collect::<Vec<_>>(),
-            "the SDK path entries follow the app root"
+            "the SDK path entries follow the plugin root"
         );
     }
 
     /// Identity falls back to the directory name with no dependencies when
-    /// the app has no readable manifest, and reads both from one when it does.
+    /// the plugin has no readable manifest, and reads both from one when it does.
     #[test]
-    fn app_test_identity_reads_manifest_else_dir_name() {
+    fn plugin_test_identity_reads_manifest_else_dir_name() {
         let dir = TempDir::new().unwrap();
-        let (id, deps) = app_test_identity(dir.path());
+        let (id, deps) = plugin_test_identity(dir.path());
         assert_eq!(
             id,
             dir.path().file_name().unwrap().to_string_lossy(),
@@ -3057,18 +3057,18 @@ mod app_test_command_tests {
             "schema_version = 2\n\n[plugin]\nid = \"todo\"\nname = \"Todo\"\ndependencies = [\"httpx\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"todo.main\"\ndefault = true\n",
         )
         .unwrap();
-        let (id, deps) = app_test_identity(dir.path());
+        let (id, deps) = plugin_test_identity(dir.path());
         assert_eq!(id, "todo");
         assert_eq!(deps, vec!["httpx".to_string()]);
     }
 
-    /// The generated command must ask uv for pytest itself. Apps do not depend
+    /// The generated command must ask uv for pytest itself. Plugins do not depend
     /// on pytest, so dropping `--with pytest` puts `plexi plugin test` back to
-    /// `Failed to spawn: pytest` for every maintained and scaffolded app.
+    /// `Failed to spawn: pytest` for every maintained and scaffolded plugin.
     #[test]
-    fn app_test_provisions_pytest_for_an_app_without_a_project() {
+    fn plugin_test_provisions_pytest_for_an_plugin_without_a_project() {
         let dir = TempDir::new().unwrap();
-        let args = app_test_uv_args(dir.path(), &venv_python());
+        let args = plugin_test_uv_args(dir.path(), &venv_python());
         assert_eq!(
             args,
             vec![
@@ -3081,21 +3081,21 @@ mod app_test_command_tests {
                 "pytest",
                 "tests/"
             ],
-            "an app declaring no pyproject.toml runs pytest in an isolated uv environment"
+            "an plugin declaring no pyproject.toml runs pytest in an isolated uv environment"
         );
     }
 
-    /// An app that declares its own project keeps project mode, so uv installs
+    /// An plugin that declares its own project keeps project mode, so uv installs
     /// the author's dependencies next to pytest.
     #[test]
-    fn app_test_keeps_project_mode_when_the_app_declares_one() {
+    fn plugin_test_keeps_project_mode_when_the_plugin_declares_one() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("pyproject.toml"),
             "[project]\nname = \"x\"\n",
         )
         .unwrap();
-        let args = app_test_uv_args(dir.path(), &venv_python());
+        let args = plugin_test_uv_args(dir.path(), &venv_python());
         assert_eq!(
             args,
             vec![
@@ -3107,7 +3107,7 @@ mod app_test_command_tests {
                 "pytest",
                 "tests/"
             ],
-            "an app with its own project must not be run with --no-project"
+            "an plugin with its own project must not be run with --no-project"
         );
     }
 }
@@ -3157,7 +3157,7 @@ mod scaffold_marketplace_tests {
 
     #[test]
     fn stable_python_scaffold_omits_marketplace_placeholder() {
-        assert_no_placeholder(&manifest_for(scaffold_python_app));
+        assert_no_placeholder(&manifest_for(scaffold_python_plugin));
     }
 
     #[test]
@@ -3165,17 +3165,17 @@ mod scaffold_marketplace_tests {
         let dir = TempDir::new().unwrap();
         let plugin_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        scaffold_python_app(&plugin_dir, "myapp").unwrap();
+        scaffold_python_plugin(&plugin_dir, "myapp").unwrap();
 
-        let test_path = plugin_dir.join("tests").join("test_app.py");
+        let test_path = plugin_dir.join("tests").join("test_plugin.py");
         assert!(
             test_path.is_file(),
-            "python scaffold must write tests/test_app.py"
+            "python scaffold must write tests/test_plugin.py"
         );
         let test_src = std::fs::read_to_string(&test_path).unwrap();
         assert!(
-            test_src.contains("AppHarness"),
-            "generated test must exemplify AppHarness"
+            test_src.contains("PluginHarness"),
+            "generated test must exemplify PluginHarness"
         );
         assert!(
             test_src.contains("assert_no_overlap"),
@@ -3192,7 +3192,7 @@ mod scaffold_marketplace_tests {
         let dir = TempDir::new().unwrap();
         let plugin_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        scaffold_python_app(&plugin_dir, "myapp").unwrap();
+        scaffold_python_plugin(&plugin_dir, "myapp").unwrap();
 
         let agents = std::fs::read_to_string(plugin_dir.join("AGENTS.md")).unwrap();
         assert!(
@@ -3303,18 +3303,18 @@ mod scaffold_marketplace_tests {
         let dir = TempDir::new().unwrap();
         let plugin_dir = dir.path().join("myapp");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        scaffold_python_app(&plugin_dir, "myapp").unwrap();
+        scaffold_python_plugin(&plugin_dir, "myapp").unwrap();
 
         let read = |file: &str| {
             std::fs::read_to_string(plugin_dir.join(file))
                 .unwrap_or_else(|e| panic!("python scaffold must write {file}: {e}"))
         };
         let main_src = read("main.py");
-        let package_src = read("app/__init__.py");
-        let tools_src = read("app/tools.py");
-        let ui_src = read("app/ui.py");
+        let package_src = read("plugin/__init__.py");
+        let tools_src = read("plugin/tools.py");
+        let ui_src = read("plugin/ui.py");
         assert!(
-            !plugin_dir.join("app_tools.py").exists() && !plugin_dir.join("app_ui.py").exists(),
+            !plugin_dir.join("plugin_tools.py").exists() && !plugin_dir.join("plugin_ui.py").exists(),
             "v5 scaffold must not write the flat v4 modules"
         );
         assert!(
@@ -3324,9 +3324,9 @@ mod scaffold_marketplace_tests {
 
         for (file, src) in [
             ("main.py", &main_src),
-            ("app/__init__.py", &package_src),
-            ("app/tools.py", &tools_src),
-            ("app/ui.py", &ui_src),
+            ("plugin/__init__.py", &package_src),
+            ("plugin/tools.py", &tools_src),
+            ("plugin/ui.py", &ui_src),
         ] {
             assert!(
                 !src.contains("__DISPLAY_NAME__") && !src.contains("__CLASS_NAME__"),
@@ -3336,7 +3336,7 @@ mod scaffold_marketplace_tests {
 
         // main.py: thin lifecycle wiring only.
         assert!(
-            main_src.contains("SDK v3 app generated by `plexi plugin init`"),
+            main_src.contains("SDK v3 plugin generated by `plexi plugin init`"),
             "generated main.py should identify the SDK v3 scaffold"
         );
         assert!(
@@ -3352,8 +3352,8 @@ mod scaffold_marketplace_tests {
             "generated main.py should explain component/effect separation"
         );
         assert!(
-            main_src.contains("from app import tools as app_tools")
-                && main_src.contains("from app import ui as app_ui"),
+            main_src.contains("from plugin import tools as plugin_tools")
+                && main_src.contains("from plugin import ui as plugin_ui"),
             "generated main.py should import the tools and UI modules"
         );
         assert!(
@@ -3365,7 +3365,7 @@ mod scaffold_marketplace_tests {
             "generated main.py must dispatch tool calls first in update"
         );
         assert!(
-            main_src.contains("app_ui.build_view("),
+            main_src.contains("plugin_ui.build_view("),
             "generated main.py must delegate view to the UI module"
         );
         assert!(
@@ -3373,21 +3373,21 @@ mod scaffold_marketplace_tests {
             "generated main.py must not build UI itself"
         );
 
-        // app/tools.py: plain functions on the SDK decorator API.
+        // plugin/tools.py: plain functions on the SDK decorator API.
         assert!(
             tools_src.contains("from plexi_sdk import state, tools"),
-            "generated app/tools.py should use the SDK tools module"
+            "generated plugin/tools.py should use the SDK tools module"
         );
         assert!(
             tools_src.contains("@tools.tool("),
-            "generated app/tools.py should declare tools with the decorator"
+            "generated plugin/tools.py should declare tools with the decorator"
         );
         assert!(
             tools_src.contains("read_only=True"),
-            "generated app/tools.py should demonstrate a read-only tool"
+            "generated plugin/tools.py should demonstrate a read-only tool"
         );
 
-        // app/ui.py: the component tree and the primitive guidance.
+        // plugin/ui.py: the component tree and the primitive guidance.
         for needle in [
             "def build_view(",
             "ActionBar(",
@@ -3409,17 +3409,17 @@ mod scaffold_marketplace_tests {
         ] {
             assert!(
                 ui_src.contains(needle),
-                "generated app/ui.py should mention {needle}"
+                "generated plugin/ui.py should mention {needle}"
             );
         }
         assert!(
             !ui_src.contains("SetState("),
-            "generated app/ui.py must stay free of effects"
+            "generated plugin/ui.py must stay free of effects"
         );
 
         let agents = std::fs::read_to_string(plugin_dir.join("AGENTS.md")).unwrap();
         assert!(
-            agents.contains("app/tools.py") && agents.contains("app/ui.py"),
+            agents.contains("plugin/tools.py") && agents.contains("plugin/ui.py"),
             "AGENTS.md must document the tools-vs-UI module split"
         );
     }
@@ -3430,17 +3430,17 @@ mod scaffold_marketplace_tests {
         let plugin_dir = temp.path().join("my-counter");
         std::fs::create_dir(&plugin_dir).unwrap();
 
-        scaffold_wasm_app(&plugin_dir, "my-counter").unwrap();
+        scaffold_wasm_view(&plugin_dir, "my-counter").unwrap();
 
         let manifest: toml::Value =
             toml::from_str(&std::fs::read_to_string(plugin_dir.join("manifest.toml")).unwrap())
                 .unwrap();
-        assert_eq!(manifest["app"]["type"].as_str(), Some("wasm"));
+        assert_eq!(manifest["runtime"]["kind"].as_str(), Some("wasm"));
         assert_eq!(
-            manifest["app"]["entry"].as_str(),
+            manifest["runtime"]["entry"].as_str(),
             Some("target/wasm32-wasip1/release/my_counter.wasm")
         );
-        assert!(plugin_dir.join("app/src/lib.rs").is_file());
+        assert!(plugin_dir.join("plugin/src/lib.rs").is_file());
         assert_eq!(
             std::fs::read_link(plugin_dir.join("wit")).unwrap(),
             std::path::Path::new(".plexi-sdk/wit")
@@ -3451,7 +3451,7 @@ mod scaffold_marketplace_tests {
         let readme = std::fs::read_to_string(plugin_dir.join("README.md")).unwrap();
         assert!(readme.contains("[Plexi WASM authoring guide](AUTHORING.md)"));
         assert!(plugin_dir.join("AUTHORING.md").is_file());
-        let source = std::fs::read_to_string(plugin_dir.join("app/src/lib.rs")).unwrap();
+        let source = std::fs::read_to_string(plugin_dir.join("plugin/src/lib.rs")).unwrap();
         assert!(source.contains("InputEvent::UiAction"));
         assert!(source.contains("InputEvent::Key"));
     }
@@ -3460,17 +3460,17 @@ mod scaffold_marketplace_tests {
     fn scaffolds_keep_marketplace_placeholder_when_the_experiment_is_on() {
         let _on =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Marketplace]);
-        assert_placeholder(&manifest_for(scaffold_python_app));
+        assert_placeholder(&manifest_for(scaffold_python_plugin));
     }
 }
 
 #[cfg(test)]
-mod app_init_collision_tests {
-    use super::describe_app_init_collision;
+mod plugin_init_collision_tests {
+    use super::describe_plugin_init_collision;
     use tempfile::TempDir;
 
     /// stint 0428: a name collision on `plugin init` must name the occupying
-    /// app's id/type and suggest a concrete alternative name, so an agent
+    /// plugin's id/type and suggest a concrete alternative name, so an agent
     /// (or the assistant's build-plexi-plugin skill) never pivots to silently
     /// editing whatever it finds there instead.
     #[test]
@@ -3484,7 +3484,7 @@ mod app_init_collision_tests {
         )
         .unwrap();
 
-        let msg = describe_app_init_collision(&plugin_dir, "counter");
+        let msg = describe_plugin_init_collision(&plugin_dir, "counter");
         assert!(msg.contains("already exists"), "message: {msg}");
         assert!(msg.contains("id=\"counter\""), "message: {msg}");
         assert!(msg.contains("Wasm"), "message: {msg}");
@@ -3502,7 +3502,7 @@ mod app_init_collision_tests {
         let plugin_dir = dir.path().join("stale-dir");
         std::fs::create_dir_all(&plugin_dir).unwrap();
 
-        let msg = describe_app_init_collision(&plugin_dir, "stale-dir");
+        let msg = describe_plugin_init_collision(&plugin_dir, "stale-dir");
         assert!(msg.contains("already exists"), "message: {msg}");
         assert!(
             msg.contains("plexi plugin init stale-dir-2"),
@@ -3512,8 +3512,8 @@ mod app_init_collision_tests {
 }
 
 #[cfg(test)]
-mod app_info_honesty_tests {
-    use super::format_app_info;
+mod plugin_info_honesty_tests {
+    use super::format_plugin_info;
     use crate::app::registry::{PluginCapabilities, PluginIdentity, ManifestType};
     use crate::plexi_ai::tool_dispatch::LiveToolEntry;
 
@@ -3522,7 +3522,7 @@ mod app_info_honesty_tests {
             id: id.to_string(),
             name: "Calculator".to_string(),
             entry: "main.py".to_string(),
-            manifest_type: ManifestType::App,
+            manifest_type: ManifestType::Python,
             version: "0.1.0".to_string(),
             min_sdk_version: None,
             description: "Scientific calculator".to_string(),
@@ -3536,7 +3536,7 @@ mod app_info_honesty_tests {
     }
 
     #[test]
-    fn app_info_populates_live_tools_when_pane_is_running() {
+    fn view_info_populates_live_tools_when_pane_is_running() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = sample_manifest("calc");
         let live = vec![LiveToolEntry {
@@ -3559,7 +3559,7 @@ mod app_info_honesty_tests {
             read_only: false,
             timeout_ms: None,
         }];
-        let out = format_app_info(&manifest, dir.path(), Some((7, &live)));
+        let out = format_plugin_info(&manifest, dir.path(), Some((7, &live)));
         assert!(
             out.contains("tools (live registry, context 7):"),
             "expected live registry header: {out}"
@@ -3573,16 +3573,16 @@ mod app_info_honesty_tests {
     }
 
     #[test]
-    fn app_info_labels_manifest_only_when_not_running_and_no_static_literals() {
+    fn plugin_info_labels_manifest_only_when_not_running_and_no_static_literals() {
         let dir = tempfile::tempdir().unwrap();
-        // Dynamic tool registration in a loop (like apps/calc) has no literal string first arg.
+        // Dynamic tool registration in a loop (like plugins/calc) has no literal string first arg.
         std::fs::write(
             dir.path().join("main.py"),
             "for name in ['add', 'sub']:\n    @tools.tool(f'calc.{name}', 'desc')\n    def _op(): pass\n",
         )
         .unwrap();
         let manifest = sample_manifest("calc");
-        let out = format_app_info(&manifest, dir.path(), None);
+        let out = format_plugin_info(&manifest, dir.path(), None);
         assert!(
             out.contains("manifest-only"),
             "must explicitly label manifest-only when not running: {out}"
@@ -3598,7 +3598,7 @@ mod app_info_honesty_tests {
     }
 
     #[test]
-    fn app_info_labels_static_source_scan_when_not_running_with_static_decorators() {
+    fn plugin_info_labels_static_source_scan_when_not_running_with_static_decorators() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("main.py"),
@@ -3606,7 +3606,7 @@ mod app_info_honesty_tests {
         )
         .unwrap();
         let manifest = sample_manifest("chess");
-        let out = format_app_info(&manifest, dir.path(), Some((1, &[])));
+        let out = format_plugin_info(&manifest, dir.path(), Some((1, &[])));
         assert!(
             out.contains("static source scan; manifest-only while not running"),
             "must label static scan honestly: {out}"

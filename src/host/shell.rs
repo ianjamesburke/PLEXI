@@ -124,7 +124,7 @@ fn which_on_path(name: &str) -> Option<String> {
 /// macOS GUI bundles (launched from LaunchServices / Dock / Spotlight) inherit
 /// a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) with no Homebrew, no
 /// `~/.local/bin`, no asdf/nvm/pyenv shims. Every subprocess Plexi spawns
-/// (process apps, terminals, `gh` calls from apps) inherits that broken PATH
+/// (process plugins, terminals, `gh` calls from plugins) inherits that broken PATH
 /// too, so `shutil.which("gh") == None` even when `gh` is installed.
 ///
 /// Fix: at startup, ask the user's login shell what its PATH is and adopt it
@@ -195,7 +195,7 @@ pub fn scrub_launcher_color_overrides() {
 ///
 /// macOS GUI bundles only inherit a minimal environment — API keys, tokens,
 /// and other secrets set in `~/.zshrc` or `~/.zsh_secrets` are invisible to
-/// Plexi and every app it spawns. This probes the login shell for its full
+/// Plexi and every plugin it spawns. This probes the login shell for its full
 /// `env` output and sets any var not already present in the process env.
 ///
 /// Skips system vars (HOME, USER, SHELL, PWD, etc.) and vars already set —

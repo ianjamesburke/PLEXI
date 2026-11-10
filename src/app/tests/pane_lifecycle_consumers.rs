@@ -146,7 +146,7 @@ fn close(h: &mut HostHarness, pane: u64) {
 }
 
 fn subscriptions(pane: u64) -> usize {
-    crate::host::app_timeline::global()
+    crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
         .subscriptions()

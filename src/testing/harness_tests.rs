@@ -199,18 +199,18 @@ fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expecte
     }
 }
 
-fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
+fn add_view_pane_to_window(h: &mut HostHarness, window_id: u64, manifest_id: &str) {
     let win_idx = h
         .app
         .windows
         .iter()
         .position(|window| window.window_id == window_id)
         .expect("test window must exist");
-    h.app.add_app_pane_in_window(win_idx, manifest_id);
+    h.app.add_view_pane_in_window(win_idx, manifest_id);
 }
 
 /// Push a second context + window (no PTY dependency) and return its window
-/// index. Mirrors the pattern in `app::tests::context_tests`, duplicated here
+/// index. Mirrors the pattern in `plugin::tests::context_tests`, duplicated here
 /// since that helper is module-private.
 pub(super) fn push_secondary_context(h: &mut HostHarness, context_id: u64, root: &std::path::Path) -> usize {
     let win_id = h.app.next_window_id;
@@ -326,7 +326,7 @@ fn assistant_panes(h: &HostHarness) -> Vec<u64> {
         .iter()
         .flat_map(|window| {
             window.panes.iter().filter_map(|(id, pane)| {
-                pane.as_app()
+                pane.as_view()
                     .is_some_and(|app| app.runtime.type_id() == "assistant")
                     .then_some(*id)
             })
@@ -334,7 +334,7 @@ fn assistant_panes(h: &HostHarness) -> Vec<u64> {
         .collect()
 }
 
-/// Stint 0724 Phase C regression: an app pane in context A exposes a
+/// Stint 0724 Phase C regression: an view pane in context A exposes a
 /// connector tool; an Assistant pane in a sibling context B must NOT see it,
 /// and an Assistant pane in context A must. Proves the migration off
 /// path-equality onto `evaluate_reach`/`context_id` end-to-end through the
@@ -349,16 +349,16 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
     let root_b = tempfile::tempdir().expect("root b");
     let win_b_idx = push_secondary_context(&mut h, context_b, root_b.path());
 
-    // An app pane in context A exposes a connector tool. Registering directly
+    // An view pane in context A exposes a connector tool. Registering directly
     // through `tool_dispatch::register` (rather than the `ExposeTools` wire
     // path) isolates this test to the reachability question; `App::dispatch`
     // resolving the same `origin_for_pane` at its two `ExposeTools` call
     // sites is covered by reading those call sites, not re-simulated here.
-    let (_, provider_pane_id) = h.app.add_app_pane_in_window(0, "connector-app");
+    let (_, provider_pane_id) = h.app.add_view_pane_in_window(0, "connector-app");
     let origin = h
         .app
         .origin_for_pane(provider_pane_id)
-        .expect("origin_for_pane must resolve for a live app pane");
+        .expect("origin_for_pane must resolve for a live view pane");
     assert_eq!(origin.context_id, context_a);
     let (tx, _rx) = std::sync::mpsc::channel();
     crate::plexi_ai::tool_dispatch::register(
@@ -405,7 +405,7 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
 #[test]
 fn two_harnesses_do_not_share_a_chess_tool_namespace() {
     fn register_play(h: &mut HostHarness) -> u64 {
-        let (_, pane_id) = h.app.add_app_pane_in_window(0, "chess");
+        let (_, pane_id) = h.app.add_view_pane_in_window(0, "chess");
         let origin = h
             .app
             .origin_for_pane(pane_id)
@@ -694,7 +694,7 @@ fn pane_heartbeat_persists_with_pane_state() {
 }
 
 #[test]
-fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
+fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
@@ -709,7 +709,7 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
     h.run_hidden_frames(1);
 
     let response = read_json_response(&response_file);
-    assert_eq!(response["type"], "app");
+    assert_eq!(response["type"], "view");
     assert!(
         response["semantic"]["roots"]
             .as_array()
@@ -728,7 +728,7 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
 fn pane_state_reports_failed_for_python_guest_that_dies_at_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugin_dir = tmp.path().join("import-failure");
-    std::fs::create_dir(&plugin_dir).expect("create fixture app directory");
+    std::fs::create_dir(&plugin_dir).expect("create fixture plugin directory");
     std::fs::write(
         plugin_dir.join("manifest.toml"),
         r#"schema_version = 2
@@ -762,18 +762,18 @@ default = true
 
     let mut h = HostHarness::new();
     h.app
-        .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
-        .expect("launch fixture app");
+        .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
+        .expect("launch fixture plugin");
     let pane_id = *h
         .state()
         .open_panes
         .last()
-        .expect("fixture app pane appears");
+        .expect("fixture view pane appears");
     let pane = h.app.windows[h.app.active_window]
         .panes
         .get_mut(&pane_id)
-        .and_then(Pane::as_app_mut)
-        .expect("fixture app pane");
+        .and_then(Pane::as_view_mut)
+        .expect("fixture view pane");
     let ViewRuntime::Python(runtime) = &mut pane.runtime else {
         panic!("fixture must launch through the Python runtime");
     };
@@ -811,7 +811,7 @@ default = true
 }
 
 /// `plexi pane state` always carries `claimed_state`, `observed_state`, and
-/// `stale_claim` together, even for a builtin app pane that never wrote a
+/// `stale_claim` together, even for a builtin view pane that never wrote a
 /// `status` slot: `claimed_state` and `stale_claim` are `null`, but the keys
 /// — and a populated `observed_state` — are always present. Proves the JSON
 /// shape (stint 0665).
@@ -971,12 +971,12 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
     );
 }
 
-/// Write a minimal but real Python app fixture: a manifest the launch path
+/// Write a minimal but real Python plugin fixture: a manifest the launch path
 /// accepts and a `.py` entry, global-scoped state (root-independent) so the
 /// test doesn't have to fuss with context roots.
-fn write_restore_fixture_app(parent: &std::path::Path, plugin_id: &str) -> std::path::PathBuf {
+fn write_restore_fixture_plugin(parent: &std::path::Path, plugin_id: &str) -> std::path::PathBuf {
     let plugin_dir = parent.join(plugin_id);
-    std::fs::create_dir_all(&plugin_dir).expect("create fixture app directory");
+    std::fs::create_dir_all(&plugin_dir).expect("create fixture plugin directory");
     std::fs::write(
         plugin_dir.join("manifest.toml"),
         format!(
@@ -993,23 +993,23 @@ fn write_restore_fixture_app(parent: &std::path::Path, plugin_id: &str) -> std::
     plugin_dir
 }
 
-/// stint 0680 + stint 0686 — a saved Python app pane's `plugin_id` must be the
+/// stint 0680 + stint 0686 — a saved Python view pane's `plugin_id` must be the
 /// real manifest id (never the runtime kind), it must carry enough launch
 /// context to relaunch, `hidden` must round-trip, and booting a fresh
 /// `HostHarness::from_profile_dir` against the saved profile must reconstruct
 /// the workspace through `restore_workspace` so the restored pane resolves the
 /// same state paths.
 #[test]
-fn saved_python_app_pane_restores_as_that_app() {
+fn saved_python_view_pane_restores_as_that_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let plugin_dir = write_restore_fixture_app(tmp.path(), "todo");
+    let plugin_dir = write_restore_fixture_plugin(tmp.path(), "todo");
 
     let mut h = HostHarness::new();
     let saved_profile = h.profile_dir().to_path_buf();
     let pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
-        .expect("launch fixture app")
+        .launch_view_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
+        .expect("launch fixture plugin")
         .expect("a Python launch returns a pane id");
     let context_id = h.app.windows[h.app.active_window].context_id;
     let saved_focused = h.app.windows[h.app.active_window].focused_pane;
@@ -1023,8 +1023,8 @@ fn saved_python_app_pane_restores_as_that_app() {
     let live_state_paths = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
-        .expect("live app pane")
+        .and_then(Pane::as_view)
+        .expect("live view pane")
         .runtime
         .state_paths();
 
@@ -1036,7 +1036,7 @@ fn saved_python_app_pane_restores_as_that_app() {
         .iter()
         .flat_map(|window| &window.panes)
         .find(|pane| pane.id == pane_id)
-        .expect("app pane saved")
+        .expect("view pane saved")
         .clone();
 
     assert_eq!(
@@ -1077,8 +1077,8 @@ fn saved_python_app_pane_restores_as_that_app() {
         "restored pane must preserve hidden state"
     );
     let restored = restored_pane
-        .as_app()
-        .expect("restored pane is an app pane");
+        .as_view()
+        .expect("restored pane is an view pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
     assert_eq!(restored.manifest_id, "todo");
     assert!(matches!(restored.runtime, ViewRuntime::Python(_)));
@@ -1175,7 +1175,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                 tree: tree_b,
                 panes: vec![crate::workspace::SavedPane {
                     id: 42,
-                    kind: crate::workspace::SavedPaneKind::App,
+                    kind: crate::workspace::SavedPaneKind::View,
                     cwd: root_b.path().to_path_buf(),
                     name: Some("Browser".to_string()),
                     plugin_id: Some("file_browser".to_string()),
@@ -1247,7 +1247,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
 /// didn't exist yet) must still load — never get treated as corrupt and
 /// backed up/wiped like a version mismatch does.
 #[test]
-fn legacy_app_pane_without_launch_context_still_loads() {
+fn legacy_view_pane_without_launch_context_still_loads() {
     let _channel = crate::config::set_test_channel("harness-0680-migration");
     let workspace_dir = crate::config::config_dir().join("workspaces");
     // A prior run of this test (or a prior failure) may have left a
@@ -1281,7 +1281,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
                     "panes": [
                         {{
                             "id": 1,
-                            "kind": "app",
+                            "kind": "plugin",
                             "cwd": "/tmp",
                             "name": "Todo",
                             "plugin_id": "python-wasm",
@@ -1318,18 +1318,18 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     assert!(workspace_path.exists(), "migration keeps the active workspace path");
 }
 
-/// The other half of the migration path: a `launch` that names an app
+/// The other half of the migration path: a `launch` that names an plugin
 /// directory which no longer exists must fail visibly through
-/// `restore_app_pane`/`restore_launch_failed_pane`, never silently succeed.
+/// `restore_view_pane`/`restore_launch_failed_pane`, never silently succeed.
 #[test]
-fn restore_app_pane_fails_visibly_when_plugin_dir_is_gone() {
+fn restore_view_pane_fails_visibly_when_plugin_dir_is_gone() {
     let missing_dir = std::path::PathBuf::from("/nonexistent/stint-0680/missing-app");
     let launch = crate::workspace::SavedViewLaunch::Python {
         plugin_dir: missing_dir.clone(),
         args: vec![],
     };
     let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-    let result = crate::pane_ops::restore_app_pane(
+    let result = crate::pane_ops::restore_view_pane(
         "missing-app",
         &launch,
         crate::pane_ops::RestoreTarget {
@@ -1347,11 +1347,11 @@ fn restore_app_pane_fails_visibly_when_plugin_dir_is_gone() {
     };
 
     let pane = crate::pane_ops::restore_launch_failed_pane("missing-app", 99, missing_dir, error);
-    let restored = pane.as_app().expect("launch-failed pane is an app pane");
+    let restored = pane.as_view().expect("launch-failed pane is an view pane");
     assert_eq!(restored.runtime.type_id(), "launch_failed");
     assert!(
         restored.name.contains("missing-app"),
-        "the launch-failed pane must name the app that failed to restore: {}",
+        "the launch-failed pane must name the plugin that failed to restore: {}",
         restored.name
     );
 }
@@ -1359,7 +1359,7 @@ fn restore_app_pane_fails_visibly_when_plugin_dir_is_gone() {
 /// Review follow-up on stint 0680: a legacy record (`is_legacy_runtime_kind_id()`
 /// true — pre-0680 save whose `plugin_id` is the runtime kind, not a manifest
 /// id) must restore as a `launch_failed` pane naming the runtime kind and the
-/// recovery command, exactly like `restore_app_pane_fails_visibly_when_plugin_dir_is_gone`'s
+/// recovery command, exactly like `restore_view_pane_fails_visibly_when_plugin_dir_is_gone`'s
 /// unresolvable-manifest case — never fall back to a terminal. This mirrors
 /// the restore loop's own logic in `PlexiApp::new` (which is not reachable
 /// through `HostHarness::new`/`new_for_test`, since those skip the
@@ -1367,10 +1367,10 @@ fn restore_app_pane_fails_visibly_when_plugin_dir_is_gone() {
 /// assertions below exercise the exact same `is_legacy_runtime_kind_id` +
 /// `restore_launch_failed_pane` sequence the restore loop runs.
 #[test]
-fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
+fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
     let record = crate::workspace::SavedPane {
         id: 7,
-        kind: crate::workspace::SavedPaneKind::App,
+        kind: crate::workspace::SavedPaneKind::View,
         cwd: std::path::PathBuf::from("/tmp"),
         name: Some("Todo".to_string()),
         plugin_id: Some("python-wasm".to_string()),
@@ -1387,13 +1387,13 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
         "record with no runtime_kind and a runtime-kind plugin_id must be flagged legacy"
     );
 
-    let app_type = record.plugin_id.clone().expect("legacy record carries plugin_id");
+    let plugin_type = record.plugin_id.clone().expect("legacy record carries plugin_id");
     // Exact reason format the restore loop in `PlexiApp::new` builds for this
     // branch (src/app/mod.rs) — asserted here so a drift in either place
     // shows up as a test failure.
     let reason = format!(
-        "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); \
-         reopen the app with `plexi view open <id>`"
+        "view pane saved before Plexi recorded plugin identity (runtime kind only: {plugin_type}); \
+         reopen the plugin with `plexi view open <id>`"
     );
     assert!(
         reason.contains("python-wasm"),
@@ -1405,7 +1405,7 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
     );
 
     let pane = crate::pane_ops::restore_launch_failed_pane(
-        &app_type,
+        &plugin_type,
         record.id,
         record.cwd.clone(),
         reason,
@@ -1415,7 +1415,7 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
         pane.as_terminal().is_none(),
         "legacy restore must not produce a TerminalPane"
     );
-    let restored = pane.as_app().expect("legacy restore produces an app pane");
+    let restored = pane.as_view().expect("legacy restore produces an view pane");
     assert_eq!(
         restored.runtime.type_id(),
         "launch_failed",
@@ -1436,8 +1436,8 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let image = tmp.path().join("image.png");
     std::fs::write(&image, b"png fixture").expect("seed image");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note.clone())),
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(note.clone())),
         crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
@@ -1463,7 +1463,7 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let app = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .expect("notes pane");
     let state = app.runtime.semantic_details().expect("notes semantics");
     assert_eq!(state["kind"], "notes_editor");
@@ -1484,8 +1484,8 @@ fn click_pane_moves_notes_caret_through_real_pointer_events() {
     let body: String = (0..40).map(|i| format!("line number {i}\n")).collect();
     std::fs::write(&note, &body).expect("seed note");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(note)),
         crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
@@ -1512,7 +1512,7 @@ fn click_pane_moves_notes_caret_through_real_pointer_events() {
     let app = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .expect("notes pane");
     let state = app.runtime.semantic_details().expect("notes semantics");
     let caret = state["caret"].as_u64().expect("caret offset");
@@ -1560,7 +1560,7 @@ struct KeyBurstProbe {
     text: Vec<String>,
 }
 
-impl crate::app::app_trait::App for KeyBurstProbe {
+impl crate::app::view_trait::View for KeyBurstProbe {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -1576,7 +1576,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
@@ -1584,7 +1584,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
     fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         for event in input.events() {
             if let egui::Event::Key { key, pressed, .. } = event {
                 let name = format!("{key:?}").to_ascii_lowercase();
@@ -1599,7 +1599,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
                 self.text.push(text.clone());
             }
         }
-        crate::app::app_trait::KeyDisposition::Consumed
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
@@ -1611,7 +1611,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
     }
 }
 
-impl crate::app::app_trait::App for TextInputProbe {
+impl crate::app::view_trait::View for TextInputProbe {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -1633,7 +1633,7 @@ impl crate::app::app_trait::App for TextInputProbe {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
@@ -1652,14 +1652,14 @@ impl crate::app::app_trait::App for TextInputProbe {
     fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         if input.key_pressed(egui::Key::Enter) {
             self.enter_handled = true;
             if self.consume_enter {
-                return crate::app::app_trait::KeyDisposition::Consumed;
+                return crate::app::view_trait::KeyDisposition::Consumed;
             }
         }
-        crate::app::app_trait::KeyDisposition::Passthrough
+        crate::app::view_trait::KeyDisposition::Passthrough
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
@@ -1672,10 +1672,10 @@ impl crate::app::app_trait::App for TextInputProbe {
 }
 
 #[test]
-fn send_to_app_pane_injects_text_through_focused_render_input() {
+fn send_to_view_pane_injects_text_through_focused_render_input() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<TextInputProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -1714,7 +1714,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("probe state");
     assert_eq!(state["text"], "/settings");
@@ -1733,7 +1733,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("probe state after Enter");
     assert_eq!(state["enter_handled"], true);
@@ -1744,7 +1744,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
 fn consumed_native_key_is_not_replayed_into_render_input() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(TextInputProbe {
             consume_enter: true,
             ..Default::default()
@@ -1771,7 +1771,7 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("consuming probe state");
     assert_eq!(state["enter_handled"], true);
@@ -1782,7 +1782,7 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
 fn rapid_pane_key_burst_delivers_every_press_in_order() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -1808,22 +1808,22 @@ fn rapid_pane_key_burst_delivers_every_press_in_order() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("burst probe state");
     assert_eq!(state["received"], serde_json::json!(intended));
 }
 
 /// Stint 0387: a real keyboard event injected via `RawInput` must reach the
-/// focused app pane's `handle_key` through the migrated `PlexiInput`
-/// ownership-transfer router in `dispatch_app_key_events` — not just the
-/// synthesized `plexi pane key` IPC path. Proves the app-dispatch migration is
+/// focused view pane's `handle_key` through the migrated `PlexiInput`
+/// ownership-transfer router in `dispatch_plugin_key_events` — not just the
+/// synthesized `plexi pane key` IPC path. Proves the plugin-dispatch migration is
 /// wired into the live frame, reading the frame's owned buffer.
 #[test]
-fn raw_key_event_reaches_focused_app_via_router() {
+fn raw_key_event_reaches_focused_view_via_router() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<TextInputProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -1854,7 +1854,7 @@ fn raw_key_event_reaches_focused_app_via_router() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("probe state after Enter");
     assert_eq!(
@@ -1863,15 +1863,15 @@ fn raw_key_event_reaches_focused_app_via_router() {
     );
 }
 
-/// Host command chords are a higher input layer than app shortcuts. A single
+/// Host command chords are a higher input layer than plugin shortcuts. A single
 /// Cmd+D may split the focused pane, but its `D` edge must already be gone when
-/// the focused app's raw-key handler runs. Before stint 0692 app dispatch ran
+/// the focused plugin's raw-key handler runs. Before stint 0692 plugin dispatch ran
 /// before `poll_actions`, so the probe observed `d` as well as the host action.
 #[test]
-fn host_command_chord_is_removed_before_focused_app_dispatch() {
+fn host_command_chord_is_removed_before_focused_view_dispatch() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -1902,23 +1902,23 @@ fn host_command_chord_is_removed_before_focused_app_dispatch() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("command-chord probe state");
     assert_eq!(
         state["received"],
         serde_json::json!([] as [&str; 0]),
-        "host command chords must never leak into an app's bare-key shortcuts"
+        "host command chords must never leak into an plugin's bare-key shortcuts"
     );
 }
 
 /// Releasing Command before the chord key must not turn the host-owned key-up
-/// into an orphan bare release in the focused app.
+/// into an orphan bare release in the focused plugin.
 #[test]
 fn host_command_chord_owns_its_release_after_command_is_released_first() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -1965,7 +1965,7 @@ fn host_command_chord_owns_its_release_after_command_is_released_first() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("command-chord probe state");
     assert_eq!(state["received"], serde_json::json!([] as [&str; 0]));
@@ -2948,8 +2948,8 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
 #[test]
 fn osc_title_updates_unlocked_terminal_pane_name_by_default() {
     let mut h = HostHarness::new();
-    let app_pane = h.add_test_pane();
-    h.focus_pane(app_pane);
+    let view_pane = h.add_test_pane();
+    h.focus_pane(view_pane);
     h.run_frames(1);
 
     h.app.split_focused(true, None, false, false, None);
@@ -3031,8 +3031,8 @@ fn osc_title_content_stays_out_of_persistent_logs() {
 #[test]
 fn osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name() {
     let mut h = HostHarness::new();
-    let app_pane = h.add_test_pane();
-    h.focus_pane(app_pane);
+    let view_pane = h.add_test_pane();
+    h.focus_pane(view_pane);
     h.run_frames(1);
 
     h.app.split_focused(true, None, false, false, None);
@@ -3093,17 +3093,17 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
 // -- Shell execution security (issue #1177) ───────────────────────────────
 
-/// Regression guard: an app without `terminal.bindings` must never reach
+/// Regression guard: an plugin without `terminal.bindings` must never reach
 /// the `sh -c` spawn in `StreamProcess`. The host must return
 /// `StreamEnd { exit_code: 1 }` immediately and never spawn a subprocess.
 ///
-/// This is the only app-reachable `sh -c` path in the codebase. Any future
-/// app-reachable shell execution path must add a matching denial test here.
+/// This is the only plugin-reachable `sh -c` path in the codebase. Any future
+/// plugin-reachable shell execution path must add a matching denial test here.
 /// See `docs/security/shell-execution-inventory.md` for the full audit.
 
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
-    use crate::app::app_trait::KeyDisposition;
+    use crate::app::view_trait::KeyDisposition;
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
     h.app
@@ -3157,8 +3157,8 @@ fn cwd_for_welcome_tab_uses_creation_root_without_explicit_set_root() {
 // -- Capability modal focus layer -----------------------------------------
 
 /// Regression guard for #1596: Escape must reach the capability consent
-/// modal and fire deny_once. Before the fix, `dispatch_app_key_events` ran
-/// in step 3 of `update()`, the focused app consumed any key (returning
+/// modal and fire deny_once. Before the fix, `dispatch_plugin_key_events` ran
+/// in step 3 of `update()`, the focused plugin consumed any key (returning
 /// `consumed = true`), which caused the host to steal Escape from the
 /// input state — the modal in step 4 saw nothing. After the fix the modal
 /// renders in step 2 with exclusive keyboard ownership.
@@ -3577,7 +3577,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
         window_id: child_win_id,
         context_id: child_ctx_id,
     });
-    add_app_pane_to_window(&mut h, child_win_id, "portal-child-one");
+    add_view_pane_to_window(&mut h, child_win_id, "portal-child-one");
 
     // Portal pane in the active (root) window pointing at the child context.
     let portal_pane_id = 77200u64;
@@ -3610,7 +3610,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
 
     // Mutate the child context — add a second pane — and verify the portal
     // preview reflects it on the very next frame (no stale cache).
-    add_app_pane_to_window(&mut h, child_win_id, "portal-child-two");
+    add_view_pane_to_window(&mut h, child_win_id, "portal-child-two");
     h.run_frames(1);
     let state = portal_state(&h).expect("context_state must persist");
     assert_eq!(
@@ -3630,7 +3630,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
     let pane = h.add_test_pane();
     h.run_frames(1);
 
-    // Fresh app pane: no pip reported yet.
+    // Fresh view pane: no pip reported yet.
     assert_eq!(
         h.app.windows[0].panes.get(&pane).unwrap().pip_status(),
         None
@@ -3685,14 +3685,14 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
     assert_eq!(p.effective_activity(), Some(&AgentState::Working));
     assert!(!p.static_health_pip(), "an identified working agent still animates");
     p.set_agent(None);
-    assert!(p.static_health_pip(), "yellow app health keeps its color without an agent animation");
+    assert!(p.static_health_pip(), "yellow plugin health keeps its color without an agent animation");
 }
 
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
 /// unit test (`src/host/wasm_render.rs::canvas_click_inverts_fit_transform_to_canvas_space`).
 /// That test drives a raw `UiTree` through the renderer directly; this test
-/// drives a REAL process-app pane through the production `HostRequest::ClickPane`
-/// dispatch — the exact path `plexi pane click` uses — and confirms the app on
+/// drives a REAL process-view pane through the production `HostRequest::ClickPane`
+/// dispatch — the exact path `plexi pane click` uses — and confirms the plugin on
 /// the other side of the IPC bridge receives the correctly inverted
 /// canvas-space coordinate for a `fit="contain"` (scaled + letterboxed) canvas.
 ///
@@ -3706,7 +3706,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("canvas-click-probe");
+    let pane_id = h.launch_dev_view("canvas-click-probe");
 
     let (win_idx, tile_id) = h
         .app
@@ -3751,7 +3751,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
 
     // The click's egui-level effect is synchronous, but delivery to the
     // Python subprocess and its reply round-trip the IPC pipe — poll for the
-    // app's re-render to reflect it.
+    // plugin's re-render to reflect it.
     let start = std::time::Instant::now();
     let mut observed: Option<(f64, f64)> = None;
     loop {
@@ -3759,7 +3759,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
         let state = h.app.windows[win_idx]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         if let Some(state) = &state {
             for node in &state.nodes {
@@ -3781,7 +3781,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
         assert!(
             start.elapsed()
                 < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "app did not report the click's canvas-space coordinate in time"
+            "plugin did not report the click's canvas-space coordinate in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -3798,7 +3798,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
 }
 
 /// Stint 0510: drag counterpart of stint 0398's click e2e above. Drives a
-/// REAL process-app pane (`apps/dev/canvas-click-probe`) through the
+/// REAL process-view pane (`apps/dev/canvas-click-probe`) through the
 /// production `HostRequest::DragPane` dispatch — the exact path
 /// `plexi pane drag` and `HostHarness::inject_drag` use. The schedule is
 /// delivered one frame at a time (press → moves → release), each sample
@@ -3810,7 +3810,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("canvas-click-probe");
+    let pane_id = h.launch_dev_view("canvas-click-probe");
 
     let (win_idx, tile_id) = h
         .app
@@ -3861,7 +3861,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
         let state = h.app.windows[win_idx]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         if let Some(state) = &state {
             for node in &state.nodes {
@@ -3880,7 +3880,7 @@ fn drag_pane_delivers_press_moves_release_through_canvas_transform() {
         assert!(
             start.elapsed()
                 < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "app did not report a completed drag in time"
+            "plugin did not report a completed drag in time"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -3910,7 +3910,7 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("canvas-click-probe");
+    let pane_id = h.launch_dev_view("canvas-click-probe");
 
     // Node exists (the canvas root, arena id "0") but has no recorded bounds.
     let response_file = temp_response(tmp.path(), "drag-node-no-bounds");
@@ -3942,18 +3942,18 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
     );
 }
 
-/// Stint 0511: an emitted app event must land in the recorded event bus and
+/// Stint 0511: an emitted plugin event must land in the recorded event bus and
 /// be assertable through `HostHarness::wait_for_plugin_event`. Drives the REAL
-/// `apps/dev/event-probe` process app: `KeyPane('e')` makes the guest emit
+/// `apps/dev/event-probe` process plugin: `KeyPane('e')` makes the guest emit
 /// `probe.tick`, which flows guest → bridge → `HostRequest::EmitEvent` →
 /// `PluginTimeline::record_event` — the exact path the scene `expect`
 /// `event_stream` predicate reads.
 #[test]
-fn emitted_app_event_is_recorded_and_awaitable() {
+fn emitted_plugin_event_is_recorded_and_awaitable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("event-probe");
+    let pane_id = h.launch_dev_view("event-probe");
 
     let response_file = temp_response(tmp.path(), "key-pane");
     h.inject_ipc(crate::protocol::HostRequest::KeyPane {
@@ -3966,7 +3966,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     assert_eq!(response["ok"], true, "key dispatch failed: {response:?}");
 
     let record = h
-        .wait_for_app_event(
+        .wait_for_view_event(
             "probe.tick",
             Some("\"count\":1"),
             crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
@@ -3994,7 +3994,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
 fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app_without_render("event-probe");
+    let pane_id = h.launch_dev_view_without_render("event-probe");
 
     let expected_origin = h
         .app
@@ -4018,28 +4018,28 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
 // ── Directed pipes: context-scoped keys + reachability (stint 0724 Phase D 2/2) ──
 
 /// Minimal `App` stub for directed-pipe tests: `queue_pipe_command` pushes an
-/// `ViewCommand` a real app would have emitted onto `outgoing`, drained by the
-/// next `service_view_commands` pass exactly like a live app's own queue;
+/// `ViewCommand` a real plugin would have emitted onto `outgoing`, drained by the
+/// next `service_view_commands` pass exactly like a live plugin's own queue;
 /// `queue_outbound_event` records every `PlexiEvent` the host delivers back
 /// into `received` so a test can assert on what actually arrived. Mirrors
 /// `focus_tests::ThemeEventRecorder`. Commands are constructed directly here
 /// rather than through an SDK bridge because no SDK exposes
-/// `pipe_open_directed`/`pipe_send` to real apps yet (`wasm_python.rs`'s JSON
+/// `pipe_open_directed`/`pipe_send` to real plugins yet (`wasm_python.rs`'s JSON
 /// bridge table is the only current producer, and nothing in `sdk/python`
 /// calls it) — the host-side contract under test is the same regardless of
 /// which SDK eventually reaches it.
 struct PipeTestView {
-    outgoing: Vec<crate::app::app_trait::ViewCommand>,
+    outgoing: Vec<crate::app::view_trait::ViewCommand>,
     received: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
-impl crate::app::app_trait::App for PipeTestView {
+impl crate::app::view_trait::View for PipeTestView {
     fn type_id(&self) -> &'static str {
         "pipe-test-app"
     }
 
     fn display_name(&self) -> String {
-        "Pipe test app".to_string()
+        "Pipe test plugin".to_string()
     }
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
@@ -4049,19 +4049,19 @@ impl crate::app::app_trait::App for PipeTestView {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
-    fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::ViewCommand> {
+    fn take_pending_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
         std::mem::take(&mut self.outgoing)
     }
 
     fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         self.received
             .lock()
-            .expect("pipe test app event log")
+            .expect("pipe test plugin event log")
             .push(event);
     }
 }
@@ -4077,7 +4077,7 @@ fn add_pipe_test_pane(
 ) {
     let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane_id = h.app.host.alloc_pane_id();
-    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
+    let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(PipeTestView {
@@ -4104,18 +4104,18 @@ fn add_pipe_test_pane(
     (pane_id, received)
 }
 
-/// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the app
+/// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the plugin
 /// itself had emitted it — the next `service_view_commands` pass (driven by
 /// `run_hidden_frames`) drains and dispatches it through the real production
 /// path, including the `sender_pane_id` rewrite `drain_all_view_commands`
 /// performs.
-fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::app_trait::ViewCommand) {
+fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::view_trait::ViewCommand) {
     let app = h
         .app
         .windows
         .iter_mut()
         .find_map(|w| w.panes.get_mut(&pane_id))
-        .and_then(crate::host::pane::Pane::as_app_mut)
+        .and_then(crate::host::pane::Pane::as_view_mut)
         .expect("pipe test pane must exist");
     let crate::host::pane::ViewRuntime::Builtin(runtime) = &mut app.runtime else {
         panic!("pipe test pane must be a Builtin runtime");
@@ -4151,7 +4151,7 @@ fn open_directed_pipe_rejects_cross_context_target() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+        crate::app::view_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a,
             pipe_id: "cross-ctx".to_string(),
             target_pane_id: target_b,
@@ -4183,7 +4183,7 @@ fn open_directed_pipe_rejects_cross_context_target() {
     queue_pipe_command(
         &mut h,
         sender_a2,
-        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+        crate::app::view_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a2,
             pipe_id: "same-ctx".to_string(),
             target_pane_id: target_a2,
@@ -4227,7 +4227,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+        crate::app::view_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a,
             pipe_id: "my-pipe".to_string(),
             target_pane_id: target_a,
@@ -4236,7 +4236,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_b,
-        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+        crate::app::view_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_b,
             pipe_id: "my-pipe".to_string(),
             target_pane_id: target_b,
@@ -4263,7 +4263,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
+        crate::app::view_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id: sender_a,
             pipe_id: "my-pipe".to_string(),
             payload: serde_json::json!({"from": "a"}),
@@ -4296,7 +4296,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_b,
-        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
+        crate::app::view_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id: sender_b,
             pipe_id: "my-pipe".to_string(),
             payload: serde_json::json!({"from": "b"}),
@@ -4328,7 +4328,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
 
 /// Stint 0414: node-targeted counterpart of stint 0398's
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
-/// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single
+/// Drives a REAL process-view pane (`apps/dev/node-click-probe`, a single
 /// `Button` with no other input) through the production
 /// `HostRequest::ClickPaneNode` dispatch — the exact path
 /// `plexi pane click <pane_id> --node <node_id>` uses — resolving the
@@ -4341,14 +4341,14 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("node-click-probe");
+    let pane_id = h.launch_dev_view("node-click-probe");
 
     let semantic_state = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
-        .expect("app pane has a semantic tree");
+        .expect("view pane has a semantic tree");
 
     let button_id = semantic_state
         .nodes
@@ -4401,7 +4401,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
     // Happy path: click the button by node_id and observe the guest's
     // re-rendered count. The click's egui-level effect is synchronous, but
     // delivery to the Python subprocess and its reply round-trip the IPC
-    // pipe — poll for the app's re-render to reflect it.
+    // pipe — poll for the plugin's re-render to reflect it.
     let click_response = temp_response(tmp.path(), "click-node-increment");
     h.inject_node_click(pane_id, &button_id, "left", Some(click_response.clone()));
     h.run_frames(1);
@@ -4418,7 +4418,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         let state = h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         if let Some(state) = &state {
             observed_count = state
@@ -4432,13 +4432,13 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
         }
         assert!(
             start.elapsed() < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "app did not reflect the node-targeted click's mutation in time (last seen: {observed_count:?})"
+            "plugin did not reflect the node-targeted click's mutation in time (last seen: {observed_count:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
-/// Stint 0469: node-targeted click passthrough into a *builtin* app, exercising
+/// Stint 0469: node-targeted click passthrough into a *builtin* plugin, exercising
 /// the FULL two-step workflow entirely through synthetic node clicks — the same
 /// path `plexi pane click <id> --node <id>` drives — with no real pointer input
 /// anywhere. Step 1 clicks the "View" toolbar button (opening its menu, which is
@@ -4455,7 +4455,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
 fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -4474,8 +4474,8 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
             .panes
             .get_mut(&pane_id)
             .expect("file explorer pane exists");
-        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("app pane").runtime else {
-            panic!("pane {pane_id} is not a builtin app");
+        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("view pane").runtime else {
+            panic!("pane {pane_id} is not a builtin plugin");
         };
         app.as_any_mut()
             .downcast_mut::<crate::file_browser::FileBrowserView>()
@@ -4486,9 +4486,9 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state())
-            .expect("app pane has a semantic tree")
+            .expect("view pane has a semantic tree")
             .nodes
             .iter()
             .find(|n| n.role == role && n.label.as_deref() == Some(label))
@@ -4551,12 +4551,12 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("key-event-probe");
+    let pane_id = h.launch_dev_view("key-event-probe");
 
     let initial_count = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
         .and_then(|state| {
             state
@@ -4584,7 +4584,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
         let state = h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         if let Some(state) = &state {
             observed_count = state
@@ -4599,7 +4599,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
         assert!(
             start.elapsed()
                 < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "app did not reflect the key event's mutation in time (last seen: {observed_count:?})"
+            "plugin did not reflect the key event's mutation in time (last seen: {observed_count:?})"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
@@ -4607,7 +4607,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
 
 /// Stint 0430: bare Escape on a focused WASM/Python pane must close it. The
 /// Escape→CloseView binding (keys.rs, `BindingContext::ViewActive`) fires in
-/// `poll_actions` only when the focused app's `handle_key` did NOT consume the
+/// `poll_actions` only when the focused plugin's `handle_key` did NOT consume the
 /// key. `LivePythonPane::handle_key` used to report `Consumed` for bare Escape
 /// (`python_key_events` forwarded it), which claimed Escape out of the frame's
 /// input buffer before `poll_actions` ran — so the pane never closed. Drive a
@@ -4617,7 +4617,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
 fn bare_escape_closes_focused_python_wasm_pane() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("key-event-probe");
+    let pane_id = h.launch_dev_view("key-event-probe");
     h.focus_pane(pane_id);
     h.run_frames(1);
     assert!(
@@ -4672,14 +4672,14 @@ fn bare_escape_closes_focused_python_wasm_pane() {
 fn queued_node_click_survives_a_hot_reload_relaunch_race() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("node-click-probe");
+    let pane_id = h.launch_dev_view("node-click-probe");
 
     let semantic_state = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
-        .expect("app pane has a semantic tree");
+        .expect("view pane has a semantic tree");
     let button_arena_id = semantic_state
         .nodes
         .iter()
@@ -4706,7 +4706,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
     // Force the exact race: relaunch before any frame drains the queued
     // click, landing it on a not-initialized/not-ready `ui()` call.
     assert!(
-        h.app.reload_app_pane(pane_id, "test: relaunch race"),
+        h.app.reload_view_pane(pane_id, "test: relaunch race"),
         "reload_plugin_pane must find and relaunch the Python pane"
     );
 
@@ -4719,7 +4719,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
         let state = h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         if let Some(state) = &state {
             observed_count = state
@@ -4832,7 +4832,7 @@ fn context_1041_unpark_cancels_rename_and_returns_input() {
 fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
     let tmp = tempfile::tempdir().unwrap();
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(), PluginPermissions::builtin(),
         tmp.path().to_path_buf(), None, Some("split_h"), None,
     );
@@ -4849,7 +4849,7 @@ fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
         key: egui::Key::ArrowDown, physical_key: None, pressed: true,
         repeat: false, modifiers: egui::Modifiers::NONE,
     }]);
-    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_app)
+    let state = h.app.windows[0].panes.get(&pane_id).and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state()).unwrap();
     assert_ne!(state["received"], serde_json::json!([] as [&str; 0]));
     assert!(!h.app.input_captured_by_overlay());
@@ -5175,15 +5175,15 @@ fn input_owner_precedence_os_overlay_pane() {
     );
 }
 
-/// Typing into the context rename overlay must not reach the focused app
+/// Typing into the context rename overlay must not reach the focused plugin
 /// pane's `handle_key` — the editor is `InputOwner::Overlay(ContextRename)`,
-/// so `dispatch_app_key_events` is gated off (stint 0429). Before, the keys
-/// fed both the rename box and the app.
+/// so `dispatch_plugin_key_events` is gated off (stint 0429). Before, the keys
+/// fed both the rename box and the plugin.
 #[test]
-fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
+fn sidebar_rename_keys_do_not_reach_focused_view_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -5213,21 +5213,21 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("burst probe state");
     assert_eq!(
         state["received"],
         serde_json::json!([] as [&str; 0]),
-        "keys typed during context rename must not reach the focused app pane"
+        "keys typed during context rename must not reach the focused view pane"
     );
 }
 
 #[test]
-fn notification_modal_keys_do_not_reach_focused_app_pane() {
+fn notification_modal_keys_do_not_reach_focused_view_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::<KeyBurstProbe>::default(),
         PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
@@ -5262,7 +5262,7 @@ fn notification_modal_keys_do_not_reach_focused_app_pane() {
     let state = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.serialize_state())
         .expect("burst probe state");
     assert_eq!(state["received"], serde_json::json!([] as [&str; 0]));
@@ -5696,7 +5696,7 @@ fn text_label_with_prefix(h: &HostHarness, pane_id: PaneId, prefix: &str) -> Opt
     let state = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())?;
     state
         .nodes
@@ -5726,8 +5726,8 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
 }
 
 /// Stint 0456: end-to-end typing contract for the declarative `TextInput`,
-/// against a REAL process app (`apps/dev/text-input-probe`). Keystrokes
-/// with no field focused route to the app's raw `KeyEvent` path; after a
+/// against a REAL process plugin (`apps/dev/text-input-probe`). Keystrokes
+/// with no field focused route to the plugin's raw `KeyEvent` path; after a
 /// node-targeted click focuses the field, the dispatch gate
 /// (`focused_pane_text_surface`) keeps keystrokes with the host TextEdit —
 /// the guest's `keys:` counter must stay frozen — while `on_change`
@@ -5737,11 +5737,11 @@ fn wait_for_text_label(h: &mut HostHarness, pane_id: PaneId, prefix: &str, expec
 fn focused_text_input_receives_typing_and_enter_submits() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("text-input-probe");
+    let pane_id = h.launch_dev_view("text-input-probe");
     h.focus_pane(pane_id);
     h.run_frames(2);
 
-    // Baseline: no field focused — a keystroke routes to the app's raw
+    // Baseline: no field focused — a keystroke routes to the plugin's raw
     // KeyEvent path and bumps the guest's counter.
     frame_with_events(&mut h, vec![pressed_key(egui::Key::X)]);
     wait_for_text_label(&mut h, pane_id, "keys:", "keys:1");
@@ -5751,7 +5751,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     let input_node_id = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
         .and_then(|state| {
             state
@@ -5777,7 +5777,7 @@ fn focused_text_input_receives_typing_and_enter_submits() {
     assert_eq!(
         text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
         Some("keys:1"),
-        "keystrokes into the focused TextInput must not reach the app's KeyEvent path"
+        "keystrokes into the focused TextInput must not reach the plugin's KeyEvent path"
     );
 
     // Enter fires on_submit (the probe records the draft and clears it).
@@ -5800,23 +5800,23 @@ fn focused_text_input_receives_typing_and_enter_submits() {
         "post-submit typing must stay with the still-focused TextInput"
     );
 
-    // Escape leaves the field without closing the app (the ViewActive
+    // Escape leaves the field without closing the plugin (the ViewActive
     // CloseView binding must not fire); the next keystroke routes to the
-    // app's raw KeyEvent path again.
+    // plugin's raw KeyEvent path again.
     let panes_before = h.pane_count();
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
     h.run_frames(2);
     assert_eq!(
         h.pane_count(),
         panes_before,
-        "Escape in a focused TextInput must not close the app pane"
+        "Escape in a focused TextInput must not close the view pane"
     );
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Z)]);
     wait_for_text_label(&mut h, pane_id, "keys:", "keys:3");
 }
 
 /// Stint 0720: typing faster than the guest's render round trip must not lose
-/// characters. The app path re-renders the last *committed* guest tree every
+/// characters. The plugin path re-renders the last *committed* guest tree every
 /// host frame, and a real subprocess can never echo a keystroke in the same
 /// frame it was typed — so between the keystroke and the echo there are frames
 /// whose tree still carries the stale value. Those frames must leave the local
@@ -5829,14 +5829,14 @@ fn focused_text_input_receives_typing_and_enter_submits() {
 fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("text-input-probe");
+    let pane_id = h.launch_dev_view("text-input-probe");
     h.focus_pane(pane_id);
     h.run_frames(2);
 
     let input_node_id = h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .map(|pane| pane.semantic_state())
         .and_then(|state| {
             state
@@ -5884,7 +5884,7 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 
 // -- Declarative TextInput key routing -------------------------------------
 
-/// Escape that releases a real process app's focused `FormField` must also
+/// Escape that releases a real process plugin's focused `FormField` must also
 /// reach the guest exactly once, then stay consumed by the host so CloseView
 /// cannot reclaim the pane. This drives the full physical-key route:
 /// focus -> egui TextInput focus-loss -> router -> Python bridge -> guest
@@ -5894,15 +5894,15 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
     let mut h = HostHarness::new();
     let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
     h.app
-        .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch todo");
     let pane_id = *h.state().open_panes.last().expect("todo pane appears");
 
-    let app_text = |h: &HostHarness| {
+    let plugin_text = |h: &HostHarness| {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| {
                 pane.semantic_state()
                     .nodes
@@ -5915,12 +5915,12 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
     };
     let wait_for = |h: &mut HostHarness, expected: &str| {
         let start = std::time::Instant::now();
-        while !app_text(h).contains(expected) {
+        while !plugin_text(h).contains(expected) {
             assert!(
                 start.elapsed()
                     < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
                 "todo never rendered {expected:?}:\n{}",
-                app_text(h)
+                plugin_text(h)
             );
             h.run_frames(1);
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -5941,12 +5941,12 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
     // dispatch must consume it before ViewActive can fire CloseView.
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
     let start = std::time::Instant::now();
-    while app_text(&h).contains("What needs doing?") {
+    while plugin_text(&h).contains("What needs doing?") {
         assert!(
             start.elapsed()
                 < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
             "todo form remained open after Escape:\n{}",
-            app_text(&h)
+            plugin_text(&h)
         );
         h.run_frames(1);
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -5959,28 +5959,28 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
     );
     h.run_frames(3);
     assert!(
-        !app_text(&h).contains("What needs doing?"),
+        !plugin_text(&h).contains("What needs doing?"),
         "the canceled form must not reclaim focus or reopen on later reconciliation passes"
     );
 }
 
 // -- Stint 0729 follow-up: vertical-arrow list nav through a focused TextInput --
 
-/// End-to-end contract for `dispatch_app_key_events`'s arrow-forwarding gate,
-/// against a REAL process app (`apps/dev/search-nav-probe`) whose `TextInput`
+/// End-to-end contract for `dispatch_plugin_key_events`'s arrow-forwarding gate,
+/// against a REAL process plugin (`apps/dev/search-nav-probe`) whose `TextInput`
 /// is `autofocus=True` — the same shape as `wikipedia.py`'s search box. Before
 /// this fix, `text_surface_focused` unconditionally returned early and the
-/// app's KeyEvent-driven `selected` never advanced; the box holds focus
-/// permanently (nothing else in the app is focusable), so this was
-/// permanently dead code. Confirms ArrowDown/ArrowUp still reach the app and
+/// plugin's KeyEvent-driven `selected` never advanced; the box holds focus
+/// permanently (nothing else in the plugin is focusable), so this was
+/// permanently dead code. Confirms ArrowDown/ArrowUp still reach the plugin and
 /// move `selected`, while a plain letter keystroke — routed to the host
 /// TextEdit exactly as before this fix — updates the `query` draft via
 /// `on_change` and leaves `selected`/`keys` untouched.
 #[test]
-fn arrow_keys_reach_app_through_a_focused_text_input() {
+fn arrow_keys_reach_view_through_a_focused_text_input() {
     let mut h = HostHarness::new();
 
-    let pane_id = h.launch_dev_app("search-nav-probe");
+    let pane_id = h.launch_dev_view("search-nav-probe");
 
     // The TextInput is autofocus — focusing the pane and letting it render is
     // enough to claim the text surface, exactly as wikipedia.py's search box
@@ -5996,7 +5996,7 @@ fn arrow_keys_reach_app_through_a_focused_text_input() {
     assert_eq!(
         text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
         Some("keys:1"),
-        "ArrowDown must reach the app's KeyEvent path exactly once"
+        "ArrowDown must reach the plugin's KeyEvent path exactly once"
     );
 
     // ArrowUp moves it back down.
@@ -6004,8 +6004,8 @@ fn arrow_keys_reach_app_through_a_focused_text_input() {
     wait_for_text_label(&mut h, pane_id, "selected:", "selected:0");
 
     // A plain letter keystroke must still land in the host TextEdit, not the
-    // app: `query` round-trips via `on_change` (proof the event arrived at
-    // all), while `selected`/`keys` — the app-visible tells — stay frozen.
+    // plugin: `query` round-trips via `on_change` (proof the event arrived at
+    // all), while `selected`/`keys` — the plugin-visible tells — stay frozen.
     frame_with_events(
         &mut h,
         vec![
@@ -6022,7 +6022,7 @@ fn arrow_keys_reach_app_through_a_focused_text_input() {
     assert_eq!(
         text_label_with_prefix(&h, pane_id, "keys:").as_deref(),
         Some("keys:2"),
-        "typing a letter into the focused TextInput must not reach the app's KeyEvent path"
+        "typing a letter into the focused TextInput must not reach the plugin's KeyEvent path"
     );
 }
 
@@ -6127,8 +6127,8 @@ const GATE_HARNESS_CASES: &[&str] = &[
 fn open_gate_note(h: &mut HostHarness, dir: &std::path::Path, initial: &str) -> PaneId {
     let note = dir.join("gate-note.md");
     std::fs::write(&note, initial).expect("seed gate note");
-    h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(note)),
         crate::app::permissions::PluginPermissions::builtin(),
         dir.to_path_buf(),
         None,
@@ -6144,7 +6144,7 @@ fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
     h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| pane.runtime.semantic_details())
         .expect("notes semantic details")
 }
@@ -6414,13 +6414,13 @@ fn editor_gate_host_surfaces() {
     );
 
     // The production semantic commit path (accesskit → SemanticPaneState in
-    // app_pane::render, the exact state `plexi pane state` serves live) must
+    // view_pane::render, the exact state `plexi pane state` serves live) must
     // carry the editor's rendered text so `rendered_text_contains` scene
     // assertions are truthful against an installed host.
     let semantic = h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .expect("notes pane")
         .semantic_state();
     assert!(
@@ -6435,7 +6435,7 @@ fn editor_gate_host_surfaces() {
         semantic.nodes
     );
 
-    // Live Preview toggle through the app's real key handler.
+    // Live Preview toggle through the plugin's real key handler.
     assert_eq!(state["preview_mode"].as_str(), Some("live_preview"));
     let response = temp_response(tmp.path(), "gate-toggle");
     h.inject_ipc(HostRequest::KeyPane {
@@ -6660,7 +6660,7 @@ fn traversal_and_control_keys_reach_focused_terminal_pty() {
 }
 
 /// Editor-scoped chords must not hijack a focused terminal. The editor's
-/// link-activation (Ctrl+Enter) and find (Cmd+F) live in editor/notes app
+/// link-activation (Ctrl+Enter) and find (Cmd+F) live in editor/notes plugin
 /// panes; with a terminal focused, no editor renders, so these must leave the
 /// terminal as the input owner with egui focus intact — never surrender it to
 /// an editor surface or overlay. Guards the broader stint 0505 invariant that
@@ -6709,8 +6709,8 @@ fn open_focused_note_with_layout(
     std::fs::write(&note, body).expect("seed note");
     let before: std::collections::HashSet<PaneId> =
         h.app.windows[0].panes.keys().copied().collect();
-    h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(note)),
         crate::app::permissions::PluginPermissions::builtin(),
         dir.to_path_buf(),
         None,
@@ -6737,7 +6737,7 @@ fn note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
     h.app.windows[0]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .expect("notes pane")
         .runtime
         .semantic_details()
@@ -6851,7 +6851,7 @@ fn fullscreen_input_conjunction_fullscreen_editor_updates_body() {
 fn zoom_round_trip_restores_note_editor_scroll_and_focus() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    // Focus the sibling BEFORE opening the note: `place_app_pane` only splits
+    // Focus the sibling BEFORE opening the note: `place_view_pane` only splits
     // an existing tile when a pane is already focused — with no focused pane
     // it installs the new pane as the sole root, discarding the split.
     let sibling = h.add_test_pane();
@@ -6961,8 +6961,8 @@ fn scroll_regression_open_wrapped_note_reveals_end_caret() {
     std::fs::create_dir_all(&notes_dir).expect("create note tier");
     let path = notes_dir.join("long-note.md");
     std::fs::write(&path, &body).expect("seed note");
-    h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorView::new(path)),
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(path)),
         crate::app::permissions::PluginPermissions::builtin(),
         notes_dir,
         None,
@@ -7211,7 +7211,7 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -7240,8 +7240,8 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
         .iter()
         .find(|(id, _)| **id != explorer)
         .map(|(_, pane)| pane)
-        .and_then(Pane::as_app)
-        .expect("a new app pane");
+        .and_then(Pane::as_view)
+        .expect("a new view pane");
     assert_eq!(opened.manifest_id, "text-editor");
 }
 
@@ -7251,7 +7251,7 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -7324,7 +7324,7 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
     let doc = tmp.path().join("readme.md");
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -7339,7 +7339,7 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
         h.app.windows[0].panes.keys().copied().collect();
     // A second pane, focused, so a missing anchor would split THIS pane
     // rather than the explorer.
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -7361,7 +7361,7 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
         let pane = h.app.windows[0]
             .panes
             .get_mut(&browser)
-            .and_then(Pane::as_app_mut)
+            .and_then(Pane::as_view_mut)
             .expect("file browser pane");
         let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime else {
             panic!("file browser is a builtin");
@@ -7380,7 +7380,7 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
             **id != browser
                 && **id != decoy
                 && pane
-                    .as_app()
+                    .as_view()
                     .is_some_and(|app| app.manifest_id == "text-editor")
         })
         .map(|(id, _)| *id)
@@ -7486,15 +7486,15 @@ fn pane_ipc_serviced_while_window_hidden() {
     );
 }
 
-/// Stint 0688: an app pane's outbound commands are external-client servicing,
+/// Stint 0688: an view pane's outbound commands are external-client servicing,
 /// not rendering. `drain_all_view_commands` and the command execution it feeds
-/// lived in `App::ui`, so a minimized or fully occluded host executed no app
+/// lived in `App::ui`, so a minimized or fully occluded host executed no plugin
 /// command at all — every assistant tool call, notification, and host request
 /// from every runtime sat queued until the window was uncovered. They now run
 /// from `App::logic` via `service_view_commands`; this pins that they complete
 /// on hidden passes alone.
 #[test]
-fn app_commands_execute_while_window_hidden() {
+fn plugin_commands_execute_while_window_hidden() {
     let mut h = HostHarness::new();
     // The harness boots with notifications off; this test uses one as the
     // observable side effect of a command actually executing.
@@ -7503,11 +7503,11 @@ fn app_commands_execute_while_window_hidden() {
     h.run_frames(1);
     assert!(
         h.app.pending_notifications.is_empty(),
-        "no notification should be queued before the app emits one"
+        "no notification should be queued before the plugin emits one"
     );
 
     h.assistant_mut(pane).pending_commands.push(
-        crate::app::app_trait::ViewCommand::ShowNotification {
+        crate::app::view_trait::ViewCommand::ShowNotification {
             notify_id: "hidden-pass-notify".to_string(),
             sender_pane_id: pane,
             source_context_id: 0,
@@ -7532,7 +7532,7 @@ fn app_commands_execute_while_window_hidden() {
             .pending_notifications
             .iter()
             .any(|notification| notification.notify_id == "hidden-pass-notify"),
-        "an app command queued while the window is hidden must be drained and \
+        "an plugin command queued while the window is hidden must be drained and \
          executed on a logic-only pass — eframe never calls ui for a covered window"
     );
 }
@@ -7545,7 +7545,7 @@ fn app_commands_execute_while_window_hidden() {
 /// then killed by the bridge's 90 s deadline, while polling `plexi pane state`
 /// (which forces paints) made the identical setup succeed in 3 s. The fix
 /// services Python pane runtimes from `App::logic`
-/// (`service_python_pane_runtimes`); this drives a real probe app and a real
+/// (`service_python_pane_runtimes`); this drives a real probe plugin and a real
 /// server process through `hidden_frame` passes alone and requires the reply
 /// to land with `App::ui` never running.
 #[cfg(unix)]
@@ -7584,16 +7584,16 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
     )
     .expect("write mcp_servers.toml");
 
-    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
+    let pane_id = h.launch_dev_view_without_render("mcp-hidden-probe");
 
     // `display_name` surfaces the guest's `set_title` (falling back to the
-    // app id before the first one lands) — host-side state updated on
+    // plugin id before the first one lands) — host-side state updated on
     // logic-only passes, observable with no paint.
     let python_title = |h: &HostHarness| -> Option<String> {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| match &pane.runtime {
                 ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
@@ -7640,7 +7640,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
 
 // -- Occlusion axis: hot reload, pane init, timers (stint 0759) -----------
 
-/// Write a minimal manifest-backed CPython-in-WASM app to `dir`. `title`
+/// Write a minimal manifest-backed CPython-in-WASM plugin to `dir`. `title`
 /// becomes the guest's `set_title` on `init`, observable host-side with no
 /// paint. Shared fixture for the stint 0759 hidden-window regression guards
 /// below.
@@ -7674,7 +7674,7 @@ fn python_pane_title(h: &HostHarness, pane_id: PaneId) -> Option<String> {
     h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| match &pane.runtime {
             ViewRuntime::Python(p) => Some(p.display_name()),
             _ => None,
@@ -7685,7 +7685,7 @@ fn python_pane_has_rendered_tree(h: &HostHarness, pane_id: PaneId) -> bool {
     h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .is_some_and(|pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()))
 }
 
@@ -7693,7 +7693,7 @@ fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
     h.app.windows[h.app.active_window]
         .panes
         .get(&pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| match &pane.runtime {
             ViewRuntime::Python(p) => p.error().map(str::to_string),
             _ => None,
@@ -7704,15 +7704,15 @@ fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
 /// save under a fully occluded host sat unserviced until the window was next
 /// uncovered (`ui_mailbox: source=hot_reload has N unserviced message(s)`, the
 /// stint 0602 live-drive evidence). It now runs from `App::logic`; this
-/// rewrites the watched app's `main.py` and requires the debounced reload to
+/// rewrites the watched plugin's `main.py` and requires the debounced reload to
 /// land through `hidden_frame` passes alone.
 #[test]
 fn hot_reload_serviced_while_window_hidden() {
-    let tmp = tempfile::tempdir().expect("app dir");
+    let tmp = tempfile::tempdir().expect("plugin dir");
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
     h.app
-        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
 
@@ -7729,10 +7729,10 @@ fn hot_reload_serviced_while_window_hidden() {
     }
 
     // Debounced watcher save: rewrite main.py with a new title. Any file
-    // change under the watched app dir (main.py included) triggers a reload
+    // change under the watched plugin dir (main.py included) triggers a reload
     // — every CPython-in-WASM pane is watched unconditionally
-    // (`open_python_wasm_app_pane`), independent of the manifest's `watch`
-    // flag, which only affects raw process apps.
+    // (`open_python_wasm_view_pane`), independent of the manifest's `watch`
+    // flag, which only affects raw process plugins.
     write_hidden_axis_probe(tmp.path(), "v2");
     std::thread::sleep(std::time::Duration::from_millis(
         crate::host::hot_reload::DEBOUNCE_MS + 150,
@@ -7761,12 +7761,12 @@ fn hot_reload_serviced_while_window_hidden() {
 /// pane and runs *only* `hidden_frame` passes from the moment it opens —
 /// `App::ui` never runs for it — and requires it to reach a committed tree.
 #[test]
-fn new_wasm_app_pane_reaches_running_while_window_hidden() {
-    let tmp = tempfile::tempdir().expect("app dir");
+fn new_wasm_view_pane_reaches_running_while_window_hidden() {
+    let tmp = tempfile::tempdir().expect("plugin dir");
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
     h.app
-        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
     assert!(
@@ -7799,11 +7799,11 @@ fn new_wasm_app_pane_reaches_running_while_window_hidden() {
 /// "fired", which must land with `App::ui` never running.
 #[test]
 fn set_timer_fires_while_window_hidden() {
-    let tmp = tempfile::tempdir().expect("app dir");
+    let tmp = tempfile::tempdir().expect("plugin dir");
     write_hidden_axis_probe(tmp.path(), "v1");
     let mut h = HostHarness::new();
     h.app
-        .launch_app_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&tmp.path().to_string_lossy(), None, None, &[])
         .expect("launch hidden-axis-probe");
     let pane_id = *h.state().open_panes.last().expect("pane appears");
 
@@ -7825,7 +7825,7 @@ fn set_timer_fires_while_window_hidden() {
 
 #[test]
 fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
-    let tmp = tempfile::tempdir().expect("app dir");
+    let tmp = tempfile::tempdir().expect("plugin dir");
     write_hidden_axis_probe(tmp.path(), "waiting");
     let entry = tmp.path().join("main.py");
     let source = std::fs::read_to_string(&entry).expect("read probe");
@@ -7837,7 +7837,7 @@ fn future_timer_keeps_a_hidden_pane_wake_scheduled() {
     let mut h = HostHarness::new();
     let pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(
+        .launch_view_by_path_with_layout_no_review_modal(
             &tmp.path().to_string_lossy(),
             None,
             None,
@@ -7888,12 +7888,12 @@ fn experiment_off_blocks_mcp_client_and_spawns_no_server_process() {
     )
     .expect("write mcp_servers.toml");
 
-    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
+    let pane_id = h.launch_dev_view_without_render("mcp-hidden-probe");
     let python_title = |h: &HostHarness| -> Option<String> {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| match &pane.runtime {
                 ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
@@ -7966,12 +7966,12 @@ fn experiment_on_allows_mcp_client_and_spawns_the_server_process() {
     )
     .expect("write mcp_servers.toml");
 
-    let pane_id = h.launch_dev_app_without_render("mcp-hidden-probe");
+    let pane_id = h.launch_dev_view_without_render("mcp-hidden-probe");
     let python_title = |h: &HostHarness| -> Option<String> {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| match &pane.runtime {
                 ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
@@ -8168,7 +8168,7 @@ fn screenshot_delivered_capture_still_fulfills() {
     h.run_frames(1);
 
     // Stand in for wgpu's asynchronous readback, which no headless pass can
-    // produce: hand the app the capture event eframe would have injected.
+    // produce: hand the plugin the capture event eframe would have injected.
     let image = std::sync::Arc::new(egui::ColorImage::filled(
         [64, 48],
         egui::Color32::from_rgb(10, 20, 30),
@@ -8336,7 +8336,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(tmp.path().join("alpha.txt"), b"x").expect("seed file");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
@@ -8414,7 +8414,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
 fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(TextInputProbe {
             id_salt: 1,
             ..Default::default()
@@ -8429,7 +8429,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
     // Pane A renders, grabs raw egui focus, and owns input for real frames.
     h.run_frames(2);
 
-    h.app.open_builtin_app_pane(
+    h.app.open_builtin_view_pane(
         Box::new(TextInputProbe {
             id_salt: 2,
             ..Default::default()
@@ -8465,7 +8465,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
         h.app.windows[0]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| pane.runtime.serialize_state())
             .expect("probe state")["text"]
             .as_str()
@@ -8511,9 +8511,9 @@ mod routine_firing {
         ctx.name = "main".to_string().into();
     }
 
-    /// Insert a builtin app pane (rooted at `root`, never a real machine dir)
+    /// Insert a builtin view pane (rooted at `root`, never a real machine dir)
     /// into `win_idx` and focus it, so `split_focused` has a split target.
-    fn add_focused_app_pane(h: &mut HostHarness, win_idx: usize, root: &std::path::Path) -> PaneId {
+    fn add_focused_view_pane(h: &mut HostHarness, win_idx: usize, root: &std::path::Path) -> PaneId {
         let pane_id = h.app.host.alloc_pane_id();
         let pane = ViewPane {
             pip_status: None,
@@ -8534,7 +8534,7 @@ mod routine_firing {
             semantic_state: Default::default(),
         };
         let win = &mut h.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::App(Box::new(pane)));
+        win.panes.insert(pane_id, Pane::View(Box::new(pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -8564,7 +8564,7 @@ mod routine_firing {
             context_id: ctx_id,
         });
         let win_idx = h.app.windows.len() - 1;
-        add_focused_app_pane(h, win_idx, root);
+        add_focused_view_pane(h, win_idx, root);
         h.app.router.push(Context {
             name: name.to_string().into(),
             // Anchored beside (not at) the routines root: tick_scheduler
@@ -8612,7 +8612,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
         let work_root = tempfile::tempdir().expect("tempdir");
         let work_win = add_secondary_context(&mut h, "work", work_root.path());
 
@@ -8657,7 +8657,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
         let work_root = tempfile::tempdir().expect("tempdir");
         let work_win = add_secondary_context(&mut h, "work", work_root.path());
 
@@ -8710,7 +8710,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
         let panes_before = h.app.windows[0].panes.len();
 
         let response = temp_response(tmp.path(), "ctx-name-missing");
@@ -8751,7 +8751,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -8777,7 +8777,7 @@ mod routine_firing {
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -8817,7 +8817,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -8853,7 +8853,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
         write_routines(
             root.path(),
             r#"
@@ -8882,7 +8882,7 @@ mod routine_firing {
         let mut h2 = HostHarness::new();
         let root2 = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h2, root2.path());
-        add_focused_app_pane(&mut h2, 0, root2.path());
+        add_focused_view_pane(&mut h2, 0, root2.path());
         write_routines(
             root2.path(),
             r#"
@@ -8902,7 +8902,7 @@ mod routine_firing {
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -8988,7 +8988,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -9034,7 +9034,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -9086,7 +9086,7 @@ mod routine_firing {
         let mut h = HostHarness::new();
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
-        add_focused_app_pane(&mut h, 0, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
 
         write_routines(
             root.path(),
@@ -9350,8 +9350,8 @@ mod agent_boot {
         );
     }
 
-    /// An agent is a terminal affordance. Asking for one on an app pane is a
-    /// caller mistake and must fail loudly rather than spawn a silent app.
+    /// An agent is a terminal affordance. Asking for one on an view pane is a
+    /// caller mistake and must fail loudly rather than spawn a silent plugin.
     #[test]
     fn agent_spawn_rejected_for_non_terminal_target() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -9498,7 +9498,7 @@ mod agent_boot {
         pump_until_response(&mut h, &response, true);
         assert_eq!(read_json_response(&response)["pane_id"], pane_id);
         h.run_hidden_frames(2);
-        let timeline = crate::host::app_timeline::global();
+        let timeline = crate::host::plugin_timeline::global();
         let timeline = timeline.lock().unwrap();
         let facts: Vec<_> = timeline
             .events()
@@ -9992,11 +9992,11 @@ mod pane_send_submit_tests {
         );
     }
 
-    /// `--submit` is a terminal-pane verb. An app pane has no input line to
+    /// `--submit` is a terminal-pane verb. An view pane has no input line to
     /// confirm, so it is refused with a typed error rather than silently
     /// degrading to a plain text injection.
     #[test]
-    fn pane_send_submit_rejects_app_pane() {
+    fn pane_send_submit_rejects_view_pane() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
         let pane = h.add_test_pane();
@@ -10008,7 +10008,7 @@ mod pane_send_submit_tests {
         assert_eq!(
             read_json_response(&response)["error"].as_str(),
             Some(
-                format!("pane {pane} is an app pane; --submit only applies to terminal panes")
+                format!("pane {pane} is an view pane; --submit only applies to terminal panes")
                     .as_str()
             )
         );
@@ -10196,21 +10196,21 @@ mod pane_send_submit_tests {
     }
 }
 
-/// Stint 0549: a continuous-cadence app's decoder must let ready frames ride
+/// Stint 0549: a continuous-cadence plugin's decoder must let ready frames ride
 /// the repaint the frame scheduler already scheduled, instead of forcing a
 /// second full-host repaint per guest frame. Drives the real `apps/dev/balls`
 /// subprocess — the exemplar the 0541 audit measured — and asserts the
 /// suppression path actually engages end to end.
 #[test]
-fn continuous_app_frames_ride_the_scheduled_repaint() {
+fn continuous_plugin_frames_ride_the_scheduled_repaint() {
     let mut h = HostHarness::new();
-    let pane_id = h.launch_dev_app_without_render("balls");
+    let pane_id = h.launch_dev_view_without_render("balls");
 
     let suppressed = |h: &HostHarness| {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| match &pane.runtime {
                 ViewRuntime::Python(p) => Some(p.suppressed_wakes()),
                 _ => None,
@@ -10226,27 +10226,27 @@ fn continuous_app_frames_ride_the_scheduled_repaint() {
         }
         assert!(
             start.elapsed() < std::time::Duration::from_secs(30),
-            "a continuous app produced no frame that could ride an already-scheduled repaint"
+            "a continuous plugin produced no frame that could ride an already-scheduled repaint"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
-/// Stint 0549, the other direction: an input-driven (scheduled-mode) app must
+/// Stint 0549, the other direction: an input-driven (scheduled-mode) plugin must
 /// never have its frame-arrival wake suppressed. Its frames are the response
 /// to input, nothing else is scheduled to present them, and the latency would
 /// be perceptible. `apps/dev/key-event-probe` never sets a scheduler mode.
 #[test]
-fn scheduled_mode_app_never_suppresses_its_frame_wake() {
+fn scheduled_mode_view_never_suppresses_its_frame_wake() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
-    let pane_id = h.launch_dev_app("key-event-probe");
+    let pane_id = h.launch_dev_view("key-event-probe");
 
     let suppressed = |h: &HostHarness| {
         h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|pane| match &pane.runtime {
                 ViewRuntime::Python(p) => Some(p.suppressed_wakes()),
                 _ => None,
@@ -10267,7 +10267,7 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
         let state = h.app.windows[h.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.semantic_state());
         let count = state.as_ref().and_then(|state| {
             state
@@ -10289,7 +10289,7 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
     assert_eq!(
         suppressed(&h),
         0,
-        "an input-driven app must never trade presentation latency for saved paints"
+        "an input-driven plugin must never trade presentation latency for saved paints"
     );
 }
 
@@ -10615,7 +10615,7 @@ mod pane_lifecycle_events {
     use super::*;
 
     fn records(pane_id: u64) -> Vec<serde_json::Value> {
-        crate::host::app_timeline::global()
+        crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
             .events()
@@ -11412,7 +11412,7 @@ mod flight_recorder_session {
     }
 
     /// Two agent panes, an ask-gated `plugin call`, a desktop approval, and a
-    /// pane lifecycle app event must leave one ordered, complete session trace
+    /// pane lifecycle plugin event must leave one ordered, complete session trace
     /// that `debug session show --json` reconstructs.
     #[test]
     fn multi_pane_session_with_desktop_approval_writes_a_complete_ordered_trace() {
@@ -13199,7 +13199,7 @@ mod agent_state_restoration_tests {
 
 // -- Directed pipe registration across real runtimes (stint 0742) ---------
 
-fn write_directed_pipe_receiver_app(dir: &std::path::Path) {
+fn write_directed_pipe_receiver_plugin(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
         "schema_version = 2\n\n[plugin]\nid = \"pipe-receiver-probe\"\nname = \"Pipe Receiver Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe receiver\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-receiver-probe.main\"\ndefault = true\n",
@@ -13226,7 +13226,7 @@ fn write_directed_pipe_receiver_app(dir: &std::path::Path) {
     .expect("write receiver main.py");
 }
 
-fn write_directed_pipe_sender_app(dir: &std::path::Path) {
+fn write_directed_pipe_sender_plugin(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
         "schema_version = 2\n\n[plugin]\nid = \"pipe-sender-probe\"\nname = \"Pipe Sender Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe sender\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-sender-probe.main\"\ndefault = true\n",
@@ -13257,7 +13257,7 @@ fn write_directed_pipe_sender_app(dir: &std::path::Path) {
     .expect("write sender main.py");
 }
 
-/// Stint 0742: two real CPython-in-WASM apps (not `PipeTestView` stubs) open a
+/// Stint 0742: two real CPython-in-WASM plugins (not `PipeTestView` stubs) open a
 /// directed pipe, register local pipe readers on both runtimes via
 /// `register_directed_pipe_on_target`, and exchange duplex JSON messages
 /// end-to-end.
@@ -13265,19 +13265,19 @@ fn write_directed_pipe_sender_app(dir: &std::path::Path) {
 fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     let receiver_dir = tempfile::tempdir().expect("receiver dir");
     let sender_dir = tempfile::tempdir().expect("sender dir");
-    write_directed_pipe_receiver_app(receiver_dir.path());
-    write_directed_pipe_sender_app(sender_dir.path());
+    write_directed_pipe_receiver_plugin(receiver_dir.path());
+    write_directed_pipe_sender_plugin(sender_dir.path());
 
     let mut h = HostHarness::new();
     let receiver_pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(
+        .launch_view_by_path_with_layout_no_review_modal(
             &receiver_dir.path().to_string_lossy(),
             None,
             None,
             &[],
         )
-        .expect("launch receiver app")
+        .expect("launch receiver plugin")
         .expect("receiver pane id");
 
     let start = std::time::Instant::now();
@@ -13286,7 +13286,7 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
         assert!(
             start.elapsed()
                 < crate::testing::load_aware_timeout(std::time::Duration::from_secs(30)),
-            "receiver app did not reach ready title in time (last title: {:?}, error: {:?})",
+            "receiver plugin did not reach ready title in time (last title: {:?}, error: {:?})",
             python_pane_title(&h, receiver_pane_id),
             python_pane_error(&h, receiver_pane_id)
         );
@@ -13296,13 +13296,13 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     let sender_args = vec![receiver_pane_id.to_string()];
     let sender_pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(
+        .launch_view_by_path_with_layout_no_review_modal(
             &sender_dir.path().to_string_lossy(),
             None,
             None,
             &sender_args,
         )
-        .expect("launch sender app")
+        .expect("launch sender plugin")
         .expect("sender pane id");
 
     let start = std::time::Instant::now();
@@ -13338,12 +13338,12 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     let sender_has_reader = h.app.windows[h.app.active_window]
         .panes
         .get(&sender_pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .is_some_and(|pane| pane.runtime.has_pipe_reader("stint0742.duplex"));
     let receiver_has_reader = h.app.windows[h.app.active_window]
         .panes
         .get(&receiver_pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .is_some_and(|pane| pane.runtime.has_pipe_reader("stint0742.duplex"));
     assert!(
         sender_has_reader,
@@ -13361,7 +13361,7 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
 /// `DeliverPipeMessage` frames reach the WASM runtime.
 #[test]
 fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
-    use crate::host::wasm_app::{Grants, StateStore, WasmView};
+    use crate::host::wasm_view::{Grants, StateStore, WasmView};
     use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
     let mut h = HostHarness::new();
@@ -13395,7 +13395,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     live.set_context_id(ctx_id);
     h.app.windows[win_idx].panes.insert(
         wasm_pane_id,
-        Pane::App(Box::new(crate::host::pane::ViewPane {
+        Pane::View(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: wasm_pane_id,
             runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
@@ -13417,7 +13417,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     queue_pipe_command(
         &mut h,
         sender_pane_id,
-        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+        crate::app::view_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id,
             pipe_id: "wasm.directed".to_string(),
             target_pane_id: wasm_pane_id,
@@ -13426,7 +13426,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     queue_pipe_command(
         &mut h,
         sender_pane_id,
-        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
+        crate::app::view_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id,
             pipe_id: "wasm.directed".to_string(),
             payload: serde_json::json!({"track": 1}),
@@ -13437,7 +13437,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     let wasm_has_reader = h.app.windows[h.app.active_window]
         .panes
         .get(&wasm_pane_id)
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .is_some_and(|pane| pane.runtime.has_pipe_reader("wasm.directed"));
     assert!(
         wasm_has_reader,
@@ -13573,7 +13573,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     );
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
-    // 4. With an app pane zoomed (`text-editor`), bare Esc reaches the app (`handle_key`,
+    // 4. With an view pane zoomed (`text-editor`), bare Esc reaches the plugin (`handle_key`,
     //    setting `input_released = true`) and the pane stays zoomed.
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("sample.toml");
@@ -13595,31 +13595,31 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     );
     assert!(
         h.app.windows[0].zoomed_pane.is_some(),
-        "Cmd+Shift+Enter must zoom the focused app pane"
+        "Cmd+Shift+Enter must zoom the focused view pane"
     );
     // Press bare Escape: reaches `TextEditorView::handle_key` (which releases edit mode to pane nav)
     // while keeping the pane zoomed and open!
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(
         h.text_editor_mut(editor_id).is_input_released(),
-        "bare Escape on zoomed app pane must reach handle_key"
+        "bare Escape on zoomed view pane must reach handle_key"
     );
     assert!(
         h.app.windows[0].zoomed_pane.is_some(),
-        "bare Escape on zoomed app pane must keep the pane zoomed"
+        "bare Escape on zoomed view pane must keep the pane zoomed"
     );
     assert!(
         h.app.windows[0].panes.contains_key(&editor_id),
-        "app pane that consumed Escape must stay open"
+        "view pane that consumed Escape must stay open"
     );
-    // Cmd+Shift+Enter zooms the app pane back out.
+    // Cmd+Shift+Enter zooms the view pane back out.
     h.press_key(
         egui::Key::Enter,
         egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
     );
     assert!(
         h.app.windows[0].zoomed_pane.is_none(),
-        "Cmd+Shift+Enter on zoomed app pane must zoom out"
+        "Cmd+Shift+Enter on zoomed view pane must zoom out"
     );
 }
 
@@ -13850,8 +13850,8 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     req_json["command"] = serde_json::Value::String("sleep 30".to_string());
     req_json["response_file"] = serde_json::Value::String(spawn_reply.clone());
 
-    let app_req: HostRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
-    h.inject_ipc(app_req);
+    let plugin_req: HostRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
+    h.inject_ipc(plugin_req);
     h.hidden_frame();
 
     let spawned = read_json_response(&spawn_reply);
@@ -14104,7 +14104,7 @@ fn agent_start_from_background_context_caller_preserves_active_focus() {
     let background_caller = h.add_focused_terminal();
     let active_ctx = h.app.create_context_without_pty("front", None);
     let front_idx = h.app.windows.len() - 1;
-    let (tile, front_pane) = h.app.add_app_pane_in_window(front_idx, "front");
+    let (tile, front_pane) = h.app.add_view_pane_in_window(front_idx, "front");
     h.app.windows[front_idx].navigate_to(tile);
     h.run_frames(2);
     assert_eq!(h.app.router.active().context_id, active_ctx);
@@ -16240,8 +16240,8 @@ mod tiled_navigation_frame_tests {
     #[test]
     fn slow_shell_paints_stable_placeholder_chrome_and_preserves_geometry() {
         let mut h = HostHarness::new();
-        let app_pane = h.add_test_pane();
-        h.focus_pane(app_pane);
+        let view_pane = h.add_test_pane();
+        h.focus_pane(view_pane);
         h.run_frames(1);
 
         let ctx_idx = h.app.active_window;
@@ -16893,9 +16893,9 @@ fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
     );
 }
 
-// -- Stint 1180: per-pane focus and visibility events for Python apps -------
+// -- Stint 1180: per-pane focus and visibility events for Python plugins -------
 
-/// Write a CPython-in-WASM app that appends every focus/visibility event it
+/// Write a CPython-in-WASM plugin that appends every focus/visibility event it
 /// receives to its title (`log:shown,gained,...`), so the host-side title is a
 /// complete, ordered record of what the guest was told.
 fn write_presence_probe(dir: &std::path::Path, plugin_id: &str) {
@@ -16932,7 +16932,7 @@ fn presence_log(h: &HostHarness, pane_id: PaneId) -> Option<String> {
         .windows
         .iter()
         .find_map(|window| window.panes.get(&pane_id))
-        .and_then(Pane::as_app)
+        .and_then(Pane::as_view)
         .and_then(|pane| match &pane.runtime {
             ViewRuntime::Python(p) => p.display_name().strip_prefix("log:").map(str::to_string),
             _ => None,
@@ -16970,20 +16970,20 @@ fn expect_presence_log(h: &mut HostHarness, pane_id: PaneId, expected: &str, hid
     );
 }
 
-/// A live Python app pane is told, in order and exactly once per transition,
+/// A live Python view pane is told, in order and exactly once per transition,
 /// when it is shown, hidden, focused and unfocused, across pane focus moves,
-/// a hidden (logic-only) window, a context switch and pane zoom. A second app
+/// a hidden (logic-only) window, a context switch and pane zoom. A second plugin
 /// pane acts as the unrelated control and only ever sees its own transitions.
 #[test]
-fn python_app_pane_receives_focus_and_visibility_events_in_order() {
-    let dir_a = tempfile::tempdir().expect("app a dir");
-    let dir_b = tempfile::tempdir().expect("app b dir");
+fn python_view_pane_receives_focus_and_visibility_events_in_order() {
+    let dir_a = tempfile::tempdir().expect("plugin a dir");
+    let dir_b = tempfile::tempdir().expect("plugin b dir");
     write_presence_probe(dir_a.path(), "presence-probe-a");
     write_presence_probe(dir_b.path(), "presence-probe-b");
     let mut h = HostHarness::new();
 
     h.app
-        .launch_app_by_path_with_layout(&dir_a.path().to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&dir_a.path().to_string_lossy(), None, None, &[])
         .expect("launch probe a");
     let pane_a = *h.state().open_panes.last().expect("pane a appears");
     expect_presence_log(&mut h, pane_a, "shown,gained", false);
@@ -16991,7 +16991,7 @@ fn python_app_pane_receives_focus_and_visibility_events_in_order() {
     // B opens and takes focus: A loses it, B starts from scratch.
     let before = h.state().open_panes;
     h.app
-        .launch_app_by_path_with_layout(&dir_b.path().to_string_lossy(), None, None, &[])
+        .launch_view_by_path_with_layout(&dir_b.path().to_string_lossy(), None, None, &[])
         .expect("launch probe b");
     let pane_b = h
         .state()

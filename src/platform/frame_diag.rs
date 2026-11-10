@@ -22,7 +22,7 @@ pub enum RepaintCause {
     ViewClick,
     /// App-requested `ScheduleRender { after_ms }`.
     ViewScheduleRender,
-    /// Pointer-tracking apps at ~60fps while the pointer moves; also terminal
+    /// Pointer-tracking plugins at ~60fps while the pointer moves; also terminal
     /// drag-selection auto-scroll.
     PointerTracking,
     /// Focused terminal cursor blink.

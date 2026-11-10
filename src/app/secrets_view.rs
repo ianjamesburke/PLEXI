@@ -1,4 +1,4 @@
-use crate::app::app_trait::{App, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{View, ViewRenderContext, KeyDisposition};
 use crate::ui::button::{self, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::{labels, row, style};
@@ -393,7 +393,7 @@ impl SecretsView {
     }
 }
 
-impl App for SecretsView {
+impl View for SecretsView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -603,7 +603,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secrets_app_mutations_use_shared_audited_handlers() {
+    fn secrets_plugin_mutations_use_shared_audited_handlers() {
         let profile = tempfile::tempdir().unwrap();
         let _profile = crate::config::set_test_profile_dir(profile.path().into());
         let cwd = tempfile::tempdir().unwrap();
@@ -759,7 +759,7 @@ mod tests {
         ));
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(root.path().into())),
                 PluginPermissions::builtin(),
                 root.path().into(),
@@ -785,7 +785,7 @@ mod tests {
                 .values_mut()
                 .find_map(|pane| {
                     let crate::host::pane::ViewRuntime::Builtin(builtin) =
-                        &mut pane.as_app_mut()?.runtime
+                        &mut pane.as_view_mut()?.runtime
                     else {
                         return None;
                     };

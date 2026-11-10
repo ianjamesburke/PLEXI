@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "AppRequest": {
+    "HostRequest": {
       "$defs": {
         "AgentBlockedReason": {
           "description": "A reported blocking condition. Unknown preserves legacy reports without guessing.",
@@ -44,7 +44,7 @@
           "type": "object"
         },
         "AiTool": {
-          "description": "Tool definition for the tool-use turn loop (#398).\nApps declare callable tools via `DrawCommand::ExposeTools`.",
+          "description": "Tool definition for the tool-use turn loop (#398).\nPlugins declare callable tools via `DrawCommand::ExposeTools`.",
           "properties": {
             "description": {
               "type": "string"
@@ -76,18 +76,8 @@
           ],
           "type": "object"
         },
-        "AppEventActor": {
-          "description": "Who caused an app state change (`AppRequest::EmitEvent`).",
-          "enum": [
-            "user",
-            "agent",
-            "app",
-            "system"
-          ],
-          "type": "string"
-        },
         "ArtifactOpenMode": {
-          "description": "Routing target for `AppRequest::OpenArtifact`.",
+          "description": "Routing target for `HostRequest::OpenArtifact`.",
           "oneOf": [
             {
               "const": "open_in_pane",
@@ -101,13 +91,13 @@
             },
             {
               "const": "open_with_default",
-              "description": "`open <path>` — Launch Services default app.",
+              "description": "`open <path>` — Launch Services default plugin.",
               "type": "string"
             }
           ]
         },
         "EventStreamDecl": {
-          "description": "One declared app event stream (`AppRequest::DeclareEventStreams`).",
+          "description": "One declared plugin event stream (`HostRequest::DeclareEventStreams`).",
           "properties": {
             "description": {
               "description": "Human-readable description of when this event fires.",
@@ -149,7 +139,7 @@
           "type": "string"
         },
         "ModelTier": {
-          "description": "Coarse model tier requested by the app. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
+          "description": "Coarse model tier requested by the plugin. The host maps each tier to a\nconcrete model identifier per backend (spec §ai.query):\n  - `Low`    → Haiku\n  - `Medium` → Sonnet\n  - `High`   → Opus",
           "enum": [
             "low",
             "medium",
@@ -193,7 +183,7 @@
           "type": "object"
         },
         "NotifyKind": {
-          "description": "The shape / interaction model of a notification.\n\n- `Message` — title + body, single Acknowledge button.\n- `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k\n  cycles, 1-9 direct-selects, optional per-option `shortcut` key.\n- `Input`   — title + body + a text field; Enter submits.\n\nFuture kinds (image / audio / video / rich) will land here without breaking\nexisting apps — `#[serde(default)]` on the field means missing `kind`\ndeserializes to `Message`.",
+          "description": "The shape / interaction model of a notification.\n\n- `Message` — title + body, single Acknowledge button.\n- `Choice`  — title + body + N options; Enter picks the focused one, ↑↓/j-k\n  cycles, 1-9 direct-selects, optional per-option `shortcut` key.\n- `Input`   — title + body + a text field; Enter submits.\n\nFuture kinds (image / audio / video / rich) will land here without breaking\nexisting plugins — `#[serde(default)]` on the field means missing `kind`\ndeserializes to `Message`.",
           "enum": [
             "message",
             "choice",
@@ -225,7 +215,7 @@
             },
             "value": {
               "default": "",
-              "description": "Value returned to the app in `PlexiEvent::NotifyAction.value`. If empty,\nthe label is used.",
+              "description": "Value returned to the plugin in `PlexiEvent::NotifyAction.value`. If empty,\nthe label is used.",
               "type": "string"
             }
           },
@@ -235,7 +225,7 @@
           "type": "object"
         },
         "NotifyScope": {
-          "description": "Visibility scope for a notification.\n\n- `Context` — visible only when the source context is the active context.\n- `Global`  — always visible, regardless of which context is active.\n\nHost-side enum. Apps do NOT emit this on the wire — scope is a per-app\nuser-facing policy declared in `manifest.toml::[launch] notification_scope`,\nresolved by the host at dispatch time. Apps never think about it.",
+          "description": "Visibility scope for a notification.\n\n- `Context` — visible only when the source context is the active context.\n- `Global`  — always visible, regardless of which context is active.\n\nHost-side enum. Plugins do NOT emit this on the wire — scope is a per-plugin\nuser-facing policy declared in `manifest.toml::[launch] notification_scope`,\nresolved by the host at dispatch time. Plugins never think about it.",
           "oneOf": [
             {
               "const": "window",
@@ -255,7 +245,7 @@
           ]
         },
         "PathTokenMode": {
-          "description": "Replace-vs-append behaviour for `AppRequest::InsertPathToken`.",
+          "description": "Replace-vs-append behaviour for `HostRequest::InsertPathToken`.",
           "oneOf": [
             {
               "const": "replace",
@@ -270,7 +260,7 @@
           ]
         },
         "PayloadMode": {
-          "description": "How much of an event a subscription delivers\n(src/host/app_timeline.rs).",
+          "description": "How much of an event a subscription delivers\n(src/host/plugin_timeline.rs).",
           "oneOf": [
             {
               "const": "off",
@@ -295,11 +285,21 @@
           ]
         },
         "PipStatus": {
-          "description": "App-reported \"pip\" status — a traffic-light health indicator an app sets for\nitself via the SDK (`App.set_pip_status`). Optional: when unset the host\nfalls back to derived activity. Distinct from `AgentState` (the hook-script\nvocabulary) so the SDK surface reads as red/yellow/green.",
+          "description": "App-reported \"pip\" status — a traffic-light health indicator an plugin sets for\nitself via the SDK (`App.set_pip_status`). Optional: when unset the host\nfalls back to derived activity. Distinct from `AgentState` (the hook-script\nvocabulary) so the SDK surface reads as red/yellow/green.",
           "enum": [
             "green",
             "yellow",
             "red"
+          ],
+          "type": "string"
+        },
+        "PluginEventActor": {
+          "description": "Who caused an plugin state change (`HostRequest::EmitEvent`).",
+          "enum": [
+            "user",
+            "agent",
+            "view",
+            "system"
           ],
           "type": "string"
         },
@@ -336,7 +336,7 @@
           ]
         },
         "TriggerMode": {
-          "description": "How an event subscription triggers its subscriber\n(src/host/app_timeline.rs). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "description": "How an event subscription triggers its subscriber\n(src/host/plugin_timeline.rs). Also the vocabulary for an emitting\nplugin's `suggested_trigger` hint.",
           "oneOf": [
             {
               "const": "never",
@@ -674,7 +674,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Submit one text turn to the Assistant. With `pane_id` omitted the host\nreuses an Assistant in the context or creates a hidden one, so a\nCLI caller does not need `app open assistant` first.\nA `pane_id` that does not exist still fails with\n`assistant_pane_not_found`. The pane owns the normal composer path and\nwrites the terminal JSON reply.",
+          "description": "Submit one text turn to the Assistant. With `pane_id` omitted the host\nreuses an Assistant in the context or creates a hidden one, so a\nCLI caller does not need `view open assistant` first.\nA `pane_id` that does not exist still fails with\n`assistant_pane_not_found`. The pane owns the normal composer path and\nwrites the terminal JSON reply.",
           "properties": {
             "client": {
               "description": "Ledger client tag for this run. Absent uses `[ai] client`.",
@@ -761,7 +761,7 @@
               "type": "string"
             },
             "type": {
-              "const": "command_view",
+              "const": "agents_dashboard",
               "type": "string"
             }
           },
@@ -841,7 +841,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Read a file through the native WASM app runtime host. Requires `fs.read` and\nthe resolved path must stay inside the app's workspace root.",
+          "description": "Read a file through the native WASM plugin runtime host. Requires `fs.read` and\nthe resolved path must stay inside the plugin's workspace root.",
           "properties": {
             "path": {
               "type": "string"
@@ -859,7 +859,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "List a directory through the native WASM app runtime host. Requires `fs.read`\nand the resolved path must stay inside the app's workspace root.",
+          "description": "List a directory through the native WASM plugin runtime host. Requires `fs.read`\nand the resolved path must stay inside the plugin's workspace root.",
           "properties": {
             "extensions": {
               "default": [],
@@ -884,11 +884,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "Save app state. Host writes to workspace or global JSON file.",
+          "description": "Save plugin state. Host writes to workspace or global JSON file.",
           "properties": {
             "payload": true,
             "type": {
-              "const": "save_app_state",
+              "const": "save_plugin_state",
               "type": "string"
             }
           },
@@ -920,7 +920,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Signal that a run the app owns has finished.",
+          "description": "Signal that a run the plugin owns has finished.",
           "properties": {
             "result": true,
             "run_id": {
@@ -981,7 +981,7 @@
             "kind": {
               "$ref": "#/$defs/NotifyKind",
               "default": "message",
-              "description": "The notification shape. Defaults to `message` for back-compat with\nexisting apps. Determines how the modal renders and interacts."
+              "description": "The notification shape. Defaults to `message` for back-compat with\nexisting plugins. Determines how the modal renders and interacts."
             },
             "notify_id": {
               "default": null,
@@ -993,7 +993,7 @@
             },
             "on_dismiss": {
               "default": null,
-              "description": "Payload delivered to the app when the notification reaches a terminal\nnon-answer outcome (timeout or source exit). Escape means Later and\ndeliberately sends no response; the modal Cancel action returns\n`\"cancelled\"`. Defaults to \"timeout\" for timeouts when omitted.",
+              "description": "Payload delivered to the plugin when the notification reaches a terminal\nnon-answer outcome (timeout or source exit). Escape means Later and\ndeliberately sends no response; the modal Cancel action returns\n`\"cancelled\"`. Defaults to \"timeout\" for timeouts when omitted.",
               "type": [
                 "string",
                 "null"
@@ -1009,11 +1009,11 @@
             },
             "required": {
               "default": false,
-              "description": "If true, the user cannot dismiss with Esc — they must pick an option\nor submit input. Intended for decisions the app depends on.",
+              "description": "If true, the user cannot dismiss with Esc — they must pick an option\nor submit input. Intended for decisions the plugin depends on.",
               "type": "boolean"
             },
             "response_file": {
-              "description": "CLI-only: path to a file the host writes the chosen key into when\nthe user responds. Used by `plexi notify --choice` to return the\nresult to the blocking CLI process. Never set by app SDK.",
+              "description": "CLI-only: path to a file the host writes the chosen key into when\nthe user responds. Used by `plexi notify --choice` to return the\nresult to the blocking CLI process. Never set by plugin SDK.",
               "type": [
                 "string",
                 "null"
@@ -1028,7 +1028,7 @@
                   "type": "null"
                 }
               ],
-              "description": "CLI-only: notification visibility scope. Apps never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit to take `NotifyScope::default()`."
+              "description": "CLI-only: notification visibility scope. Plugins never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit to take `NotifyScope::default()`."
             },
             "source_context_id": {
               "description": "CLI-only: the sender's own context id (`PLEXI_CONTEXT_ID`), stamped\nby the CLI so the host never guesses provenance from whichever\ncontext happens to be active at dispatch time. Absent when the\ncaller runs outside any Plexi pane. A scope the sender cannot\nsupport resolves to the nearest wider one rather than attaching to\na context that never produced it: window scope with a resolvable\ncontext but no live window narrows to context; no resolvable\nsender at all escalates to global.",
@@ -1171,7 +1171,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Report an app's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the app process via `App.set_pip_status`. Takes\npriority over derived activity until the app reports a new status.\n\n`pane_id` is stamped by the host with the sending app's own pane (the app\ndoes not know its pane id), so it defaults to 0 on the wire and an app\ncan only ever set its own pip — never another pane's.",
+          "description": "Report an plugin's own pip status (red/yellow/green) for its activity dot.\nFire-and-forget; set by the plugin process via `App.set_pip_status`. Takes\npriority over derived activity until the plugin reports a new status.\n\n`pane_id` is stamped by the host with the sending plugin's own pane (the plugin\ndoes not know its pane id), so it defaults to 0 on the wire and an plugin\ncan only ever set its own pip — never another pane's.",
           "properties": {
             "pane_id": {
               "default": 0,
@@ -1241,7 +1241,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer apps are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.",
+          "description": "Open a *directed* JSON pipe to a specific target pane (#286).\n\nMirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only\nthe caller pane and the pane identified by `target_pane_id` can\nreceive messages on this pipe — peer plugins are NOT subscribed even\nif they call `pipe_open` with the same `pipe_id`.\n\nCreated bidirectionally: both panes receive the other's `PipeSend`\npayloads as `PlexiEvent::PipeMessage`. Either side can close.\n\nCapability gate: caller needs `pipe.open` (the same as `PipeOpen`).\nThe target does NOT need `agents.list` — it just needs to be\naddressable. The target also doesn't need to opt in; the host\nsubscribes it on this pipe id.\n\nDirection is always `duplex` on directed pipes — there's no use case\nfor a one-way agent-to-agent channel today, so the field is omitted.\nMode is always `json`; binary directed pipes are out of scope until\na real use case arrives.",
           "properties": {
             "pipe_id": {
               "type": "string"
@@ -1332,7 +1332,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_h\" (new pane right), \"split_v\" (default, new pane below),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
+          "description": "Request the host to spawn a new view pane. Requires `spawn.plugin` capability.\n`layout`: \"split_h\" (new pane right), \"split_v\" (default, new pane below),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::ViewOpened { pane_id }` on success.",
           "properties": {
             "args": {
               "default": [],
@@ -1349,7 +1349,7 @@
               ]
             },
             "type": {
-              "const": "spawn_app",
+              "const": "spawn_view",
               "type": "string"
             },
             "type_id": {
@@ -1364,7 +1364,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\nA spawned child that needs to report completion back to its spawner does\nso over the event bus: it calls `EmitEvent` with `<app>::completed` and\nthe spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe\nreply channel (the legacy `--pipe=<id>` coupling was removed in 0327).\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
+          "description": "Unified pane spawn primitive (#592). Supersedes SpawnView for new plugins.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\nA spawned child that needs to report completion back to its spawner does\nso over the event bus: it calls `EmitEvent` with `<plugin>::completed` and\nthe spawner reads it via `SubscribePluginEvents`. There is no JSON-pipe\nreply channel (the legacy `--pipe=<id>` coupling was removed in 0327).\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
             "agent_cmd": {
               "description": "When set, the host types this shell command into the newly spawned\nterminal and withholds the spawn response until the agent running\nthere reports itself idle. Sent by `plexi pane new --agent`, whose\ncontract is that a printed pane id means \"ready for a brief\".\nTerminal spawns only; passed through to the shell verbatim.",
@@ -1429,7 +1429,7 @@
               "type": "boolean"
             },
             "path": {
-              "description": "When set, the host launches the app directly from this filesystem path\nrather than looking it up in the registry by type_id.",
+              "description": "When set, the host launches the plugin directly from this filesystem path\nrather than looking it up in the registry by type_id.",
               "type": [
                 "string",
                 "null"
@@ -1463,7 +1463,7 @@
               "description": "Optional JSON Schema declared for the spawned pane's structured return\n(`plexi pane new --result-schema <json-or-path>`, stint 0666)."
             },
             "target_context": {
-              "description": "When set, spawn the pane into this child context instead of the\nrequesting app's own context. The target context must exist and be\na descendant of the requesting app's context (#1518).",
+              "description": "When set, spawn the pane into this child context instead of the\nrequesting plugin's own context. The target context must exist and be\na descendant of the requesting plugin's context (#1518).",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -1479,7 +1479,7 @@
               "type": "string"
             },
             "workspace_root": {
-              "description": "When set, use this path as the workspace root for app state scoping\ninstead of defaulting to the app directory. Sent by `plexi open github:`.",
+              "description": "When set, use this path as the workspace root for plugin state scoping\ninstead of defaulting to the plugin directory. Sent by `plexi open github:`.",
               "type": [
                 "string",
                 "null"
@@ -1636,7 +1636,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "List permission state across apps (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"app_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"app_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running app that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
+          "description": "List permission state across plugins (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"plugin_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"plugin_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running plugin that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
           "properties": {
             "response_file": {
               "type": "string"
@@ -1654,12 +1654,12 @@
         },
         {
           "additionalProperties": false,
-          "description": "Set the stored permission state for an (app, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running app with `app_id` is used;\nif no such app is running the request fails. Persists to\n`permissions.toml` AND live-updates any running app's permission set,\nso a revocation takes effect on the app's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
+          "description": "Set the stored permission state for an (plugin, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running plugin with `plugin_id` is used;\nif no such plugin is running the request fails. Persists to\n`permissions.toml` AND live-updates any running plugin's permission set,\nso a revocation takes effect on the plugin's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
           "properties": {
-            "app_id": {
+            "capability": {
               "type": "string"
             },
-            "capability": {
+            "plugin_id": {
               "type": "string"
             },
             "response_file": {
@@ -1681,7 +1681,7 @@
           },
           "required": [
             "type",
-            "app_id",
+            "plugin_id",
             "capability",
             "state",
             "response_file"
@@ -2514,7 +2514,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Write text to a terminal PTY or an app's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal app paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on app panes.",
+          "description": "Write text to a terminal PTY or an plugin's input path (`plexi pane send`).\n`\\n` in text (literal backslash-n) is interpreted as Enter unless\n`paste` requests a literal plugin paste event.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.\n\nWith `submit`, the host owns the whole type-and-enter sequence for a\nterminal pane: it waits for the pane's output to settle, presses Enter,\nand holds the reply until it has confirmed the prompt left the input\nline — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not\nsupported on view panes.",
           "properties": {
             "generated_operation_id": {
               "default": false,
@@ -2535,7 +2535,7 @@
             },
             "paste": {
               "default": false,
-              "description": "Deliver literal text as one paste event to an app pane.",
+              "description": "Deliver literal text as one paste event to an view pane.",
               "type": "boolean"
             },
             "peer_ancestry": {
@@ -2627,7 +2627,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic key event to any pane. Sent by `plexi pane key`.\nFor terminal panes, the key is translated to PTY bytes.\nFor PGAP app panes, a `PlexiEvent::Key` is delivered.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
+          "description": "Deliver a synthetic key event to any pane. Sent by `plexi pane key`.\nFor terminal panes, the key is translated to PTY bytes.\nFor PGAP view panes, a `PlexiEvent::Key` is delivered.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
           "properties": {
             "key": {
               "description": "Key string: single char (\"h\"), named key (\"enter\", \"escape\", \"up\", \"down\",\n\"left\", \"right\", \"space\", \"backspace\"), or chord (\"ctrl+c\", \"ctrl+d\").",
@@ -2686,7 +2686,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic pointer click to an app pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
+          "description": "Deliver a synthetic pointer click to an view pane, in pane-pixel\ncoordinates (origin at the pane's top-left). Sent by `plexi pane click`.\nThe host injects a real `PointerMoved`+`PointerButton` press/release\npair into the live production egui pass, so it exercises the exact\nsame `canvas_transform` inversion a physical click would — never a\nparallel resolver. Terminal panes reject this (no click semantics\ndefined yet). Host writes `{\"ok\":true}` or `{\"error\":\"...\"}` to\n`response_file` when set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2729,7 +2729,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a synthetic click to an app pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
+          "description": "Deliver a synthetic click to an view pane by node id, activating the\nButton/TextInput/ListView node the id names — the node-addressed\nsibling of `ClickPane` (stint 0414). Sent by\n`plexi pane click <pane_id> --node <node_id>`. `node_id` matches\n`SemanticPaneNode.id`, the id `plexi pane state` reports for every\nnode in the pane's tree, so a caller resolves it from `pane state`\noutput rather than computing pixel geometry. The host validates\n`node_id` against the pane's cached semantic tree and fails loudly\n(no queued click) when it is absent or not an interactive role;\notherwise it resolves the node's on-screen rect during the next\nrender pass and delivers the same `PendingPaneClick` honest hit-test\nthe pixel path uses. Host writes `{\"ok\":true}` or `{\"error\":\"...\"}`\nto `response_file` when set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2766,7 +2766,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Deliver a sanctioned pointer drag to an app pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
+          "description": "Deliver a sanctioned pointer drag to an view pane: press at `from`,\n`steps` intermediate `PointerMoved` positions, release at `to` —\nspread across consecutive frames through the same production input\npaths `ClickPane` uses (raw-input merge for builtin egui panes, the\nrender-pass honest hit-test for canvas/process/WASM panes), never a\nparallel resolver. Sent by `plexi pane drag` and\n`HostHarness::inject_drag` (stint 0510). Endpoints are addressable by\npane-pixel coordinates (`from`/`to`, origin at the pane's top-left) or\nby semantic node id (`from_node`/`to_node`, the ids `plexi pane state`\nreports; the drag targets the node rect's center). Exactly one of the\npixel/node forms must be set per endpoint; the host validates node ids\nagainst the pane's semantic tree and fails loudly when one is absent.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`\nwhen set.",
           "properties": {
             "button": {
               "description": "\"left\" (default), \"right\", or \"middle\".",
@@ -2805,7 +2805,7 @@
               ]
             },
             "steps": {
-              "description": "Intermediate move positions between press and release (default 8,\nmax 256). Each step is one frame, so scrub/threshold logic in the\ntarget app sees a realistic pointer trajectory.",
+              "description": "Intermediate move positions between press and release (default 8,\nmax 256). Each step is one frame, so scrub/threshold logic in the\ntarget plugin sees a realistic pointer trajectory.",
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -2911,7 +2911,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nEvery response additionally carries `claimed_state` (the pane's own\n`status` slot, agent-authored) and `observed_state` (host-derived\nliveness) together — never one without the other (stint 0665). When\n`stale_after_secs` is set and the claim looks fresh but the host has\nobserved no output within that many seconds, the response also\ncarries a typed `stale_claim` object; omitted, no stale evaluation\nruns and `stale_claim` is `null`.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
+          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor view panes: host writes a versioned `semantic` tree for every runtime.\nProcess panes also retain the compatible `frame` RenderCommand array.\nFor terminal panes: host writes a simple status object.\nEvery response additionally carries `claimed_state` (the pane's own\n`status` slot, agent-authored) and `observed_state` (host-derived\nliveness) together — never one without the other (stint 0665). When\n`stale_after_secs` is set and the claim looks fresh but the host has\nobserved no output within that many seconds, the response also\ncarries a typed `stale_claim` object; omitted, no stale evaluation\nruns and `stale_claim` is `null`.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
           "properties": {
             "pane_id": {
               "format": "uint64",
@@ -2974,7 +2974,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Inject a synthetic key into the host-level input path. Sent by\n`plexi host key` for validating host shortcuts without routing the\nchord through a focused pane's PTY or app runtime.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
+          "description": "Inject a synthetic key into the host-level input path. Sent by\n`plexi host key` for validating host shortcuts without routing the\nchord through a focused pane's PTY or plugin runtime.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
           "properties": {
             "key": {
               "description": "Single key, named key, or chord accepted by\n`key_str_to_egui_raw_input` (for example, `cmd+1`).",
@@ -2997,7 +2997,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target app pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
+          "description": "Dispatch a semantic action to an view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target view pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
           "properties": {
             "action": {
               "description": "Action name, e.g. \"refresh\", \"navigate-to\".",
@@ -3022,7 +3022,7 @@
               ]
             },
             "type": {
-              "const": "send_app_action",
+              "const": "send_pane_action",
               "type": "string"
             }
           },
@@ -3334,11 +3334,8 @@
         },
         {
           "additionalProperties": false,
-          "description": "Call an app-exposed tool through the host tool dispatcher. Sent by\n`plexi app call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the app answers or the host deadline passes.",
+          "description": "Call an plugin-exposed tool through the host tool dispatcher. Sent by\n`plexi plugin call`. The host resolves the viewer context from\n`caller_pane_id` (the credential's context when absent), stamps the\ncaller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or\n`session:<id>` — never `user`), and writes\n`{\"ok\":true,\"output\":<json>}` or `{\"error\":\"...\"}` to `response_file`\nfrom a worker thread once the plugin answers or the host deadline passes.",
           "properties": {
-            "app_id": {
-              "type": "string"
-            },
             "call_credential": {
               "description": "Host-issued session credential. A client-supplied pane id is only a claim.",
               "type": [
@@ -3367,6 +3364,9 @@
               },
               "type": "array"
             },
+            "plugin_id": {
+              "type": "string"
+            },
             "response_file": {
               "type": [
                 "string",
@@ -3374,7 +3374,7 @@
               ]
             },
             "target_pane_id": {
-              "description": "Pane that owns the tool when more than one instance of the app is live.",
+              "description": "Pane that owns the tool when more than one instance of the plugin is live.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -3386,7 +3386,7 @@
               "type": "string"
             },
             "type": {
-              "const": "call_app_tool",
+              "const": "call_plugin_tool",
               "type": "string"
             },
             "wait_approved": {
@@ -3397,7 +3397,7 @@
           },
           "required": [
             "type",
-            "app_id",
+            "plugin_id",
             "tool",
             "input_json"
           ],
@@ -3405,14 +3405,8 @@
         },
         {
           "additionalProperties": false,
-          "description": "Snapshot the live tool registry exposed by running app panes in the\nresolved context. Sent by `plexi app tools` and `plexi app info`.\nThe host resolves the viewer context from `context_id` when explicitly\nsupplied, otherwise from the verified socket peer pane or\n`caller_pane_id` (falling back to the active context when run outside a\npane), and writes `{\"ok\":true,\"context_id\":<u64>,\"tools\":[...]}` to\n`response_file`.",
+          "description": "Snapshot the live tool registry exposed by running view panes in the\nresolved context. Sent by `plexi plugin tools` and `plexi plugin info`.\nThe host resolves the viewer context from `context_id` when explicitly\nsupplied, otherwise from the verified socket peer pane or\n`caller_pane_id` (falling back to the active context when run outside a\npane), and writes `{\"ok\":true,\"context_id\":<u64>,\"tools\":[...]}` to\n`response_file`.",
           "properties": {
-            "app_id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "caller_context_id": {
               "format": "uint64",
               "minimum": 0,
@@ -3446,11 +3440,17 @@
               },
               "type": "array"
             },
+            "plugin_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "response_file": {
               "type": "string"
             },
             "type": {
-              "const": "list_app_tools",
+              "const": "list_plugin_tools",
               "type": "string"
             }
           },
@@ -3777,7 +3777,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Query the rolled-up `ContextState` for a context (#1518).\nThe requesting app must be in an ancestor (or the same) context.\nHost responds with `PlexiEvent::ContextStateResponse`.",
+          "description": "Query the rolled-up `ContextState` for a context (#1518).\nThe requesting plugin must be in an ancestor (or the same) context.\nHost responds with `PlexiEvent::ContextStateResponse`.",
           "properties": {
             "context_id": {
               "format": "uint64",
@@ -3855,7 +3855,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "v3.3 brokered AI call. Requires `ai.query` capability.\n\nThe host routes this to the active Plexi AI backend, appends an\n`AgentTurn` row to `ai-ledger.jsonl`, and replies with\n`PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.\n\nAll fields are required — no `serde(default)`. `tools` may be empty;\nnon-empty `tools` causes the broker to dispatch through a tool loop\n(#399) — the AI can call tools on any pane that exposed them via\n`AppRequest::ExposeTools`.",
+          "description": "v3.3 brokered AI call. Requires `ai.query` capability.\n\nThe host routes this to the active Plexi AI backend, appends an\n`AgentTurn` row to `ai-ledger.jsonl`, and replies with\n`PlexiEvent::AiResponse { request_id, content, tokens_in, tokens_out, error }`.\n\nAll fields are required — no `serde(default)`. `tools` may be empty;\nnon-empty `tools` causes the broker to dispatch through a tool loop\n(#399) — the AI can call tools on any pane that exposed them via\n`HostRequest::ExposeTools`.",
           "properties": {
             "messages": {
               "items": {
@@ -4027,7 +4027,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Request enumeration of audio devices (#277). Host responds with\n`PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only device names already\nvisible to any macOS app.",
+          "description": "Request enumeration of audio devices (#277). Host responds with\n`PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No\ncapability gate — enumeration discloses only device names already\nvisible to any macOS plugin.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -4103,7 +4103,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host\nonly emits `PlexiEvent::MidiSendError` if the send failed (port not\nopen, CoreMIDI error). Requires `midi.out`. The host opens the output\nport lazily on the first `SendMidi` call and keeps it open until the\napp exits.",
+          "description": "Send one MIDI 1.0 byte stream to `port_id`. Fire-and-forget — the host\nonly emits `PlexiEvent::MidiSendError` if the send failed (port not\nopen, CoreMIDI error). Requires `midi.out`. The host opens the output\nport lazily on the first `SendMidi` call and keeps it open until the\nplugin exits.",
           "properties": {
             "bytes": {
               "items": {
@@ -4283,7 +4283,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Ask the host to open a fresh terminal pane next to this Canvas app\nand link it. Host responds with `PlexiEvent::LinkedTerminalReady\n{ request_id, terminal_pane_id }`. `cwd` defaults to the app's\nworkspace root when `None`. `label` is reserved for future pane-\nchrome decoration; currently unused by the host but pinned on the\nwire so apps and the host evolve together.\n\nCapability: `terminal.bindings`. Required fields — no `serde(default)`.",
+          "description": "Ask the host to open a fresh terminal pane next to this Canvas plugin\nand link it. Host responds with `PlexiEvent::LinkedTerminalReady\n{ request_id, terminal_pane_id }`. `cwd` defaults to the plugin's\nworkspace root when `None`. `label` is reserved for future pane-\nchrome decoration; currently unused by the host but pinned on the\nwire so plugins and the host evolve together.\n\nCapability: `terminal.bindings`. Required fields — no `serde(default)`.",
           "properties": {
             "cwd": {
               "type": [
@@ -4397,7 +4397,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane` — open the path in a new app pane, e.g. a file\n    browser at a directory or a text editor on a file.\n    Implementation: routes through the file-browser app for\n    directories; falls through to the OS default for files in\n    this PR.\n  - `RevealInFinder` — `open -R <path>` on macOS.\n  - `OpenWithDefault` — `open <path>` on macOS — uses Launch\n    Services to pick the registered app for the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
+          "description": "Open a workspace artifact (file or directory) via the host.\n\nModes:\n  - `OpenInPane` — open the path in a new view pane, e.g. a file\n    browser at a directory or a text editor on a file.\n    Implementation: routes through the file-browser plugin for\n    directories; falls through to the OS default for files in\n    this PR.\n  - `RevealInFinder` — `open -R <path>` on macOS.\n  - `OpenWithDefault` — `open <path>` on macOS — uses Launch\n    Services to pick the registered plugin for the file's UTI.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "mode": {
               "$ref": "#/$defs/ArtifactOpenMode"
@@ -4419,7 +4419,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "App signals it has pushed a navigation level. The host appends the\nentry to its per-pane nav stack. While the stack has entries, the pane\nchrome shows a back arrow + the current view's title, and Cmd+[\nemits `PlexiEvent::NavBack` to the app instead of cycling tabs.\n\n`view_id` must be a stable identifier for this view (e.g. `\"detail\"`);\n`title` is shown in the pane chrome while this view is active.",
+          "description": "App signals it has pushed a navigation level. The host appends the\nentry to its per-pane nav stack. While the stack has entries, the pane\nchrome shows a back arrow + the current view's title, and Cmd+[\nemits `PlexiEvent::NavBack` to the plugin instead of cycling tabs.\n\n`view_id` must be a stable identifier for this view (e.g. `\"detail\"`);\n`title` is shown in the pane chrome while this view is active.",
           "properties": {
             "title": {
               "type": "string"
@@ -4455,7 +4455,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Enable or disable `PlexiEvent::MouseMove` delivery for this pane.\n\nOff by default to avoid flooding apps that don't need continuous pointer\ntracking. Send `{ enabled: true }` after `Ready` to start receiving\n`on_mouse_move` callbacks. Send `{ enabled: false }` to stop.",
+          "description": "Enable or disable `PlexiEvent::MouseMove` delivery for this pane.\n\nOff by default to avoid flooding plugins that don't need continuous pointer\ntracking. Send `{ enabled: true }` after `Ready` to start receiving\n`on_mouse_move` callbacks. Send `{ enabled: false }` to stop.",
           "properties": {
             "enabled": {
               "type": "boolean"
@@ -4473,7 +4473,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Spawn `command` via `sh -c` and stream its output back to the app.\n\nThe host pipes stdout and stderr, batches available bytes at ~30 Hz,\nand delivers each batch as `PlexiEvent::StreamChunk`. When the child\nexits (or the app calls `CancelProcess`) the host sends\n`PlexiEvent::StreamEnd`. `channel` selects which output stream to\nforward; v1 treats `structured` identically to `stdout`.\n\n`terminal_pane_id` links the stream to an existing linked terminal\nfor capability gating and future display contexts.\n\nCapability: `terminal.bindings`. All fields required.",
+          "description": "Spawn `command` via `sh -c` and stream its output back to the plugin.\n\nThe host pipes stdout and stderr, batches available bytes at ~30 Hz,\nand delivers each batch as `PlexiEvent::StreamChunk`. When the child\nexits (or the plugin calls `CancelProcess`) the host sends\n`PlexiEvent::StreamEnd`. `channel` selects which output stream to\nforward; v1 treats `structured` identically to `stdout`.\n\n`terminal_pane_id` links the stream to an existing linked terminal\nfor capability gating and future display contexts.\n\nCapability: `terminal.bindings`. All fields required.",
           "properties": {
             "channel": {
               "$ref": "#/$defs/StreamChannel"
@@ -4556,7 +4556,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Declare the named event streams this app may emit on. Event names are\napp-defined but MUST be declared (with a JSON-Schema object) before\nany `EmitEvent` referencing them is accepted. Re-declaring a stream\nreplaces its previous declaration.",
+          "description": "Declare the named event streams this plugin may emit on. Event names are\nplugin-defined but MUST be declared (with a JSON-Schema object) before\nany `EmitEvent` referencing them is accepted. Re-declaring a stream\nreplaces its previous declaration.",
           "properties": {
             "streams": {
               "items": {
@@ -4577,14 +4577,14 @@
         },
         {
           "additionalProperties": false,
-          "description": "Emit a semantic app event into the host timeline.\n\nRequired: `event` (a declared stream name), `actor`, `summary`,\n`resource_id`, `revision_after`. The host validates these and rejects\n(with a warn log) any event that is malformed or references an\nundeclared stream — rejected events never enter the timeline.\n\nSupplying `rollback_token` marks the mutation reversible: the host\nalso creates an undo checkpoint from this event's metadata.",
+          "description": "Emit a semantic plugin event into the host timeline.\n\nRequired: `event` (a declared stream name), `actor`, `summary`,\n`resource_id`, `revision_after`. The host validates these and rejects\n(with a warn log) any event that is malformed or references an\nundeclared stream — rejected events never enter the timeline.\n\nSupplying `rollback_token` marks the mutation reversible: the host\nalso creates an undo checkpoint from this event's metadata.",
           "properties": {
             "actor": {
-              "$ref": "#/$defs/AppEventActor",
+              "$ref": "#/$defs/PluginEventActor",
               "description": "Who caused the state change."
             },
             "actor_id": {
-              "description": "Optional stable identity for the actor (e.g. an agent id).\nDefaults to the emitting app's id.",
+              "description": "Optional stable identity for the actor (e.g. an agent id).\nDefaults to the emitting plugin's id.",
               "type": [
                 "string",
                 "null"
@@ -4613,11 +4613,11 @@
               "description": "Structured payload matching the declared stream schema."
             },
             "resource_id": {
-              "description": "Document, game, pane, or app-instance id the event is about.",
+              "description": "Document, game, pane, or plugin-instance id the event is about.",
               "type": "string"
             },
             "resource_scope": {
-              "description": "Scope class of `resource_id` (`\"document\"`, `\"game\"`, `\"pane\"`…).\nDefaults to `\"pane\"` (the app instance) when omitted.",
+              "description": "Scope class of `resource_id` (`\"document\"`, `\"game\"`, `\"pane\"`…).\nDefaults to `\"pane\"` (the plugin instance) when omitted.",
               "type": [
                 "string",
                 "null"
@@ -4635,7 +4635,7 @@
               ]
             },
             "rollback_token": {
-              "description": "Opaque app token the host returns in `PlexiEvent::RollbackApply`.\nPresence makes this event checkpoint-creating (reversible).",
+              "description": "Opaque plugin token the host returns in `PlexiEvent::RollbackApply`.\nPresence makes this event checkpoint-creating (reversible).",
               "type": [
                 "string",
                 "null"
@@ -4702,15 +4702,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "Subscribe this pane to another app's declared event streams. Gated\nthrough the unified broker (`TargetType::AppEventStream`, one\nevaluation per event name) — the host stamps the subscriber identity\nfrom the requesting pane; apps cannot subscribe as someone else.\nPhase B wire subscriptions are session-scoped.\n\nHost responds with `PlexiEvent::AppEventsSubscribed`. Matching events\nare then delivered as `PlexiEvent::AppEvent`, shaped per\n`payload_mode` and tagged with the subscription's `trigger_mode`.",
+          "description": "Subscribe this pane to another plugin's declared event streams. Gated\nthrough the unified broker (`TargetType::PluginEventStream`, one\nevaluation per event name) — the host stamps the subscriber identity\nfrom the requesting pane; plugins cannot subscribe as someone else.\nPhase B wire subscriptions are session-scoped.\n\nHost responds with `PlexiEvent::PluginEventsSubscribed`. Matching events\nare then delivered as `PlexiEvent::PluginEvent`, shaped per\n`payload_mode` and tagged with the subscription's `trigger_mode`.",
           "properties": {
-            "app_id": {
-              "description": "Publisher app package identity whose streams are subscribed.",
-              "type": "string"
-            },
             "event_names": {
               "default": [],
-              "description": "Declared stream names. Empty = all streams the app declares.",
+              "description": "Declared stream names. Empty = all streams the plugin declares.",
               "items": {
                 "type": "string"
               },
@@ -4718,6 +4714,10 @@
             },
             "payload_mode": {
               "$ref": "#/$defs/PayloadMode"
+            },
+            "plugin_id": {
+              "description": "Publisher plugin package identity whose streams are subscribed.",
+              "type": "string"
             },
             "request_id": {
               "type": "string"
@@ -4733,14 +4733,14 @@
               "$ref": "#/$defs/TriggerMode"
             },
             "type": {
-              "const": "subscribe_app_events",
+              "const": "subscribe_plugin_events",
               "type": "string"
             }
           },
           "required": [
             "type",
             "request_id",
-            "app_id",
+            "plugin_id",
             "payload_mode",
             "trigger_mode"
           ],
@@ -4748,7 +4748,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Remove a subscription previously created by `SubscribeAppEvents`.\nOnly the subscriber that owns it may remove it.",
+          "description": "Remove a subscription previously created by `SubscribePluginEvents`.\nOnly the subscriber that owns it may remove it.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -4757,7 +4757,7 @@
               "type": "string"
             },
             "type": {
-              "const": "unsubscribe_app_events",
+              "const": "unsubscribe_plugin_events",
               "type": "string"
             }
           },
@@ -4770,9 +4770,9 @@
         },
         {
           "additionalProperties": false,
-          "description": "List undo checkpoints from the host undo timeline, newest first.\n`app_id` filters to one app; `None` = this app's own checkpoints.\nHost responds with `PlexiEvent::UndoCheckpoints`.",
+          "description": "List undo checkpoints from the host undo timeline, newest first.\n`plugin_id` filters to one plugin; `None` = this plugin's own checkpoints.\nHost responds with `PlexiEvent::UndoCheckpoints`.",
           "properties": {
-            "app_id": {
+            "plugin_id": {
               "type": [
                 "string",
                 "null"
@@ -4794,7 +4794,7 @@
         },
         {
           "additionalProperties": false,
-          "description": "Request rollback of an undo checkpoint. Gated through the unified\nbroker (`TargetType::UndoCheckpoint`). On allow, the host starts the\nrevision-verification round-trip with the checkpoint's owning app\n(`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →\n`PlexiEvent::RollbackApply`). Denials and conflicts are logged.",
+          "description": "Request rollback of an undo checkpoint. Gated through the unified\nbroker (`TargetType::UndoCheckpoint`). On allow, the host starts the\nrevision-verification round-trip with the checkpoint's owning plugin\n(`PlexiEvent::RollbackVerify` → `HostRequest::RollbackVerifyResult` →\n`PlexiEvent::RollbackApply`). Denials and conflicts are logged.",
           "properties": {
             "checkpoint_id": {
               "type": "string"
@@ -4839,7 +4839,7 @@
           "type": "object"
         }
       ],
-      "title": "AppRequest"
+      "title": "HostRequest"
     },
     "PlexiEvent": {
       "$defs": {
@@ -5076,7 +5076,7 @@
           ]
         },
         "TriggerMode": {
-          "description": "How an event subscription triggers its subscriber\n(src/host/app_timeline.rs). Also the vocabulary for an emitting\napp's `suggested_trigger` hint.",
+          "description": "How an event subscription triggers its subscriber\n(src/host/plugin_timeline.rs). Also the vocabulary for an emitting\nplugin's `suggested_trigger` hint.",
           "oneOf": [
             {
               "const": "never",
@@ -5106,20 +5106,16 @@
         {
           "description": "Sent exactly once on startup. App must reply with DrawCommand::Ready.",
           "properties": {
-            "app_id": {
-              "description": "Stable identifier for this app instance, e.g. \"audio-recorder\".",
-              "type": "string"
-            },
             "args": {
               "default": [],
-              "description": "Launch arguments passed via `plexi app open <id> -- <args>` or\nprogrammatic SpawnPane. Also forwarded as subprocess argv for\nbackward compatibility. Empty when no args were provided.",
+              "description": "Launch arguments passed via `plexi view open <id> -- <args>` or\nprogrammatic SpawnPane. Also forwarded as subprocess argv for\nbackward compatibility. Empty when no args were provided.",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "capabilities": {
-              "description": "Capabilities granted to this app (declared in manifest or runtime-prompted).\ne.g. [\"audio.record\", \"fs.read\"]",
+              "description": "Capabilities granted to this plugin (declared in manifest or runtime-prompted).\ne.g. [\"audio.record\", \"fs.read\"]",
               "items": {
                 "type": "string"
               },
@@ -5144,8 +5140,12 @@
               "format": "float",
               "type": "number"
             },
+            "plugin_id": {
+              "description": "Stable identifier for this plugin instance, e.g. \"audio-recorder\".",
+              "type": "string"
+            },
             "protocol": {
-              "description": "Protocol version string, e.g. \"pgap/3\". App must refuse unknown versions.",
+              "description": "Protocol version string, e.g. \"pgap/4\". App must refuse unknown versions.",
               "type": "string"
             },
             "regular_threshold": {
@@ -5154,14 +5154,14 @@
               "type": "number"
             },
             "state": {
-              "description": "Pre-seeded app state for headless rendering (--state flag).\nWhen present, the SDK populates self.state before calling on_init.\nOmitted in live (non-headless) Init events."
+              "description": "Pre-seeded plugin state for headless rendering (--state flag).\nWhen present, the SDK populates self.state before calling on_init.\nOmitted in live (non-headless) Init events."
             },
             "theme": {
               "additionalProperties": {
                 "type": "string"
               },
               "default": {},
-              "description": "Active host theme as a `role -> #rrggbb` map (see `Colors::to_theme_map`).\nLets app-drawn chrome track the host theme (light/dark + user overrides).\nEmpty map ⇒ app falls back to its built-in dark constants.",
+              "description": "Active host theme as a `role -> #rrggbb` map (see `Colors::to_theme_map`).\nLets plugin-drawn chrome track the host theme (light/dark + user overrides).\nEmpty map ⇒ plugin falls back to its built-in dark constants.",
               "type": "object"
             },
             "type": {
@@ -5170,19 +5170,19 @@
             },
             "width": {
               "default": 0.0,
-              "description": "Initial pane width in logical pixels. Apps use this to size\nlayout before the first Resize event arrives.",
+              "description": "Initial pane width in logical pixels. Plugins use this to size\nlayout before the first Resize event arrives.",
               "format": "float",
               "type": "number"
             },
             "workspace_root": {
-              "description": "The workspace root this app was launched from.\nHard invariant: all SecretGet calls are scoped to this directory.",
+              "description": "The workspace root this plugin was launched from.\nHard invariant: all SecretGet calls are scoped to this directory.",
               "type": "string"
             }
           },
           "required": [
             "type",
             "protocol",
-            "app_id",
+            "plugin_id",
             "workspace_root",
             "capabilities",
             "feature_flags"
@@ -5194,13 +5194,13 @@
           "properties": {
             "canvas_height": {
               "default": 0.0,
-              "description": "Actual rendered canvas height from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; apps that\nneed their own size track it themselves via `init(size)` + `Resize`.",
+              "description": "Actual rendered canvas height from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; plugins that\nneed their own size track it themselves via `init(size)` + `Resize`.",
               "format": "float",
               "type": "number"
             },
             "canvas_width": {
               "default": 0.0,
-              "description": "Actual rendered canvas width from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; apps that\nneed their own size track it themselves via `init(size)` + `Resize`.",
+              "description": "Actual rendered canvas width from the previous frame's component tree.\nZero on the first frame (no prior render). Not SDK-exposed; plugins that\nneed their own size track it themselves via `init(size)` + `Resize`.",
               "format": "float",
               "type": "number"
             },
@@ -5211,7 +5211,7 @@
             },
             "rect": {
               "$ref": "#/$defs/Rect",
-              "description": "Current surface rect the app should draw into."
+              "description": "Current surface rect the plugin should draw into."
             },
             "type": {
               "const": "render",
@@ -5274,7 +5274,7 @@
           "type": "object"
         },
         {
-          "description": "Mouse click at logical coordinates within the app surface.",
+          "description": "Mouse click at logical coordinates within the plugin surface.",
           "properties": {
             "button": {
               "$ref": "#/$defs/MouseButton"
@@ -5369,7 +5369,7 @@
           "type": "object"
         },
         {
-          "description": "Pointer moved over the app surface. Only fires when the app has opted in\nvia `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local\ncoordinates; `buttons` lists which buttons are currently held.",
+          "description": "Pointer moved over the plugin surface. Only fires when the plugin has opted in\nvia `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local\ncoordinates; `buttons` lists which buttons are currently held.",
           "properties": {
             "buttons": {
               "items": {
@@ -5420,7 +5420,7 @@
           "type": "object"
         },
         {
-          "description": "Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.\nApps receive this in `on_event` and dispatch on `action` name.\n`args` is empty when no extra arguments were provided.",
+          "description": "Semantic action dispatched by `plexi pane action <pane_id> <action> [args...]`.\nPlugins receive this in `on_event` and dispatch on `action` name.\n`args` is empty when no extra arguments were provided.",
           "properties": {
             "action": {
               "description": "Action name, e.g. \"refresh\", \"navigate-to\", \"add-item\".",
@@ -5493,7 +5493,7 @@
           "type": "object"
         },
         {
-          "description": "Native WASM app runtime file read result.",
+          "description": "Native WASM plugin runtime file read result.",
           "properties": {
             "content": {
               "items": {
@@ -5524,7 +5524,7 @@
           "type": "object"
         },
         {
-          "description": "Native WASM app runtime directory listing result.",
+          "description": "Native WASM plugin runtime directory listing result.",
           "properties": {
             "entries": {
               "items": {
@@ -5595,7 +5595,7 @@
           "type": "object"
         },
         {
-          "description": "Pane group CWD broadcast. **Declared, never constructed** — no host path\nemits this today; `sync_app_cwd` reassigns `workspace_root` in place\ninstead. Do not cite it as the mechanism behind a cwd-scoping symptom.",
+          "description": "Pane group CWD broadcast. **Declared, never constructed** — no host path\nemits this today; `sync_plugin_cwd` reassigns `workspace_root` in place\ninstead. Do not cite it as the mechanism behind a cwd-scoping symptom.",
           "properties": {
             "cwd": {
               "type": "string"
@@ -5612,7 +5612,7 @@
           "type": "object"
         },
         {
-          "description": "App is being backgrounded (host window losing focus, app no longer visible).",
+          "description": "App is being backgrounded (host window losing focus, plugin no longer visible).",
           "properties": {
             "type": {
               "const": "suspend",
@@ -5672,16 +5672,16 @@
           "type": "object"
         },
         {
-          "description": "Confirmation that a SpawnApp request succeeded.",
+          "description": "Confirmation that a SpawnView request succeeded.",
           "properties": {
             "pane_id": {
-              "description": "The pane_id of the newly spawned app pane.",
+              "description": "The pane_id of the newly spawned view pane.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
             },
             "type": {
-              "const": "app_spawned",
+              "const": "view_opened",
               "type": "string"
             },
             "type_id": {
@@ -5744,7 +5744,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::QueryContextState` (#1518).",
+          "description": "Response to `HostRequest::QueryContextState` (#1518).",
           "properties": {
             "state": {
               "$ref": "#/$defs/ContextState"
@@ -5761,7 +5761,7 @@
           "type": "object"
         },
         {
-          "description": "Binary pipe opened — app connects to `socket_path` as a unix socket client.",
+          "description": "Binary pipe opened — plugin connects to `socket_path` as a unix socket client.",
           "properties": {
             "pipe_id": {
               "type": "string"
@@ -5805,7 +5805,7 @@
           "type": "object"
         },
         {
-          "description": "Drop a JSON payload into the app's `on_inject` hook.\nSent at startup with persisted app state (workspace if available, else global).\nAlso usable from `pgap_test_harness` to seed deterministic state.",
+          "description": "Drop a JSON payload into the plugin's `on_inject` hook.\nSent at startup with persisted plugin state (workspace if available, else global).\nAlso usable from `pgap_test_harness` to seed deterministic state.",
           "properties": {
             "payload": true,
             "type": {
@@ -5820,7 +5820,7 @@
           "type": "object"
         },
         {
-          "description": "A state scope's backing file changed outside the app's own persist\nflow — an external edit, or a persist the app lost to a concurrent\nexternal write (disk wins; the dropped persist is answered with this\nevent). `payload` is the scope's full on-disk value set; the SDK\nreplaces the scope wholesale (deleted keys vanish — never a merge).\n`error` is set when the file exists but could not be decoded; the\nprevious values are kept in that case and persists to the scope are\nblocked until a successful re-read.",
+          "description": "A state scope's backing file changed outside the plugin's own persist\nflow — an external edit, or a persist the plugin lost to a concurrent\nexternal write (disk wins; the dropped persist is answered with this\nevent). `payload` is the scope's full on-disk value set; the SDK\nreplaces the scope wholesale (deleted keys vanish — never a merge).\n`error` is set when the file exists but could not be decoded; the\nprevious values are kept in that case and persists to the scope are\nblocked until a successful re-read.",
           "properties": {
             "error": {
               "default": null,
@@ -6020,7 +6020,7 @@
           "type": "object"
         },
         {
-          "description": "Clipboard paste forwarded into the focused app pane.\n\nEmitted whenever the host observes `egui::Event::Paste(text)` while an\napp pane has keyboard focus. The text is the OS clipboard contents at\npaste time, already decoded to UTF-8 by egui. Apps receive this both\nfor Cmd+V chords and for OS-menu / right-click → Paste actions.\n\nPre-#200 apps shelled out to `pbpaste` for this; that workaround is\nmacOS-only and races with focus changes. This event is the portable\npath.",
+          "description": "Clipboard paste forwarded into the focused view pane.\n\nEmitted whenever the host observes `egui::Event::Paste(text)` while an\nview pane has keyboard focus. The text is the OS clipboard contents at\npaste time, already decoded to UTF-8 by egui. Plugins receive this both\nfor Cmd+V chords and for OS-menu / right-click → Paste actions.\n\nPre-#200 plugins shelled out to `pbpaste` for this; that workaround is\nmacOS-only and races with focus changes. This event is the portable\npath.",
           "properties": {
             "text": {
               "type": "string"
@@ -6037,7 +6037,7 @@
           "type": "object"
         },
         {
-          "description": "Response to a `DrawCommand::AiQuery`. Either `content` is `Some` (success)\nor `error` is `Some` (failure) — the two are mutually exclusive. Token\ncounts are zero on error.\n\n`error` is set when:\n  - the app does not declare the `ai.query` capability (\"capability denied\")\n  - the host backend cannot be reached (e.g. missing API key, Ollama not running)\n  - the upstream backend returned an error mid-stream",
+          "description": "Response to a `DrawCommand::AiQuery`. Either `content` is `Some` (success)\nor `error` is `Some` (failure) — the two are mutually exclusive. Token\ncounts are zero on error.\n\n`error` is set when:\n  - the plugin does not declare the `ai.query` capability (\"capability denied\")\n  - the host backend cannot be reached (e.g. missing API key, Ollama not running)\n  - the upstream backend returned an error mid-stream",
           "properties": {
             "content": {
               "type": [
@@ -6112,10 +6112,10 @@
           "type": "object"
         },
         {
-          "description": "Host-to-app tool invocation (#399). The broker calls a tool exposed via\n`DrawCommand::ExposeTools` by sending this event to the owning pane.\nThe app must reply with `DrawCommand::ToolResult { call_id, … }`.",
+          "description": "Host-to-plugin tool invocation (#399). The broker calls a tool exposed via\n`DrawCommand::ExposeTools` by sending this event to the owning pane.\nThe plugin must reply with `DrawCommand::ToolResult { call_id, … }`.",
           "properties": {
             "authorization": {
-              "description": "Host-stamped authorization envelope. Absent on legacy WASM guests;\nPython apps receive it beside the model arguments.",
+              "description": "Host-stamped authorization envelope. Absent on legacy WASM guests;\nPython plugins receive it beside the model arguments.",
               "type": [
                 "string",
                 "null"
@@ -6125,7 +6125,7 @@
               "type": "string"
             },
             "caller_id": {
-              "description": "Broker identity of the caller (e.g. `\"agent:chess-opponent\"` or\nan app id). The SDK stamps `caused_by` on events emitted while\nthis call is being serviced.",
+              "description": "Broker identity of the caller (e.g. `\"agent:chess-opponent\"` or\nan plugin id). The SDK stamps `caused_by` on events emitted while\nthis call is being serviced.",
               "type": "string"
             },
             "input_json": {
@@ -6186,7 +6186,7 @@
           "type": "object"
         },
         {
-          "description": "Sent when a `DrawCommand::AudioCapture` successfully opened the device\nand started delivering PCM frames on `pipe_id`. The `sample_rate`,\n`channels`, and `buffer_size` are the actual negotiated values — the\napp must use these (not its requested values) when interpreting frames.",
+          "description": "Sent when a `DrawCommand::AudioCapture` successfully opened the device\nand started delivering PCM frames on `pipe_id`. The `sample_rate`,\n`channels`, and `buffer_size` are the actual negotiated values — the\nplugin must use these (not its requested values) when interpreting frames.",
           "properties": {
             "buffer_size": {
               "format": "uint32",
@@ -6284,7 +6284,7 @@
           "type": "object"
         },
         {
-          "description": "Sent when a `DrawCommand::OpenMidiInput` successfully opened the port\nand started forwarding incoming MIDI byte streams to the binary pipe\nat `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`\njust before this event so the app can connect to the socket.",
+          "description": "Sent when a `DrawCommand::OpenMidiInput` successfully opened the port\nand started forwarding incoming MIDI byte streams to the binary pipe\nat `pipe_id`. The host emitted `PipeOpened { pipe_id, socket_path }`\njust before this event so the plugin can connect to the socket.",
           "properties": {
             "pipe_id": {
               "type": "string"
@@ -6351,7 +6351,7 @@
           "type": "object"
         },
         {
-          "description": "Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has\nallocated the binary pipe (look for the preceding `PipeOpened`),\nstarted the decoder, and is now pumping RGBA8 frames into the pipe.\n`handle_id` is the opaque handle the app passes to subsequent\n`SetVideoState` / `CloseVideo` commands.",
+          "description": "Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has\nallocated the binary pipe (look for the preceding `PipeOpened`),\nstarted the decoder, and is now pumping RGBA8 frames into the pipe.\n`handle_id` is the opaque handle the plugin passes to subsequent\n`SetVideoState` / `CloseVideo` commands.",
           "properties": {
             "duration_ms": {
               "format": "uint64",
@@ -6418,7 +6418,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the\npane id of the freshly-opened terminal so subsequent\n`RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference\nit. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses\ninternally — pass it back verbatim.\n\nApps without `terminal.bindings` never receive this event; the\nrequest is dropped at the routing layer with a capability-denied\nlog line.",
+          "description": "Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the\npane id of the freshly-opened terminal so subsequent\n`RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference\nit. `terminal_pane_id` is the same `PaneId` (`u64`) the host uses\ninternally — pass it back verbatim.\n\nPlugins without `terminal.bindings` never receive this event; the\nrequest is dropped at the routing layer with a capability-denied\nlog line.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -6441,7 +6441,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `DrawCommand::RequestCommandPreview` (#78). Returns the\ncommand verbatim plus the linked terminal's current cwd so the app\ncan render a confirmation modal that says \"this would run in\n/tmp/foo\". `would_run_in_cwd` is the host's best-effort snapshot of\nthe terminal child's cwd at request time — never an expansion of\nshell history or alias.",
+          "description": "Response to `DrawCommand::RequestCommandPreview` (#78). Returns the\ncommand verbatim plus the linked terminal's current cwd so the plugin\ncan render a confirmation modal that says \"this would run in\n/tmp/foo\". `would_run_in_cwd` is the host's best-effort snapshot of\nthe terminal child's cwd at request time — never an expansion of\nshell history or alias.",
           "properties": {
             "command": {
               "type": "string"
@@ -6466,7 +6466,7 @@
           "type": "object"
         },
         {
-          "description": "Emitted by host to app when Escape is pressed and the app's nav stack\ndepth is > 0. The app handles this by popping its own internal view\nand emitting `DrawCommand::PopNav` to decrement the host counter.",
+          "description": "Emitted by host to plugin when Escape is pressed and the plugin's nav stack\ndepth is > 0. The plugin handles this by popping its own internal view\nand emitting `DrawCommand::PopNav` to decrement the host counter.",
           "properties": {
             "type": {
               "const": "nav_back",
@@ -6483,7 +6483,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `DrawCommand::OpenFilePicker`. At least one file was selected.\n`paths` contains the absolute, canonicalized paths chosen by the user.\nEach path is already registered as a scoped fs grant for this pane, so\nthe app can pass it verbatim to `file_read` / `file_write`.",
+          "description": "Response to `DrawCommand::OpenFilePicker`. At least one file was selected.\n`paths` contains the absolute, canonicalized paths chosen by the user.\nEach path is already registered as a scoped fs grant for this pane, so\nthe plugin can pass it verbatim to `file_read` / `file_write`.",
           "properties": {
             "paths": {
               "items": {
@@ -6507,7 +6507,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `DrawCommand::OpenFilePicker` when the user cancelled the\ndialog without selecting a file, or the app lacks `fs.pick` capability.",
+          "description": "Response to `DrawCommand::OpenFilePicker` when the user cancelled the\ndialog without selecting a file, or the plugin lacks `fs.pick` capability.",
           "properties": {
             "request_id": {
               "type": "string"
@@ -6577,7 +6577,7 @@
           "type": "object"
         },
         {
-          "description": "Emitted by the host when the scroll offset for a `BeginScroll` region\nchanges (mouse wheel, drag). The app should re-render using `offset_y`\nas the vertical translation applied to all content within that region.\n\n`id` matches the `id` from the `DrawCommand::BeginScroll` that declared\nthe region. `offset_y` is always >= 0 and clamped to\n`max(0, content_height - viewport_height)`.",
+          "description": "Emitted by the host when the scroll offset for a `BeginScroll` region\nchanges (mouse wheel, drag). The plugin should re-render using `offset_y`\nas the vertical translation applied to all content within that region.\n\n`id` matches the `id` from the `DrawCommand::BeginScroll` that declared\nthe region. `offset_y` is always >= 0 and clamped to\n`max(0, content_height - viewport_height)`.",
           "properties": {
             "id": {
               "type": "string"
@@ -6599,7 +6599,7 @@
           "type": "object"
         },
         {
-          "description": "Emitted when the mouse wheel moves over an app pane that has no\nhost-managed scroll region or list_view under the cursor.\n`delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =\nscroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from\nthe app's `on_scroll_delta` handler.",
+          "description": "Emitted when the mouse wheel moves over an view pane that has no\nhost-managed scroll region or list_view under the cursor.\n`delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =\nscroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from\nthe plugin's `on_scroll_delta` handler.",
           "properties": {
             "delta_y": {
               "format": "float",
@@ -6689,7 +6689,7 @@
           "type": "object"
         },
         {
-          "description": "Host asks the app whether `resource_id` is still at\n`expected_revision` before rolling back a checkpoint. The app must\nanswer with `AppRequest::RollbackVerifyResult` carrying its current\nrevision; rollback only proceeds on an exact match.",
+          "description": "Host asks the plugin whether `resource_id` is still at\n`expected_revision` before rolling back a checkpoint. The plugin must\nanswer with `HostRequest::RollbackVerifyResult` carrying its current\nrevision; rollback only proceeds on an exact match.",
           "properties": {
             "checkpoint_id": {
               "type": "string"
@@ -6714,7 +6714,7 @@
           "type": "object"
         },
         {
-          "description": "Host instructs the app to roll `resource_id` back using the\n`rollback_token` the app supplied when it emitted the reversible\nevent. Sent only after a successful `RollbackVerify` round-trip.",
+          "description": "Host instructs the plugin to roll `resource_id` back using the\n`rollback_token` the plugin supplied when it emitted the reversible\nevent. Sent only after a successful `RollbackVerify` round-trip.",
           "properties": {
             "checkpoint_id": {
               "type": "string"
@@ -6739,7 +6739,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::SubscribeAppEvents`. Exactly one of\n`subscription_id` / `error` is set.",
+          "description": "Response to `HostRequest::SubscribePluginEvents`. Exactly one of\n`subscription_id` / `error` is set.",
           "properties": {
             "error": {
               "type": [
@@ -6757,7 +6757,7 @@
               ]
             },
             "type": {
-              "const": "app_events_subscribed",
+              "const": "plugin_events_subscribed",
               "type": "string"
             }
           },
@@ -6768,7 +6768,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::DeclareEventStreams`.",
+          "description": "Response to `HostRequest::DeclareEventStreams`.",
           "properties": {
             "error": {
               "type": [
@@ -6796,7 +6796,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::EmitEvent`.",
+          "description": "Response to `HostRequest::EmitEvent`.",
           "properties": {
             "error": {
               "type": [
@@ -6823,7 +6823,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::UnsubscribeAppEvents`.",
+          "description": "Response to `HostRequest::UnsubscribePluginEvents`.",
           "properties": {
             "error": {
               "type": [
@@ -6838,7 +6838,7 @@
               "type": "string"
             },
             "type": {
-              "const": "app_events_unsubscribed",
+              "const": "plugin_events_unsubscribed",
               "type": "string"
             }
           },
@@ -6850,12 +6850,8 @@
           "type": "object"
         },
         {
-          "description": "One subscribed app event, delivered to the subscriber pane. Content\nbeyond the event identity is shaped by the subscription's\n`payload_mode`; `trigger_mode` tells the subscriber (Phase C: the\nagent runtime) how it is allowed to react.",
+          "description": "One subscribed plugin event, delivered to the subscriber pane. Content\nbeyond the event identity is shaped by the subscription's\n`payload_mode`; `trigger_mode` tells the subscriber (Phase C: the\nagent runtime) how it is allowed to react.",
           "properties": {
-            "app_id": {
-              "description": "Publisher app id.",
-              "type": "string"
-            },
             "created_at": {
               "description": "RFC 3339.",
               "type": "string"
@@ -6871,6 +6867,10 @@
               "type": "integer"
             },
             "payload": true,
+            "plugin_id": {
+              "description": "Publisher plugin id.",
+              "type": "string"
+            },
             "resource_id": {
               "type": "string"
             },
@@ -6893,14 +6893,14 @@
               "$ref": "#/$defs/TriggerMode"
             },
             "type": {
-              "const": "app_event",
+              "const": "plugin_event",
               "type": "string"
             }
           },
           "required": [
             "type",
             "subscription_id",
-            "app_id",
+            "plugin_id",
             "event",
             "event_id",
             "resource_id",
@@ -6910,7 +6910,7 @@
           "type": "object"
         },
         {
-          "description": "Response to `AppRequest::ListUndoCheckpoints`: undo checkpoints,\nnewest first, serialized with the spec's checkpoint metadata fields\nplus `status` (`active | verifying | rolled_back | conflict`).",
+          "description": "Response to `HostRequest::ListUndoCheckpoints`: undo checkpoints,\nnewest first, serialized with the spec's checkpoint metadata fields\nplus `status` (`active | verifying | rolled_back | conflict`).",
           "properties": {
             "checkpoints": {
               "items": true,
@@ -6935,6 +6935,6 @@
       "title": "PlexiEvent"
     }
   },
-  "protocol": "pgap/3",
+  "protocol": "pgap/4",
   "version": 3
 }

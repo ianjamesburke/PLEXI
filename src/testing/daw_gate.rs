@@ -1,6 +1,6 @@
 //! DAW release gate, host side (stint 0519): the same tiers the notes editor
 //! gate runs (`src/editor/gate.rs`, `src/testing/harness_tests.rs`), cloned
-//! onto the DAW so the whole app is agent-validatable under one command,
+//! onto the DAW so the whole plugin is agent-validatable under one command,
 //! `cargo test --bin plexi`.
 //!
 //! The DAW's pure model lives in a sibling crate (`plexi-daw-model`), unlike
@@ -32,7 +32,7 @@ use plexi_daw_model::{
     TICKS_PER_BEAT,
 };
 
-use crate::host::wasm_app::{
+use crate::host::wasm_view::{
     InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView,
 };
 

@@ -16,10 +16,11 @@ Workspace:
   agent         Report agent status and completion, and install status hooks. Agent definitions, spawning and teams need the `agent_mesh` experiment.
   context       Manage the active context (the folder and project scope tied to the current pane)
 
-Apps:
-  app           Manage your Plexi apps — open, install, list, scaffold, and inspect
+Plugins:
+  plugin        Manage your Plexi plugins — open, install, list, scaffold, and inspect
+  view          Discover, open, and render plugin views
   registry      Watch installed CLI tools for changes to their available commands and options
-  events        Subscribe to a Plexi app's event streams and receive brokered deliveries
+  events        Subscribe to a Plexi plugin's event streams and receive brokered deliveries
 
 Panes:
   pane          Control panes — list, focus, send input, capture output, and more
@@ -39,7 +40,7 @@ System:
   lease         Acquire process-lifetime capacity before starting work. Pauses exit with code 2
   config        Check your Plexi config file for errors
   note          Capture, list, read, open, and delete notes
-  doctor        Audit all installed apps for capability and config gaps
+  doctor        Audit all installed plugins for capability and config gaps
   debug         Inspect what the host recorded: per-session flight traces
   demo          Interactive keybinding tutorial — learn split and navigate in real time
   update        Update this channel's managed package, or restore its previous generation

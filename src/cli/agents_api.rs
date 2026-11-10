@@ -1,4 +1,4 @@
-//! CLI front end for the Agents API and Command View.
+//! CLI front end for the Agents API and Agents dashboard.
 
 use serde_json::{json, Value};
 
@@ -25,8 +25,8 @@ pub fn command_view_cli(op: &str, json_out: bool) -> i32 {
     );
     let content = match super::request_with(
         json!({"type": "command_view", "op": op, "payload": {"workspace": workspace}}),
-        "command-view",
-        "command-view",
+        "agents-dashboard",
+        "agents-dashboard",
         std::time::Duration::from_secs(20),
     ) {
         Ok(content) => content,
@@ -55,8 +55,8 @@ pub fn command_view_cancel_cli(run: &str) -> i32 {
             "op": "cancel",
             "payload": {"workspace": workspace, "run": run}
         }),
-        "command-view-cancel",
-        "command-view cancel",
+        "agents-dashboard-cancel",
+        "agents-dashboard cancel",
         std::time::Duration::from_secs(20),
     ) {
         Ok(content) => content,
@@ -80,7 +80,7 @@ pub fn command_view_refused(kind: &str) -> i32 {
     } else {
         (
             "not_an_approval",
-            "command-view resolve and allow do not grant",
+            "agents-dashboard resolve and allow do not grant",
         )
     };
     log::info!("command_view:cli: refused {kind} code={code}");

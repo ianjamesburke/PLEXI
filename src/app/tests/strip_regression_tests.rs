@@ -112,7 +112,7 @@ fn saved_strip_restores_width_scroll_and_focus() {
     let second = h.add_test_pane();
     let context = h.app.router.active().context_id;
     for id in [first, second] {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
     }
     h.app.set_context_columns(context, vec![vec![first], vec![second]]);
     h.app.focus_pane_in_strip(second);
@@ -180,7 +180,7 @@ fn restored_strip_keeps_scroll_after_first_frame() {
     let panes = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
     }
     h.app.set_context_columns(context, panes.into_iter().map(|pane| vec![pane]).collect());
     h.app.focus_pane_in_strip(panes[1]);
@@ -207,7 +207,7 @@ fn legacy_fixture_migrates_and_retains_later_v3_changes() {
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        let app = h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap();
+        let app = h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap();
         app.manifest_id = "agents".into();
         app.name = format!("rollback pane {id}");
     }
@@ -365,7 +365,7 @@ fn legacy_tab_conversion_retains_inactive_pane_and_active_identity() {
     let panes = [h.add_test_pane(), h.add_test_pane()];
     let context = h.app.router.active().context_id;
     for id in panes {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
     }
     let window = &mut h.app.windows[0];
     let first = window.tree.tiles.find_pane(&panes[0]).unwrap();
@@ -430,7 +430,7 @@ fn legacy_portal_conversion_preserves_child_and_scope() {
     let child = h.add_test_pane();
     let parent_context = h.app.router.active().context_id;
     for id in [parent, child] {
-        h.app.windows[0].panes.get_mut(&id).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+        h.app.windows[0].panes.get_mut(&id).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
     }
     h.app.set_context_columns(parent_context, vec![vec![parent], vec![child]]);
     let request = serde_json::from_value(serde_json::json!({"type":"push_pane_to_subcontext", "name":"child", "pane_id":child})).unwrap();

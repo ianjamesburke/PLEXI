@@ -1,6 +1,6 @@
 //! Shared minimal HTTP/1.1 JSON-RPC transport for Plexi's MCP servers.
 //!
-//! The host MCP server (`app::host_mcp`) speaks a single `POST /mcp` request
+//! The host MCP server (`plugin::host_mcp`) speaks a single `POST /mcp` request
 //! carrying a JSON-RPC body, authenticated with `Authorization: Bearer
 //! <token>`. This module owns request framing, socket read/write timeouts,
 //! the caller-supplied credential lookup, the body-size guard, and response

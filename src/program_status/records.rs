@@ -40,7 +40,7 @@ pub struct Record {
     pub progress: Option<u8>,
     pub msg: Option<String>,
     pub title: Option<String>,
-    /// As reported; see [`ProgramStatusStore::effective_app`] for inheritance.
+    /// As reported; see [`ProgramStatusStore::effective_plugin`] for inheritance.
     pub app: Option<String>,
     /// The user has seen this `done` / `error` record.
     pub seen: bool,
@@ -149,8 +149,8 @@ impl ProgramStatusStore {
         self.records.iter().map(|(k, v)| (k.as_str(), v))
     }
 
-    /// `app` of the record, or of its nearest ancestor that has one.
-    pub fn effective_app(&self, id: &str) -> Option<&str> {
+    /// `plugin` of the record, or of its nearest ancestor that has one.
+    pub fn effective_plugin(&self, id: &str) -> Option<&str> {
         let mut cur = id;
         loop {
             if let Some(app) = self.records.get(cur).and_then(|r| r.app.as_deref()) {

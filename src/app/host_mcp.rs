@@ -1,16 +1,16 @@
 //! Host-level MCP server — `stints 0214, 0653`.
 //!
 //! The native transport for MCP-aware agents (Claude Code, Codex). Unlike the
-//! rejected per-app-server design, this is a single host-wide server started
+//! rejected per-plugin-server design, this is a single host-wide server started
 //! once at boot. It exposes event subscription tools and the live plugin tools
 //! registered through `ExposeTools`.
 //!
 //! Tools:
-//! - `list_event_streams` — discover the `(app, stream)` pairs running apps declare.
+//! - `list_event_streams` — discover the `(plugin, stream)` pairs running plugins declare.
 //! - `subscribe_and_wait` — broker-checked subscribe, block for the next event,
 //!   return it, then drop the subscription. A long-poll, so an agent can "wait
 //!   for the next event and report it" in one tool call.
-//! - `<plugin_id>__<tool>` — workspace-scoped tools registered by live app panes.
+//! - `<plugin_id>__<tool>` — workspace-scoped tools registered by live view panes.
 //!
 //! Discovery: the bound port + bearer token are injected into every pane's PTY
 //! env as `PLEXI_HOST_MCP_PORT` / `PLEXI_HOST_MCP_TOKEN`, so an agent in a pane
@@ -367,18 +367,18 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
         }),
         serde_json::json!({
             "name": "list_event_streams",
-            "description": "List the event streams currently declared by running Plexi apps. Returns an array of {plugin_id, stream} pairs.",
+            "description": "List the event streams currently declared by running Plexi plugins. Returns an array of {plugin_id, stream} pairs.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
         serde_json::json!({
             "name": "subscribe_and_wait",
-            "description": "Subscribe to a Plexi app's event stream and block until the next event arrives (or the timeout elapses), then return it. The subscription is dropped when the call returns.",
+            "description": "Subscribe to a Plexi plugin's event stream and block until the next event arrives (or the timeout elapses), then return it. The subscription is dropped when the call returns.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "plugin_id": { "type": "string", "description": "App that publishes the stream, e.g. event-probe." },
                     "stream": { "type": "string", "description": "Stream name, e.g. probe.tick. Omit with all=true to subscribe to every stream." },
-                    "all": { "type": "boolean", "description": "Subscribe to all of the app's declared streams." },
+                    "all": { "type": "boolean", "description": "Subscribe to all of the plugin's declared streams." },
                     "payload": { "type": "string", "enum": ["off", "summary", "full", "state_ref"], "description": "How much of the event to deliver (default full)." },
                     "timeout_secs": { "type": "integer", "description": "Max seconds to wait for the next event (default 25, max 55)." }
                 },
@@ -387,9 +387,9 @@ fn tool_defs(dispatcher: &crate::plexi_ai::tool_dispatch::ToolDispatcher) -> ser
             }
         }),
     ];
-    let mut app_tools = dispatcher.all_tools();
-    app_tools.sort_by(|a, b| a.name.cmp(&b.name));
-    tools.extend(app_tools.into_iter().map(|tool| {
+    let mut plugin_tools = dispatcher.all_tools();
+    plugin_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    tools.extend(plugin_tools.into_iter().map(|tool| {
         serde_json::json!({
             "name": tool.name,
             "description": tool.description,
@@ -573,7 +573,7 @@ fn tool_permissions(
 /// anyway (no cross-context grant exists), so listing it would be
 /// misleading.
 fn tool_list_event_streams(caller: &McpCaller) -> Result<String, String> {
-    let streams = crate::host::app_timeline::global()
+    let streams = crate::host::plugin_timeline::global()
         .lock()
         .unwrap()
         .all_declared_streams();
@@ -666,7 +666,7 @@ fn tool_subscribe_and_wait(
     };
 
     // Long-poll the global timeline for the next delivery.
-    let timeline = crate::host::app_timeline::global();
+    let timeline = crate::host::plugin_timeline::global();
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let mut first = None;
     while Instant::now() < deadline {
@@ -846,7 +846,7 @@ mod tests {
         }
         let svc = crate::host::event_subscriptions::HostSubscriptionService::new_for_test(
             store,
-            crate::host::app_timeline::global(),
+            crate::host::plugin_timeline::global(),
         );
         std::thread::spawn(move || {
             while let Ok(req) = rx.recv() {
@@ -967,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_credential_lists_and_calls_only_context_app_tools() {
+    fn pane_credential_lists_and_calls_only_context_view_tools() {
         use crate::protocol::{AiTool, PlexiEvent};
         use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
 
@@ -1043,7 +1043,7 @@ mod tests {
             };
             let args = r#"{"value":7}"#;
             let binding = ExactBinding {
-                actor_type: ActorType::App,
+                actor_type: ActorType::Plugin,
                 actor_id: format!("mcp:pane:{caller_pane}"),
                 actor_scope: ActorScope::User,
                 trust_origin: "host".to_string(),
@@ -1122,14 +1122,14 @@ mod tests {
     #[test]
     fn subscribe_and_wait_delivers_emitted_event() {
         use crate::protocol::{PluginEventActor, EventStreamDecl};
-        use crate::host::app_timeline::EmittedEvent;
+        use crate::host::plugin_timeline::EmittedEvent;
         let app = "mcp-it-app";
         let stream = "it.tick";
         // `start_test_server` registers its pane credential with `context_id
         // = 1` (see `register_pane_credential(pane_id, 1, ...)` below), so
         // the stream must be declared under that same context for the
         // subscribe to see it as declared (stint 0724 Phase D).
-        crate::host::app_timeline::global()
+        crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
             .declare_streams(
@@ -1147,7 +1147,7 @@ mod tests {
         // Emit shortly after the tool call begins its long-poll.
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(300));
-            crate::host::app_timeline::global()
+            crate::host::plugin_timeline::global()
                 .lock()
                 .unwrap()
                 .record_event(

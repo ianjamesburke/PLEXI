@@ -4676,7 +4676,7 @@ mod agent_tests {
                 profile.path(),
                 ws.path()
             ),
-            include_str!("testdata/agent_list_json_base_agents.json").trim_end(),
+            include_str!("testdata/agent_list_json_base_agents.json").replace("0.4.0", env!("CARGO_PKG_VERSION")).trim_end(),
             "the agent array must be byte-identical to the base-commit output"
         );
     }

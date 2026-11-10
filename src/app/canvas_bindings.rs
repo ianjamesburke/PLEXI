@@ -3,7 +3,7 @@
 //! The primitives are routed by `host::wasm_pane::route_command` into
 //! `ViewCommand` variants and end up here once the parent `PlexiApp` drains
 //! the deferred queue. Implementation lives in this module rather than
-//! `app/mod.rs` to keep the surface readable — the binding-primitive layer
+//! `plugin/mod.rs` to keep the surface readable — the binding-primitive layer
 //! is conceptually one feature, not a scattering of unrelated cases.
 
 use super::PlexiApp;
@@ -15,7 +15,7 @@ use egui_tiles::Tile;
 
 impl PlexiApp {
     /// `RequestLinkedTerminal` — open a fresh terminal pane next to the
-    /// requesting app pane and emit `LinkedTerminalReady` back.
+    /// requesting view pane and emit `LinkedTerminalReady` back.
     ///
     /// Strategy: locate the sender's tile, allocate a new pane id, build a
     /// `TerminalPane`, and reuse the existing `split_with_new_pane`
@@ -36,7 +36,7 @@ impl PlexiApp {
         let workspace_root = self.windows[active]
             .panes
             .get(&sender_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .map(|a| a.workspace_root.clone());
         let resolved_cwd = cwd
             .map(std::path::PathBuf::from)
@@ -45,7 +45,7 @@ impl PlexiApp {
 
         // Find the sender's tile so we can split next to it. Without the
         // tile we have no anchor for the split — bail out and notify the
-        // app so the blocking helper unblocks instead of hanging.
+        // plugin so the blocking helper unblocks instead of hanging.
         let Some(sender_tile) = find_tile_for_pane(&self.windows[active].tree, sender_pane_id)
         else {
             log::warn!(
@@ -95,10 +95,10 @@ impl PlexiApp {
         pending_credential.mark_live();
 
         // Split the tree directly, adjacent to sender_tile, without touching focused_pane.
-        // place_below=false → side-by-side (vertical=true), Canvas app left, terminal right.
-        // place_below=true  → stacked (vertical=false), app on top, terminal underneath —
+        // place_below=false → side-by-side (vertical=true), Canvas plugin left, terminal right.
+        // place_below=true  → stacked (vertical=false), plugin on top, terminal underneath —
         // the CLI renderer uses this so its form sits above its output.
-        // focused_pane is deliberately NOT updated — the Canvas app retains keyboard focus
+        // focused_pane is deliberately NOT updated — the Canvas plugin retains keyboard focus
         // so the user doesn't lose input mid-flow.
         let share =
             crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
@@ -114,7 +114,7 @@ impl PlexiApp {
         // Update the sender's linked_pane_id so legacy CdRequest also
         // routes to this terminal.
         if let Some(pane) = self.windows[active].panes.get_mut(&sender_pane_id) {
-            if let Some(app) = pane.as_app_mut() {
+            if let Some(app) = pane.as_view_mut() {
                 app.linked_pane_id = Some(new_id);
             }
         }
@@ -149,7 +149,7 @@ impl PlexiApp {
         let linked = self.windows[active]
             .panes
             .get(&sender_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .and_then(|a| a.linked_pane_id);
         if linked != Some(terminal_pane_id) {
             log::warn!(
@@ -192,7 +192,7 @@ impl PlexiApp {
         let linked = self.windows[active]
             .panes
             .get(&sender_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .and_then(|a| a.linked_pane_id);
         if linked != Some(terminal_pane_id) {
             log::warn!(
@@ -236,7 +236,7 @@ impl PlexiApp {
         let linked = self.windows[active]
             .panes
             .get(&sender_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .and_then(|a| a.linked_pane_id);
         if linked != Some(terminal_pane_id) {
             log::warn!(
@@ -289,11 +289,11 @@ impl PlexiApp {
         let workspace_root = self.windows[active]
             .panes
             .get(&sender_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .map(|a| a.workspace_root.clone());
-        // workspace_root is None for builtin apps (which run with trusted
+        // workspace_root is None for builtin plugins (which run with trusted
         // PluginPermissions::builtin()) — they bypass the path check intentionally.
-        // For process apps the root is always set; None here means the pane was
+        // For process plugins the root is always set; None here means the pane was
         // already removed (race between close and dispatch), so we allow through
         // rather than silently dropping a legitimate late-arriving command.
         //
@@ -341,7 +341,7 @@ impl PlexiApp {
                     // its body here with our path.
                     self.open_file_browser_at(p);
                 } else {
-                    self.open_file_in_app(sender_pane_id, &path);
+                    self.open_file_in_view(sender_pane_id, &path);
                 }
             }
             ArtifactOpenMode::RevealInFinder => shell_open(&path, true),
@@ -349,20 +349,20 @@ impl PlexiApp {
         }
     }
 
-    /// Queue an outbound `PlexiEvent` to the app pane identified by
+    /// Queue an outbound `PlexiEvent` to the view pane identified by
     /// `pane_id`. No-op when the pane has gone away (it can during a
-    /// pending dispatch — the user closed the canvas app between request
+    /// pending dispatch — the user closed the canvas plugin between request
     /// and response).
     fn queue_event_to_pane(&mut self, pane_id: PaneId, event: PlexiEvent) {
         let active = self.active_window;
         if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
-            if let Some(app) = pane.as_app_mut() {
+            if let Some(app) = pane.as_view_mut() {
                 app.runtime.queue_outbound_event(event);
             }
         }
     }
 
-    /// Internal: open the file browser app rooted at `cwd`.
+    /// Internal: open the file browser plugin rooted at `cwd`.
     /// Mirror of `open_file_browser` but driven by an explicit path
     /// instead of the focused-pane cwd, since OpenArtifact specifies the
     /// directory it wants browsed.
@@ -370,10 +370,10 @@ impl PlexiApp {
         if self.plugin_blocked("file_browser") {
             return;
         }
-        use crate::app::app_trait::App;
-        let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
+        use crate::app::view_trait::View;
+        let app: Box<dyn View> = Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
         let perms = crate::app::permissions::PluginPermissions::builtin();
-        self.open_builtin_app_pane(
+        self.open_builtin_view_pane(
             app,
             perms,
             cwd,
@@ -386,17 +386,17 @@ impl PlexiApp {
     /// The single file-open resolver (#2283). Decides which handler opens
     /// `path` and launches it. Resolution order, first match wins:
     ///   (a) user `[file_handlers]` override
-    ///   (b) app manifest `file_types` association
+    ///   (b) plugin manifest `file_types` association
     ///   (c) builtin media players (`MediaKind`)
     ///   (d) builtin text-editor for text/source files
     ///   (e) OS default opener — mandatory fallback
-    /// Any `app:` target that is absent or fails to launch falls through to the
+    /// Any `plugin:` target that is absent or fails to launch falls through to the
     /// OS opener rather than silently doing nothing — this is what makes
     /// "Enter on a video with no installed player" open in the OS player
     /// instead of vanishing. `sender_pane_id` is the pane that requested the
     /// open (the explorer, or the terminal behind it); the text-editor lands as
     /// a split to its right.
-    fn open_file_in_app(&mut self, sender_pane_id: PaneId, path: &str) {
+    fn open_file_in_view(&mut self, sender_pane_id: PaneId, path: &str) {
         if self.plugin_blocked("file viewer / text-editor") {
             return;
         }
@@ -430,13 +430,13 @@ impl PlexiApp {
                     shell_open(path, false);
                     return;
                 }
-                Some(FileHandler::App(id)) => {
-                    if self.launch_app_with_path(&id, path) {
-                        log::info!("open: '{path}' → app '{id}' (file_handlers override)");
+                Some(FileHandler::View(id)) => {
+                    if self.launch_view_with_path(&id, path) {
+                        log::info!("open: '{path}' → plugin '{id}' (file_handlers override)");
                         return;
                     }
                     log::warn!(
-                        "open: file_handler app '{id}' for .{ext} unavailable — OS fallback for '{path}'"
+                        "open: file_handler plugin '{id}' for .{ext} unavailable — OS fallback for '{path}'"
                     );
                     shell_open(path, false);
                     return;
@@ -454,15 +454,15 @@ impl PlexiApp {
             }
         }
 
-        // (b) app manifest `file_types` association.
+        // (b) plugin manifest `file_types` association.
         if let Some(id) = self
             .registries
             .view_for_context(context_id, &self.router)
             .handler_for_ext(&ext)
             .map(|s| s.to_string())
         {
-            if self.launch_app_with_path(&id, path) {
-                log::info!("open: '{path}' → app '{id}' (manifest file_types)");
+            if self.launch_view_with_path(&id, path) {
+                log::info!("open: '{path}' → plugin '{id}' (manifest file_types)");
                 return;
             }
             log::warn!("open: manifest handler '{id}' for .{ext} failed — continuing resolution");
@@ -472,7 +472,7 @@ impl PlexiApp {
         if let Some(id) =
             crate::file_browser::MediaKind::for_path(std::path::Path::new(path)).player_plugin_id()
         {
-            if self.launch_app_with_path(id, path) {
+            if self.launch_view_with_path(id, path) {
                 log::info!("open: '{path}' → builtin media player '{id}'");
                 return;
             }
@@ -482,7 +482,7 @@ impl PlexiApp {
         // (d) builtin text-editor: text and source files open in a split to
         // the right of the requesting pane. Sits below user/manifest overrides
         // so a user-configured handler for e.g. `.md` still wins.
-        if crate::app::text_editor_app::is_text_editable_ext(&ext) {
+        if crate::app::text_editor_view::is_text_editable_ext(&ext) {
             log::info!("open: '{path}' → builtin text-editor (split right of pane {sender_pane_id})");
             self.open_text_file_in_split(sender_pane_id, path);
             return;
@@ -495,7 +495,7 @@ impl PlexiApp {
 
     /// Open `path` in the builtin text-editor as a `split_h` anchored at
     /// `anchor_pane_id`, so the editor lands to the right of the explorer (or
-    /// terminal) that requested it. Mirrors the `SpawnPane` app-branch: it
+    /// terminal) that requested it. Mirrors the `SpawnPane` plugin-branch: it
     /// resolves the anchor's window from its pane id (never a global-focus
     /// read), retargets the launch to that window/tile, then restores the
     /// original active window. The `context_id` follows implicitly from
@@ -523,11 +523,11 @@ impl PlexiApp {
                 );
             }
         }
-        // Forced (bypass the app's `on_launch` dedup): opening a specific file
+        // Forced (bypass the plugin's `on_launch` dedup): opening a specific file
         // must always load THAT file. A `focus_existing` policy would otherwise
         // resolve to an already-open editor and drop the path, so the explorer
         // would appear to do nothing for a different file.
-        if let Err(e) = self.launch_app_by_id_with_layout_forced(
+        if let Err(e) = self.launch_view_by_id_with_layout_forced(
             "text-editor",
             Some("split_h".to_string()),
             &[path.to_string()],
@@ -541,17 +541,17 @@ impl PlexiApp {
         self.active_window = original_active_window;
     }
 
-    /// Launch app `id` with `path` as its sole arg, using the app's natural
+    /// Launch plugin `id` with `path` as its sole arg, using the plugin's natural
     /// placement (`None` layout → manifest `[launch] placement` → `overlay`).
-    /// Returns `true` on a successful launch; `false` when the app is not
+    /// Returns `true` on a successful launch; `false` when the plugin is not
     /// available, so the resolver can fall through to the OS opener.
-    fn launch_app_with_path(&mut self, id: &str, path: &str) -> bool {
+    fn launch_view_with_path(&mut self, id: &str, path: &str) -> bool {
         let layout = matches!(id, "image-viewer" | "video-player" | "audio-player")
             .then(|| "split_h".to_string());
-        match self.launch_app_by_id_with_layout(id, layout, &[path.to_string()], None) {
+        match self.launch_view_by_id_with_layout(id, layout, &[path.to_string()], None) {
             Ok(_) => true,
             Err(e) => {
-                log::warn!("open: launch of app '{id}' for '{path}' failed — {e}");
+                log::warn!("open: launch of plugin '{id}' for '{path}' failed — {e}");
                 false
             }
         }

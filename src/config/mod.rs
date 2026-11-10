@@ -827,7 +827,7 @@ pub struct KeybindingsConfig {
     pub ui_scale_up: Option<String>,
     /// Scale the whole UI down, terminal text included (default Cmd+Shift+-).
     pub ui_scale_down: Option<String>,
-    /// Reset app-wide UI scale (default Cmd+Shift+0).
+    /// Reset plugin-wide UI scale (default Cmd+Shift+0).
     pub ui_scale_reset: Option<String>,
     /// Open the Agents pane (default Cmd+Alt+A).
     pub open_agents: Option<String>,
@@ -841,7 +841,7 @@ pub struct KeybindingsConfig {
     pub reload_config: Option<String>,
     pub open_secrets_manager: Option<String>,
     pub open_assistant: Option<String>,
-    pub force_reload_app: Option<String>,
+    pub force_reload_view: Option<String>,
     pub toggle_attention_queue: Option<String>,
     pub zoom_in: Option<String>,
     pub open_scratchpad: Option<String>,
@@ -920,7 +920,7 @@ impl KeybindingsConfig {
         overlay_field!(reload_config);
         overlay_field!(open_secrets_manager);
         overlay_field!(open_assistant);
-        overlay_field!(force_reload_app);
+        overlay_field!(force_reload_view);
         overlay_field!(toggle_attention_queue);
         overlay_field!(zoom_in);
         overlay_field!(open_scratchpad);
@@ -983,7 +983,7 @@ pub struct PlexiConfig {
     /// Per-extension file-open handlers (`[file_handlers]`). Keys are bare,
     /// lowercase extensions (`md`, not `.md`); values are `kind:value` handler
     /// specs resolved by [`crate::app::file_handlers::FileHandler`]:
-    ///   `app:<id>` — open in a Plexi app by registry id
+    ///   `plugin:<id>` — open in a Plexi plugin by registry id
     ///   `os`       — hand to the OS default opener (`open` / `xdg-open`)
     ///   `cmd:<command>` — reserved; falls back to OS open until wired
     /// A user entry overrides any manifest-declared `file_types` association.
@@ -1158,9 +1158,11 @@ impl PermissionsConfig {
 /// Non-model AI settings (`ai.query` capability).
 #[derive(Deserialize, Default, Clone)]
 pub struct AiConfig {
-    /// Per-app daily spend cap in USD. Default $1.00.
-    pub per_app_daily_usd: Option<f64>,
-    /// Global daily spend cap across all apps in USD. Default $10.00.
+    /// Per-plugin daily spend cap in USD. Default $1.00.
+    // Keep the existing on-disk setting so a vocabulary change cannot reset a spend limit.
+    #[serde(rename = "per_app_daily_usd")]
+    pub per_plugin_daily_usd: Option<f64>,
+    /// Global daily spend cap across all plugins in USD. Default $10.00.
     pub global_daily_usd: Option<f64>,
     /// Default ledger client tag for Assistant and agent runs that do not set
     /// one. Free-form (`narrative`, `du`, `personal`). A blank or missing
@@ -1169,9 +1171,9 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
-    /// Resolved per-app daily spend cap. Falls back to $1.00 if unset.
-    pub fn effective_per_app_daily_usd(&self) -> f64 {
-        self.per_app_daily_usd.unwrap_or(1.0)
+    /// Resolved per-plugin daily spend cap. Falls back to $1.00 if unset.
+    pub fn effective_per_plugin_daily_usd(&self) -> f64 {
+        self.per_plugin_daily_usd.unwrap_or(1.0)
     }
 
     /// Resolved global daily spend cap. Falls back to $10.00 if unset.
@@ -1183,8 +1185,8 @@ impl AiConfig {
 impl AiConfig {
     /// Overlay `other` on top of `self` — any `Some` field in `other` wins.
     pub fn overlay(&mut self, other: Self) {
-        if other.per_app_daily_usd.is_some() {
-            self.per_app_daily_usd = other.per_app_daily_usd;
+        if other.per_plugin_daily_usd.is_some() {
+            self.per_plugin_daily_usd = other.per_plugin_daily_usd;
         }
         if other.global_daily_usd.is_some() {
             self.global_daily_usd = other.global_daily_usd;
@@ -1275,7 +1277,7 @@ impl AgentsConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct NotificationsConfig {
     /// Master switch. If false, incoming notifications are silently dropped —
-    /// apps still send them, but the modal never appears and the queue stays
+    /// plugins still send them, but the modal never appears and the queue stays
     /// empty. Defaults to true.
     pub enabled: Option<bool>,
     /// Focus mode. When true, no notification auto-surfaces. Everything queues
@@ -1560,14 +1562,14 @@ pub fn lock_profile_initialization() -> Result<Option<std::fs::File>, String> {
     Ok(Some(lock))
 }
 
-/// Ensure the apps directory and embedded SDK exist. Caller holds the initialization lock.
-/// Returns whether this is the first launch (no apps directory yet).
+/// Ensure the plugins directory and embedded SDK exist. Caller holds the initialization lock.
+/// Returns whether this is the first launch (no plugins directory yet).
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
-    // Install metadata may have created the profile before the first app launch.
+    // Install metadata may have created the profile before the first plugin launch.
     let is_new = !dir.join("plugins").is_dir();
     if let Err(e) = std::fs::create_dir_all(dir.join("plugins")) {
-        eprintln!("profile init: failed to create apps directory: {e}");
+        eprintln!("profile init: failed to create plugins directory: {e}");
         return false;
     }
 
@@ -2050,7 +2052,7 @@ fn workspace_config_path_for_channel(workspace_root: &Path, channel_dir: &str) -
     workspace_root.join(channel_dir).join("config.toml")
 }
 
-/// Dev override: when `PLEXI_SDK_PATH` is set, Python apps import the SDK from
+/// Dev override: when `PLEXI_SDK_PATH` is set, Python plugins import the SDK from
 /// that directory (which must contain the `plexi_sdk` package) instead of the
 /// binary-embedded copy. This enables live SDK iteration — edit
 /// `sdk/python/plexi_sdk/*.py`, re-render, no rebuild. Returns the path only if
@@ -2071,7 +2073,7 @@ pub fn sdk_path_override() -> Option<PathBuf> {
     }
 }
 
-/// Builds the `PYTHONPATH` value for Python app subprocesses.
+/// Builds the `PYTHONPATH` value for Python plugin subprocesses.
 ///
 /// This is the single source for how PYTHONPATH is constructed. Both
 /// WASM launch and static render paths call this so the
@@ -3478,14 +3480,14 @@ mod tests {
     /// test used to assert the opposite — that public docs deny Python
     /// sandboxing — which kept a false security claim pinned in place. The
     /// invariant it guards now is the true one: no public doc may tell a
-    /// reader that Python apps run unsandboxed as native processes.
+    /// reader that Python plugins run unsandboxed as native processes.
     #[test]
     fn public_security_docs_do_not_deny_python_sandboxing() {
         for (name, doc) in [
             ("README.md", include_str!("../../README.md")),
             (
                 "apps.md",
-                include_str!("../../website/src/content/docs/apps.md"),
+                include_str!("../../website/src/content/docs/plugins.md"),
             ),
             (
                 "sdk.md",
@@ -3497,15 +3499,15 @@ mod tests {
             ),
         ] {
             for claim in [
-                "Python apps are native processes",
-                "Python apps are native subprocesses",
+                "Python plugins are native processes",
+                "Python plugins are native subprocesses",
                 "not sandboxed",
                 "not a Python process sandbox",
                 "do not sandbox",
             ] {
                 assert!(
                     !doc.contains(claim),
-                    "{name} claims {claim:?}; Python apps run sandboxed through the \
+                    "{name} claims {claim:?}; Python plugins run sandboxed through the \
                      CPython-in-WASM adapter (docs/wasm-runtime.md § Security Model)"
                 );
             }

@@ -233,7 +233,7 @@ impl super::PlexiApp {
     pub(crate) fn prepare_user_quit(&mut self) -> bool {
         let veto = self.windows.iter_mut().find_map(|window| {
             window.panes.iter_mut().find_map(|(id, pane)| {
-                pane.as_app_mut()
+                pane.as_view_mut()
                     .and_then(|app| (!app.runtime.request_close()).then_some(*id))
             })
         });

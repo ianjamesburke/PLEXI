@@ -250,7 +250,7 @@ pub(super) fn reconcile(
 }
 
 /// Scan the store backend, reconcile `secrets-index.json` against it, and
-/// persist the result. Called when the Secrets app loads or is refreshed.
+/// persist the result. Called when the Secrets plugin loads or is refreshed.
 #[cfg(all(target_os = "macos", not(test)))]
 pub fn reconcile_index_with_keychain() -> Result<ReconcileReport, SecretError> {
     let store = system_store();

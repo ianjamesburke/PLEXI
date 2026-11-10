@@ -77,7 +77,7 @@ pub struct HostSnapshot {
 }
 
 impl HostSnapshot {
-    fn from_app(app: &PlexiApp) -> Self {
+    fn from_plugin(app: &PlexiApp) -> Self {
         let win = &app.windows[app.active_window];
         let open_panes: Vec<PaneId> = win.panes.keys().copied().collect();
         let pane_titles: HashMap<PaneId, String> = win
@@ -85,7 +85,7 @@ impl HostSnapshot {
             .iter()
             .map(|(id, pane)| {
                 let title = match pane {
-                    Pane::App(p) => p.name.clone(),
+                    Pane::View(p) => p.name.clone(),
                     Pane::Terminal(p) => p.display_name().unwrap_or("Terminal").to_string(),
                     Pane::Portal(p) => format!("Portal({})", p.target_context_id),
                 };
@@ -108,7 +108,7 @@ impl HostSnapshot {
 /// (e.g. `plexi_ai::tool_dispatch::GLOBAL_REGISTRY`, keyed by `pane_id`) stay
 /// exactly that global in test builds too — there is no per-test process to
 /// isolate them. `HostModel` is the allocator for panes opened through the
-/// app (`open_view_by_path`, scenes). `HostHarness` keeps a second counter
+/// plugin (`open_view_by_path`, scenes). `HostHarness` keeps a second counter
 /// for panes it inserts directly. Both draw from this atomic, and
 /// `PlexiApp::new_for_test` seeds `HostModel` from it. A fixed start of `1`
 /// made every chess launch and every scene claim pane 1; `ViewPane`'s drop
@@ -129,7 +129,7 @@ static NEXT_TEST_CONTEXT_ID: std::sync::atomic::AtomicU64 =
 /// Reserve a context id for one harness window.
 ///
 /// `plexi_ai::tool_dispatch::GLOBAL_REGISTRY` is process-global and namespaces
-/// tools by `context_id`. `new_for_test` starts every app at context 1, so
+/// tools by `context_id`. `new_for_test` starts every plugin at context 1, so
 /// concurrent chess tests otherwise see one namespace. Ids start at 1_000_000
 /// so they stay clear of the small ids fixtures still use for a second context.
 pub(crate) fn reserve_test_context_id() -> u64 {
@@ -168,9 +168,9 @@ pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
 /// h.run_frames(1);
 /// ```
 pub struct HostHarness {
-    /// The app under test.
+    /// The plugin under test.
     pub app: PlexiApp,
-    /// Shared egui context — same instance that `app.ctx` holds.
+    /// Shared egui context — same instance that `plugin.ctx` holds.
     ctx: egui::Context,
     /// Next pane id to assign.
     next_pane_id: u64,
@@ -220,7 +220,7 @@ impl HostHarness {
         let frame_tick = Arc::new(AtomicU64::new(0));
         let (mut app, ipc_tx) = PlexiApp::new_for_test(ctx.clone(), frame_tick);
         let ws_path = workspace_dir.path().to_path_buf();
-        let _ = crate::workspace::secrets::ensure_app_state_gitignore(&ws_path);
+        let _ = crate::workspace::secrets::ensure_plugin_state_gitignore(&ws_path);
         app.router.get_mut(0).root = ws_path.clone();
         app.windows[0].path = ws_path;
         app.set_initial_context_id_for_test(reserve_test_context_id());
@@ -311,13 +311,13 @@ impl HostHarness {
 
     // ── Pane management ──────────────────────────────────────────────────────
 
-    /// Add a builtin app pane (not a Terminal) for host testing.
+    /// Add a builtin view pane (not a Terminal) for host testing.
     /// The pane has builtin permissions (all capability checks pass).
     pub fn add_test_pane(&mut self) -> PaneId {
         self.add_test_pane_with_permissions(PluginPermissions::builtin())
     }
 
-    /// Add a test app pane with the given permissions.
+    /// Add a test view pane with the given permissions.
     pub fn add_test_pane_with_permissions(&mut self, permissions: PluginPermissions) -> PaneId {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -326,7 +326,7 @@ impl HostHarness {
         // the real temp_dir(), which on a dev machine can hold ~50k entries
         // and balloons any test that renders the pane by gigabytes.
         let browser_root = self._workspace_dir.path().to_path_buf();
-        let app_pane = ViewPane {
+        let view_pane = ViewPane {
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -346,7 +346,7 @@ impl HostHarness {
         };
 
         let win = &mut self.app.windows[0];
-        win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -355,7 +355,7 @@ impl HostHarness {
         pane_id
     }
 
-    /// Add a builtin Assistant app pane backed by an inert AI broker. Used by
+    /// Add a builtin Assistant view pane backed by an inert AI broker. Used by
     /// input-ownership tests that assert on the composer's observable state.
     /// Always lands in `windows[0]` — for a pane in a specific (e.g.
     /// secondary-context) window, use
@@ -411,7 +411,7 @@ impl HostHarness {
             &crate::config::config_dir(),
             context_id,
         );
-        let app_pane = ViewPane {
+        let view_pane = ViewPane {
             pip_status: None,
             id: pane_id,
             runtime: ViewRuntime::Builtin(Box::new(assistant)),
@@ -428,7 +428,7 @@ impl HostHarness {
             semantic_state: Default::default(),
         };
         let win = &mut self.app.windows[win_idx];
-        win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         // Join the layout so this pane actually renders each frame — a tile
         // outside the root container would never reach the tiling behavior.
@@ -445,7 +445,7 @@ impl HostHarness {
         pane_id
     }
 
-    /// Mutable access to an assistant pane's concrete app for state assertions.
+    /// Mutable access to an assistant pane's concrete plugin for state assertions.
     /// Searches every window, not just `windows[0]` — a pane placed via
     /// [`Self::add_assistant_pane_in_window`] with a non-zero index must
     /// still be found.
@@ -456,33 +456,33 @@ impl HostHarness {
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("assistant pane not found");
-        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not an view pane").runtime
         else {
-            panic!("pane {pane_id} is not a builtin app");
+            panic!("pane {pane_id} is not a builtin plugin");
         };
         app.as_any_mut()
             .downcast_mut::<crate::assistant::AssistantView>()
             .expect("pane is not an AssistantView")
     }
 
-    /// Mutable access to a text-editor pane's concrete app for scroll/focus
+    /// Mutable access to a text-editor pane's concrete plugin for scroll/focus
     /// assertions. Searches every window, matching [`Self::assistant_mut`].
     pub fn text_editor_mut(
         &mut self,
         pane_id: PaneId,
-    ) -> &mut crate::app::text_editor_app::TextEditorView {
+    ) -> &mut crate::app::text_editor_view::TextEditorView {
         let pane = self
             .app
             .windows
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("text editor pane not found");
-        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not an view pane").runtime
         else {
-            panic!("pane {pane_id} is not a builtin app");
+            panic!("pane {pane_id} is not a builtin plugin");
         };
         app.as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
+            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
             .expect("pane is not a TextEditorView")
     }
 
@@ -558,9 +558,9 @@ impl HostHarness {
 
     // ── State inspection ─────────────────────────────────────────────────────
 
-    /// Snapshot observable state from the app after the last frame.
+    /// Snapshot observable state from the plugin after the last frame.
     pub fn state(&self) -> HostSnapshot {
-        HostSnapshot::from_app(&self.app)
+        HostSnapshot::from_plugin(&self.app)
     }
 
     /// Number of panes in the active window.
@@ -607,8 +607,8 @@ impl HostHarness {
     /// terminal. Returns the terminal's `PaneId`.
     pub fn add_focused_terminal(&mut self) -> PaneId {
         if self.app.windows[0].tree.root.is_none() {
-            let app_pane = self.add_test_pane();
-            self.focus_pane(app_pane);
+            let view_pane = self.add_test_pane();
+            self.focus_pane(view_pane);
         } else if self.app.windows[0].focused_pane.is_none() {
             if let Some(root) = self.app.windows[0].tree.root {
                 self.app.windows[0].focused_pane = self.app.windows[0].find_first_pane_in(root);
@@ -673,17 +673,17 @@ impl HostHarness {
         self
     }
 
-    /// Launch a real process app from `apps/dev/<name>` and return its pane
+    /// Launch a real process plugin from `apps/dev/<name>` and return its pane
     /// id, without waiting for the guest's first render. Use this when the
     /// test drives startup itself (a title-phase poll, a scheduler-wake
-    /// probe); otherwise prefer `launch_dev_app`, which also waits.
-    pub fn launch_dev_app_without_render(&mut self, name: &str) -> PaneId {
+    /// probe); otherwise prefer `launch_dev_view`, which also waits.
+    pub fn launch_dev_view_without_render(&mut self, name: &str) -> PaneId {
         let plugin_dir =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("apps/dev/{name}"));
         let before = self.state().open_panes;
         let focused = self
             .app
-            .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
+            .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
             .unwrap_or_else(|e| panic!("launch {name}: {e}"));
         self.state()
             .open_panes
@@ -693,26 +693,26 @@ impl HostHarness {
             .unwrap_or_else(|| panic!("a pane appears after launching {name}"))
     }
 
-    /// Launch a real process app from `apps/dev/<name>` and poll frames until
+    /// Launch a real process plugin from `apps/dev/<name>` and poll frames until
     /// its guest has committed a first rendered tree. Returns the pane id.
     /// Anything layout-dependent (pane rect resolution, clicking, reading the
     /// semantic tree) needs that first commit, so this is the default launch.
-    pub fn launch_dev_app(&mut self, name: &str) -> PaneId {
-        let pane_id = self.launch_dev_app_without_render(name);
+    pub fn launch_dev_view(&mut self, name: &str) -> PaneId {
+        let pane_id = self.launch_dev_view_without_render(name);
         self.wait_for_first_render(pane_id);
         pane_id
     }
 
-    /// Launch the real process app at `<repo>/<rel_dir>` with launch `args`,
+    /// Launch the real process plugin at `<repo>/<rel_dir>` with launch `args`,
     /// rooted in the harness's scratch workspace (so any `PersistState` lands
     /// in a tempdir, never the checkout), and wait for its first render.
-    pub fn launch_repo_app(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
+    pub fn launch_repo_view(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
         let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
         let workspace = self._workspace_dir.path().to_path_buf();
         let before = self.state().open_panes;
         let focused = self
             .app
-            .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, Some(workspace), args)
+            .launch_view_by_path_with_layout(&plugin_dir.to_string_lossy(), None, Some(workspace), args)
             .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
         let pane_id = self
             .state()
@@ -728,7 +728,7 @@ impl HostHarness {
 
     /// Poll until `pane_id` has tools in the process-global registry.
     ///
-    /// `launch_repo_app` is the chess launch path. Chess declares tools from
+    /// `launch_repo_view` is the chess launch path. Chess declares tools from
     /// `init`, but under a parallel `cargo test` that declaration can arrive
     /// after the first rendered tree. A call in that gap is `tool_not_found`.
     pub fn wait_for_exposed_tools(&mut self, pane_id: PaneId) {
@@ -750,12 +750,12 @@ impl HostHarness {
 
     /// Poll frames until the Python guest backing `pane_id` has committed its
     /// first rendered tree, then run two idle frames so the tile tree's
-    /// layout settles. Panics naming the app's manifest id on timeout.
+    /// layout settles. Panics naming the plugin's manifest id on timeout.
     pub fn wait_for_first_render(&mut self, pane_id: PaneId) {
         let name = self.app.windows[self.app.active_window]
             .panes
             .get(&pane_id)
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .map(|pane| pane.manifest_id.clone())
             .unwrap_or_else(|| format!("pane {pane_id}"));
         let start = std::time::Instant::now();
@@ -764,7 +764,7 @@ impl HostHarness {
             let rendered = self.app.windows[self.app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(Pane::as_app)
+                .and_then(Pane::as_view)
                 .is_some_and(
                     |pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()),
                 );
@@ -788,17 +788,17 @@ impl HostHarness {
     /// expected. The timeline is process-global, so use a distinct stream
     /// name (or payload marker) per test to stay isolated under parallel
     /// test runs.
-    pub fn wait_for_app_event(
+    pub fn wait_for_view_event(
         &mut self,
         stream: &str,
         payload_contains: Option<&str>,
         timeout: std::time::Duration,
-    ) -> Result<crate::host::app_timeline::PluginEventRecord, String> {
+    ) -> Result<crate::host::plugin_timeline::PluginEventRecord, String> {
         let started = std::time::Instant::now();
         loop {
             {
-                let timeline = crate::host::app_timeline::global();
-                let timeline = timeline.lock().expect("app timeline lock");
+                let timeline = crate::host::plugin_timeline::global();
+                let timeline = timeline.lock().expect("plugin timeline lock");
                 let matched = timeline.events().iter().rev().find(|record| {
                     record.event == stream
                         && payload_contains.is_none_or(|needle| {
@@ -831,7 +831,7 @@ impl HostHarness {
     /// pointer move + press + release is delivered into the live production
     /// egui pass, so it exercises the pane's own `canvas_transform`
     /// inversion, never a parallel resolver. Call `run_frames` afterward to
-    /// let the dispatch (and, for process apps, the async IPC round trip to
+    /// let the dispatch (and, for process plugins, the async IPC round trip to
     /// the guest) take effect. `button` is `"left"`, `"right"`, or `"middle"`.
     pub fn inject_click(
         &self,
@@ -913,7 +913,7 @@ impl HostHarness {
     /// every node in the pane's tree. The host resolves the node's on-screen
     /// rect during the next render pass and delivers the same
     /// `PendingPaneClick` honest hit-test the pixel path uses. Call
-    /// `run_frames` afterward to let the dispatch (and, for process apps,
+    /// `run_frames` afterward to let the dispatch (and, for process plugins,
     /// the async IPC round trip to the guest) take effect. `button` is
     /// `"left"`, `"right"`, or `"middle"`.
     pub fn inject_node_click(

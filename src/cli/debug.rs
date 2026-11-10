@@ -5,7 +5,7 @@
 //! inspected after the host has exited. `show --join-agents` additionally reads
 //! the external agent transcripts named by recorded `Provenance.session_id`
 //! values (`~/.pi/agent/sessions`, `~/.claude/projects`) and interleaves their
-//! prompts and tool calls with the host's permission and app events by time.
+//! prompts and tool calls with the host's permission and plugin events by time.
 
 use crate::host::flight_recorder as recorder;
 use chrono::{DateTime, Local, Utc};

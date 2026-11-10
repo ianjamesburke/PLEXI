@@ -1,7 +1,7 @@
 // Counter — typed-node interaction POC for the Plexi WASM runtime.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit/world.wit",
 });
 

@@ -34,7 +34,7 @@ pub enum ApprovalChoice {
     Once,
     Session,
     Always,
-    /// Different arguments for the same actor, context, app instance and resource,
+    /// Different arguments for the same actor, context, plugin instance and resource,
     /// until this host session ends.
     AllowTool,
     /// Refuse this call only. The next call asks again.
@@ -260,7 +260,7 @@ impl ContinuationState {
     }
 }
 
-/// Host-owned durable continuation record linking a waiting turn or app tool
+/// Host-owned durable continuation record linking a waiting turn or plugin tool
 /// mutation to its session, pane/context, resource/revision, `Needs you` item,
 /// and terminal receipt.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -353,7 +353,7 @@ struct PendingWiden {
     action: String,
 }
 
-/// One row the Permissions app and `plexi permissions list` share.
+/// One row the Permissions plugin and `plexi permissions list` share.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PermissionEntry {
     pub id: String,
@@ -379,7 +379,7 @@ pub struct PermissionEntry {
 #[derive(Debug, Clone)]
 pub struct PermissionCaller {
     /// A person at a terminal with no pane and no call credential.
-    /// The Permissions app's own buttons also pass `true`.
+    /// The Permissions plugin's own buttons also pass `true`.
     pub human: bool,
     pub actor_id: String,
 }
@@ -922,7 +922,7 @@ impl PermissionMonitor {
     }
 
     /// Admit a request with the immutable posture captured when its agent pane
-    /// was spawned. The caller supplies no posture for human and app requests.
+    /// was spawned. The caller supplies no posture for human and plugin requests.
     pub fn admit_with_posture(
         &self,
         req: AdmitRequest<'_>,
@@ -932,7 +932,7 @@ impl PermissionMonitor {
     }
 
     /// Admit one typed CLI operation. `disclosure` is the text the approval
-    /// shows the human in place of the raw argument JSON: it names the app,
+    /// shows the human in place of the raw argument JSON: it names the plugin,
     /// workspace, executable, operation and the native program's ambient
     /// authority. It is display only and never part of a binding.
     pub fn admit_cli_operation(&self, req: AdmitRequest<'_>, disclosure: &str) -> Admission {
@@ -3148,9 +3148,9 @@ impl PermissionMonitor {
         entries
     }
 
-    /// Persist one app capability. A later click replaces an auto-grant of the
+    /// Persist one plugin capability. A later click replaces an auto-grant of the
     /// same capability instead of adding a second row.
-    pub fn grant_app_capability(
+    pub fn grant_plugin_capability(
         &self,
         plugin_id: &str,
         workspace_root: &Path,
@@ -3187,7 +3187,7 @@ impl PermissionMonitor {
     /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
     /// Non-sensitive capabilities with no stored decision are auto-granted.
     /// Sensitive capabilities stay withheld until a human grant exists.
-    pub fn materialize_app_permissions(
+    pub fn materialize_plugin_permissions(
         &self,
         plugin_id: &str,
         workspace_root: &Path,
@@ -3280,7 +3280,7 @@ impl PermissionMonitor {
                 .records()
                 .iter()
                 .filter(|record| {
-                    record.actor_type == ActorType::App
+                    record.actor_type == ActorType::Plugin
                         && record.actor_id == plugin_id
                         && record.target_type == TargetType::Capability
                         && record.workspace_root.as_deref() == Some(ws.as_path())
@@ -4022,7 +4022,7 @@ fn stored_capability_decision(
     let mut ask = false;
     let mut deny = false;
     for record in store.records() {
-        if record.actor_type != ActorType::App
+        if record.actor_type != ActorType::Plugin
             || record.actor_id != plugin_id
             || record.target_type != TargetType::Capability
             || record.target_id != capability_id
@@ -5141,7 +5141,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_app_tool_keeps_identity_and_resource_boundaries() {
+    fn allow_plugin_tool_keeps_identity_and_resource_boundaries() {
         let monitor = PermissionMonitor::ephemeral();
         let row = binding("ignored");
         let first = r#"{"game_id":"game-1","move":"e2e4"}"#;

@@ -138,7 +138,7 @@ impl PlexiApp {
         // Resolve the caller's host-established origin here, at the point of
         // dispatch — never cached, never trusted verbatim from the wire
         // (stint 0724 Phase D). A request whose sender already resolved its
-        // own origin (host MCP, a WASM/Python app's own subscribe path) is
+        // own origin (host MCP, a WASM/Python plugin's own subscribe path) is
         // left untouched; only the raw CLI-socket shape (`context_id_override
         // == None`) is resolved here, preferring kernel-verified
         // `peer_ancestry` over the client-forwarded `from_pane_id` claim.
@@ -311,7 +311,7 @@ impl PlexiApp {
 
     /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
     /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
-    /// 0013/0014) so capability-gated app requests take the identical host
+    /// 0013/0014) so capability-gated plugin requests take the identical host
     /// code path as CLI requests arriving over PLEXI_SOCKET.
     pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
         match &cmd {
@@ -325,10 +325,10 @@ impl PlexiApp {
                     if context_id.is_some_and(|id| window.context_id != id) { continue; }
                     for (id, pane) in &mut window.panes {
                         if pane_id.is_some_and(|wanted| wanted != *id) { continue; }
-                        let Some(app) = pane.as_app_mut() else { continue; };
+                        let Some(app) = pane.as_view_mut() else { continue; };
                         if app.runtime.type_id() != "assistant" { continue; }
                         submitted = true;
-                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone(), crate::app::app_trait::ExternalTurnOpts { conversation_id: conversation_id.clone(), join_desktop: *join_desktop, status_for: status_for.clone(), client: client.clone(), kind: kind.clone() }) { failure = Some(error); }
+                        if let Err(error) = app.runtime.submit_external_turn(text.clone(), request_id.clone(), response_file.clone(), crate::app::view_trait::ExternalTurnOpts { conversation_id: conversation_id.clone(), join_desktop: *join_desktop, status_for: status_for.clone(), client: client.clone(), kind: kind.clone() }) { failure = Some(error); }
                         break;
                     }
                     if submitted { break; }
@@ -338,7 +338,7 @@ impl PlexiApp {
                 else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
                     ); }
             }
-            crate::protocol::HostRequest::CommandView { op, payload, response_file } => {
+            crate::protocol::HostRequest::AgentsDashboard { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=command_view op={op}");
                 let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
                     .or_else(crate::config::active_workspace_root)
@@ -567,7 +567,7 @@ impl PlexiApp {
                             };
                             found = true;
                             break;
-                        } else if let Some(a) = pane.as_app_mut() {
+                        } else if let Some(a) = pane.as_view_mut() {
                             a.runtime.on_pane_renamed(name);
                             a.name = if name.is_empty() {
                                 a.runtime.display_name()
@@ -575,7 +575,7 @@ impl PlexiApp {
                                 name.clone()
                             };
                             log::info!(
-                                "pane_ipc: set_pane_title: app pane {pane_id} named {:?}",
+                                "pane_ipc: set_pane_title: view pane {pane_id} named {:?}",
                                 a.name
                             );
                             found = true;
@@ -693,9 +693,9 @@ impl PlexiApp {
                                     });
                                 ("terminal", name, cwd)
                             }
-                            crate::host::pane::Pane::App(a) => {
+                            crate::host::pane::Pane::View(a) => {
                                 let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
-                                ("app", a.name.clone(), cwd)
+                                ("view", a.name.clone(), cwd)
                             }
                             crate::host::pane::Pane::Portal(p) => {
                                 ("portal", format!("portal:{}", p.target_context_id), None)
@@ -872,10 +872,10 @@ impl PlexiApp {
                                 }
                                 obj
                             }
-                            crate::host::pane::Pane::App(a) => {
+                            crate::host::pane::Pane::View(a) => {
                                 serde_json::json!({
                                     "id": pane_id,
-                                    "type": "app",
+                                    "type": "view",
                                     "title": a.name.clone(),
                                     "focused": focused,
                                     "context_id": win.context_id,
@@ -949,10 +949,10 @@ impl PlexiApp {
                                             "slots": pane_slots_json(pane),
                                         })
                                     }
-                                    crate::host::pane::Pane::App(a) => {
+                                    crate::host::pane::Pane::View(a) => {
                                         serde_json::json!({
                                             "id": pane_id,
-                                            "type": "app",
+                                            "type": "view",
                                             "title": a.name.clone(),
                                             "focused": false,
                                             "context_id": win.context_id,
@@ -1875,7 +1875,7 @@ impl PlexiApp {
                 let mut cwd_override = spec.cwd.clone();
                 let mut file_browser_follow_caller = false;
                 // Snapshot Explorer's caller directory before any focus redirect.
-                // An explicit --cwd retains precedence; other app policies are unchanged.
+                // An explicit --cwd retains precedence; other plugin policies are unchanged.
                 if cwd_override.is_none()
                     && matches!(&spec.target, crate::app::launch_spec::PaneLaunchTarget::PluginId(id) if id == "file_browser")
                 {
@@ -2140,7 +2140,7 @@ impl PlexiApp {
                     let (target_win, orig_focused_in_target) =
                         self.redirect_focus_to_spawn_origin(spec.from_pane_id, "path", active);
                     launch_result = self
-                        .launch_app_by_path_with_layout_no_review_modal(
+                        .launch_view_by_path_with_layout_no_review_modal(
                             &app_path.to_string_lossy(),
                             spec.layout.clone(),
                             spec.workspace_root.clone(),
@@ -2224,7 +2224,7 @@ impl PlexiApp {
                             .view_for_context(target_context_id, &self.router)
                             .placement_for(type_id),
                     );
-                    let launched = self.launch_app_by_id_with_layout_at(
+                    let launched = self.launch_view_by_id_with_layout_at(
                         crate::pane_ops::create::IdViewLaunchOptions {
                             target_win,
                             bypass_on_launch: false,
@@ -2345,8 +2345,8 @@ impl PlexiApp {
                     win.panes.get(pane_id).map(|pane| {
                         if pane.as_terminal().is_some() {
                             "terminal"
-                        } else if pane.as_app().is_some() {
-                            "app"
+                        } else if pane.as_view().is_some() {
+                            "view"
                         } else {
                             "unsupported"
                         }
@@ -2603,7 +2603,7 @@ impl PlexiApp {
                         Err("--paste and --submit cannot be combined".to_string())
                     }
                     Some("terminal") if *paste => {
-                        Err("--paste only applies to app panes".to_string())
+                        Err("--paste only applies to view panes".to_string())
                     }
                     Some("terminal") if *submit && self.submit_in_flight(*pane_id) => {
                         // Refuse before typing anything. Two submits racing on
@@ -2652,13 +2652,13 @@ impl PlexiApp {
                                     }
                                 }
                     }
-                    Some("app") if *submit => {
+                    Some("view") if *submit => {
                         log::warn!("pane_submit: pane_id={pane_id} refused — not a terminal pane");
                         Err(format!(
-                            "pane {pane_id} is an app pane; --submit only applies to terminal panes"
+                            "pane {pane_id} is an view pane; --submit only applies to terminal panes"
                         ))
                     }
-                    Some("app") => {
+                    Some("view") => {
                         if !self.pane_navigate(*pane_id) {
                             Err(format!("pane {pane_id} could not be focused"))
                         } else {
@@ -2674,7 +2674,7 @@ impl PlexiApp {
                             );
                             self.ctx.request_repaint();
                             log::info!(
-                                "pane_ipc: send_to_pane: app pane_id={pane_id} paste={paste} text_chars={}",
+                                "pane_ipc: send_to_pane: view pane_id={pane_id} paste={paste} text_chars={}",
                                 text.chars().count()
                             );
                             Ok(())
@@ -2821,7 +2821,7 @@ impl PlexiApp {
                 // Mirror the live dispatch gate (stint 0456): while this
                 // pane's TextInput holds egui focus, keys belong to the
                 // host TextEdit — replay into the real ctx (the passthrough
-                // path below) instead of the app's raw KeyEvent path, the
+                // path below) instead of the plugin's raw KeyEvent path, the
                 // same routing a physical keypress gets.
                 let text_input_focused =
                     crate::app::input_owner::focused_pane_text_surface(&self.ctx, *pane_id);
@@ -2846,7 +2846,7 @@ impl PlexiApp {
                                     .process_command(egui_term::BackendCommand::Write(bytes));
                             }
                             Ok(serde_json::json!({"ok": true}))
-                        } else if pane.as_app_mut().is_some()
+                        } else if pane.as_view_mut().is_some()
                             && text_input_focused
                             && key.eq_ignore_ascii_case("escape")
                         {
@@ -2854,14 +2854,14 @@ impl PlexiApp {
                             // a replayed raw Escape lands mid-frame, after the
                             // dispatch gate already ran, so it would fall
                             // through to the ViewActive CloseView binding and
-                            // destroy the pane. Deliver it to the app's
+                            // destroy the pane. Deliver it to the plugin's
                             // handle_key instead — the assistant interrupts
                             // its in-flight turn — and never replay it raw.
-                            let app_pane = pane.as_app_mut().expect("checked above");
-                            match super::drive_native_pane_key(&mut app_pane.runtime, key) {
+                            let view_pane = pane.as_view_mut().expect("checked above");
+                            match super::drive_native_pane_key(&mut view_pane.runtime, key) {
                                 Ok(disposition) => {
                                     log::info!(
-                                        "pane_ipc: key_pane: pane {pane_id} Escape delivered to app (text surface focused, CloseView suppressed, result={disposition:?})"
+                                        "pane_ipc: key_pane: pane {pane_id} Escape delivered to plugin (text surface focused, CloseView suppressed, result={disposition:?})"
                                     );
                                     Ok(serde_json::json!({
                                         "ok": true,
@@ -2870,7 +2870,7 @@ impl PlexiApp {
                                 }
                                 Err(e) => Err(e),
                             }
-                        } else if pane.as_app_mut().is_some() && text_input_focused {
+                        } else if pane.as_view_mut().is_some() && text_input_focused {
                             match super::key_str_to_egui_raw_input(key) {
                                 Some(raw) => {
                                     log::info!(
@@ -2883,24 +2883,24 @@ impl PlexiApp {
                                     }))
                                 }
                                 None => Err(format!(
-                                    "key {key:?} does not map to a native app key event"
+                                    "key {key:?} does not map to a native plugin key event"
                                 )),
                             }
-                        } else if let Some(app_pane) = pane.as_app_mut() {
-                            let runtime = &mut app_pane.runtime;
+                        } else if let Some(view_pane) = pane.as_view_mut() {
+                            let runtime = &mut view_pane.runtime;
                             match super::drive_native_pane_key(runtime, key) {
                                 Ok(disposition) => {
                                     let disposition_label = match disposition {
-                                        crate::app::app_trait::KeyDisposition::Consumed => {
+                                        crate::app::view_trait::KeyDisposition::Consumed => {
                                             "consumed"
                                         }
-                                        crate::app::app_trait::KeyDisposition::Passthrough => {
+                                        crate::app::view_trait::KeyDisposition::Passthrough => {
                                             passthrough_raw = super::key_str_to_egui_raw_input(key);
                                             "passthrough"
                                         }
                                     };
                                     log::info!(
-                                        "pane_ipc: key_pane: native app pane_id={pane_id} \
+                                        "pane_ipc: key_pane: native view pane_id={pane_id} \
                                              key_chars={} disposition={disposition_label}",
                                         key.chars().count()
                                     );
@@ -2954,9 +2954,9 @@ impl PlexiApp {
                     let app = self.windows[win_idx]
                         .panes
                         .get_mut(pane_id)
-                        .and_then(crate::host::pane::Pane::as_app_mut)
+                        .and_then(crate::host::pane::Pane::as_view_mut)
                         .ok_or_else(|| format!("pane {pane_id} cannot accept this drop"))?;
-                    crate::spatial::tiling::dispatch_drop_to_app(*pane_id, app, path_or_url, true)
+                    crate::spatial::tiling::dispatch_drop_to_plugin(*pane_id, app, path_or_url, true)
                 })();
                 match &result {
                     Ok(_) => log::info!(
@@ -3015,13 +3015,13 @@ impl PlexiApp {
                     let Some(is_builtin) = self.windows[win_idx]
                         .panes
                         .get(pane_id)
-                        .and_then(crate::host::pane::Pane::as_app)
-                        .map(|app_pane| {
-                            matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_))
+                        .and_then(crate::host::pane::Pane::as_view)
+                        .map(|view_pane| {
+                            matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_))
                         })
                     else {
                         return Err(format!(
-                            "pane {pane_id}: click injection is only supported for app panes"
+                            "pane {pane_id}: click injection is only supported for view panes"
                         ));
                     };
                     if !self.pane_navigate(*pane_id) {
@@ -3041,7 +3041,7 @@ impl PlexiApp {
                     // recognized as a click. Queue instead, on the plane the
                     // pane's runtime actually consumes:
                     if is_builtin {
-                        // Builtin apps are ordinary egui widgets — nothing
+                        // Builtin plugins are ordinary egui widgets — nothing
                         // consumes `PendingPaneClick` on their render path, so
                         // queue genuine pointer events through the same
                         // pre-pass raw-input merge `KeyPane` uses
@@ -3118,16 +3118,16 @@ impl PlexiApp {
                     let Some((win_idx, _tile_id)) = self.find_pane_in_any_window(*pane_id) else {
                         return Err(format!("pane {pane_id} not found"));
                     };
-                    let Some(app_pane) = self.windows[win_idx]
+                    let Some(view_pane) = self.windows[win_idx]
                         .panes
                         .get(pane_id)
-                        .and_then(|pane| pane.as_app())
+                        .and_then(|pane| pane.as_view())
                     else {
                         return Err(format!(
-                            "pane {pane_id}: click injection is only supported for app panes"
+                            "pane {pane_id}: click injection is only supported for view panes"
                         ));
                     };
-                    let arena_id = app_pane
+                    let arena_id = view_pane
                         .semantic_state()
                         .resolve_interactive_node(node_id)?;
                     if !self.pane_navigate(*pane_id) {
@@ -3188,17 +3188,17 @@ impl PlexiApp {
                             "pane {pane_id}: no known screen rect (pane has not rendered yet)"
                         ));
                     };
-                    let Some(app_pane) = self.windows[win_idx]
+                    let Some(view_pane) = self.windows[win_idx]
                         .panes
                         .get(pane_id)
-                        .and_then(crate::host::pane::Pane::as_app)
+                        .and_then(crate::host::pane::Pane::as_view)
                     else {
                         return Err(format!(
-                            "pane {pane_id}: drag injection is only supported for app panes"
+                            "pane {pane_id}: drag injection is only supported for view panes"
                         ));
                     };
                     let is_builtin =
-                        matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_));
+                        matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_));
                     // Resolve each endpoint to an absolute screen position:
                     // pane-pixel coordinates directly, or a semantic node's
                     // cached bounds center. Nodes without recorded bounds
@@ -3213,7 +3213,7 @@ impl PlexiApp {
                             )),
                             (Some([x, y]), None) => Ok(pane_rect.min + egui::vec2(*x, *y)),
                             (None, Some(node_id)) => {
-                                let state = app_pane.semantic_state();
+                                let state = view_pane.semantic_state();
                                 let Some(node) = state.nodes.iter().find(|n| &n.id == node_id)
                                 else {
                                     return Err(format!(
@@ -3568,32 +3568,32 @@ impl PlexiApp {
                     }
                     Some(pane) => {
                         let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
-                        let mut response = if let Some(app_pane) = pane.as_app() {
-                            if matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
+                        let mut response = if let Some(view_pane) = pane.as_view() {
+                            if matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
                                 // Core pane inspection needs the rendered tree even when
                                 // experimental eager accessibility capture is off. This
                                 // enables internal capture, not the native OS adapter.
                                 self.ctx.enable_accesskit();
                                 self.ctx.request_repaint();
                             }
-                            let frame = app_pane
+                            let frame = view_pane
                                 .runtime
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
-                            let semantic = app_pane.semantic_state();
-                            let plugin_state = app_pane.runtime.semantic_details();
-                            let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
+                            let semantic = view_pane.semantic_state();
+                            let plugin_state = view_pane.runtime.semantic_details();
+                            let (lifecycle, guest_error) = view_pane.runtime.lifecycle();
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} lifecycle={lifecycle} runtime={} schema_version={} node_count={}",
-                                app_pane.runtime.runtime_kind(),
+                                view_pane.runtime.runtime_kind(),
                                 semantic.schema_version,
                                 semantic.nodes.len(),
                             );
                             serde_json::json!({
                                 "pane_id": pane_id,
-                                "type": "app",
-                                "title": app_pane.name,
-                                "manifest_id": app_pane.manifest_id,
+                                "type": "view",
+                                "title": view_pane.name,
+                                "manifest_id": view_pane.manifest_id,
                                 "lifecycle": lifecycle,
                                 // The CLI transport envelope signals failure
                                 // with a top-level `error` string. Guest-domain
@@ -3697,15 +3697,15 @@ impl PlexiApp {
                         Err(format!("pane {pane_id} not found"))
                     }
                     Some(pane) => {
-                        if let Some(app_pane) = pane.as_app_mut() {
-                            app_pane
+                        if let Some(view_pane) = pane.as_view_mut() {
+                            view_pane
                                 .runtime
-                                .send_app_action(action.clone(), args.clone())
+                                .send_plugin_action(action.clone(), args.clone())
                         } else {
                             log::warn!(
-                                "pane_ipc: send_pane_action: pane_id={pane_id} is not an app pane"
+                                "pane_ipc: send_pane_action: pane_id={pane_id} is not an view pane"
                             );
-                            Err(format!("pane {pane_id} is not an app pane"))
+                            Err(format!("pane {pane_id} is not an view pane"))
                         }
                     }
                 };
@@ -3729,7 +3729,7 @@ impl PlexiApp {
                 response_file,
                 wait_approved,
             } => {
-                self.call_app_tool(
+                self.call_plugin_tool(
                     plugin_id.clone(),
                     tool.clone(),
                     input_json.clone(),
@@ -3749,7 +3749,7 @@ impl PlexiApp {
                 peer_ancestry,
                 response_file,
             } => {
-                self.list_app_tools(
+                self.list_plugin_tools(
                     plugin_id.as_deref(),
                     *context_id,
                     *caller_pane_id,
@@ -4083,7 +4083,7 @@ impl PlexiApp {
                     log::info!("pane_ipc: set_pip_status: pane_id={pane_id} stored on pane");
                 } else {
                     log::warn!(
-                        "pane_ipc: set_pip_status: pane_id={pane_id} not found or not an app pane"
+                        "pane_ipc: set_pip_status: pane_id={pane_id} not found or not an view pane"
                     );
                 }
             }
@@ -5510,8 +5510,8 @@ impl PlexiApp {
     /// `ListPermissions` host handler (stint 0017). Writes the permission
     /// inventory JSON documented on the `HostRequest::ListPermissions` variant:
     /// one row per stored `permissions.toml` entry (`stored: true`) plus one
-    /// row per live granted/blocked capability of a running app that has no
-    /// stored entry (`stored: false`), and the list of running app ids.
+    /// row per live granted/blocked capability of a running plugin that has no
+    /// stored entry (`stored: false`), and the list of running plugin ids.
     fn handle_list_permissions(&mut self, response_file: &str) {
         use crate::app::permissions::PermissionStore;
         use crate::host::pane::Pane;
@@ -5535,27 +5535,27 @@ impl PlexiApp {
         let mut running: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for win in &self.windows {
             for pane in win.panes.values() {
-                let Pane::App(app_pane) = pane else { continue };
-                running.insert(app_pane.manifest_id.clone());
-                let workspace = app_pane
+                let Pane::View(view_pane) = pane else { continue };
+                running.insert(view_pane.manifest_id.clone());
+                let workspace = view_pane
                     .workspace_root
                     .canonicalize()
-                    .unwrap_or_else(|_| app_pane.workspace_root.clone())
+                    .unwrap_or_else(|_| view_pane.workspace_root.clone())
                     .display()
                     .to_string();
-                let live = app_pane
+                let live = view_pane
                     .permissions
                     .capabilities
                     .iter()
                     .map(|&cap| (cap, "green"))
-                    .chain(app_pane.permissions.blocked.iter().map(|&cap| (cap, "red")));
+                    .chain(view_pane.permissions.blocked.iter().map(|&cap| (cap, "red")));
                 for (cap, state) in live {
-                    let key = format!("{}::{}::{}", app_pane.manifest_id, workspace, cap.as_str());
+                    let key = format!("{}::{}::{}", view_pane.manifest_id, workspace, cap.as_str());
                     if !stored_keys.insert(key) {
                         continue; // already covered by a stored row
                     }
                     rows.push(serde_json::json!({
-                        "plugin_id": app_pane.manifest_id,
+                        "plugin_id": view_pane.manifest_id,
                         "workspace": workspace,
                         "capability": cap.as_str(),
                         "state": state,
@@ -5576,10 +5576,10 @@ impl PlexiApp {
     }
 
     /// `SetPermission` host handler (stint 0017). Persists the new state to
-    /// `permissions.toml` and live-updates every running app instance with a
-    /// matching (plugin_id, workspace) so a revocation takes effect on the app's
+    /// `permissions.toml` and live-updates every running plugin instance with a
+    /// matching (plugin_id, workspace) so a revocation takes effect on the plugin's
     /// next request. Unknown capability/state strings fail closed with an
-    /// error reply; a missing workspace fails unless the app is running.
+    /// error reply; a missing workspace fails unless the plugin is running.
     fn handle_set_permission(
         &mut self,
         plugin_id: &str,
@@ -5602,16 +5602,16 @@ impl PlexiApp {
                     .iter()
                     .find_map(|win| {
                         win.panes.values().find_map(|pane| {
-                            let Pane::App(app_pane) = pane else {
+                            let Pane::View(view_pane) = pane else {
                                 return None;
                             };
-                            (app_pane.manifest_id == plugin_id)
-                                .then(|| app_pane.workspace_root.clone())
+                            (view_pane.manifest_id == plugin_id)
+                                .then(|| view_pane.workspace_root.clone())
                         })
                     })
                     .ok_or_else(|| {
                         format!(
-                            "workspace required: app '{plugin_id}' is not running; \
+                            "workspace required: plugin '{plugin_id}' is not running; \
                              pass workspace explicitly"
                         )
                     })?,
@@ -5622,45 +5622,45 @@ impl PlexiApp {
             store.save();
 
             crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
-                .grant_app_capability(
+                .grant_plugin_capability(
                     plugin_id,
                     &ws,
                     cap,
                     crate::broker::Decision::from_permission_state(new_state),
                 );
 
-            // Live-update every running instance of this app in this workspace.
+            // Live-update every running instance of this plugin in this workspace.
             let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
             for win in &mut self.windows {
                 for pane in win.panes.values_mut() {
-                    let Pane::App(app_pane) = pane else { continue };
-                    if app_pane.manifest_id != plugin_id {
+                    let Pane::View(view_pane) = pane else { continue };
+                    if view_pane.manifest_id != plugin_id {
                         continue;
                     }
-                    let proc_ws = app_pane
+                    let proc_ws = view_pane
                         .workspace_root
                         .canonicalize()
-                        .unwrap_or_else(|_| app_pane.workspace_root.clone());
+                        .unwrap_or_else(|_| view_pane.workspace_root.clone());
                     if proc_ws != ws_canonical {
                         continue;
                     }
                     match new_state {
                         PermissionState::Green => {
-                            app_pane.permissions.capabilities.insert(cap);
-                            app_pane.permissions.blocked.remove(&cap);
+                            view_pane.permissions.capabilities.insert(cap);
+                            view_pane.permissions.blocked.remove(&cap);
                         }
                         PermissionState::Yellow => {
-                            app_pane.permissions.capabilities.remove(&cap);
-                            app_pane.permissions.blocked.remove(&cap);
+                            view_pane.permissions.capabilities.remove(&cap);
+                            view_pane.permissions.blocked.remove(&cap);
                         }
                         PermissionState::Red => {
-                            app_pane.permissions.blocked.insert(cap);
-                            app_pane.permissions.capabilities.remove(&cap);
+                            view_pane.permissions.blocked.insert(cap);
+                            view_pane.permissions.capabilities.remove(&cap);
                         }
                     }
                     log::info!(
                         "pane_ipc: set_permission: live-updated '{plugin_id}' pane {} — {} → {}",
-                        app_pane.id,
+                        view_pane.id,
                         cap.as_str(),
                         new_state.as_str()
                     );
@@ -6210,7 +6210,7 @@ impl PlexiApp {
     pub(super) fn service_python_pane_runtimes(&mut self, ctx: &egui::Context) {
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
-                if let Some(app) = pane.as_app_mut() {
+                if let Some(app) = pane.as_view_mut() {
                     if let crate::host::pane::ViewRuntime::Python(python) = &mut app.runtime {
                         python.service_external_io(ctx);
                     }

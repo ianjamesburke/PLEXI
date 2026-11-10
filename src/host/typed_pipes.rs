@@ -51,7 +51,7 @@ impl std::fmt::Display for PipeError {
 }
 
 pub struct BinaryPipeAllocation {
-    /// Unix socket path the app connects to as a client.
+    /// Unix socket path the plugin connects to as a client.
     pub socket_path: String,
 }
 
@@ -76,7 +76,7 @@ struct BinaryPipeEntry {
     ring: Arc<ArrayQueue<Vec<u8>>>,
     /// Set by the drain thread before it exits due to a write error (e.g.
     /// Broken pipe). The host polls this flag per-frame via `drain_failed()`
-    /// and emits an error event so the app is notified promptly rather than
+    /// and emits an error event so the plugin is notified promptly rather than
     /// waiting for the next retry attempt.
     error_flag: Arc<AtomicBool>,
 }
@@ -146,10 +146,10 @@ impl TypedPipeRegistry {
 
     /// Allocate a binary pipe backed by a unix domain socket.
     ///
-    /// The host binds a listener, accepts one client connection (the app), and
+    /// The host binds a listener, accepts one client connection (the plugin), and
     /// starts a drain thread that reads from the lock-free ring and writes
     /// length-prefixed frames to the socket. Returns a `BinaryPipeAllocation`
-    /// with the socket path and host-side fd for the caller to hand to the app
+    /// with the socket path and host-side fd for the caller to hand to the plugin
     /// via the `PipeOpen` draw command.
     pub fn open_binary(
         &mut self,
@@ -184,13 +184,13 @@ impl TypedPipeRegistry {
 
             let listener = UnixListener::bind(&socket_path)
                 .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
-            // Prevent child processes (app subprocesses) from inheriting this socket FD.
+            // Prevent child processes (plugin subprocesses) from inheriting this socket FD.
             unsafe {
                 use std::os::unix::io::AsRawFd;
                 libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
             }
             // Non-blocking so the drain thread's accept loop can observe `shutdown`
-            // and exit if the app never connects (e.g. start_capture failed and no
+            // and exit if the plugin never connects (e.g. start_capture failed and no
             // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
             listener
                 .set_nonblocking(true)
@@ -206,14 +206,14 @@ impl TypedPipeRegistry {
             let socket_path_drain = socket_path.clone();
             let pipe_id_log = pipe_id.clone();
 
-            // Drain thread: blocks waiting for the app to connect, then drains the
+            // Drain thread: blocks waiting for the plugin to connect, then drains the
             // ring into the socket. Exits when `shutdown` is set and ring is empty.
             let drain_handle = thread::Builder::new()
                 .name(format!("pipe-drain-{pipe_id}"))
                 .spawn(move || {
                     log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
                     // Poll for a client connection. Listener is non-blocking so we
-                    // can observe `shutdown` and exit if the app never connects
+                    // can observe `shutdown` and exit if the plugin never connects
                     // (e.g. start_capture failed before PipeOpened was sent).
                     let stream = loop {
                         match listener.accept() {
@@ -288,7 +288,7 @@ impl TypedPipeRegistry {
 
             // FILE_FLAG_OVERLAPPED is what lets the drain thread poll for a
             // client while still observing `shutdown`. Without it
-            // `ConnectNamedPipe` blocks forever when the app never connects
+            // `ConnectNamedPipe` blocks forever when the plugin never connects
             // (e.g. start_capture failed before PipeOpened was sent) and
             // `close()` -> `join()` deadlocks.
             //
@@ -466,7 +466,7 @@ impl TypedPipeRegistry {
 
     /// Returns true if the drain thread for `pipe_id` exited due to a write
     /// error (e.g. Broken pipe). The host polls this per-frame to detect pipe
-    /// failures promptly rather than waiting for the app to retry.
+    /// failures promptly rather than waiting for the plugin to retry.
     pub fn drain_failed(&self, pipe_id: &str) -> bool {
         match self.pipes.get(pipe_id) {
             Some(PipeEntry::Binary(b)) => b.error_flag.load(Ordering::Acquire),
@@ -535,13 +535,13 @@ fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
 #[cfg(windows)]
 const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 
-/// Block until the app connects, or until `shutdown` is set.
+/// Block until the plugin connects, or until `shutdown` is set.
 ///
 /// The Windows analogue of the Unix non-blocking accept loop: the pipe was
 /// created `FILE_FLAG_OVERLAPPED`, so `ConnectNamedPipe` returns immediately
 /// with `ERROR_IO_PENDING` and completion is observed by waiting on the
 /// OVERLAPPED's event in 50 ms slices — the same cadence, and the same reason:
-/// an app that never connects must not wedge `close()` -> `join()`.
+/// an plugin that never connects must not wedge `close()` -> `join()`.
 #[cfg(windows)]
 fn win32_await_client(
     handle: windows_sys::Win32::Foundation::HANDLE,
@@ -736,7 +736,7 @@ mod tests {
         // reflects only its own subscribers — they do NOT collide.
         //
         // This is the substrate for `directed_pipes` scoping in
-        // `app/mod.rs`: the host maintains a `(sender, target)` pair keyed
+        // `plugin/mod.rs`: the host maintains a `(sender, target)` pair keyed
         // on pipe_id, and `DeliverPipeMessage` consults that pair to route
         // ONLY to the target — never broadcasting to other panes that
         // coincidentally opened the same id. The registry's job is simply
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn drain_failed_set_after_broken_pipe() {
         // Open a binary pipe, connect a client, then immediately drop it to
-        // simulate the app-side socket closing unexpectedly (Broken pipe).
+        // simulate the plugin-side socket closing unexpectedly (Broken pipe).
         // After the drain thread attempts a write and fails, drain_failed()
         // must return true.
         let (mut reg, _dir) = test_registry();

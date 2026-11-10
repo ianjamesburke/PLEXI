@@ -5,7 +5,7 @@ effect type emitted back to the host, state management, frame timing, and
 all Core 9 apps booting correctly.
 
 These tests serve as the safety net during the runtime refactor
-(ProtocolTransport extraction + V3AppRuntime rewrite).
+(ProtocolTransport extraction + PluginRuntime rewrite).
 """
 
 import json
@@ -1069,10 +1069,10 @@ class TestTimers:
 def test_core_app_boots_and_renders(relative_path: str) -> None:
     """Every Core app must satisfy Init -> Ready -> Render -> FrameDone."""
     from plexi_sdk.testing import PluginHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with PluginHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert cmds, f"{relative_path} should emit draw/control commands"
     trees = [c for c in cmds if c.get("type") == "component_tree"]
@@ -1090,10 +1090,10 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str) -> None:
     """Apps that need timers/schedulers must emit them during boot."""
     from plexi_sdk.testing import PluginHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with PluginHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert any(c.get("type") == expected_effect for c in cmds), (
         f"{relative_path} should emit {expected_effect}"
@@ -1107,10 +1107,10 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""
     from plexi_sdk.testing import PluginHarness
-    app_path = REPO_ROOT / relative_path
-    if not app_path.exists():
+    plugin_path = REPO_ROOT / relative_path
+    if not plugin_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with PluginHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(plugin_path, timeout=3.0) as h:
         cmds_before = h.run(1)
         h.key(key)
         cmds_after = h.run(1)

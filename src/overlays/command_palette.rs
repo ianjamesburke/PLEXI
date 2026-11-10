@@ -28,7 +28,7 @@ enum PaletteEntry {
     /// A context persists without a live window. It remains discoverable, but
     /// cannot be restored until something recreates a window for it.
     UnavailableContext { name: String, search_text: String },
-    App {
+    View {
         id: String,
         name: String,
         description: String,
@@ -36,7 +36,7 @@ enum PaletteEntry {
         is_workspace_local: bool,
         search_text: String,
     },
-    /// Host-native builtin app (no registry manifest), launched by id.
+    /// Host-native builtin plugin (no registry manifest), launched by id.
     Builtin {
         id: &'static str,
         name: &'static str,
@@ -92,7 +92,7 @@ impl PaletteEntry {
             PaletteEntry::Agent {
                 window_id, pane_id, ..
             } => format!("agent:{window_id}:{pane_id}"),
-            PaletteEntry::App { id, .. } => format!("app:{id}"),
+            PaletteEntry::View { id, .. } => format!("app:{id}"),
             PaletteEntry::Builtin { id, .. } => format!("builtin:{id}"),
             PaletteEntry::Note { path, .. } => format!("note:{}", path.display()),
             PaletteEntry::UserCommand { name, scope, .. } => format!("run:{scope:?}:{name}"),
@@ -104,7 +104,7 @@ impl PaletteEntry {
             PaletteEntry::Context { .. } | PaletteEntry::UnavailableContext { .. } => 0,
             PaletteEntry::Agent { .. } => 1,
             PaletteEntry::Note { .. } => 2,
-            PaletteEntry::App { .. } | PaletteEntry::Builtin { .. } => 3,
+            PaletteEntry::View { .. } | PaletteEntry::Builtin { .. } => 3,
             PaletteEntry::Command { .. } => 4,
             PaletteEntry::UserCommand { .. } => 5,
         }
@@ -127,7 +127,7 @@ impl PaletteEntry {
             PaletteEntry::Command { name, .. } | PaletteEntry::Builtin { name, .. } => name,
             PaletteEntry::Context { name, .. }
             | PaletteEntry::UnavailableContext { name, .. }
-            | PaletteEntry::App { name, .. }
+            | PaletteEntry::View { name, .. }
             | PaletteEntry::UserCommand { name, .. } => name.as_str(),
             PaletteEntry::Agent { agent_name, .. } => agent_name.as_str(),
             PaletteEntry::Note { title, .. } => title.as_str(),
@@ -140,7 +140,7 @@ impl PaletteEntry {
             PaletteEntry::Context { search_text, .. }
             | PaletteEntry::UnavailableContext { search_text, .. }
             | PaletteEntry::Agent { search_text, .. }
-            | PaletteEntry::App { search_text, .. }
+            | PaletteEntry::View { search_text, .. }
             | PaletteEntry::Builtin { search_text, .. }
             | PaletteEntry::Note { search_text, .. }
             | PaletteEntry::UserCommand { search_text, .. } => search_text.as_str(),
@@ -198,7 +198,7 @@ enum PaletteCommand {
     EditCommands,
     /// Switch the focused `commands.toml` editor between workspace and global scope.
     SwitchCommandsScope,
-    /// Open the Attention Queue list (`app::attention_queue`).
+    /// Open the Attention Queue list (`plugin::attention_queue`).
     OpenAttention,
     /// Install the CLI launcher, completions, and PATH registration for external terminals.
     SetupCli,
@@ -542,7 +542,7 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             window_id: *window_id,
             pane_id: Some(*pane_id),
         })),
-        PaletteEntry::App { id, .. } => Some(PaletteAction::OpenView(id.clone())),
+        PaletteEntry::View { id, .. } => Some(PaletteAction::OpenView(id.clone())),
         PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
         PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
         PaletteEntry::UserCommand { name, scope, .. } => Some(PaletteAction::RunUserCommand {
@@ -568,7 +568,7 @@ struct BuiltinPaletteView {
     gate: crate::release::ReleaseFeature,
 }
 
-/// Builtin host apps surfaced in the palette alongside registry apps.
+/// Builtin host plugins surfaced in the palette alongside registry plugins.
 const BUILTIN_APPS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
     id: "assistant",
     name: "Assistant",
@@ -576,15 +576,15 @@ const BUILTIN_APPS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
     gate: crate::release::ReleaseFeature::Assistant,
 }];
 
-pub(crate) fn app_metadata_chips(
+pub(crate) fn plugin_metadata_chips(
     running_in_background: bool,
     is_workspace_local: bool,
 ) -> &'static [&'static str] {
     match (running_in_background, is_workspace_local) {
-        (false, false) => &["app"],
-        (true, false) => &["app", "bg"],
-        (false, true) => &["app", "ws"],
-        (true, true) => &["app", "bg", "ws"],
+        (false, false) => &["view"],
+        (true, false) => &["view", "bg"],
+        (false, true) => &["view", "ws"],
+        (true, true) => &["view", "bg", "ws"],
     }
 }
 
@@ -917,11 +917,11 @@ fn pane_row_identity(
                 .unwrap_or_else(|| "terminal".to_string()),
             "term",
         ),
-        crate::host::pane::Pane::App(a) => {
+        crate::host::pane::Pane::View(a) => {
             let chip = if a.manifest_id == "text-editor" {
                 "text"
             } else {
-                "app"
+                "view"
             };
             let name = if a.name.is_empty() {
                 a.runtime.display_name()
@@ -1025,7 +1025,7 @@ impl PlexiApp {
         // ── Window entries (active context first, then by visit recency) ──
         // Two-tier sort: panes whose window belongs to the active context float
         // above panes in other contexts. Within each tier, recency wins.
-        // Mirrors macOS Cmd+Tab — current app's windows first.
+        // Mirrors macOS Cmd+Tab — current plugin's windows first.
         let active_win_id = self.windows[self.active_window].window_id;
         let active_ctx_id = self.windows[self.active_window].context_id;
         let active_focused_tile = self.windows[self.active_window].focused_pane;
@@ -1302,7 +1302,7 @@ impl PlexiApp {
             }
         }
 
-        // ── Workspace-aware app entries ────────────────────────────────────
+        // ── Workspace-aware plugin entries ────────────────────────────────────
         // Use the workspace root cached at palette-open time (not re-resolved
         // per frame) to avoid filesystem traversal in the egui draw loop.
         //
@@ -1320,13 +1320,13 @@ impl PlexiApp {
             .or(home.as_deref())
             .unwrap_or(std::path::Path::new("/"));
 
-        let app_entries: Vec<(String, String, String, bool, String)> = self
+        let plugin_entries: Vec<(String, String, String, bool, String)> = self
             .registries
             .view_for_root(rescan_cwd)
             .list()
             .into_iter()
             .filter_map(|app| {
-                // Local apps are visible only when the focused pane is in their workspace.
+                // Local plugins are visible only when the focused pane is in their workspace.
                 // Use the same explicit predicate here as in the badge below — no wildcard.
                 let workspace_visible = match app.source {
                     crate::app::registry::RegistrySource::Global => true,
@@ -1379,9 +1379,9 @@ impl PlexiApp {
             }
         }
 
-        for (id, name, description, is_workspace_local, search_text) in app_entries {
+        for (id, name, description, is_workspace_local, search_text) in plugin_entries {
             let running_in_background = self.background_apps.contains_key(&id);
-            entries.push(PaletteEntry::App {
+            entries.push(PaletteEntry::View {
                 id,
                 name,
                 description,
@@ -1504,7 +1504,7 @@ impl PlexiApp {
                             te_id.with("paint_layer"),
                         )),
                         |ui| {
-                            TextField::singleline(te_id, "Jump to context or launch app...")
+                            TextField::singleline(te_id, "Jump to context or launch plugin...")
                                 .surface(crate::ui::focus::SurfaceKey::Overlay(
                                     crate::app::input_owner::OverlaySurface::Layer(
                                         crate::app::FocusKind::CommandPalette,
@@ -1525,7 +1525,7 @@ impl PlexiApp {
                 if entries.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(ui.available_width());
-                        description_label(ui, "No matching contexts or apps", &colors);
+                        description_label(ui, "No matching contexts or plugins", &colors);
                     });
                     return;
                 }
@@ -1698,7 +1698,7 @@ impl PlexiApp {
                                     hover_select = Some(i);
                                 }
                             }
-                            PaletteEntry::App {
+                            PaletteEntry::View {
                                 name,
                                 description,
                                 running_in_background,
@@ -1709,7 +1709,7 @@ impl PlexiApp {
                                     shown_apps_header = true;
                                     ui.add_space(style::SPACE_XS);
                                     ui.label(
-                                        RichText::new("APPS")
+                                        RichText::new("Plugins")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
@@ -1717,7 +1717,7 @@ impl PlexiApp {
                                 }
 
                                 let row = ListRow::new(name.as_str())
-                                    .metadata_chips(app_metadata_chips(
+                                    .metadata_chips(plugin_metadata_chips(
                                         *running_in_background,
                                         *is_workspace_local,
                                     ))
@@ -1743,7 +1743,7 @@ impl PlexiApp {
                                     shown_apps_header = true;
                                     ui.add_space(style::SPACE_XS);
                                     ui.label(
-                                        RichText::new("APPS")
+                                        RichText::new("Plugins")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );
@@ -1751,7 +1751,7 @@ impl PlexiApp {
                                 }
 
                                 let row_response = ListRow::new(name)
-                                    .metadata_chips(&["app", "host"])
+                                    .metadata_chips(&["view", "Bundled"])
                                     .secondary(description)
                                     .selected(is_selected)
                                     .show(ui, &colors);
@@ -1872,7 +1872,7 @@ impl PlexiApp {
             PaletteAction::RunCommand(command) => self.run_palette_command(command),
             PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
             PaletteAction::Focus(target) => self.focus_palette_target(target),
-            PaletteAction::OpenView(id) => self.launch_app_by_id(&id),
+            PaletteAction::OpenView(id) => self.launch_view_by_id(&id),
             PaletteAction::LaunchBuiltin(id) => self.launch_builtin_by_id(id),
             PaletteAction::OpenNote(path) => {
                 let path_str = path.display().to_string();
@@ -1882,7 +1882,7 @@ impl PlexiApp {
                 } else {
                     log::info!("palette: opening note {:?} in new pane", path);
                     let _ =
-                        self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None);
+                        self.launch_view_by_id_with_layout("text-editor", None, &[path_str], None);
                 }
             }
         }
@@ -1893,7 +1893,7 @@ impl PlexiApp {
         if self.plugin_blocked(id) {
             return;
         }
-        log::info!("palette: launching builtin app '{id}'");
+        log::info!("palette: launching builtin plugin '{id}'");
         match id {
             "assistant" => {
                 if crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
@@ -1904,7 +1904,7 @@ impl PlexiApp {
                     );
                 }
             }
-            other => log::warn!("palette: unknown builtin app id '{other}'"),
+            other => log::warn!("palette: unknown builtin plugin id '{other}'"),
         }
     }
 
@@ -1922,9 +1922,9 @@ impl PlexiApp {
                         .effective_commands_workspace_root()
                         .unwrap_or_else(|| self.router.active().root.clone());
                     log::info!("palette: UI upcycle opening curated CLI '{binary}'");
-                    self.open_builtin_app_pane(
+                    self.open_builtin_view_pane(
                         Box::new(
-                            crate::render::cli_renderer_app::CliRendererView::from_descriptor(
+                            crate::render::cli_renderer_view::CliRendererView::from_descriptor(
                                 descriptor,
                             ),
                         ),
@@ -2183,7 +2183,7 @@ impl PlexiApp {
     /// commands with `on_load` execute their steps directly through the host's
     /// step runner; single-line `run` commands run in the focused terminal pane
     /// when it is an idle shell (unless `split = true`), or open a new split
-    /// pane when focused on a busy shell, agent pane, or app pane.
+    /// pane when focused on a busy shell, agent pane, or view pane.
     fn run_user_command(&mut self, name: &str, scope: crate::cli::UserCommandScope) {
         let cwd = self.palette_workspace_root.clone();
         log::info!("palette: running user command '{name}' scope={scope:?} cwd={cwd:?}");
@@ -2414,7 +2414,7 @@ impl PlexiApp {
                     crate::host::pane::Pane::Terminal(t) => {
                         t.name.clone().unwrap_or_else(|| "terminal".to_string())
                     }
-                    crate::host::pane::Pane::App(a) => a.name.clone(),
+                    crate::host::pane::Pane::View(a) => a.name.clone(),
                     crate::host::pane::Pane::Portal(_) => String::new(),
                 };
                 (id, title)
@@ -2513,13 +2513,13 @@ impl PlexiApp {
                     );
                     let plugin_id =
                         (cmd.as_deref() == Some("agents") && agent.is_none()).then_some("agents");
-                    let is_app = plugin_id.is_some();
+                    let is_plugin = plugin_id.is_some();
                     let type_id = if let Some(a) = plugin_id {
                         a.to_string()
                     } else {
                         "terminal".to_string()
                     };
-                    let args: Vec<String> = if is_app {
+                    let args: Vec<String> = if is_plugin {
                         extra_args
                     } else if let Some(c) = cmd {
                         let joined = std::iter::once(c.as_str())
@@ -2966,10 +2966,10 @@ mod tests {
     use crate::ui::list::ListRowPips;
 
     #[test]
-    fn app_metadata_chips_add_workspace_scope_without_secondary_text() {
-        assert_eq!(app_metadata_chips(false, false), &["app"]);
-        assert_eq!(app_metadata_chips(false, true), &["app", "ws"]);
-        assert_eq!(app_metadata_chips(true, true), &["app", "bg", "ws"]);
+    fn plugin_metadata_chips_add_workspace_scope_without_secondary_text() {
+        assert_eq!(plugin_metadata_chips(false, false), &["view"]);
+        assert_eq!(plugin_metadata_chips(false, true), &["view", "ws"]);
+        assert_eq!(plugin_metadata_chips(true, true), &["view", "bg", "ws"]);
     }
 
     #[test]
@@ -3161,7 +3161,7 @@ mod tests {
                 description: "Edit config",
                 search_text: "open config",
             },
-            PaletteEntry::App {
+            PaletteEntry::View {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
@@ -3186,7 +3186,7 @@ mod tests {
         sort_palette_entries(&mut entries, "");
 
         assert!(matches!(entries[0], PaletteEntry::Context { .. }));
-        assert!(matches!(entries[1], PaletteEntry::App { .. }));
+        assert!(matches!(entries[1], PaletteEntry::View { .. }));
         assert!(matches!(entries[2], PaletteEntry::Command { .. }));
     }
 
@@ -3223,7 +3223,7 @@ mod tests {
     #[test]
     fn contexts_header_shows_once_for_a_leading_context_block_and_never_without_one() {
         let mut with_contexts = vec![
-            PaletteEntry::App {
+            PaletteEntry::View {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
@@ -3263,9 +3263,9 @@ mod tests {
         // (never fires again) through the second.
         assert!(matches!(with_contexts[0], PaletteEntry::Context { .. }));
         assert!(matches!(with_contexts[1], PaletteEntry::Context { .. }));
-        assert!(matches!(with_contexts[2], PaletteEntry::App { .. }));
+        assert!(matches!(with_contexts[2], PaletteEntry::View { .. }));
 
-        let without_contexts = vec![PaletteEntry::App {
+        let without_contexts = vec![PaletteEntry::View {
             id: "balls".to_string(),
             name: "Balls".to_string(),
             description: "Demo".to_string(),
@@ -3284,7 +3284,7 @@ mod tests {
     #[test]
     fn typed_palette_query_keeps_groups_contiguous_for_their_headers() {
         let mut entries = vec![
-            PaletteEntry::App {
+            PaletteEntry::View {
                 id: "config-viewer".to_string(),
                 name: "Config Viewer".to_string(),
                 description: "Demo".to_string(),
@@ -3302,7 +3302,7 @@ mod tests {
 
         sort_palette_entries(&mut entries, "open");
 
-        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[0], PaletteEntry::View { .. }));
         assert!(matches!(entries[1], PaletteEntry::Command { .. }));
     }
 
@@ -3321,7 +3321,7 @@ mod tests {
                 description: "Edit config",
                 search_text: "open config",
             },
-            PaletteEntry::App {
+            PaletteEntry::View {
                 id: "balls".to_string(),
                 name: "Balls".to_string(),
                 description: "Demo".to_string(),
@@ -3333,7 +3333,7 @@ mod tests {
 
         sort_palette_entries(&mut entries, "");
 
-        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[0], PaletteEntry::View { .. }));
         assert!(matches!(entries[1], PaletteEntry::Command { .. }));
         assert!(matches!(entries[2], PaletteEntry::UserCommand { .. }));
     }
@@ -3341,7 +3341,7 @@ mod tests {
     #[test]
     fn typed_query_surfaces_user_command_by_name() {
         let mut entries = vec![
-            PaletteEntry::App {
+            PaletteEntry::View {
                 // Only a substring match for "test" (inside "fastest").
                 id: "fastest".to_string(),
                 name: "Fastest".to_string(),
@@ -3360,7 +3360,7 @@ mod tests {
 
         // Groups stay contiguous; relevance ranks within each group.
         sort_palette_entries(&mut entries, "test");
-        assert!(matches!(entries[0], PaletteEntry::App { .. }));
+        assert!(matches!(entries[0], PaletteEntry::View { .. }));
         assert!(matches!(entries[1], PaletteEntry::UserCommand { .. }));
     }
 
@@ -3422,7 +3422,7 @@ mod tests {
 
     #[test]
     fn palette_selection_survives_reorder_and_clears_on_removal() {
-        let app = PaletteEntry::App {
+        let app = PaletteEntry::View {
             id: "alpha".to_string(),
             name: "Alpha".to_string(),
             description: String::new(),
@@ -3561,7 +3561,7 @@ mod tests {
         }
     }
 
-    /// An app pane carrying hook-reported agent state.
+    /// An view pane carrying hook-reported agent state.
     fn test_agent_pane(
         id: u64,
         pane_name: &str,
@@ -3572,7 +3572,7 @@ mod tests {
         use crate::app::permissions::PluginPermissions;
         use crate::host::pane::{ViewPane, ViewRuntime};
 
-        Pane::App(Box::new(ViewPane {
+        Pane::View(Box::new(ViewPane {
             pip_status: None,
             id,
             runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -4129,7 +4129,7 @@ mod tests {
         use crate::host::pane::{ViewPane, ViewRuntime};
 
         let make_app = |manifest_id: &str, name: &str| {
-            Pane::App(Box::new(ViewPane {
+            Pane::View(Box::new(ViewPane {
                 pip_status: None,
                 id: 99,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -4150,7 +4150,7 @@ mod tests {
         };
 
         let (name, chip) = pane_row_identity(&make_app("notes", "My Notes"), &[]);
-        assert_eq!((name.as_str(), chip), ("My Notes", "app"));
+        assert_eq!((name.as_str(), chip), ("My Notes", "view"));
 
         let (name, chip) = pane_row_identity(&make_app("text-editor", "todo.md"), &[]);
         assert_eq!((name.as_str(), chip), ("todo.md", "text"));
@@ -4159,9 +4159,9 @@ mod tests {
         let (name, _) = pane_row_identity(&make_app("notes", ""), &[]);
         assert!(!name.is_empty());
 
-        // User-renamed app pane uses the assigned name in palette search.
+        // User-renamed view pane uses the assigned name in palette search.
         let (name, chip) = pane_row_identity(&make_app("assistant", "chad"), &[]);
-        assert_eq!((name.as_str(), chip), ("chad", "app"));
+        assert_eq!((name.as_str(), chip), ("chad", "view"));
         let search = searchable_text(&[name.as_str(), "work"]);
         assert!(
             search.contains("chad"),
@@ -4181,7 +4181,7 @@ mod tests {
                     .windows
                     .iter()
                     .flat_map(|w| w.panes.values())
-                    .any(|pane| { pane.as_app().is_some_and(|app| app.name == binary) }),
+                    .any(|pane| { pane.as_view().is_some_and(|app| app.name == binary) }),
                 "{binary} renderer opened"
             );
         }
@@ -4209,8 +4209,8 @@ mod tests {
         let ws_root = h.app.windows[0]
             .panes
             .get(&first_pane)
-            .and_then(|p| p.as_app())
-            .expect("test app pane")
+            .and_then(|p| p.as_view())
+            .expect("test view pane")
             .workspace_root
             .clone();
         let channel_dir = ws_root.join(crate::config::workspace_channel_dir());
@@ -4403,9 +4403,9 @@ steps = [
             "pane list --json must include the mixer terminal pane: {panes_arr:?}"
         );
         assert!(
-            panes_arr.iter().any(|p| p["type"] == "app"
+            panes_arr.iter().any(|p| p["type"] == "view"
                 && p["title"].as_str().is_some_and(|t| t.starts_with("note-"))),
-            "pane list --json must include the text-editor app pane: {panes_arr:?}"
+            "pane list --json must include the text-editor view pane: {panes_arr:?}"
         );
 
         // 2. Trigger `play` from the Command Palette and verify it also opens two panes.
@@ -4521,7 +4521,7 @@ steps = [
         );
         assert_eq!(
             h.app.windows[0].panes[&editor_pane_id]
-                .as_app()
+                .as_view()
                 .unwrap()
                 .name,
             "commands.toml [workspace]"
@@ -4548,7 +4548,7 @@ steps = [
         );
         assert_eq!(
             h.app.windows[0].panes[&editor_pane_id]
-                .as_app()
+                .as_view()
                 .unwrap()
                 .name,
             "commands.toml [global]"
@@ -4583,17 +4583,17 @@ steps = [
     }
 
     #[test]
-    fn single_line_user_command_runs_in_focused_idle_shell_and_splits_when_busy_agent_app_or_split_true(
+    fn single_line_user_command_runs_in_focused_idle_shell_and_splits_when_busy_agent_view_or_split_true(
     ) {
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();
         let term = h.add_focused_terminal();
-        let app_pane = *h.app.windows[0]
+        let view_pane = *h.app.windows[0]
             .panes
             .keys()
             .find(|&&id| id != term)
-            .expect("initial app pane");
+            .expect("initial view pane");
 
         let ws_root = h.workspace_root().to_path_buf();
         let ws_commands = ws_root
@@ -4673,15 +4673,15 @@ split = true
             "running a user command while focused on a busy terminal must fall back to a split pane"
         );
 
-        // 3. When the focused pane is an app pane, running `in_place` also falls back to splitting.
-        h.focus_pane(app_pane);
+        // 3. When the focused pane is an view pane, running `in_place` also falls back to splitting.
+        h.focus_pane(view_pane);
         assert_eq!(h.app.focused_idle_shell_pane_id(), None);
-        let count_before_app = h.pane_count();
+        let count_before_plugin = h.pane_count();
         h.app.run_user_command_by_name("in_place").unwrap();
         assert_eq!(
             h.pane_count(),
-            count_before_app + 1,
-            "running a user command while focused on an app pane must fall back to a split pane"
+            count_before_plugin + 1,
+            "running a user command while focused on an view pane must fall back to a split pane"
         );
     }
 
@@ -4704,7 +4704,7 @@ split = true
         h.app.palette_workspace_root = None;
         h.app.run_user_command_by_name("alpha").expect("alpha v1");
         assert_eq!(
-            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            h.app.windows[0].panes[&pane_id].as_view().unwrap().name,
             "AlphaV1"
         );
 
@@ -4733,12 +4733,12 @@ split = true
         // 2. `[keys]` `run:<name>` (`run_user_command_by_name`) executes updated `alpha` and new `beta`.
         h.app.run_user_command_by_name("alpha").expect("alpha v2");
         assert_eq!(
-            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            h.app.windows[0].panes[&pane_id].as_view().unwrap().name,
             "AlphaV2"
         );
         h.app.run_user_command_by_name("beta").expect("beta added");
         assert_eq!(
-            h.app.windows[0].panes[&pane_id].as_app().unwrap().name,
+            h.app.windows[0].panes[&pane_id].as_view().unwrap().name,
             "BetaAdded"
         );
 

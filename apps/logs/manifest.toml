@@ -20,7 +20,6 @@ id = "logs"
 name = "Logs"
 version = "0.3.0"
 description = "Live tail of the Plexi host log, color-coded by level, with level/app/search filters."
-mouse_tracking = true
 
 [plugin.capabilities]
 capabilities = ["logs.read", "timer"]

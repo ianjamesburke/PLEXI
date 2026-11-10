@@ -74,7 +74,7 @@ pub fn check_runtime() -> Result<(), String> {
         &resources.join("smoke-app"),
     )
     .map_err(|e| e.to_string())?
-    .ok_or("package smoke app has no Python entry")?;
+    .ok_or("package smoke plugin has no Python entry")?;
     let tree = crate::host::wasm_python::run_headless_frame(&config, (800.0, 600.0), None)
         .map_err(|e| e.to_string())?;
     if tree.nodes.is_empty() {

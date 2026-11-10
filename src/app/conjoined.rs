@@ -13,7 +13,7 @@ impl PlexiApp {
                 .find_map(|w| w.panes.get(&parent))
                 .and_then(|p| match p {
                     crate::host::pane::Pane::Terminal(t) => t.name.clone(),
-                    crate::host::pane::Pane::App(a) => Some(a.name.clone()),
+                    crate::host::pane::Pane::View(a) => Some(a.name.clone()),
                     crate::host::pane::Pane::Portal(_) => None,
                 })
                 .unwrap_or_else(|| parent.to_string())
@@ -178,8 +178,8 @@ impl PlexiApp {
                             pane_input,
                             false,
                         );
-                    } else if let Some(app) = pane.as_app_mut() {
-                        crate::render::app_pane::render(ui, app, &self.colors, false, None, &root);
+                    } else if let Some(app) = pane.as_view_mut() {
+                        crate::render::view_pane::render(ui, app, &self.colors, false, None, &root);
                     }
                 }
             },

@@ -1,4 +1,4 @@
-//! Publish pane facts through the same timeline used by app event streams.
+//! Publish pane facts through the same timeline used by plugin event streams.
 use crate::app::PlexiApp;
 use crate::host::pane_lifecycle::{PaneLifecycleEvent, PaneLifecycleState, Provenance};
 
@@ -6,7 +6,7 @@ impl PlexiApp {
     /// Register panes from all creation/restoration paths before servicing events.
     /// Called in the logic pass, including while the window is hidden.
     pub(crate) fn observe_pane_spawns(&mut self) {
-        match crate::host::app_timeline::global().lock() {
+        match crate::host::plugin_timeline::global().lock() {
             Ok(mut timeline) => {
                 for pane_id in self.host.pane_lifecycle.keys() {
                     if !self
@@ -88,7 +88,7 @@ impl PlexiApp {
         pane_id: u64,
         event: PaneLifecycleEvent,
     ) -> bool {
-        let timeline = crate::host::app_timeline::global();
+        let timeline = crate::host::plugin_timeline::global();
         let result = match timeline.lock() {
             Ok(mut timeline) => timeline.record_pane_lifecycle(context_id, pane_id, &event),
             Err(error) => {

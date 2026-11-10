@@ -1,8 +1,8 @@
-//! Embedded, non-visible execution surface for the Assistant's app-build
+//! Embedded, non-visible execution surface for the Assistant's plugin-build
 //! commands (stint 0421).
 //!
 //! The Assistant must never drive a user-visible PTY for its own work.
-//! `host.build.run` executes an allowlisted set of `plexi app` subcommands
+//! `host.build.run` executes an allowlisted set of `plexi plugin` subcommands
 //! (`init`, `check`) as a hidden subprocess of the running host binary,
 //! captures both streams, and returns them directly to the model — one tool
 //! call per command instead of a `host.terminals.run`/`host.terminals.read`
@@ -41,17 +41,17 @@ pub(crate) struct BuildCommandOutput {
     pub duration_ms: u64,
 }
 
-/// Gate the embedded surface to the sanctioned app-authoring commands.
+/// Gate the embedded surface to the sanctioned plugin-authoring commands.
 /// Everything else — including pane-opening flags — must go through the
 /// dedicated host tools, so the scope of a `host.build.run` grant stays
-/// exactly "app scaffolding and validation".
+/// exactly "plugin scaffolding and validation".
 pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
     let (Some(first), Some(second)) = (args.first(), args.get(1)) else {
         return Err(
-            "invalid_input: args must start with [\"app\", \"init\"|\"check\"]".to_string(),
+            "invalid_input: args must start with [\"plugin\", \"init\"|\"check\"]".to_string(),
         );
     };
-    if first != "app" || !matches!(second.as_str(), "init" | "check") {
+    if first != "plugin" || !matches!(second.as_str(), "init" | "check") {
         return Err(format!(
             "command_not_allowed: only `plexi plugin init` and `plexi plugin check` run here, got `plexi {}`",
             args.join(" ")
@@ -59,7 +59,7 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
     }
     if args.iter().any(|arg| arg == "--open") {
         return Err(
-            "command_not_allowed: --open is rejected; open the app with host.apps.open instead"
+            "command_not_allowed: --open is rejected; open the plugin with host.plugins.open instead"
                 .to_string(),
         );
     }
@@ -203,7 +203,7 @@ mod tests {
         let uninstall = validate_build_args(&args(&["plugin", "uninstall", "x"])).unwrap_err();
         assert!(uninstall.starts_with("command_not_allowed"), "{uninstall}");
         let open = validate_build_args(&args(&["plugin", "init", "snake", "--open"])).unwrap_err();
-        assert!(open.contains("host.apps.open"), "{open}");
+        assert!(open.contains("host.views.open"), "{open}");
     }
 
     #[test]

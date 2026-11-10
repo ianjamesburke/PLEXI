@@ -32,7 +32,7 @@ pub enum Capability {
     SecretsGet,
     /// Open typed pipes (JSON or binary mode).
     PipeOpen,
-    /// Launch another app in a new pane.
+    /// Launch another plugin in a new pane.
     SpawnView,
     /// Capture microphone audio via host broker.
     AudioRecord,
@@ -47,7 +47,7 @@ pub enum Capability {
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
     Timer,
     /// Issue tier-routed LLM calls through the Plexi AI broker (`ai.query`).
-    /// The host owns the API key and the cost ledger; apps never see the key.
+    /// The host owns the API key and the cost ledger; plugins never see the key.
     AiQuery,
     /// Receive MIDI 1.0 byte streams from a connected hardware controller via
     /// the host CoreMIDI broker (#320). Per-port; the manifest declares the
@@ -61,11 +61,11 @@ pub enum Capability {
     /// Primitives (`terminal.bindings`, #78). Covers all of:
     /// `RequestLinkedTerminal`, `RunInLinkedTerminal`, `InsertPathToken`,
     /// `RequestCommandPreview`, `OpenArtifact`. Single capability across
-    /// the surface so an app's manifest declares one intent ("I drive a
+    /// the surface so an plugin's manifest declares one intent ("I drive a
     /// terminal") rather than enumerating each verb.
     TerminalBindings,
     /// Show a native macOS file picker dialog (`fs.pick`, #514).
-    /// Returns picked paths via `PlexiEvent::FilePicked`. Apps without this
+    /// Returns picked paths via `PlexiEvent::FilePicked`. Plugins without this
     /// capability receive `PlexiEvent::FilePickCancelled` immediately.
     FsPick,
     /// Spawn a new pane via DrawCommand::SpawnPane (#592).
@@ -80,16 +80,16 @@ pub enum Capability {
     /// and `SendPaneAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
     PanesControl,
-    /// Inspect and mutate other apps' permission state (stint 0017). Gates
+    /// Inspect and mutate other plugins' permission state (stint 0017). Gates
     /// the PGAP path for `ListPermissions` and `SetPermission`, the host-
-    /// mediated surface a permission-manager app uses to list, grant, and
+    /// mediated surface a permission-manager plugin uses to list, grant, and
     /// revoke capabilities.
     PermissionsManage,
     /// Read the Plexi host channel log via the host-mediated `read_host_log`
     /// effect (stint 0444). The host owns path resolution — it tails its own
-    /// `~/.plexi-<channel>/plexi.log` and returns the text — so the app never
+    /// `~/.plexi-<channel>/plexi.log` and returns the text — so the plugin never
     /// names or opens the file and the WASM sandbox mounts stay limited to the
-    /// SDK and app dir. Non-sensitive by necessity: the CPython-in-WASM runtime
+    /// SDK and plugin dir. Non-sensitive by necessity: the CPython-in-WASM runtime
     /// has no interactive-consent seam yet (`capability_request` only reflects
     /// the launch-granted set), so a withheld sensitive cap could never be
     /// granted at runtime. Auto-granted when declared, exactly like `fs.read`.
@@ -97,15 +97,15 @@ pub enum Capability {
     /// Connect to an MCP server the *user* configured in
     /// `<config_dir>/mcp_servers.toml` (stint 0382). Gates
     /// `Effect::McpConnect` / `McpSend` / `McpDisconnect`: the host spawns and
-    /// owns the server process, the app speaks the MCP protocol over it.
+    /// owns the server process, the plugin speaks the MCP protocol over it.
     ///
-    /// The app names a server by id only. Argv comes from user-owned config
-    /// and never from the app, so this capability authorizes "talk to a server
-    /// the user configured", never "run this command" — an app holding it
+    /// The plugin names a server by id only. Argv comes from user-owned config
+    /// and never from the plugin, so this capability authorizes "talk to a server
+    /// the user configured", never "run this command" — an plugin holding it
     /// cannot reach a binary the user has not already listed.
     McpClient,
     /// Request the typed one-shot CLI operations the plugin package declares in
-    /// `[[cli_operation]]` (stint 1175). Manifest membership only allows the app
+    /// `[[cli_operation]]` (stint 1175). Manifest membership only allows the plugin
     /// to *ask*: every invocation is separately admitted by the permission
     /// monitor against the exact operation, workspace, package and executable.
     CliOperations,
@@ -139,7 +139,7 @@ impl Capability {
             Self::NetHttp => "Make outbound HTTP requests",
             Self::SecretsGet => "Read secrets scoped to this workspace",
             Self::PipeOpen => "Open data pipes to other panes",
-            Self::SpawnView => "Launch another app in a new pane",
+            Self::SpawnView => "Launch another plugin in a new pane",
             Self::AudioRecord => "Capture microphone audio",
             Self::AudioPlayback => "Play audio",
             Self::GpuRender => "Render through the WASM GPU surface",
@@ -152,9 +152,9 @@ impl Capability {
             Self::TerminalBindings => "Drive a linked terminal pane",
             Self::FsPick => "Show a native file picker",
             Self::PanesSpawn => "Open new panes in your workspace",
-            Self::PanesRead => "See your open panes and read app or terminal pane state",
-            Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
-            Self::PermissionsManage => "See and change what other apps are allowed to do",
+            Self::PanesRead => "See your open panes and read plugin or terminal pane state",
+            Self::PanesControl => "Control your panes: focus, close, send input, and drive plugins",
+            Self::PermissionsManage => "See and change what other plugins are allowed to do",
             Self::LogsRead => "Read the Plexi host log",
             Self::McpClient => "Talk to the MCP servers you have configured",
             Self::CliOperations => "Ask to run the approved command-line operations it declares",
@@ -228,7 +228,7 @@ impl Capability {
 
     /// Returns a human-readable description of why this capability cannot be
     /// satisfied by the current config, or `None` if it is satisfiable.
-    /// Called before spawning any app process — if any declared capability
+    /// Called before spawning any plugin process — if any declared capability
     /// returns `Some(...)`, the host shows an error tile instead of launching.
     pub fn config_missing_reason(&self, config: &crate::config::PlexiConfig) -> Option<String> {
         match self {
@@ -246,7 +246,7 @@ impl Capability {
 
     /// Returns true for capabilities that require explicit first-run user consent.
     /// These are withheld (treated as Yellow) when no stored decision exists,
-    /// so the app must send a CapabilityRequest to trigger the consent modal.
+    /// so the plugin must send a CapabilityRequest to trigger the consent modal.
     pub fn is_sensitive(self) -> bool {
         // List both groups explicitly so new capabilities require a consent decision.
         match self {
@@ -366,15 +366,15 @@ impl<'a> TryFrom<&'a str> for Capability {
 
 // ── PluginPermissions ────────────────────────────────────────────────────────────
 
-/// Per-app, per-workspace permission set (v3).
+/// Per-plugin, per-workspace permission set (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginPermissions {
-    /// Granted capabilities for this app in this workspace.
+    /// Granted capabilities for this plugin in this workspace.
     pub capabilities: HashSet<Capability>,
     /// Permanently blocked capabilities — auto-denied without a modal.
     #[serde(default)]
     pub blocked: HashSet<Capability>,
-    /// True when this is a built-in app; bypasses all capability checks.
+    /// True when this is a built-in plugin; bypasses all capability checks.
     #[serde(default)]
     pub is_builtin: bool,
     /// Allowed HTTP hosts. Empty = unrestricted.
@@ -398,7 +398,7 @@ impl PluginPermissions {
         withheld
     }
 
-    /// Full permissions for built-in first-party apps — bypasses all checks.
+    /// Full permissions for built-in first-party plugins — bypasses all checks.
     pub fn builtin() -> Self {
         Self {
             capabilities: HashSet::new(), // not needed — is_builtin bypasses checks
@@ -411,7 +411,7 @@ impl PluginPermissions {
     /// Create a permissions set from a list of v3 capability strings.
     /// Unknown capability strings are logged and dropped — manifest loaders
     /// should validate with `parse_capability_strings` first and refuse to
-    /// install an app that names an unknown capability.
+    /// install an plugin that names an unknown capability.
     #[cfg(test)]
     pub fn from_capability_strings(strings: &[String]) -> Self {
         let mut capabilities = HashSet::new();
@@ -435,7 +435,7 @@ impl PluginPermissions {
 }
 
 /// Parse a list of capability strings, returning an error on the first unknown
-/// entry. Manifest loaders should call this before installing an app.
+/// entry. Manifest loaders should call this before installing an plugin.
 pub fn parse_capability_strings(
     strings: &[String],
 ) -> Result<HashSet<Capability>, UnknownCapability> {
@@ -457,7 +457,7 @@ pub enum PermissionCheck {
 
 // ── v3 check API ──────────────────────────────────────────────────────────────
 
-/// Check whether a specific capability is granted for an app+workspace pair.
+/// Check whether a specific capability is granted for an plugin+workspace pair.
 #[cfg(test)]
 pub fn check(perms: &PluginPermissions, cap: Capability) -> PermissionCheck {
     if perms.is_builtin {
@@ -473,7 +473,7 @@ pub fn check(perms: &PluginPermissions, cap: Capability) -> PermissionCheck {
     }
 }
 
-/// Returns true if this capability is permanently blocked for this app.
+/// Returns true if this capability is permanently blocked for this plugin.
 /// Callers should check this before adding to pending_prompts — blocked
 /// caps should be auto-denied without showing a modal.
 #[cfg(test)]
@@ -676,7 +676,7 @@ impl PermissionStore {
         self.untrusted.as_ref()
     }
 
-    /// Get the stored state for a (app, workspace, capability) triple.
+    /// Get the stored state for a (plugin, workspace, capability) triple.
     #[cfg(test)]
     pub fn get(
         &self,
@@ -691,7 +691,7 @@ impl PermissionStore {
             .copied()
     }
 
-    /// Set the state for a (app, workspace, capability) triple.
+    /// Set the state for a (plugin, workspace, capability) triple.
     pub fn set(
         &mut self,
         plugin_id: &str,
@@ -775,7 +775,7 @@ impl PermissionStore {
                 }
                 None if cap.is_sensitive() => {
                     // Sensitive caps require explicit user consent on first launch.
-                    // The app must send CapabilityRequest to trigger the modal.
+                    // The plugin must send CapabilityRequest to trigger the modal.
                     log::info!(
                         "permission_store: '{}' withheld for '{}' — first-run consent required",
                         cap,
@@ -965,7 +965,7 @@ pub fn validate_wasm_capability_id(capability_id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, spawn.app, clipboard.read, clipboard.write, notify, or open-pane"
+            "unknown raw WASM capability '{capability_id}' — expected ai.query, state:read-write, pipe.open, gpu.render, audio.playback, fs:read:<path>, fs:write:<path>, net:fetch:<host>, audio:record, spawn-child, spawn.plugin, clipboard.read, clipboard.write, notify, or open-pane"
         ))
     }
 }
@@ -992,7 +992,7 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
     } else if capability_id == "spawn-child" || capability_id.starts_with("spawn-child:") {
         "Spawn a child process"
     } else if capability_id == "spawn.app" {
-        "Open another app in a pane"
+        "Open another plugin in a pane"
     } else if capability_id == "clipboard.read" {
         "Read text from the clipboard"
     } else if capability_id == "clipboard.write" {
@@ -1053,7 +1053,7 @@ mod tests {
 
     #[test]
     fn logs_read_capability_recognized_and_auto_granted() {
-        // The logs app declares `logs.read` to reach the host-mediated
+        // The logs plugin declares `logs.read` to reach the host-mediated
         // `read_host_log` effect (stint 0444). It must round-trip through the
         // manifest validator and, being non-sensitive, auto-grant on first
         // launch — the CPython-in-WASM path has no runtime-consent seam, so a
@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn sensitive_cap_withheld_on_first_launch() {
         // Sensitive caps with no stored decision must NOT be pre-granted.
-        // The app must send a CapabilityRequest to trigger the consent modal.
+        // The plugin must send a CapabilityRequest to trigger the consent modal.
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
         let store = PermissionStore::load_or_default(tmp.path());
@@ -1572,7 +1572,7 @@ mod tests {
         let workspace_extra = std::path::Path::new("/work/project-extra");
         let workspace = std::path::Path::new("/work/project");
 
-        // Grant fs.read for app in /work/project-extra.
+        // Grant fs.read for plugin in /work/project-extra.
         let mut store = PermissionStore::load_or_default(tmp.path());
         store.set(
             "my-app",

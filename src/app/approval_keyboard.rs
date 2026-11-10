@@ -1,5 +1,5 @@
 //! Explicit desktop keyboard ownership for the permission banner.
-use super::app_trait::KeyDisposition;
+use super::view_trait::KeyDisposition;
 use super::input_router::PlexiInput;
 use super::{FocusKind, PlexiApp};
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
@@ -691,7 +691,7 @@ mod tests {
                 .windows
                 .iter()
                 .flat_map(|w| w.panes.values())
-                .any(|p| matches!(p, crate::host::pane::Pane::App(app) if app.manifest_id == "text-editor")),
+                .any(|p| matches!(p, crate::host::pane::Pane::View(app) if app.manifest_id == "text-editor")),
             "Enter must open RESULT.md in a text-editor viewer pane"
         );
 

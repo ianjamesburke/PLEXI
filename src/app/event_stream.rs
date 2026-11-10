@@ -1,7 +1,7 @@
 //! CLI consumers of the existing brokered event connection.
 use super::ui_mailbox::UiMailbox;
 use crate::broker::ActorType;
-use crate::host::app_timeline::{self, PluginEventRecord, lifecycle_matches};
+use crate::host::plugin_timeline::{self, PluginEventRecord, lifecycle_matches};
 use crate::host::event_subscriptions::{HostSubscribeReply, HostSubscribeRequest};
 use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
 use crate::protocol::{HostRequest, PayloadMode, TriggerMode};
@@ -88,7 +88,7 @@ impl Drop for Connection {
                 log::debug!("events: connection shutdown: {error}");
             }
         }
-        match app_timeline::global().lock() {
+        match plugin_timeline::global().lock() {
             Ok(mut timeline) => {
                 timeline.clear_subscriber(ActorType::Agent, &self.subscriber);
                 timeline.event_ready().notify_all();
@@ -178,7 +178,7 @@ pub(super) fn handle_events_subscribe(
             }
         }
         cancelled.store(true, Ordering::Release);
-        match app_timeline::global().lock() {
+        match plugin_timeline::global().lock() {
             Ok(timeline) => timeline.event_ready().notify_all(),
             Err(error) => log::error!("events: disconnect notification failed: {error}"),
         }
@@ -268,8 +268,8 @@ pub(super) fn handle_events_subscribe(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     };
-    log::info!("events: registered {subscription_id} app={plugin_id} lifecycle={lifecycle}");
-    let timeline = app_timeline::global();
+    log::info!("events: registered {subscription_id} plugin={plugin_id} lifecycle={lifecycle}");
+    let timeline = plugin_timeline::global();
     let snapshot = {
         let timeline = match timeline.lock() {
             Ok(t) => t,
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn pane_consumer_queued_match_survives_close_before_snapshot() {
         use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source};
-        let mut timeline = app_timeline::PluginTimeline::default();
+        let mut timeline = plugin_timeline::PluginTimeline::default();
         let outcome = timeline
             .record_pane_lifecycle(
                 1,

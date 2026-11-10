@@ -1,4 +1,4 @@
-//! `plexi events` — subscribe to app event streams from a terminal pane.
+//! `plexi events` — subscribe to plugin event streams from a terminal pane.
 //!
 //! The lowest-common-denominator agent transport: any process that can read
 //! subprocess stdout can subscribe. Both subcommands open the host socket,
@@ -6,7 +6,7 @@
 //!
 //! - `subscribe` keeps the connection open and prints a `subscribed` ack line
 //!   followed by one line per delivered event, until interrupted.
-//! - `list` prints the apps' declared streams once and exits.
+//! - `list` prints the plugins' declared streams once and exits.
 //!
 //! `declare` and `emit` are the publish side: they send one control line and
 //! read a single `ok`/`error` reply. A first-time publish under an plugin-id

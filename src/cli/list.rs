@@ -10,11 +10,11 @@ pub fn list_cli() -> i32 {
     );
     let installed = registry.list();
     if installed.is_empty() {
-        println!("no apps installed");
+        println!("no plugins installed");
         println!("install one with: plexi plugin install <source>[@ref]");
         return 0;
     }
-    // Read versions directly from the global apps dir for the source-of-truth
+    // Read versions directly from the global plugins dir for the source-of-truth
     // version field — the registry only carries `manifest.version` at load time.
     let global_versions =
         crate::cli::install_host::installed_versions(&crate::app::registry::plugins_dir());
@@ -55,7 +55,7 @@ pub fn list_cli() -> i32 {
     }
     if !globals.is_empty() {
         println!(
-            "Global apps ({})",
+            "Global plugins ({})",
             crate::app::registry::plugins_dir().display()
         );
         for (id, name, version, badge) in &globals {
@@ -69,7 +69,7 @@ pub fn list_cli() -> i32 {
     if !workspace.is_empty() {
         if let Some(root) = workspace_root {
             println!();
-            println!("Workspace apps ({})", root.display());
+            println!("Workspace plugins ({})", root.display());
             for (id, name, version, badge) in &workspace {
                 if badge.is_empty() {
                     println!("  {:30} {:30} {}", id, name, version);
@@ -82,14 +82,14 @@ pub fn list_cli() -> i32 {
     0
 }
 
-/// `plexi plugin freeze <path>` — write a `pack.toml` snapshot of installed apps to `path`.
+/// `plexi plugin freeze <path>` — write a `pack.toml` snapshot of installed plugins to `path`.
 /// See `crate::cli::install_host::export_pack` for the source-spec inference rules.
 pub fn freeze_cli(dest_path: &str) -> i32 {
     let target_root = crate::app::registry::plugins_dir();
     let dest = std::path::PathBuf::from(dest_path);
     match crate::cli::install_host::export_pack(&target_root, &dest) {
         Ok(n) => {
-            println!("wrote {n} apps → {}", dest.display());
+            println!("wrote {n} plugins → {}", dest.display());
             0
         }
         Err(e) => {

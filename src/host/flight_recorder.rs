@@ -113,7 +113,7 @@ pub fn record_in(
 }
 
 /// Session traces retain routing and provenance, but not arbitrary tool or
-/// app content. Those fields can contain credentials even under innocent keys.
+/// plugin content. Those fields can contain credentials even under innocent keys.
 fn redact_content(kind: &str, data: &mut Value) {
     fn hide(data: &mut Value, field: &str) {
         if let Some(value) = data.get_mut(field).filter(|v| !v.is_null()) {

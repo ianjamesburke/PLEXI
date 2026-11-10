@@ -15,7 +15,7 @@ pub struct AuditEvent {
     pub actor: String,
     /// `tool_call` | `permission_decision` | `revoke`.
     pub kind: String,
-    /// Broker target id, e.g. `app.csv.write_range`.
+    /// Broker target id, e.g. `plugin.csv.write_range`.
     pub target: String,
     /// Outcome: `ok`, `error`, `allow_once`, `allow_session`, `allow_always`,
     /// `deny`, `revoked`.

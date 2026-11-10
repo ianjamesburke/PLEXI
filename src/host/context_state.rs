@@ -1,6 +1,6 @@
 //! ContextState — rolled-up status summary for a context and its children.
 //!
-//! Reads existing status channels only (StatusSummary for apps, pty_title for
+//! Reads existing status channels only (StatusSummary for plugins, pty_title for
 //! terminals). No new protocol messages.
 
 use crate::spatial::tiling::PaneId;
@@ -139,7 +139,7 @@ impl ContextState {
                         };
                         (name, status)
                     }
-                    crate::host::pane::Pane::App(a) => {
+                    crate::host::pane::Pane::View(a) => {
                         let status = if let Some(agent) = pane.agent() {
                             match agent.state {
                                 AgentState::NeedsYou => {
@@ -359,7 +359,7 @@ mod tests {
     use crate::protocol::AgentState;
 
     struct DummyView;
-    impl crate::app::app_trait::App for DummyView {
+    impl crate::app::view_trait::View for DummyView {
         fn type_id(&self) -> &'static str {
             "test.app"
         }
@@ -369,7 +369,7 @@ mod tests {
         fn ui(
             &mut self,
             _ui: &mut egui::Ui,
-            _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+            _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _pending_click: Option<crate::host::pane::PendingPaneClick>,
         ) {
         }
@@ -385,8 +385,8 @@ mod tests {
             make_context(2, "Squad", Some(1)),
         ];
         let mut child_win = make_empty_window(2, 101);
-        let make_app_pane = |id: u64, state: AgentState| {
-            crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
+        let make_view_pane = |id: u64, state: AgentState| {
+            crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
                 id,
                 name: format!("app-{id}"),
                 manifest_id: "test.app".into(),
@@ -410,7 +410,7 @@ mod tests {
             }))
         };
 
-        child_win.panes.insert(10, make_app_pane(10, AgentState::Working));
+        child_win.panes.insert(10, make_view_pane(10, AgentState::Working));
         let windows = vec![make_empty_window(1, 100), child_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Working);
@@ -423,10 +423,10 @@ mod tests {
         let mut windows = windows;
         windows[1]
             .panes
-            .insert(11, make_app_pane(11, AgentState::Working));
+            .insert(11, make_view_pane(11, AgentState::Working));
         windows[1]
             .panes
-            .insert(12, make_app_pane(12, AgentState::Blocked));
+            .insert(12, make_view_pane(12, AgentState::Blocked));
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::Blocked);
         assert_eq!(state.status, ContextStatus::Blocked);
@@ -438,7 +438,7 @@ mod tests {
         let mut needs_you_win = make_empty_window(2, 101);
         needs_you_win
             .panes
-            .insert(20, make_app_pane(20, AgentState::NeedsYou));
+            .insert(20, make_view_pane(20, AgentState::NeedsYou));
         let windows = vec![make_empty_window(1, 100), needs_you_win];
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children[0].status, ContextStatus::NeedsYou);

@@ -23,7 +23,7 @@
 //!   disables keychain prompts so `host start` cannot block on Allow. A
 //!   read that fails with an auth or ACL status (`errSecAuthFailed` -25293
 //!   and the same class) is rotated: the old item is deleted without reading
-//!   its secret, and a new key is created. New items trust this app's
+//!   its secret, and a new key is created. New items trust this plugin's
 //!   designated requirement, attached when the item is created, so a
 //!   same-signer rebuild keeps access when that requirement is stable. An
 //!   ad-hoc signature changes every build, so the next launch rotates again.
@@ -1680,8 +1680,8 @@ mod mac {
     // errSecItemNotFound. A missing host item is an empty store, not a failure.
     const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-    // Not in security-framework-sys. A null path is the calling app's designated
-    // requirement. A null trusted list would trust every app, so this code never
+    // Not in security-framework-sys. A null path is the calling plugin's designated
+    // requirement. A null trusted list would trust every plugin, so this code never
     // passes one.
     #[link(name = "Security", kind = "framework")]
     extern "C" {
@@ -1831,7 +1831,7 @@ mod mac {
         let chain = keychain()?;
         // The creating binary is the trusted application. `security` is not,
         // so a direct keychain read does not return the secret. The ACL is
-        // then widened to this app's designated requirement, never to any app.
+        // then widened to this plugin's designated requirement, never to any plugin.
         create_with_access(&chain, account, value)?;
         log::info!("permission_seal: stored host item {account} in the macOS keychain");
         Ok(())
@@ -2016,7 +2016,7 @@ mod mac {
         }
         if access.is_ok() && super::is_mac_account(account) {
             log::info!(
-                "permission_seal: keychain ACL for {account} trusts this app's designated requirement"
+                "permission_seal: keychain ACL for {account} trusts this plugin's designated requirement"
             );
         }
         Ok(())

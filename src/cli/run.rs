@@ -53,7 +53,7 @@ const PLEXI_SUBCOMMANDS: &[&str] = &[
     "ledger",
     "debug",
     "skill",
-    "command-view",
+    "agents-dashboard",
     "changes",
     "account",
     "demo",
@@ -595,7 +595,7 @@ pub fn dispatch_cli_step(
                     name: Some(title.as_str()),
                     layout,
                     from_pane_id: from_id,
-                    app: Some("mcp-renderer"),
+                    plugin: Some("mcp-renderer"),
                     mcp: &mcp,
                     ..Default::default()
                 })

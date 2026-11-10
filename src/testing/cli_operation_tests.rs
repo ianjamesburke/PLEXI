@@ -1,4 +1,4 @@
-//! End-to-end proof of approved CLI operations: a real sandboxed Python app
+//! End-to-end proof of approved CLI operations: a real sandboxed Python plugin
 //! requests an operation, a person decides, and a real compiled fixture CLI runs
 //! (or provably does not). Hidden-window and inactive-context servicing included.
 
@@ -136,13 +136,13 @@ impl E2e {
         let before = self.h.state().open_panes;
         self.h
             .app
-            .launch_app_by_path_with_layout(
+            .launch_view_by_path_with_layout(
                 &self.plugin_dir.to_string_lossy(),
                 None,
                 Some(self.workspace.clone()),
                 &[plan.to_string()],
             )
-            .expect("launch fixture app");
+            .expect("launch fixture plugin");
         self.h
             .state()
             .open_panes
@@ -157,7 +157,7 @@ impl E2e {
             .windows
             .iter()
             .find_map(|w| w.panes.get(&pane))
-            .and_then(Pane::as_app)
+            .and_then(Pane::as_view)
             .and_then(|p| match &p.runtime {
                 ViewRuntime::Python(py) => Some(py.display_name()),
                 _ => None,
@@ -218,7 +218,7 @@ impl E2e {
 const ECHO_PLAN: &str = r#"[{"id":"r1","op":"fixture.echo","values":{"word":"hi"}}]"#;
 
 #[test]
-fn sandboxed_app_gets_a_correlated_result_after_approval_while_the_window_is_hidden() {
+fn sandboxed_plugin_gets_a_correlated_result_after_approval_while_the_window_is_hidden() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
@@ -245,7 +245,7 @@ fn result_arrives_while_the_apps_context_is_inactive_and_the_window_hidden() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
-    // Move the person to another context: the app's window is now inactive.
+    // Move the person to another context: the plugin's window is now inactive.
     let other = tempfile::tempdir().unwrap();
     let ctx_id = crate::testing::reserve_test_context_id();
     let idx = super::harness_tests::push_secondary_context(&mut e2e.h, ctx_id, other.path());
@@ -264,7 +264,7 @@ fn result_arrives_while_the_apps_context_is_inactive_and_the_window_hidden() {
 }
 
 #[test]
-fn denial_reaches_the_app_and_launches_nothing() {
+fn denial_reaches_the_plugin_and_launches_nothing() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(ECHO_PLAN);
     let id = e2e.wait_for_approval(pane, false);
@@ -292,7 +292,7 @@ fn experiment_off_refuses_before_any_approval_or_launch() {
 }
 
 #[test]
-fn closing_the_app_kills_a_running_operation_and_its_children() {
+fn closing_the_plugin_kills_a_running_operation_and_its_children() {
     let mut e2e = E2e::new(true);
     let pane = e2e.launch(r#"[{"id":"k","op":"fixture.children","values":{}}]"#);
     let id = e2e.wait_for_approval(pane, false);
@@ -309,7 +309,7 @@ fn closing_the_app_kills_a_running_operation_and_its_children() {
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
             start.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(5)),
-            "grandchild {pid} survived closing the app"
+            "grandchild {pid} survived closing the plugin"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

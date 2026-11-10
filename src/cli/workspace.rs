@@ -48,9 +48,9 @@ pub fn workspace_init() -> i32 {
             println!("  workspace id: {}", cfg.id);
             println!("  channel dir:  {channel_dir}/");
             println!("  router:       {channel_dir}/secrets.toml (fallback = true)");
-            println!("  apps:         {channel_dir}/plugins.toml (declare app dependencies here)");
+            println!("  plugins:         {channel_dir}/plugins.toml (declare plugin dependencies here)");
             println!("  commands:     {channel_dir}/commands.toml (run commands with: plexi run)");
-            print_tip(&format!("declare app dependencies in {channel_dir}/plugins.toml, then run `plexi plugin install`."));
+            print_tip(&format!("declare plugin dependencies in {channel_dir}/plugins.toml, then run `plexi plugin install`."));
             0
         }
         Err(e) => {
@@ -323,7 +323,7 @@ pub fn workspace_secret_set(
         eprintln!("  Global secrets are always stored under their canonical name.");
         return 1;
     }
-    // `friendly` is the canonical name (env var name used in app code).
+    // `friendly` is the canonical name (env var name used in plugin code).
     // `alias` overrides the Keychain entry name when the user wants a different friendly name.
     let effective_friendly = alias.unwrap_or(friendly);
     log::info!(
@@ -946,7 +946,7 @@ fn actor_from_flags(
         (Some(id), None) => Ok(crate::workspace::secrets::SecretActor::agent(id)),
         (None, Some(id)) => Ok(crate::workspace::secrets::SecretActor::app(id)),
         _ => {
-            eprintln!("error: pass --agent <id> or --app <id>");
+            eprintln!("error: pass --agent <id> or --plugin <id>");
             Err(1)
         }
     }
@@ -1281,7 +1281,7 @@ pub fn folder_secret_exec(cwd: &std::path::Path, command: &[String]) -> i32 {
     }
 }
 
-// ── plexi app subcommands ─────────────────────────────────────────────────────
+// ── plexi plugin subcommands ─────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod secret_set_tests {

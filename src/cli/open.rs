@@ -148,7 +148,7 @@ pub struct PaneNewCliArgs<'a> {
     pub cwd: Option<&'a str>,
     pub ephemeral: bool,
     pub no_focus: bool,
-    pub app: Option<&'a str>,
+    pub plugin: Option<&'a str>,
     pub mcp: &'a [String],
     pub extra_args: &'a [String],
     pub context_name: Option<&'a str>,
@@ -171,7 +171,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
         cwd,
         ephemeral,
         no_focus,
-        app,
+        plugin,
         mcp,
         extra_args,
         context_name,
@@ -198,10 +198,10 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
     };
 
     // `agents` is the built-in fleet surface, also available via view open.
-    let app = app.or_else(|| (cmd == Some("agents") && agent.is_none()).then_some("agents"));
-    // Determine mode: app or terminal
-    let is_app = app.is_some() || !mcp.is_empty();
-    let type_id = if let Some(a) = app {
+    let plugin = plugin.or_else(|| (cmd == Some("agents") && agent.is_none()).then_some("agents"));
+    // Determine mode: plugin or terminal
+    let is_plugin = plugin.is_some() || !mcp.is_empty();
+    let type_id = if let Some(a) = plugin {
         a.to_string()
     } else if !mcp.is_empty() {
         "mcp-renderer".to_string()
@@ -211,7 +211,7 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
 
     let args: Vec<String> = if !mcp.is_empty() {
         mcp.to_vec()
-    } else if is_app {
+    } else if is_plugin {
         extra_args.to_vec()
     } else if let Some(c) = cmd {
         let command = std::iter::once(c)
@@ -374,22 +374,22 @@ pub fn mcp_pane_title(args: &[String]) -> String {
     format!("mcp: {}", args.first().map(String::as_str).unwrap_or("mcp"))
 }
 
-/// Parsed prefix from a `type_id` string like `app:snake`, `cli:git`, `mcp:filesystem`.
+/// Parsed prefix from a `type_id` string like `view:snake`, `cli:git`, `mcp:filesystem`.
 pub enum OpenPrefix {
-    /// `app:<name>` -- explicit app registry lookup
-    App(String),
+    /// `view:<name>` -- explicit plugin registry lookup
+    View(String),
     /// `cli:<name>` -- CLI registry/crawl lookup
     Cli(String),
     /// `mcp:<name>` -- MCP registry lookup
     Mcp(String),
-    /// No prefix -- backwards compat (try app registry, then CLI registry)
+    /// No prefix -- backwards compat (try plugin registry, then CLI registry)
     Bare(String),
 }
 
 /// Parse a `type_id` argument into an `OpenPrefix`.
 pub fn parse_prefix(type_id: &str) -> OpenPrefix {
-    if let Some(name) = type_id.strip_prefix("app:") {
-        OpenPrefix::App(name.to_string())
+    if let Some(name) = type_id.strip_prefix("view:") {
+        OpenPrefix::View(name.to_string())
     } else if let Some(name) = type_id.strip_prefix("cli:") {
         OpenPrefix::Cli(name.to_string())
     } else if let Some(name) = type_id.strip_prefix("mcp:") {
@@ -429,7 +429,7 @@ fn open_descriptor_in_renderer(
         layout,
         from_pane_id,
         cwd,
-        app: Some("cli-renderer"),
+        plugin: Some("cli-renderer"),
         extra_args: &[path],
         ..Default::default()
     })
@@ -469,7 +469,7 @@ pub fn open_mcp_by_name(
     let title = format!("mcp: {name}");
     pane_new_cli(PaneNewCliArgs {
         name: Some(&title), layout, from_pane_id, cwd,
-        app: Some("mcp-renderer"), mcp: &[name.to_string()],
+        plugin: Some("mcp-renderer"), mcp: &[name.to_string()],
         ..Default::default()
     })
 }
@@ -535,7 +535,7 @@ fn review_raw_wasm_open_with_reader(
     let plugin_id = raw_wasm_plugin_id(path);
     let workspace_root = raw_wasm_workspace_root(path);
     let required_grants =
-        crate::host::wasm_app::WasmView::inspect_required_grants(path).map_err(|e| {
+        crate::host::wasm_view::WasmView::inspect_required_grants(path).map_err(|e| {
             format!(
                 "could not inspect WASM imports for '{}': {e}",
                 path.display()
@@ -590,7 +590,7 @@ fn review_raw_wasm_open_with_reader(
         );
     }
     log::info!(
-        "open:cli: raw wasm review app={} path={} workspace={} grants={:?}",
+        "open:cli: raw wasm review plugin={} path={} workspace={} grants={:?}",
         plugin_id,
         path.display(),
         workspace_root.display(),
@@ -629,7 +629,7 @@ pub fn open_cli(
         eprintln!("warning: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead");
     }
 
-    // If type_id looks like a path to an app directory (contains manifest.toml), open by path.
+    // If type_id looks like a path to an plugin directory (contains manifest.toml), open by path.
     let path = std::path::Path::new(type_id);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
@@ -639,11 +639,11 @@ pub fn open_cli(
     if resolved.join("manifest.toml").exists() {
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
-    // A `.wasm` file is a sandboxed component app launched through the same
-    // path-spawn flow as a local app dir (the run primitive, G6).
+    // A `.wasm` file is a sandboxed component plugin launched through the same
+    // path-spawn flow as a local plugin dir (the run primitive, G6).
     if resolved.extension().and_then(|e| e.to_str()) == Some("wasm") && resolved.is_file() {
         if let Err(e) = review_raw_wasm_open(&resolved) {
             log::warn!(
@@ -655,21 +655,21 @@ pub fn open_cli(
         }
         let abs_path = resolved.to_string_lossy().to_string();
         log::info!("open:cli: detected .wasm component, opening from path={abs_path}");
-        return open_app_by_path(&abs_path, args, layout, from_pane_id);
+        return open_view_by_path(&abs_path, args, layout, from_pane_id);
     }
 
     pane_new_cli(PaneNewCliArgs {
         layout,
         from_pane_id,
         cwd,
-        app: Some(type_id),
+        plugin: Some(type_id),
         extra_args: args,
         ..Default::default()
     })
 }
 
-/// Open an app from a local directory path (replaces the old `app run` command).
-fn open_app_by_path(
+/// Open an plugin from a local directory path (replaces the old `plugin run` command).
+fn open_view_by_path(
     abs_path: &str,
     args: &[String],
     layout: Option<&str>,
@@ -699,7 +699,7 @@ fn open_app_by_path(
         let response_file = crate::rpc::response_file("spawn-pane-response", "json");
         let spec = spec.with_response_file(Some(response_file.clone()));
         let payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-            log::error!("open_app_by_path: failed to serialize spawn request: {e}");
+            log::error!("open_view_by_path: failed to serialize spawn request: {e}");
             serde_json::json!({
                 "type": "spawn_pane",
                 "type_id": "",
@@ -709,7 +709,7 @@ fn open_app_by_path(
                 "response_file": response_file,
             })
         });
-        log::info!("open_app_by_path: sending via socket path={abs_path} argc={} layout={layout:?} from_pane_id={from_pane_id:?}", args.len());
+        log::info!("open_view_by_path: sending via socket path={abs_path} argc={} layout={layout:?} from_pane_id={from_pane_id:?}", args.len());
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -724,7 +724,7 @@ fn open_app_by_path(
         return code;
     }
     let queue_payload = serde_json::to_value(spec.to_spawn_pane_request()).unwrap_or_else(|e| {
-        log::error!("open_app_by_path: failed to serialize queued spawn request: {e}");
+        log::error!("open_view_by_path: failed to serialize queued spawn request: {e}");
         serde_json::json!({
             "type_id": "",
             "path": abs_path,
@@ -732,7 +732,7 @@ fn open_app_by_path(
             "layout": layout,
         })
     });
-    log::info!("open_app_by_path: queued path={abs_path}");
+    log::info!("open_view_by_path: queued path={abs_path}");
     match crate::cli::queue_spawn(queue_payload, "open", &format!("open {abs_path}")) {
         Ok(_) => 0,
         Err(code) => code,
@@ -783,7 +783,7 @@ mod open_cli_tests {
     }
 
     #[test]
-    fn app_open_omits_layout_so_host_applies_split_default() {
+    fn view_open_omits_layout_so_host_applies_split_default() {
         // With no directional flag the CLI must leave `layout` unset so the host
         // applies its placement default (manifest `[launch] placement`, else a
         // sibling split) rather than forcing an overlay takeover (stint 0330).
@@ -802,7 +802,7 @@ mod open_cli_tests {
     }
 
     #[test]
-    fn app_open_explicit_tab_layout_is_preserved() {
+    fn view_open_explicit_tab_layout_is_preserved() {
         let env = socket_env_guard();
         let (code, payload) = capture_spawn_payload(&env, || {
             open_cli("file_browser", &[], Some("tab"), None, None)
@@ -831,7 +831,7 @@ mod open_cli_tests {
         let workspace_root = fixture.parent().expect("fixture parent");
 
         // Pre-approve all required grants so review does not prompt stdin.
-        let required = crate::host::wasm_app::WasmView::inspect_required_grants(&fixture)
+        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         let mut store =
@@ -883,7 +883,7 @@ mod open_cli_tests {
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
-        let required = crate::host::wasm_app::WasmView::inspect_required_grants(&fixture)
+        let required = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants")
             .capability_ids();
         let mut reader = Cursor::new(b"yes\n".to_vec());
@@ -945,9 +945,9 @@ mod tests {
     }
 
     #[test]
-    fn prefix_app() {
-        match parse_prefix("app:snake") {
-            OpenPrefix::App(name) => assert_eq!(name, "snake"),
+    fn prefix_plugin() {
+        match parse_prefix("view:snake") {
+            OpenPrefix::View(name) => assert_eq!(name, "snake"),
             _ => panic!("expected App prefix"),
         }
     }

@@ -68,7 +68,7 @@ pub enum FleetFilter {
     Done,
 }
 
-/// App-reported "pip" status — a traffic-light health indicator an app sets for
+/// App-reported "pip" status — a traffic-light health indicator an plugin sets for
 /// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
 /// falls back to derived activity. Distinct from `AgentState` (the hook-script
 /// vocabulary) so the SDK surface reads as red/yellow/green.
@@ -81,8 +81,8 @@ pub enum PipStatus {
 }
 
 impl PipStatus {
-    /// Map the app-reported status onto the host activity-dot vocabulary so the
-    /// dot renders the app's intended color. Yellow maps to the working color,
+    /// Map the plugin-reported status onto the host activity-dot vocabulary so the
+    /// dot renders the plugin's intended color. Yellow maps to the working color,
     /// green to idle, and red to blocked. The UI renders yellow health pips
     /// statically unless the pane also has a working agent.
     pub fn as_agent_state(self) -> &'static AgentState {
@@ -187,7 +187,7 @@ pub enum HostRequest {
     },
     /// Read or steer the command view. `op` is `list`, `open`, or `cancel`.
     /// Cancel finishes that run before the next tool.
-    CommandView {
+    AgentsDashboard {
         op: String,
         #[serde(default)]
         payload: serde_json::Value,
@@ -209,11 +209,11 @@ pub enum HostRequest {
     },
     /// Request a workspace-scoped secret. Scoped to Init.workspace_root automatically.
     SecretGet { key: String },
-    /// Read a file through the native WASM app runtime host. Requires `fs.read` and
-    /// the resolved path must stay inside the app's workspace root.
+    /// Read a file through the native WASM plugin runtime host. Requires `fs.read` and
+    /// the resolved path must stay inside the plugin's workspace root.
     FileRead { path: String },
-    /// List a directory through the native WASM app runtime host. Requires `fs.read`
-    /// and the resolved path must stay inside the app's workspace root.
+    /// List a directory through the native WASM plugin runtime host. Requires `fs.read`
+    /// and the resolved path must stay inside the plugin's workspace root.
     FileList {
         path: String,
         #[serde(default)]
@@ -226,7 +226,7 @@ pub enum HostRequest {
         intent: String,
         payload: serde_json::Value,
     },
-    /// Signal that a run the app owns has finished.
+    /// Signal that a run the plugin owns has finished.
     RunComplete {
         run_id: String,
         result: serde_json::Value,
@@ -245,7 +245,7 @@ pub enum HostRequest {
         title: String,
         body: String,
         /// The notification shape. Defaults to `message` for back-compat with
-        /// existing apps. Determines how the modal renders and interacts.
+        /// existing plugins. Determines how the modal renders and interacts.
         #[serde(default)]
         kind: NotifyKind,
         /// Choice options (only meaningful for `kind = "choice"`). The host shows
@@ -256,7 +256,7 @@ pub enum HostRequest {
         #[serde(default)]
         input_prompt: Option<String>,
         /// If true, the user cannot dismiss with Esc — they must pick an option
-        /// or submit input. Intended for decisions the app depends on.
+        /// or submit input. Intended for decisions the plugin depends on.
         #[serde(default)]
         required: bool,
         #[serde(default)]
@@ -281,7 +281,7 @@ pub enum HostRequest {
         /// `on_dismiss` is None). Omit for notifications that should persist.
         #[serde(default)]
         timeout_secs: Option<u64>,
-        /// Payload delivered to the app when the notification reaches a terminal
+        /// Payload delivered to the plugin when the notification reaches a terminal
         /// non-answer outcome (timeout or source exit). Escape means Later and
         /// deliberately sends no response; the modal Cancel action returns
         /// `"cancelled"`. Defaults to "timeout" for timeouts when omitted.
@@ -289,10 +289,10 @@ pub enum HostRequest {
         on_dismiss: Option<String>,
         /// CLI-only: path to a file the host writes the chosen key into when
         /// the user responds. Used by `plexi notify --choice` to return the
-        /// result to the blocking CLI process. Never set by app SDK.
+        /// result to the blocking CLI process. Never set by plugin SDK.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
-        /// CLI-only: notification visibility scope. Apps never set this — their
+        /// CLI-only: notification visibility scope. Plugins never set this — their
         /// scope comes from `manifest.toml::[launch] notification_scope`.
         /// Omit to take `NotifyScope::default()`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,12 +359,12 @@ pub enum HostRequest {
         #[serde(skip)]
         peer_ancestry: Option<Vec<u32>>,
     },
-    /// Report an app's own pip status (red/yellow/green) for its activity dot.
-    /// Fire-and-forget; set by the app process via `App.set_pip_status`. Takes
-    /// priority over derived activity until the app reports a new status.
+    /// Report an plugin's own pip status (red/yellow/green) for its activity dot.
+    /// Fire-and-forget; set by the plugin process via `App.set_pip_status`. Takes
+    /// priority over derived activity until the plugin reports a new status.
     ///
-    /// `pane_id` is stamped by the host with the sending app's own pane (the app
-    /// does not know its pane id), so it defaults to 0 on the wire and an app
+    /// `pane_id` is stamped by the host with the sending plugin's own pane (the plugin
+    /// does not know its pane id), so it defaults to 0 on the wire and an plugin
     /// can only ever set its own pip — never another pane's.
     SetPipStatus {
         #[serde(default)]
@@ -387,7 +387,7 @@ pub enum HostRequest {
     ///
     /// Mirrors `PipeOpen` but the host scopes `PipeMessage` delivery so only
     /// the caller pane and the pane identified by `target_pane_id` can
-    /// receive messages on this pipe — peer apps are NOT subscribed even
+    /// receive messages on this pipe — peer plugins are NOT subscribed even
     /// if they call `pipe_open` with the same `pipe_id`.
     ///
     /// Created bidirectionally: both panes receive the other's `PipeSend`
@@ -429,7 +429,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Request the host to spawn a new app pane. Requires `spawn.app` capability.
+    /// Request the host to spawn a new view pane. Requires `spawn.plugin` capability.
     /// `layout`: "split_h" (new pane right), "split_v" (default, new pane below),
     ///           or "overlay" (full pane, no split).
     /// `args`: argv passed to the child process (appended after the binary path).
@@ -442,7 +442,7 @@ pub enum HostRequest {
         args: Vec<String>,
     },
 
-    /// Unified pane spawn primitive (#592). Supersedes SpawnView for new apps.
+    /// Unified pane spawn primitive (#592). Supersedes SpawnView for new plugins.
     /// Requires `panes.spawn` capability.
     /// `layout`: one of "split_h", "split_right", "split_v", "split_below", "split_above", "split_left", "overlay",
     ///   "new_window" (terminal only — creates a new spatial grid window to the right
@@ -451,7 +451,7 @@ pub enum HostRequest {
     ///   both in a Tabs container if needed; use after `pane focus` to target a window).
     ///   "overlay_pane" and "background" are reserved but not yet implemented.
     /// A spawned child that needs to report completion back to its spawner does
-    /// so over the event bus: it calls `EmitEvent` with `<app>::completed` and
+    /// so over the event bus: it calls `EmitEvent` with `<plugin>::completed` and
     /// the spawner reads it via `SubscribePluginEvents`. There is no JSON-pipe
     /// reply channel (the legacy `--pipe=<id>` coupling was removed in 0327).
     /// Host responds: `PlexiEvent::PaneSpawned { pane_id }` on success,
@@ -474,17 +474,17 @@ pub enum HostRequest {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         no_focus: bool,
-        /// When set, the host launches the app directly from this filesystem path
+        /// When set, the host launches the plugin directly from this filesystem path
         /// rather than looking it up in the registry by type_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
         /// When set, use this path as the workspace root for plugin state scoping
-        /// instead of defaulting to the app directory. Sent by `plexi open github:`.
+        /// instead of defaulting to the plugin directory. Sent by `plexi open github:`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_root: Option<String>,
         /// When set, spawn the pane into this child context instead of the
-        /// requesting app's own context. The target context must exist and be
-        /// a descendant of the requesting app's context (#1518).
+        /// requesting plugin's own context. The target context must exist and be
+        /// a descendant of the requesting plugin's context (#1518).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_context: Option<u64>,
         /// When set, spawn the terminal into the context with this name,
@@ -562,7 +562,7 @@ pub enum HostRequest {
         steps: u64,
     },
 
-    /// List permission state across apps (stint 0017). Gated on
+    /// List permission state across plugins (stint 0017). Gated on
     /// `permissions.manage` when arriving over PGAP. Host writes a JSON object
     /// to `response_file`:
     ///
@@ -584,20 +584,20 @@ pub enum HostRequest {
     /// ```
     ///
     /// One row per entry persisted in `permissions.toml` (`stored: true`),
-    /// plus one row per live capability of a currently-running app that has
+    /// plus one row per live capability of a currently-running plugin that has
     /// no stored entry (`stored: false` — granted → "green", blocked →
     /// "red"). Live capabilities in the effective yellow state (declared but
     /// neither granted nor blocked) are not retained by the host after
     /// launch and only appear once a decision is stored.
     ListPermissions { response_file: String },
 
-    /// Set the stored permission state for an (app, workspace, capability)
+    /// Set the stored permission state for an (plugin, workspace, capability)
     /// triple (stint 0017). Gated on `permissions.manage` when arriving over
     /// PGAP. `state` is one of "green" | "yellow" | "red". When `workspace`
-    /// is omitted, the workspace root of a running app with `plugin_id` is used;
-    /// if no such app is running the request fails. Persists to
-    /// `permissions.toml` AND live-updates any running app's permission set,
-    /// so a revocation takes effect on the app's next request. Host writes
+    /// is omitted, the workspace root of a running plugin with `plugin_id` is used;
+    /// if no such plugin is running the request fails. Persists to
+    /// `permissions.toml` AND live-updates any running plugin's permission set,
+    /// so a revocation takes effect on the plugin's next request. Host writes
     /// `{"ok":true}` or `{"error":"..."}` to `response_file`. Unknown
     /// capability or state strings fail closed with an error reply.
     SetPermission {
@@ -885,16 +885,16 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Write text to a terminal PTY or an app's input path (`plexi pane send`).
+    /// Write text to a terminal PTY or an plugin's input path (`plexi pane send`).
     /// `\n` in text (literal backslash-n) is interpreted as Enter unless
-    /// `paste` requests a literal app paste event.
+    /// `paste` requests a literal plugin paste event.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
     ///
     /// With `submit`, the host owns the whole type-and-enter sequence for a
     /// terminal pane: it waits for the pane's output to settle, presses Enter,
     /// and holds the reply until it has confirmed the prompt left the input
     /// line — see [`crate::app::pane_wait::PendingSubmit`]. `submit` is not
-    /// supported on app panes.
+    /// supported on view panes.
     SendToPane {
         pane_id: u64,
         text: String,
@@ -906,7 +906,7 @@ pub enum HostRequest {
         generated_operation_id: bool,
         #[serde(default)]
         submit: bool,
-        /// Deliver literal text as one paste event to an app pane.
+        /// Deliver literal text as one paste event to an view pane.
         #[serde(default)]
         paste: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -933,7 +933,7 @@ pub enum HostRequest {
 
     /// Deliver a synthetic key event to any pane. Sent by `plexi pane key`.
     /// For terminal panes, the key is translated to PTY bytes.
-    /// For PGAP app panes, a `PlexiEvent::Key` is delivered.
+    /// For PGAP view panes, a `PlexiEvent::Key` is delivered.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
     KeyPane {
         pane_id: u64,
@@ -952,7 +952,7 @@ pub enum HostRequest {
         response_file: String,
     },
 
-    /// Deliver a synthetic pointer click to an app pane, in pane-pixel
+    /// Deliver a synthetic pointer click to an view pane, in pane-pixel
     /// coordinates (origin at the pane's top-left). Sent by `plexi pane click`.
     /// The host injects a real `PointerMoved`+`PointerButton` press/release
     /// pair into the live production egui pass, so it exercises the exact
@@ -971,7 +971,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Deliver a synthetic click to an app pane by node id, activating the
+    /// Deliver a synthetic click to an view pane by node id, activating the
     /// Button/TextInput/ListView node the id names — the node-addressed
     /// sibling of `ClickPane` (stint 0414). Sent by
     /// `plexi pane click <pane_id> --node <node_id>`. `node_id` matches
@@ -994,7 +994,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Deliver a sanctioned pointer drag to an app pane: press at `from`,
+    /// Deliver a sanctioned pointer drag to an view pane: press at `from`,
     /// `steps` intermediate `PointerMoved` positions, release at `to` —
     /// spread across consecutive frames through the same production input
     /// paths `ClickPane` uses (raw-input merge for builtin egui panes, the
@@ -1020,7 +1020,7 @@ pub enum HostRequest {
         to_node: Option<String>,
         /// Intermediate move positions between press and release (default 8,
         /// max 256). Each step is one frame, so scrub/threshold logic in the
-        /// target app sees a realistic pointer trajectory.
+        /// target plugin sees a realistic pointer trajectory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         steps: Option<u32>,
         /// "left" (default), "right", or "middle".
@@ -1049,7 +1049,7 @@ pub enum HostRequest {
     PaneStatus { pane_id: u64, response_file: String },
 
     /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
-    /// For app panes: host writes a versioned `semantic` tree for every runtime.
+    /// For view panes: host writes a versioned `semantic` tree for every runtime.
     /// Process panes also retain the compatible `frame` RenderCommand array.
     /// For terminal panes: host writes a simple status object.
     /// Every response additionally carries `claimed_state` (the pane's own
@@ -1083,7 +1083,7 @@ pub enum HostRequest {
 
     /// Inject a synthetic key into the host-level input path. Sent by
     /// `plexi host key` for validating host shortcuts without routing the
-    /// chord through a focused pane's PTY or app runtime.
+    /// chord through a focused pane's PTY or plugin runtime.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
     HostKey {
         /// Single key, named key, or chord accepted by
@@ -1092,8 +1092,8 @@ pub enum HostRequest {
         response_file: String,
     },
 
-    /// Dispatch a semantic action to an app pane. Sent by `plexi pane action <pane_id> <action> [args...]`.
-    /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
+    /// Dispatch a semantic action to an view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.
+    /// Host delivers `PlexiEvent::Action { action, args }` to the target view pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
     SendPaneAction {
         pane_id: u64,
@@ -1201,13 +1201,13 @@ pub enum HostRequest {
         payload: serde_json::Value,
         response_file: String,
     },
-    /// Call an app-exposed tool through the host tool dispatcher. Sent by
+    /// Call an plugin-exposed tool through the host tool dispatcher. Sent by
     /// `plexi plugin call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the
     /// caller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or
     /// `session:<id>` — never `user`), and writes
     /// `{"ok":true,"output":<json>}` or `{"error":"..."}` to `response_file`
-    /// from a worker thread once the app answers or the host deadline passes.
+    /// from a worker thread once the plugin answers or the host deadline passes.
     CallPluginTool {
         plugin_id: String,
         tool: String,
@@ -1225,13 +1225,13 @@ pub enum HostRequest {
         /// listener overwrites it before the call is admitted.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         peer_ancestry: Vec<u32>,
-        /// Pane that owns the tool when more than one instance of the app is live.
+        /// Pane that owns the tool when more than one instance of the plugin is live.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_pane_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         response_file: Option<String>,
     },
-    /// Snapshot the live tool registry exposed by running app panes in the
+    /// Snapshot the live tool registry exposed by running view panes in the
     /// resolved context. Sent by `plexi plugin tools` and `plexi plugin info`.
     /// The host resolves the viewer context from `context_id` when explicitly
     /// supplied, otherwise from the verified socket peer pane or
@@ -1372,7 +1372,7 @@ pub enum HostRequest {
     },
 
     /// Query the rolled-up `ContextState` for a context (#1518).
-    /// The requesting app must be in an ancestor (or the same) context.
+    /// The requesting plugin must be in an ancestor (or the same) context.
     /// Host responds with `PlexiEvent::ContextStateResponse`.
     QueryContextState { context_id: u64 },
 
@@ -1458,7 +1458,7 @@ pub enum HostRequest {
     /// Request enumeration of audio devices (#277). Host responds with
     /// `PlexiEvent::AudioDevicesListed { request_id, inputs, outputs }`. No
     /// capability gate — enumeration discloses only device names already
-    /// visible to any macOS app.
+    /// visible to any macOS plugin.
     ListAudioDevices { request_id: String },
 
     /// Request enumeration of MIDI ports (#320). Host responds with
@@ -1483,7 +1483,7 @@ pub enum HostRequest {
     /// only emits `PlexiEvent::MidiSendError` if the send failed (port not
     /// open, CoreMIDI error). Requires `midi.out`. The host opens the output
     /// port lazily on the first `SendMidi` call and keeps it open until the
-    /// app exits.
+    /// plugin exits.
     SendMidi { port_id: String, bytes: Vec<u8> },
 
     /// Open a video decoder (#345). The host responds with
@@ -1530,21 +1530,21 @@ pub enum HostRequest {
 
     // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
     //
-    // The binding-primitive surface that lets a Canvas app drive a linked
+    // The binding-primitive surface that lets a Canvas plugin drive a linked
     // terminal pane. All commands require the `terminal.bindings` capability
-    // — apps without it get capability-denied responses on each call.
+    // — plugins without it get capability-denied responses on each call.
     //
-    // The lifecycle: app emits `RequestLinkedTerminal` once at startup; host
-    // opens a fresh `Pane::Terminal` next to the app and replies with
+    // The lifecycle: plugin emits `RequestLinkedTerminal` once at startup; host
+    // opens a fresh `Pane::Terminal` next to the plugin and replies with
     // `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`.
     // From then on every primitive references the terminal via
     // `terminal_pane_id`.
-    /// Ask the host to open a fresh terminal pane next to this Canvas app
+    /// Ask the host to open a fresh terminal pane next to this Canvas plugin
     /// and link it. Host responds with `PlexiEvent::LinkedTerminalReady
-    /// { request_id, terminal_pane_id }`. `cwd` defaults to the app's
+    /// { request_id, terminal_pane_id }`. `cwd` defaults to the plugin's
     /// workspace root when `None`. `label` is reserved for future pane-
     /// chrome decoration; currently unused by the host but pinned on the
-    /// wire so apps and the host evolve together.
+    /// wire so plugins and the host evolve together.
     ///
     /// Capability: `terminal.bindings`. Required fields — no `serde(default)`.
     RequestLinkedTerminal {
@@ -1608,14 +1608,14 @@ pub enum HostRequest {
     /// Open a workspace artifact (file or directory) via the host.
     ///
     /// Modes:
-    ///   - `OpenInPane` — open the path in a new app pane, e.g. a file
+    ///   - `OpenInPane` — open the path in a new view pane, e.g. a file
     ///     browser at a directory or a text editor on a file.
-    ///     Implementation: routes through the file-browser app for
+    ///     Implementation: routes through the file-browser plugin for
     ///     directories; falls through to the OS default for files in
     ///     this PR.
     ///   - `RevealInFinder` — `open -R <path>` on macOS.
     ///   - `OpenWithDefault` — `open <path>` on macOS — uses Launch
-    ///     Services to pick the registered app for the file's UTI.
+    ///     Services to pick the registered plugin for the file's UTI.
     ///
     /// Capability: `terminal.bindings`. All fields required.
     OpenArtifact {
@@ -1627,7 +1627,7 @@ pub enum HostRequest {
     /// App signals it has pushed a navigation level. The host appends the
     /// entry to its per-pane nav stack. While the stack has entries, the pane
     /// chrome shows a back arrow + the current view's title, and Cmd+[
-    /// emits `PlexiEvent::NavBack` to the app instead of cycling tabs.
+    /// emits `PlexiEvent::NavBack` to the plugin instead of cycling tabs.
     ///
     /// `view_id` must be a stable identifier for this view (e.g. `"detail"`);
     /// `title` is shown in the pane chrome while this view is active.
@@ -1638,13 +1638,13 @@ pub enum HostRequest {
 
     /// Enable or disable `PlexiEvent::MouseMove` delivery for this pane.
     ///
-    /// Off by default to avoid flooding apps that don't need continuous pointer
+    /// Off by default to avoid flooding plugins that don't need continuous pointer
     /// tracking. Send `{ enabled: true }` after `Ready` to start receiving
     /// `on_mouse_move` callbacks. Send `{ enabled: false }` to stop.
     SetMouseTracking { enabled: bool },
 
     // ── Process streaming (#358) ──────────────────────────────────────────────
-    /// Spawn `command` via `sh -c` and stream its output back to the app.
+    /// Spawn `command` via `sh -c` and stream its output back to the plugin.
     ///
     /// The host pipes stdout and stderr, batches available bytes at ~30 Hz,
     /// and delivers each batch as `PlexiEvent::StreamChunk`. When the child
@@ -1699,14 +1699,14 @@ pub enum HostRequest {
         mode: FilePickerMode,
     },
 
-    // ── App events + undo (src/host/app_timeline.rs, Phase B) ─────────
-    /// Declare the named event streams this app may emit on. Event names are
-    /// app-defined but MUST be declared (with a JSON-Schema object) before
+    // ── App events + undo (src/host/plugin_timeline.rs, Phase B) ─────────
+    /// Declare the named event streams this plugin may emit on. Event names are
+    /// plugin-defined but MUST be declared (with a JSON-Schema object) before
     /// any `EmitEvent` referencing them is accepted. Re-declaring a stream
     /// replaces its previous declaration.
     DeclareEventStreams { streams: Vec<EventStreamDecl> },
 
-    /// Emit a semantic app event into the host timeline.
+    /// Emit a semantic plugin event into the host timeline.
     ///
     /// Required: `event` (a declared stream name), `actor`, `summary`,
     /// `resource_id`, `revision_after`. The host validates these and rejects
@@ -1721,7 +1721,7 @@ pub enum HostRequest {
         /// Who caused the state change.
         actor: PluginEventActor,
         /// Optional stable identity for the actor (e.g. an agent id).
-        /// Defaults to the emitting app's id.
+        /// Defaults to the emitting plugin's id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         actor_id: Option<String>,
         /// Causal identity: the tool caller whose call produced this event
@@ -1735,7 +1735,7 @@ pub enum HostRequest {
         /// Document, game, pane, or plugin-instance id the event is about.
         resource_id: String,
         /// Scope class of `resource_id` (`"document"`, `"game"`, `"pane"`…).
-        /// Defaults to `"pane"` (the app instance) when omitted.
+        /// Defaults to `"pane"` (the plugin instance) when omitted.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resource_scope: Option<String>,
         /// Revision identifier after the change.
@@ -1750,7 +1750,7 @@ pub enum HostRequest {
         /// Revision identifier before the change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revision_before: Option<String>,
-        /// Opaque app token the host returns in `PlexiEvent::RollbackApply`.
+        /// Opaque plugin token the host returns in `PlexiEvent::RollbackApply`.
         /// Presence makes this event checkpoint-creating (reversible).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rollback_token: Option<String>,
@@ -1772,10 +1772,10 @@ pub enum HostRequest {
         current_revision: String,
     },
 
-    /// Subscribe this pane to another app's declared event streams. Gated
+    /// Subscribe this pane to another plugin's declared event streams. Gated
     /// through the unified broker (`TargetType::PluginEventStream`, one
     /// evaluation per event name) — the host stamps the subscriber identity
-    /// from the requesting pane; apps cannot subscribe as someone else.
+    /// from the requesting pane; plugins cannot subscribe as someone else.
     /// Phase B wire subscriptions are session-scoped.
     ///
     /// Host responds with `PlexiEvent::PluginEventsSubscribed`. Matching events
@@ -1785,7 +1785,7 @@ pub enum HostRequest {
         request_id: String,
         /// Publisher plugin package identity whose streams are subscribed.
         plugin_id: String,
-        /// Declared stream names. Empty = all streams the app declares.
+        /// Declared stream names. Empty = all streams the plugin declares.
         #[serde(default)]
         event_names: Vec<String>,
         payload_mode: PayloadMode,
@@ -1803,7 +1803,7 @@ pub enum HostRequest {
     },
 
     /// List undo checkpoints from the host undo timeline, newest first.
-    /// `plugin_id` filters to one app; `None` = this app's own checkpoints.
+    /// `plugin_id` filters to one plugin; `None` = this plugin's own checkpoints.
     /// Host responds with `PlexiEvent::UndoCheckpoints`.
     ListUndoCheckpoints {
         request_id: String,
@@ -1813,7 +1813,7 @@ pub enum HostRequest {
 
     /// Request rollback of an undo checkpoint. Gated through the unified
     /// broker (`TargetType::UndoCheckpoint`). On allow, the host starts the
-    /// revision-verification round-trip with the checkpoint's owning app
+    /// revision-verification round-trip with the checkpoint's owning plugin
     /// (`PlexiEvent::RollbackVerify` → `HostRequest::RollbackVerifyResult` →
     /// `PlexiEvent::RollbackApply`). Denials and conflicts are logged.
     RequestRollback { checkpoint_id: String },
@@ -1840,13 +1840,13 @@ pub enum HostRequest {
 pub enum PluginEventActor {
     User,
     Agent,
-    App,
+    View,
     System,
 }
 
 /// How an event subscription triggers its subscriber
-/// (src/host/app_timeline.rs). Also the vocabulary for an emitting
-/// app's `suggested_trigger` hint.
+/// (src/host/plugin_timeline.rs). Also the vocabulary for an emitting
+/// plugin's `suggested_trigger` hint.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
@@ -1861,7 +1861,7 @@ pub enum TriggerMode {
 }
 
 /// How much of an event a subscription delivers
-/// (src/host/app_timeline.rs).
+/// (src/host/plugin_timeline.rs).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PayloadMode {
@@ -1875,7 +1875,7 @@ pub enum PayloadMode {
     StateRef,
 }
 
-/// One declared app event stream (`HostRequest::DeclareEventStreams`).
+/// One declared plugin event stream (`HostRequest::DeclareEventStreams`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct EventStreamDecl {
     /// Stream name, e.g. `"move.played"`. Must be non-empty.
@@ -1907,7 +1907,7 @@ pub enum ArtifactOpenMode {
     OpenInPane,
     /// `open -R <path>` — reveal in Finder.
     RevealInFinder,
-    /// `open <path>` — Launch Services default app.
+    /// `open <path>` — Launch Services default plugin.
     OpenWithDefault,
 }
 
@@ -1916,9 +1916,9 @@ pub enum ArtifactOpenMode {
 /// - `Context` — visible only when the source context is the active context.
 /// - `Global`  — always visible, regardless of which context is active.
 ///
-/// Host-side enum. Apps do NOT emit this on the wire — scope is a per-app
+/// Host-side enum. Plugins do NOT emit this on the wire — scope is a per-plugin
 /// user-facing policy declared in `manifest.toml::[launch] notification_scope`,
-/// resolved by the host at dispatch time. Apps never think about it.
+/// resolved by the host at dispatch time. Plugins never think about it.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NotifyScope {
@@ -1957,7 +1957,7 @@ pub struct NotificationAction {
 /// - `Input`   — title + body + a text field; Enter submits.
 ///
 /// Future kinds (image / audio / video / rich) will land here without breaking
-/// existing apps — `#[serde(default)]` on the field means missing `kind`
+/// existing plugins — `#[serde(default)]` on the field means missing `kind`
 /// deserializes to `Message`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1983,7 +1983,7 @@ pub struct NotificationImage {
 pub struct NotifyOption {
     /// Visible label on the button.
     pub label: String,
-    /// Value returned to the app in `PlexiEvent::NotifyAction.value`. If empty,
+    /// Value returned to the plugin in `PlexiEvent::NotifyAction.value`. If empty,
     /// the label is used.
     #[serde(default)]
     pub value: String,
@@ -2819,7 +2819,7 @@ mod tests {
 
     #[test]
     fn notify_without_image_fields_round_trips_serde() {
-        // Existing apps that never set image fields must continue to work.
+        // Existing plugins that never set image fields must continue to work.
         // Missing `image_inline` / `image_pipe_id` deserialise as None.
         let json = r#"{"type":"notify","title":"Plain","body":"no image","kind":"message"}"#;
         let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
@@ -4084,7 +4084,7 @@ mod pip_status_tests {
     #[test]
     fn pip_status_maps_color_faithfully_to_agent_state() {
         // The pip palette (src/ui/theme.rs) is yellow=Working, green=Idle,
-        // red=Blocked, so the dot renders the app's intended color.
+        // red=Blocked, so the dot renders the plugin's intended color.
         assert_eq!(PipStatus::Green.as_agent_state(), &AgentState::Idle);
         assert_eq!(PipStatus::Yellow.as_agent_state(), &AgentState::Working);
         assert_eq!(PipStatus::Red.as_agent_state(), &AgentState::Blocked);

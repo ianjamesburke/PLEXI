@@ -16,7 +16,7 @@ fn grid(h: &mut HostHarness) -> [u64; 4] {
             .panes
             .get_mut(&id)
             .unwrap()
-            .as_app_mut()
+            .as_view_mut()
             .unwrap()
             .manifest_id = "agents".into();
     }
@@ -226,7 +226,7 @@ fn wrap_selection_cancels_on_escape_navigation_enter_and_selected_close() {
     assert_eq!(
         h.app.windows[0].panes.len(),
         4,
-        "Escape must not close the selected app"
+        "Escape must not close the selected plugin"
     );
     h.press_key(egui::Key::K, select);
     h.press_key(egui::Key::L, command());
@@ -451,7 +451,7 @@ fn closing_last_sibling_reveals_child_without_moving_panes() {
     };
     let before_reach = crate::host::scope::evaluate_reach(&resource, parent, Some(&grant));
     let child_window = h.app.windows.iter().find(|w| w.context_id == child).unwrap();
-    let runtime = &child_window.panes[&a].as_app().unwrap().runtime as *const _ as *const ();
+    let runtime = &child_window.panes[&a].as_view().unwrap().runtime as *const _ as *const ();
     assert!(h.app.zoom_out_of_context());
     assert_eq!(h.app.router.active().context_id, parent);
     h.app.close_pane_by_id(outside);
@@ -461,7 +461,7 @@ fn closing_last_sibling_reveals_child_without_moving_panes() {
     assert!([a, b, c].iter().all(|id| child_window.panes.contains_key(id)));
     assert_eq!(h.app.origin_for_pane(a), Some(origin));
     assert_eq!(crate::host::scope::evaluate_reach(&resource, parent, Some(&grant)), before_reach);
-    assert_eq!(&child_window.panes[&a].as_app().unwrap().runtime as *const _ as *const (), runtime);
+    assert_eq!(&child_window.panes[&a].as_view().unwrap().runtime as *const _ as *const (), runtime);
     h.app.close_pane_by_id(b);
     assert_eq!(h.app.router.active().context_id, child);
     assert!(h.app.origin_for_pane(a).is_some());

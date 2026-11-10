@@ -106,7 +106,7 @@ pub struct Colors {
 }
 
 impl Colors {
-    /// Egui and window mode follow the resolved app backdrop, including overrides.
+    /// Egui and window mode follow the resolved plugin backdrop, including overrides.
     pub fn is_dark(&self) -> bool {
         luminance(self.terminal_bg) < 0.179
     }
@@ -286,16 +286,16 @@ impl Colors {
     }
 
     /// Serialize the semantic color roles to a `role -> #rrggbb` map for the
-    /// SDK `Init` payload. Apps read these via `ctx.theme.<role>` so app-drawn
+    /// SDK `Init` payload. Plugins read these via `ctx.theme.<role>` so plugin-drawn
     /// chrome tracks the host theme (light/dark + user `[theme]` overrides).
     /// Both the SDK-semantic names (bg/surface/muted/...) and ANSI aliases
-    /// (red/green/yellow) are emitted so apps can pull whichever they need.
+    /// (red/green/yellow) are emitted so plugins can pull whichever they need.
     pub fn to_theme_map(self) -> std::collections::HashMap<String, String> {
         fn hex(c: Color32) -> String {
             format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
         }
-        // `bg` is the color the host paints behind the app pane (terminal_bg),
-        // so an app that clears to theme.bg matches its container in any theme.
+        // `bg` is the color the host paints behind the view pane (terminal_bg),
+        // so an plugin that clears to theme.bg matches its container in any theme.
         [
             ("bg", self.terminal_bg),
             ("bg_darkest", self.bg_darkest),
@@ -1218,7 +1218,7 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
 
     style.spacing.item_spacing = egui::vec2(tokens::SPACE_SM, tokens::SPACE_XS);
     // Default egui button padding is (4, 1) — the single biggest "default
-    // egui" tell. Real apps give labels room to breathe.
+    // egui" tell. Real plugins give labels room to breathe.
     style.spacing.button_padding = egui::vec2(tokens::SPACE_MD, 6.0);
     style.spacing.menu_margin = egui::Margin::same(tokens::SPACE_SM as i8);
     style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);

@@ -389,7 +389,7 @@ impl PlexiApp {
             self.mark_agent_seen(id);
         }
         let has_agents_pane = self.windows.iter().flat_map(|w| w.panes.values()).any(
-            |p| matches!(p, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "agents"),
+            |p| matches!(p, crate::host::pane::Pane::View(a) if a.runtime.type_id() == "agents"),
         );
         if !has_agents_pane {
             return;
@@ -397,7 +397,7 @@ impl PlexiApp {
         let view = self.agents_view(FleetFilter::All);
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
-                if let crate::host::pane::Pane::App(a) = pane {
+                if let crate::host::pane::Pane::View(a) = pane {
                     if let crate::host::pane::ViewRuntime::Builtin(app) = &mut a.runtime {
                         app.sync_agents_view(&view);
                     }
@@ -443,7 +443,7 @@ impl PlexiApp {
         }
         log::info!("agents: open pane");
         if let Err(e) =
-            self.launch_app_by_id_with_layout("agents", Some("split_h".into()), &[], None)
+            self.launch_view_by_id_with_layout("agents", Some("split_h".into()), &[], None)
         {
             log::error!("agents: open failed: {e}");
         }
@@ -1364,7 +1364,7 @@ impl PlexiApp {
             });
         if let Some(ref path) = result_path {
             let path_str = path.to_string_lossy().into_owned();
-            if let Err(e) = self.launch_app_by_id_with_layout(
+            if let Err(e) = self.launch_view_by_id_with_layout(
                 "text-editor",
                 Some("split_h".into()),
                 &[path_str],

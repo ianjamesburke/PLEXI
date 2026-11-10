@@ -8,11 +8,12 @@ import sys
 import tokenize
 
 source, target = map(Path, sys.argv[1:])
-shutil.copytree(source, target, symlinks=True)
+shutil.copytree(source, target, symlinks=True, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
 names = {
     "AppHarness": "PluginHarness", "AppBar": "SurfaceHeader",
     "AppPalette": "PluginPalette", "AppEvent": "PluginEvent",
-    "app_id": "plugin_id",
+    "app_id": "plugin_id", "_app_id": "_plugin_id",
+    "V3AppRuntime": "PluginRuntime", "app_path": "plugin_path",
 }
 for root, dirs, files in os.walk(target, followlinks=False):
     dirs[:] = [d for d in dirs if d not in {".git", ".venv", "__pycache__"}]
@@ -24,6 +25,7 @@ for root, dirs, files in os.walk(target, followlinks=False):
             raise ValueError(f"cannot migrate symlinked Python source: {path}")
         with tokenize.open(path) as stream:
             text = stream.read()
+            encoding = stream.encoding
         ast.parse(text, filename=str(path))
         lines = text.splitlines(keepends=True)
         offsets = [0]
@@ -49,4 +51,4 @@ for root, dirs, files in os.walk(target, followlinks=False):
             text = text[:start] + replacement + text[end:]
         if edits:
             ast.parse(text, filename=str(path))
-            path.write_text(text)
+            path.write_text(text, encoding=encoding)

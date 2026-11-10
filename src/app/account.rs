@@ -3,10 +3,10 @@
 //!
 //! # What an account is for
 //!
-//! An account is optional. Local use — installing and running apps, the
+//! An account is optional. Local use — installing and running plugins, the
 //! assistant, the ledger, retention — never reads one and never creates one.
 //! A session only links this desktop to cloud features: publishing,
-//! buying a paid app, and the Plexi AI subscription. See
+//! buying a paid plugin, and the Plexi AI subscription. See
 //! `docs/marketplace-hosted.md`.
 //!
 //! This module is that link. Two providers exist, chosen by
@@ -130,7 +130,7 @@ pub enum AccountError {
     /// accounts with `[marketplace].account_backend = "plexi"`.
     #[error(
         "account_backend_disabled: marketplace accounts are off in this profile — set \
-         [marketplace].account_backend = \"plexi\" to enable them. Free apps install without an \
+         [marketplace].account_backend = \"plexi\" to enable them. Free plugins install without an \
          account. See https://plexiapp.com/docs/marketplace"
     )]
     NotConfigured,

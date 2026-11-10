@@ -11,7 +11,7 @@ pub(crate) struct PythonRuntime {
     pub(crate) version: String,
 }
 
-pub(crate) fn ensure_app_venv(
+pub(crate) fn ensure_plugin_venv(
     plugin_id: &str,
     plugin_dir: &Path,
     dependencies: &[String],
@@ -39,12 +39,12 @@ pub(crate) fn ensure_app_venv(
 
     let uv = Command::new("uv").arg("--version").output().map_err(|e| {
         format!(
-            "`uv` is required to create a Python {PYTHON_APP_VENV_VERSION} app venv but could not be started: {e}"
+            "`uv` is required to create a Python {PYTHON_APP_VENV_VERSION} plugin venv but could not be started: {e}"
         )
     })?;
     if !uv.status.success() {
         return Err(format!(
-            "`uv --version` failed while preparing Python app venv: {}",
+            "`uv --version` failed while preparing Python plugin venv: {}",
             command_output_summary(&uv)
         ));
     }
@@ -79,13 +79,13 @@ pub(crate) fn resolve_python_runtime(
 ) -> Result<PythonRuntime, String> {
     let plugin_dir = entry_path.parent().ok_or_else(|| {
         format!(
-            "could not determine app directory for Python entry {}",
+            "could not determine plugin directory for Python entry {}",
             entry_path.display()
         )
     })?;
 
     if ensure_venv {
-        let python = ensure_app_venv(plugin_id, plugin_dir, dependencies)?;
+        let python = ensure_plugin_venv(plugin_id, plugin_dir, dependencies)?;
         return runtime_from_path("venv", python);
     }
 

@@ -1,6 +1,6 @@
 # Plexi Python SDK v3 — Design Specification
 
-> **Not the authoring guide.** To *build* an app, read
+> **Not the authoring guide.** To *build* an plugin, read
 > [`AUTHORING.md`](AUTHORING.md). For the live effect/event/component surface
 > with signatures, read the generated
 > [`../../website/src/content/docs/sdk.md`](../../website/src/content/docs/sdk.md)
@@ -16,7 +16,7 @@ Source of truth for all types: `wit/plexi.wit`. Every Python type here maps to a
 
 ## 1. App Contract
 
-A Python app is three module-level functions. No class, no inheritance.
+A Python plugin is three module-level functions. No class, no inheritance.
 
 ```python
 #!/usr/bin/env python3
@@ -25,7 +25,7 @@ from __future__ import annotations
 from plexi_sdk import state, log
 from plexi_sdk.effects import SetTitle
 from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import Column, Text, Button, AppBar, FooterKeys
+from plexi_sdk.ui import Column, Text, Button, SurfaceHeader, FooterKeys
 
 def init(size: tuple[float, float], args: list[str]) -> list:
     """Called once on launch. Return initial effects."""
@@ -42,7 +42,7 @@ def view():
     """Called after any state mutation. Must be pure."""
     count = state.get("count", 0)
     return Column([
-        AppBar("My App"),
+        SurfaceHeader("My App"),
         Text(str(count), bold=True),
         FooterKeys([("q", "quit")]),
     ])
@@ -52,7 +52,7 @@ def view():
 - The adapter calls `init(size, args)` on launch, passing the pane size and any args from `plexi run`.
 - Before every `update(event)` call, the adapter sets `plexi_sdk._state` to the current `StateSnapshot`.
 - Before every `view()` call, the adapter sets `plexi_sdk._state` to the current `StateSnapshot`.
-- Before every `view()` call, the adapter dispatches `RenderFrame` through `update(event)` without auto-scheduling another render. Continuous apps opt into host-paced animation with `SetSchedulerMode("continuous", fps=60)`.
+- Before every `view()` call, the adapter dispatches `RenderFrame` through `update(event)` without auto-scheduling another render. Continuous plugins opt into host-paced animation with `SetSchedulerMode("continuous", fps=60)`.
 - `state` in `plexi_sdk` is a module-level proxy that reads `plexi_sdk._state`.
 - The adapter flattens the `UINode` tree returned by `view()` into a WIT `ui-tree` arena.
 
@@ -72,9 +72,9 @@ state.all() -> dict[str, any]                  # all keys decoded
 state.raw(key: str) -> bytes | None            # raw bytes, no decode
 ```
 
-**`state.set()` returns an effect, it does not mutate immediately.** The app returns `[state.set("count", 5)]` from `update()`. The adapter applies the update to the process-local SDK snapshot, then calls `view()`.
+**`state.set()` returns an effect, it does not mutate immediately.** The plugin returns `[state.set("count", 5)]` from `update()`. The adapter applies the update to the process-local SDK snapshot, then calls `view()`.
 
-**`SetState` effect:** process-local runtime state. Use it for view/update data, game state, caches, and animation state. It never writes host app-state files.
+**`SetState` effect:** process-local runtime state. Use it for view/update data, game state, caches, and animation state. It never writes host plugin-state files.
 
 ```python
 @dataclass
@@ -82,7 +82,7 @@ class SetState:
     data: dict  # {key: value} — values must be JSON-serializable
 ```
 
-**`PersistState` effect:** explicit durable state. It updates the same runtime snapshot and writes the full app-state snapshot through the host.
+**`PersistState` effect:** explicit durable state. It updates the same runtime snapshot and writes the full plugin-state snapshot through the host.
 
 ```python
 @dataclass
@@ -128,7 +128,7 @@ class SetState:
 
 @dataclass
 class PersistState:
-    data: dict  # runtime state plus explicit durable app-state save
+    data: dict  # runtime state plus explicit durable plugin-state save
 
 # ── File I/O ──────────────────────────────────────────────────────────────────
 
@@ -180,7 +180,7 @@ class AiMessage:
 
 @dataclass
 class AiQuery:
-    request_id: str  # app-assigned, echoed back in AiResponse event
+    request_id: str  # plugin-assigned, echoed back in AiResponse event
     model_tier: str  # "low" | "medium" | "high"
     system: str
     messages: list  # list[AiMessage]
@@ -190,7 +190,7 @@ class AiQuery:
 
 @dataclass
 class SetTimer:
-    id: int         # app-assigned u32; echoed in TimerFired event
+    id: int         # plugin-assigned u32; echoed in TimerFired event
     delay_ms: int
     repeat: bool = False
     # → set-timer(timer-effect { id, delay-ms, repeat })
@@ -304,7 +304,7 @@ class MouseEvent:
 @dataclass
 class UiAction:
     handler_id: str     # → input-event::ui-action(ui-action-event)
-    args: list[str] = field(default_factory=list)  # set by `plexi app action ... [args...]`
+    args: list[str] = field(default_factory=list)  # set by `plexi pane action ... [args...]`
 
 @dataclass
 class UiValueChange:
@@ -415,14 +415,14 @@ class SurfaceReady:
     texture_handle: int
     width: int
     height: int
-    # → input-event::surface-ready(surface-event) — GPU apps only
+    # → input-event::surface-ready(surface-event) — GPU plugins only
 
 @dataclass
 class SurfaceResized:
     texture_handle: int
     width: int
     height: int
-    # → input-event::surface-resized(surface-event) — GPU apps only
+    # → input-event::surface-resized(surface-event) — GPU plugins only
 
 @dataclass
 class PipePayload:
@@ -503,7 +503,7 @@ class Color:
 # ── Theme tokens (canvas color fields) ────────────────────────────────────────
 # Canvas color fields (rect/text/line/circle/arc fill, color, stroke, glow) take
 # a string. A "theme.<token>" string resolves to the live host theme color at
-# render time, so app chrome tracks light/dark + user [theme] overrides without
+# render time, so plugin chrome tracks light/dark + user [theme] overrides without
 # hardcoding hex. Any other string is parsed as #rrggbb / #rrggbbaa; an
 # unrecognized token falls through to hex parsing (preserving existing behavior).
 # Tokens: theme.bg, theme.fg, theme.muted, theme.accent, theme.error,
@@ -573,7 +573,7 @@ class Surface:
     width: int
     height: int
     # → ui-node-data::surface(surface-node { width, height, texture-handle: None })
-    # GPU apps only. texture_handle filled in by host after surface-ready event.
+    # GPU plugins only. texture_handle filled in by host after surface-ready event.
 
 # ── Container nodes ───────────────────────────────────────────────────────────
 
@@ -615,11 +615,11 @@ class Padding:
     left: float = 0.0
     # → ui-node-data::padding(padding-node)
 
-# ── Host-rendered app chrome ─────────────────────────────────────────────────
+# ── Host-rendered plugin chrome ─────────────────────────────────────────────────
 # These return semantic UiNode variants so the host owns their layout.
 
-def AppBar(title: str, subtitle: str = "") -> Column:
-    """Standard app top bar. Renders title + optional subtitle in a Column."""
+def SurfaceHeader(title: str, subtitle: str = "") -> Column:
+    """Standard plugin top bar. Renders title + optional subtitle in a Column."""
     items = [Text(title, bold=True, size=15.0)]
     if subtitle:
         items.append(Text(subtitle, size=11.0))
@@ -672,38 +672,38 @@ root_id = flatten(root_node)
 return ui-tree { root: root_id, nodes: arena }
 ```
 
-Reset `_next_id` to 0 before each `view()` call. Keys are positional by default; apps can set a `key` attribute on any node to override (add optional `key: str = ""` to every UINode dataclass — empty string = use positional).
+Reset `_next_id` to 0 before each `view()` call. Keys are positional by default; plugins can set a `key` attribute on any node to override (add optional `key: str = ""` to every UINode dataclass — empty string = use positional).
 
 ---
 
 ## 7. Native ProcessApp Bridge Protocol (superseded — see status note above)
 
-**This section is historical.** SDK v3 Python apps no longer run through native `ProcessApp` — stint 0285 deleted `src/process_app/` and replaced this bridge with the CPython-in-WASM adapter (`src/host/wasm_python.rs`). The archival protocol body was removed in stint 0512; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current contract.
+**This section is historical.** SDK v3 Python plugins no longer run through native `ProcessApp` — stint 0285 deleted `src/process_app/` and replaced this bridge with the CPython-in-WASM adapter (`src/host/wasm_python.rs`). The archival protocol body was removed in stint 0512; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current contract.
 
 ---
 
 ## 8. Manifest Schema
 
-Current Python SDK v3 apps use the existing app manifest shape:
+Current Python SDK v3 plugins use the existing plugin manifest shape:
 
 ```toml
 schema_version = 1
 
-[app]
+[plugin]
 id = "my_app"
-type = "app"
+type = "plugin"
 name = "My App"
 version = "0.1.0"
 description = "One sentence."
 entry = "main.py"
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
 [launch]
 ```
 
-**Superseded:** `[app] type = "app"` plus a `.py` entry now launches through the CPython-in-WASM adapter (stint 0285), not native `ProcessApp` — see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current manifest/runtime routing.
+**Superseded:** `[plugin] type = "plugin"` plus a `.py` entry now launches through the CPython-in-WASM adapter (stint 0285), not native `ProcessApp` — see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md) for the current manifest/runtime routing.
 
 ---
 
@@ -719,24 +719,24 @@ capabilities = []
 
 ---
 
-## 11. Scaffold Template (`plexi app init <name>`)
+## 11. Scaffold Template (`plexi plugin init <name>`)
 
-`src/cli/app.rs` — `init` subcommand for Python apps generates a normal app manifest and SDK v3 entry point.
+`src/cli/app.rs` — `init` subcommand for Python plugins generates a normal plugin manifest and SDK v3 entry point.
 
 **`<name>/manifest.toml`:**
 ```toml
 schema_version = 1
 
-[app]
+[plugin]
 id = "{name}"
-type = "app"
+type = "plugin"
 name = "{Name}"
 entry = "main.py"
 version = "0.1.0"
-description = "A Plexi app"
+description = "A Plexi plugin"
 watch = true
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = []
 
 [launch]
@@ -745,18 +745,18 @@ capabilities = []
 **`<name>/main.py`:**
 ```python
 #!/usr/bin/env python3
-"""{Name} - app generated by `plexi app init`."""
+"""{Name} - plugin generated by `plexi plugin init`."""
 
 from __future__ import annotations
 
 from plexi_sdk import log, state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent, UiAction
-from plexi_sdk.ui import ActionBar, AppBar, Button, Column, FooterKeys, SPACE_MD, Spacer, Text
+from plexi_sdk.ui import ActionBar, SurfaceHeader, Button, Column, FooterKeys, SPACE_MD, Spacer, Text
 
 
 def init(size, args):
-    log.info("app initialized")
+    log.info("plugin initialized")
     return [SetTitle("{Name}"), SetState({"count": 0})]
 
 
@@ -780,7 +780,7 @@ def update(event):
 
 def view():
     return Column([
-        AppBar("{Name}"),
+        SurfaceHeader("{Name}"),
         Text(str(state.get("count", 0)), size=28.0, bold=True),
         Text("Runtime state counter", size=12.0),
         Spacer(grow=True),
@@ -797,7 +797,7 @@ def view():
 
 ## 12. SDK Package Layout
 
-`sdk/python/plexi_sdk/` is the SDK v3 package used by Python apps:
+`sdk/python/plexi_sdk/` is the SDK v3 package used by Python plugins:
 
 ```
 plexi_sdk/
@@ -805,7 +805,7 @@ plexi_sdk/
   effects.py         # Effect dataclasses (section 4)
   events.py          # Event dataclasses (section 5)
   ui.py              # UINode dataclasses and layout primitives (section 6)
-  _v3_process.py     # Python app entry point
+  _v3_process.py     # Python plugin entry point
   _v3_runtime.py     # PGAP event/effect runtime
   _v3_state.py       # StateProxy and StateSnapshot implementation
   _adapter.py        # test/helper encode/decode surface
@@ -827,7 +827,7 @@ defaulted version. Python requirement remains repo-standard `>=3.11`.
 
 ## 13. Runtime Boundary (superseded)
 
-**`src/process_app/` was deleted by stint 0285.** SDK v3 Python apps run through the CPython-in-WASM adapter, same as `[app] type = "wasm"` component-model apps — there is no longer a separate native-subprocess Python runtime. This section's original constraint is inverted from what's now true; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md).
+**`src/process_app/` was deleted by stint 0285.** SDK v3 Python plugins run through the CPython-in-WASM adapter, same as `[plugin] type = "wasm"` component-model plugins — there is no longer a separate native-subprocess Python runtime. This section's original constraint is inverted from what's now true; see [`docs/wasm-runtime.md`](../../docs/wasm-runtime.md).
 
 ---
 
@@ -841,9 +841,9 @@ defaulted version. Python requirement remains repo-standard `>=3.11`.
 ### Host unit tests
 
 - `src/host/wasm_python.rs`: `fs.read` / `fs.write` capability gating and workspace scoping for Python host requests.
-- `src/host/wasm_python.rs` tests: regression coverage proves Python SDK v3 apps launch through the CPython-in-WASM adapter (stint 0285), not a native subprocess.
+- `src/host/wasm_python.rs` tests: regression coverage proves Python SDK v3 plugins launch through the CPython-in-WASM adapter (stint 0285), not a native subprocess.
 - `src/protocol/events.rs` and `src/protocol/commands.rs`: serde round-trips for new event/request fields.
 
 ### App tests
 
-Each touched core app has a focused SDK v3 test under `apps/<app>/tests/`. Canvas/game apps must prove size-aware canvas behavior; file apps must prove `FileList` / `FileRead` effects; keyboard apps must use normalized lowercase key strings.
+Each touched bundled plugin has a focused SDK v3 test under `apps/<plugin>/tests/`. Canvas/game plugins must prove size-aware canvas behavior; file plugins must prove `FileList` / `FileRead` effects; keyboard plugins must use normalized lowercase key strings.

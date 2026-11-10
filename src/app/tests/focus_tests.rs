@@ -6,7 +6,7 @@ struct ThemeEventRecorder {
     events: Arc<Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
-impl crate::app::app_trait::App for ThemeEventRecorder {
+impl crate::app::view_trait::View for ThemeEventRecorder {
     fn type_id(&self) -> &'static str {
         "theme-event-recorder"
     }
@@ -22,7 +22,7 @@ impl crate::app::app_trait::App for ThemeEventRecorder {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+        _ctx: &crate::app::view_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
@@ -39,7 +39,7 @@ fn add_theme_event_recorder(
 ) -> Arc<Mutex<Vec<crate::protocol::PlexiEvent>>> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
-    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
+    let pane = crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(ThemeEventRecorder {
@@ -729,11 +729,11 @@ fn navigate_to_activates_ancestor_tabs() {
 /// Install a text editor pane on `path` in window 0.
 fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::ViewPane {
+    let view_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorView::new_for_test_note(path.to_path_buf()),
+            crate::app::text_editor_view::TextEditorView::new_for_test_note(path.to_path_buf()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -749,7 +749,7 @@ fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     };
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
 }
 
 /// Cmd+P lists the notes you have open, not every note on disk. A note
@@ -813,11 +813,11 @@ fn open_note_entries_ignores_non_note_editor_panes() {
     std::fs::write(&source, "fn main() {}").expect("write source");
 
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::ViewPane {
+    let view_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
         runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorView::new(source.clone()),
+            crate::app::text_editor_view::TextEditorView::new(source.clone()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
         permissions: crate::app::permissions::PluginPermissions::builtin(),
@@ -833,7 +833,7 @@ fn open_note_entries_ignores_non_note_editor_panes() {
     };
     app.windows[0]
         .panes
-        .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        .insert(pane_id, crate::host::pane::Pane::View(Box::new(view_pane)));
 
     assert!(
         app.open_note_entries().is_empty(),
@@ -861,11 +861,11 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     let pane_id = app.host.alloc_pane_id();
     panes.insert(
         pane_id,
-        crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
+        crate::host::pane::Pane::View(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
             runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorView::new_for_test_note(note.clone()),
+                crate::app::text_editor_view::TextEditorView::new_for_test_note(note.clone()),
             )),
             workspace_root: crate::testing::scratch_context_root("focus"),
             permissions: crate::app::permissions::PluginPermissions::builtin(),

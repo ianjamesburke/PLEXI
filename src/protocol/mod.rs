@@ -1,4 +1,4 @@
-//! Plexi external app protocol — PGAP v4 (newline-delimited JSON over stdin/stdout).
+//! Plexi external plugin protocol — PGAP v4 (newline-delimited JSON over stdin/stdout).
 //!
 //! # Protocol overview
 //!

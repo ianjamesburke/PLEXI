@@ -123,7 +123,7 @@ fn ordinary_splits_resized_nested_tree_survives_save_reload() {
     use egui_tiles::{Container, Tile};
     let mut h = HostHarness::new();
     let first = h.add_test_pane();
-    h.app.windows[0].panes.get_mut(&first).unwrap().as_app_mut().unwrap().manifest_id = "agents".into();
+    h.app.windows[0].panes.get_mut(&first).unwrap().as_view_mut().unwrap().manifest_id = "agents".into();
     h.focus_pane(first);
     h.run_frames(2);
     h.press_key(egui::Key::D, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT);

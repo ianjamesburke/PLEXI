@@ -706,7 +706,7 @@ pub fn ai_setup_cli() -> i32 {
     println!();
     println!("{bold}Setup complete!{reset}");
     if backend_selected {
-        println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+        println!("  Plexi plugins using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
     } else {
         println!("  [ai.ollama] is configured with {green}{recommended_model}{reset}; your existing `ai.backend` was left unchanged.");
         println!("  Set `backend = \"ollama\"` under [ai] to switch to it.");

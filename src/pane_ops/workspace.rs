@@ -34,13 +34,13 @@ pub(crate) struct NewContextTiming {
 ///
 /// Idempotent — skips if the channel dir already has workspace.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
-/// Ensure `<root>/.plexi/.gitignore` covers `plugin_states/` so a user can never
-/// accidentally commit their plugin state with a project (standing ruling: app
+/// Ensure `<root>/.plexi/.gitignore` covers `app_states/` so a user can never
+/// accidentally commit their plugin state with a project (standing ruling: plugin
 /// state is personal, single-user, local data). Idempotent; preserves any
 /// existing user rules. Every path that creates or rewrites a context root
 /// calls this.
 pub(super) fn ensure_context_state_ignore(root: &std::path::Path) {
-    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root) {
+    if let Err(error) = crate::workspace::secrets::ensure_plugin_state_gitignore(root) {
         log::warn!(
             "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
             root.display()
@@ -2436,7 +2436,7 @@ impl PlexiApp {
                             self.config.standby_scrollback_lines(),
                         ),
                     });
-                } else if let Some(a) = pane.as_app() {
+                } else if let Some(a) = pane.as_view() {
                     if let crate::host::pane::ViewRuntime::Builtin(view) = &a.runtime {
                         if let Some(original) = view.disabled_plugin_record() {
                             let mut saved = original.clone();
@@ -2461,10 +2461,10 @@ impl PlexiApp {
                     }
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
-                        kind: crate::workspace::SavedPaneKind::App,
+                        kind: crate::workspace::SavedPaneKind::View,
                         cwd: a.workspace_root.clone(),
                         name: Some(a.name.clone()),
-                        // The app's real manifest identity (stint 0680) — the
+                        // The plugin's real manifest identity (stint 0680) — the
                         // runtime kind alone (`ViewRuntime::type_id()`) cannot
                         // be looked up in `builtin_factory` or relaunched.
                         plugin_id: Some(a.manifest_id.clone()),
@@ -2565,7 +2565,7 @@ mod tests {
                 .iter()
                 .map(|id| crate::workspace::SavedPane {
                     id: *id,
-                    kind: crate::workspace::SavedPaneKind::App,
+                    kind: crate::workspace::SavedPaneKind::View,
                     cwd: std::env::temp_dir(),
                     name: None,
                     plugin_id: Some("test".to_string()),
@@ -2599,7 +2599,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_init_existing_channel_workspace_ensures_neutral_app_state_ignore() {
+    fn auto_init_existing_channel_workspace_ensures_neutral_plugin_state_ignore() {
         let root = tempfile::tempdir().expect("root");
         let channel_dir = crate::config::workspace_channel_dir();
         let channel_path = root.path().join(channel_dir);

@@ -1,7 +1,7 @@
 //! Global tool registry and dispatcher for the v3.7 tool protocol (#399).
 //!
-//! The tool registry is a singleton shared across all `WASM app runtime` instances.
-//! When an app sends `DrawCommand::ExposeTools`, its pane registers tool
+//! The tool registry is a singleton shared across all `WASM plugin runtime` instances.
+//! When an plugin sends `DrawCommand::ExposeTools`, its pane registers tool
 //! definitions + an `PluginEventSender` here. When the broker wants to call a
 //! tool, it creates a `ToolDispatcher` snapshot, then calls `dispatch_call`
 //! which:
@@ -10,7 +10,7 @@
 //!   3. Blocks (up to `timeout_ms`) on a `SyncReceiver` for the result.
 //!   4. Returns `ToolCallResult { output_json, error }`.
 //!
-//! Pending-call state lives in `PENDING_CALLS`. `WASM app runtime::routing` feeds
+//! Pending-call state lives in `PENDING_CALLS`. `WASM plugin runtime::routing` feeds
 //! `DrawCommand::ToolResult` back here to unblock the waiting broker thread.
 //!
 //! # Authorization model (#1182, re-scoped stint 0724 Phase C)
@@ -81,7 +81,7 @@ impl PluginEventSender {
                             "caller_id": caller_id,
                             "authorization": authorization,
                         }))
-                        .map_err(|error| format!("send ToolCall to Python app: {error}"))?;
+                        .map_err(|error| format!("send ToolCall to Python plugin: {error}"))?;
                 }
                 Ok(())
             }
@@ -109,18 +109,18 @@ impl PluginEventSender {
 
 // ── ToolRegistry ────────────────────────────────────────────────────────────
 
-/// One registered app — its tool definitions, how to reach it, and the
+/// One registered plugin — its tool definitions, how to reach it, and the
 /// host-established scope origin it was registered from (used for
 /// authorization checks).
 struct RegistryEntry {
     tools: Vec<AiTool>,
     sender: PluginEventSender,
-    /// App type id (manifest `app.id`) — used to group tools by app for `/apps`.
+    /// App type id (manifest `plugin.id`) — used to group tools by plugin for `/plugins`.
     plugin_id: String,
     /// Host-established origin of the pane that exposed these tools, captured
     /// once at registration time via `PlexiApp::origin_for_pane` — stint 0724
     /// Phase C. Reachability is decided from `origin.context_id`, never from
-    /// the pane's (mutable, `sync_app_cwd`-updated) `workspace_root`.
+    /// the pane's (mutable, `sync_plugin_cwd`-updated) `workspace_root`.
     origin: ScopeOrigin,
 }
 
@@ -236,12 +236,12 @@ impl ToolRegistry {
         map
     }
 
-    /// Snapshot for the host MCP server, where every app tool is externally
+    /// Snapshot for the host MCP server, where every plugin tool is externally
     /// named `<plugin_id>__<tool>`. The original tool name remains attached to
     /// the target so dispatch sends the provider exactly what it registered.
     ///
-    /// Multiple live instances keep distinct names `<app>:<pane>__<tool>`.
-    /// The unqualified `<app>__<tool>` name is offered only when one instance
+    /// Multiple live instances keep distinct names `<plugin>:<pane>__<tool>`.
+    /// The unqualified `<plugin>__<tool>` name is offered only when one instance
     /// is live, so a call cannot land on an arbitrary pane.
     fn namespaced_snapshot_for_caller(
         &self,
@@ -286,7 +286,7 @@ impl ToolRegistry {
             }
             let panes: Vec<u64> = owners.iter().map(|(pane_id, _, _)| *pane_id).collect();
             log::info!(
-                "tool_dispatch: {external_name} is live on panes {panes:?}; address <app>:<pane>__<tool>"
+                "tool_dispatch: {external_name} is live on panes {panes:?}; address <plugin>:<pane>__<tool>"
             );
             let plugin_id = external_name
                 .split_once("__")
@@ -302,10 +302,10 @@ impl ToolRegistry {
     }
 
     /// Map from plugin_id to tool list for all panes reachable from
-    /// `viewer_context_id`. Used by `/apps` to present tools grouped by the
-    /// app that exposed them.
+    /// `viewer_context_id`. Used by `/plugins` to present tools grouped by the
+    /// plugin that exposed them.
     fn apps_for_context(&self, viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
-        let mut by_app: std::collections::BTreeMap<String, Vec<AiTool>> =
+        let mut by_plugin: std::collections::BTreeMap<String, Vec<AiTool>> =
             std::collections::BTreeMap::new();
         for (&pane_id, entry) in &self.entries {
             if !matches!(
@@ -314,12 +314,12 @@ impl ToolRegistry {
             ) {
                 continue;
             }
-            by_app
+            by_plugin
                 .entry(entry.plugin_id.clone())
                 .or_default()
                 .extend(entry.tools.iter().cloned());
         }
-        by_app.into_iter().collect()
+        by_plugin.into_iter().collect()
     }
 
     /// Structured snapshot of tools visible to a caller in `viewer_context_id`,
@@ -364,9 +364,9 @@ pub struct LiveToolEntry {
     /// owns it, `<name>@<pane_id>` when multiple panes in the context expose the
     /// same tool name).
     pub name: String,
-    /// Tool name as originally registered by the owning app (`AiTool.name`).
+    /// Tool name as originally registered by the owning plugin (`AiTool.name`).
     pub provider_name: String,
-    /// Manifest `app.id` of the owning app.
+    /// Manifest `plugin.id` of the owning plugin.
     pub plugin_id: String,
     /// Live pane id that registered the tool.
     pub pane_id: u64,
@@ -395,7 +395,7 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 /// `DrawCommand::ExposeTools` arrives. `origin` is the host-established
 /// `ScopeOrigin` for `pane_id`, resolved by the caller via
 /// `PlexiApp::origin_for_pane` — never derived from the pane's own
-/// `workspace_root` field, which `sync_app_cwd` can mutate live.
+/// `workspace_root` field, which `sync_plugin_cwd` can mutate live.
 pub(crate) fn register(
     pane_id: u64,
     plugin_id: String,
@@ -416,7 +416,7 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
-/// Tools currently exposed by live app panes: app id, pane id, tool name, description.
+/// Tools currently exposed by live view panes: plugin id, pane id, tool name, description.
 pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
     let registry = global_registry().lock().unwrap_or_else(|error| error.into_inner());
     let mut tools = Vec::new();
@@ -542,7 +542,7 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
 /// snapshot (Phase D: the host Assistant gates ask-tier tools through the
 /// permission sheet here). Hooks run on the broker worker thread;
 /// `before_call` may block while a decision is collected on the UI thread.
-/// Callers that install no hooks (PGAP apps, `AgentHost`) are unaffected.
+/// Callers that install no hooks (PGAP plugins, `AgentHost`) are unaffected.
 pub trait ToolCallHooks: Send + Sync {
     /// Called after the monitor admits the call, before it is sent. This
     /// cannot allow or deny the call.
@@ -563,7 +563,7 @@ pub trait ToolCallHooks: Send + Sync {
 ///
 /// Only contains tools reachable from the caller's context — cross-context
 /// tools are excluded at construction time (via `evaluate_reach`) and never
-/// visible to the dispatching app or the model it drives.
+/// visible to the dispatching plugin or the model it drives.
 /// Who is dispatching. The monitor binds the grant to these fields.
 #[derive(Debug, Clone)]
 pub struct DispatchScope {
@@ -589,7 +589,7 @@ impl DispatchScope {
         {
             crate::broker::ActorType::Agent
         } else {
-            crate::broker::ActorType::App
+            crate::broker::ActorType::Plugin
         };
         Self {
             caller_pane_id,
@@ -762,7 +762,7 @@ impl ToolDispatcher {
             .collect()
     }
 
-    /// Apps and their tools visible to the caller's context — for `/apps`.
+    /// Plugins and their tools visible to the caller's context — for `/plugins`.
     /// Returns `(plugin_id, tools)` pairs sorted by plugin_id.
     pub fn apps_for_context(viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
         global_registry()
@@ -1048,9 +1048,9 @@ impl ToolDispatcher {
         result
     }
 
-    /// Pick the exposed name for an app tool. One live instance keeps
-    /// `<app>__<tool>`. Several instances require `<app>:<pane>__<tool>`.
-    pub(crate) fn select_app_tool(
+    /// Pick the exposed name for an plugin tool. One live instance keeps
+    /// `<plugin>__<tool>`. Several instances require `<plugin>:<pane>__<tool>`.
+    pub(crate) fn select_plugin_tool(
         &self,
         plugin_id: &str,
         tool: &str,
@@ -1195,7 +1195,7 @@ impl ToolDispatcher {
             ));
         }
 
-        // Block until the app sends ToolResult or the timeout fires.
+        // Block until the plugin sends ToolResult or the timeout fires.
         match result_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(result) => {
                 log::info!(
@@ -1521,7 +1521,7 @@ mod tests {
     }
 
     #[test]
-    fn namespaced_snapshot_addresses_duplicate_app_instances_by_pane() {
+    fn namespaced_snapshot_addresses_duplicate_view_instances_by_pane() {
         let mut reg = ToolRegistry::new();
         let (tx1, _rx1) = std::sync::mpsc::channel();
         let (tx2, _rx2) = std::sync::mpsc::channel();
@@ -1659,8 +1659,8 @@ mod tests {
                 }
                 event
             })
-            .expect("WASM app must receive ToolCall");
-        let crate::host::wasm_app::InputEvent::ToolCall(call) = event else {
+            .expect("WASM plugin must receive ToolCall");
+        let crate::host::wasm_view::InputEvent::ToolCall(call) = event else {
             panic!("expected ToolCall, got {event:?}");
         };
         assert_eq!(call.call_id, "wasm-call-1");

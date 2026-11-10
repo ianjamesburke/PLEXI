@@ -1,13 +1,13 @@
 //! Single-plugin package artifact — `.plexipkg` (stint 0015).
 //!
-//! A package is a gzipped tar with the app's files at the archive root plus a
+//! A package is a gzipped tar with the plugin's files at the archive root plus a
 //! generated `PACKAGE.toml` describing the contents:
 //!
 //! ```toml
 //! schema_version = 1
 //!
 //! [package]
-//! id      = "my-app"
+//! id      = "my-plugin"
 //! version = "0.1.0"
 //! runtime = "python"   # generated, never authored — see below
 //!
@@ -20,7 +20,7 @@
 //! ```
 //!
 //! `runtime` is derived at build time by [`PackageRuntime::from_manifest`]
-//! (`[app] type = "wasm"` → `"wasm"`, a `.py` entry → `"python"`; anything
+//! (`[plugin] type = "wasm"` → `"wasm"`, a `.py` entry → `"python"`; anything
 //! else is rejected as unlaunchable) and written into the generated
 //! `PACKAGE.toml`. It is not a manifest key: no `manifest.toml` declares a
 //! `runtime = "…"` scalar. The author-facing runtime key is the manifest's
@@ -30,7 +30,7 @@
 //! in `src/host/wasm_python.rs`).
 //!
 //! NOT a "pack" (`src/app/packs.rs`) — a pack is a *collection* manifest that
-//! lists multiple apps to install; a package is one app's distributable
+//! lists multiple plugins to install; a package is one plugin's distributable
 //! artifact.
 //!
 //! The validator is fail-closed: every check is a hard [`PackageError`], never
@@ -69,9 +69,9 @@ pub enum PackageError {
         #[source]
         source: std::io::Error,
     },
-    #[error("not a directory: {0} — expected an app directory containing manifest.toml")]
+    #[error("not a directory: {0} — expected an plugin directory containing manifest.toml")]
     NotADirectory(PathBuf),
-    #[error("manifest.toml not found in {0} — every package requires one at the app root")]
+    #[error("manifest.toml not found in {0} — every package requires one at the plugin root")]
     ManifestMissing(PathBuf),
     #[error("manifest.toml at {path} failed to parse: {source}")]
     ManifestParse {
@@ -98,7 +98,7 @@ pub enum PackageError {
     UnknownCapability { value: String, path: PathBuf },
     #[error("invalid cli_operation in {path}: {message}")]
     InvalidCliOperation { path: PathBuf, message: String },
-    #[error("manifest at {path} declares [[cli_operation]] but not the `cli.operations` capability — add it to [app.capabilities].capabilities")]
+    #[error("manifest at {path} declares [[cli_operation]] but not the `cli.operations` capability — add it to [plugin.capabilities].capabilities")]
     CliOperationsWithoutCapability { path: PathBuf },
     #[error("unknown raw WASM capability '{value}' in {path}: {message}")]
     UnknownWasmCapability {
@@ -141,7 +141,7 @@ pub enum PackageError {
     )]
     UnlaunchableEntry(String),
     #[error(
-        "review required for {runtime} package: {category} bypass pattern in {path}:{line}: {snippet} — reviewed native apps are not sandboxed"
+        "review required for {runtime} package: {category} bypass pattern in {path}:{line}: {snippet} — reviewed native plugins are not sandboxed"
     )]
     BypassReviewRequired {
         runtime: &'static str,
@@ -181,7 +181,7 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> PackageE
 pub enum PackageRuntime {
     /// Entry ends in `.py` — launched through the CPython-in-WASM adapter (`src/host/wasm_python.rs`).
     Python,
-    /// `[app] type = "wasm"` — launched through the wasmtime runtime.
+    /// `[plugin] type = "wasm"` — launched through the wasmtime runtime.
     Wasm,
 }
 
@@ -272,11 +272,11 @@ pub struct PackageReport {
 /// presence. See `docs/wasm-runtime.md`'s "Security Model" section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLabel {
-    /// The app id is in the bundled core pack — ships with Plexi itself.
+    /// The plugin id is in the bundled core pack — ships with Plexi itself.
     FirstPartyCore,
-    /// A Python app from outside the core pack.
+    /// A Python plugin from outside the core pack.
     PythonUnreviewed,
-    /// A Python app that has passed marketplace review.
+    /// A Python plugin that has passed marketplace review.
     ReviewedNative,
     /// A WASM component from outside the core pack.
     SandboxedWasm,
@@ -286,7 +286,7 @@ impl TrustLabel {
     /// Honest display string. Never claims sandboxing — none exists in v1.
     pub fn display_str(self) -> &'static str {
         match self {
-            Self::FirstPartyCore => "First-party core — bundled with Plexi",
+            Self::FirstPartyCore => "Bundled",
             Self::PythonUnreviewed => {
                 "Unreviewed Python process — runs with your full user permissions"
             }
@@ -329,7 +329,7 @@ pub fn trust_label(
 
 // ── Directory validation ──────────────────────────────────────────────────────
 
-/// Validate an app directory as packageable. Fail-closed: any structural
+/// Validate an plugin directory as packageable. Fail-closed: any structural
 /// problem is a hard error. A root-level `PACKAGE.toml` (left over from a
 /// previous extraction) is ignored by the file walk — it is regenerated at
 /// build time and verified at package-validate time.
@@ -418,7 +418,7 @@ fn validate_dir_inner(
     })
 }
 
-/// Read + structurally validate `manifest.toml` from an app dir.
+/// Read + structurally validate `manifest.toml` from an plugin dir.
 fn read_manifest(plugin_dir: &Path) -> Result<PluginManifest, PackageError> {
     let manifest_path = plugin_dir.join("manifest.toml");
     if !manifest_path.exists() {
@@ -734,7 +734,7 @@ fn collect_files_rec(
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 
-/// Build a `.plexipkg` artifact from an app directory.
+/// Build a `.plexipkg` artifact from an plugin directory.
 ///
 /// Validates the directory first (fail-closed), then writes
 /// `<id>-<version>.plexipkg` into the current directory, or to `out` when
@@ -793,7 +793,7 @@ pub fn build_package(plugin_dir: &Path, out: Option<&Path>) -> Result<PathBuf, P
     let gz = flate2::write::GzEncoder::new(out_file, flate2::Compression::default());
     let mut builder = tar::Builder::new(gz);
 
-    // PACKAGE.toml first, then app files at the archive root.
+    // PACKAGE.toml first, then plugin files at the archive root.
     let descriptor_bytes = descriptor_toml.as_bytes();
     let mut header = tar::Header::new_gnu();
     header.set_size(descriptor_bytes.len() as u64);
@@ -835,7 +835,7 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, PackageError> {
     Ok(hex_string(&hasher.finalize()))
 }
 
-/// Host-written files at the app root that are not package content. Excluded so
+/// Host-written files at the plugin root that are not package content. Excluded so
 /// a version pin or the install marker never changes the content identity.
 const HOST_METADATA_FILES: [&str; 3] = [
     "installed_version.txt",
@@ -843,7 +843,7 @@ const HOST_METADATA_FILES: [&str; 3] = [
     INSTALL_COMPLETE_MARKER,
 ];
 
-/// Marker the installer writes last. An app directory without it is a partial
+/// Marker the installer writes last. An plugin directory without it is a partial
 /// or interrupted install and is never trusted for CLI operations.
 pub(crate) const INSTALL_COMPLETE_MARKER: &str = ".plexi-install-complete";
 
@@ -1098,7 +1098,7 @@ fn validate_package_inner(
         return Err(PackageError::ListedFileMissing(path.to_string()));
     }
 
-    // The extracted tree must itself be a valid app dir.
+    // The extracted tree must itself be a valid plugin dir.
     let report = validate_dir_inner(&root, native_bypass_review)?;
 
     // PACKAGE.toml identity must agree with manifest.toml.
@@ -1135,22 +1135,12 @@ mod tests {
     use std::io::{Read, Write};
     use tempfile::TempDir;
 
-    /// Minimal valid python app dir: manifest + entry.
-    fn write_app(dir: &Path, id: &str, capabilities: &str) {
+    /// Minimal valid python plugin dir: manifest + entry.
+    fn write_plugin(dir: &Path, id: &str, capabilities: &str) {
         fs::write(
             dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n\
-                 [app]\n\
-                 id = \"{id}\"\n\
-                 type = \"app\"\n\
-                 name = \"Test App\"\n\
-                 entry = \"main.py\"\n\
-                 version = \"0.1.0\"\n\
-                 description = \"A test app\"\n\n\
-                 [app.capabilities]\n\
-                 capabilities = [{capabilities}]\n\n\
-                 [launch]\n"
+                "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"{id}\"\nname = \"Test App\"\nversion = \"0.1.0\"\ndescription = \"A test app\"\n\n[plugin.capabilities]\ncapabilities = [{capabilities}]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
             ),
         )
         .unwrap();
@@ -1176,7 +1166,7 @@ values = ["hi"]
     #[test]
     fn cli_operations_require_the_capability_and_a_valid_definition() {
         let tmp = TempDir::new().unwrap();
-        write_app(tmp.path(), "ops", "");
+        write_plugin(tmp.path(), "ops", "");
         let manifest = fs::read_to_string(tmp.path().join("manifest.toml")).unwrap();
         fs::write(
             tmp.path().join("manifest.toml"),
@@ -1189,7 +1179,7 @@ values = ["hi"]
             "{error}"
         );
 
-        write_app(tmp.path(), "ops", "\"cli.operations\"");
+        write_plugin(tmp.path(), "ops", "\"cli.operations\"");
         let manifest = fs::read_to_string(tmp.path().join("manifest.toml")).unwrap();
         fs::write(
             tmp.path().join("manifest.toml"),
@@ -1213,7 +1203,7 @@ values = ["hi"]
     #[test]
     fn content_digest_tracks_content_and_ignores_host_metadata() {
         let tmp = TempDir::new().unwrap();
-        write_app(tmp.path(), "digest", "");
+        write_plugin(tmp.path(), "digest", "");
         let base = content_digest(tmp.path()).unwrap();
         assert_eq!(base, content_digest(tmp.path()).unwrap());
 
@@ -1311,12 +1301,12 @@ values = ["hi"]
         write_entries(out, &entries);
     }
 
-    /// Build a valid package for a fresh app dir; returns (workdir, pkg path).
+    /// Build a valid package for a fresh plugin dir; returns (workdir, pkg path).
     fn build_valid_package(id: &str) -> (TempDir, PathBuf) {
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, id, "\"ai.query\"");
+        write_plugin(&plugin_dir, id, "\"ai.query\"");
         let out = work.path().join(format!("{id}-0.1.0.plexipkg"));
         let pkg = build_package(&plugin_dir, Some(&out)).unwrap();
         (work, pkg)
@@ -1341,7 +1331,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-pycache", "\"timer\"");
+        write_plugin(&plugin_dir, "pkg-pycache", "\"timer\"");
         let cache = plugin_dir.join("tests").join("__pycache__");
         fs::create_dir_all(&cache).unwrap();
         fs::write(plugin_dir.join("tests").join("test_it.py"), "# test\n").unwrap();
@@ -1402,7 +1392,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-symlink", "");
+        write_plugin(&plugin_dir, "pkg-symlink", "");
         std::os::unix::fs::symlink("/etc/hosts", plugin_dir.join("link")).unwrap();
 
         let err = build_package(&plugin_dir, Some(&work.path().join("x.plexipkg"))).unwrap_err();
@@ -1418,7 +1408,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-venv", "");
+        write_plugin(&plugin_dir, "pkg-venv", "");
         let venv_bin = plugin_dir.join(".venv").join("bin");
         fs::create_dir_all(&venv_bin).unwrap();
         fs::write(plugin_dir.join(".venv").join("pyvenv.cfg"), "home = /tmp\n").unwrap();
@@ -1481,7 +1471,7 @@ values = ["hi"]
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
         // "net.dns" is NOT a Capability variant.
-        write_app(&plugin_dir, "pkg-badcap", "\"net.dns\"");
+        write_plugin(&plugin_dir, "pkg-badcap", "\"net.dns\"");
 
         let err = validate_dir(&plugin_dir).unwrap_err();
         match err {
@@ -1539,7 +1529,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-socket-bypass", "\"net.http\"");
+        write_plugin(&plugin_dir, "pkg-socket-bypass", "\"net.http\"");
         fs::write(
             plugin_dir.join("main.py"),
             "import socket\nsock = socket.socket()\n",
@@ -1566,7 +1556,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-host-routing-bypass", "\"panes.read\"");
+        write_plugin(&plugin_dir, "pkg-host-routing-bypass", "\"panes.read\"");
         fs::write(
             plugin_dir.join("main.py"),
             "import os\nhost_socket = os.environ.get('PLEXI_SOCKET')\n",
@@ -1593,7 +1583,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-path-bypass", "\"fs.read\"");
+        write_plugin(&plugin_dir, "pkg-path-bypass", "\"fs.read\"");
         fs::write(plugin_dir.join("main.py"), "open('../secrets.txt').read()\n").unwrap();
 
         let err = validate_dir(&plugin_dir).unwrap_err();
@@ -1714,7 +1704,7 @@ values = ["hi"]
         );
         assert_eq!(
             TrustLabel::FirstPartyCore.display_str(),
-            "First-party core — bundled with Plexi"
+            "Bundled"
         );
     }
 
@@ -1756,11 +1746,11 @@ values = ["hi"]
 
     #[test]
     fn from_manifest_rejects_native_executable_entry() {
-        // No `.py`/`.pyc` entry and no `[app] type = "wasm"` — the host has no
+        // No `.py`/`.pyc` entry and no `[plugin] type = "wasm"` — the host has no
         // launch path for this shape (stint 0411: PackageRuntime::Native and
         // TrustLabel::NativeUnreviewed described a package that could never
         // actually launch, so validate-time now rejects it outright).
-        let err = PackageRuntime::from_manifest(crate::app::registry::ManifestType::App, "bin/app")
+        let err = PackageRuntime::from_manifest(crate::app::registry::ManifestType::Python, "bin/app")
             .unwrap_err();
         assert!(
             matches!(err, PackageError::UnlaunchableEntry(ref e) if e == "bin/app"),
@@ -1864,7 +1854,7 @@ values = ["hi"]
         let work = TempDir::new().unwrap();
         let plugin_dir = work.path().join("app");
         fs::create_dir(&plugin_dir).unwrap();
-        write_app(&plugin_dir, "pkg-name", "");
+        write_plugin(&plugin_dir, "pkg-name", "");
         // Build with out inside the temp dir to avoid touching CWD.
         let out = work.path().join("pkg-name-0.1.0.plexipkg");
         let path = build_package(&plugin_dir, Some(&out)).unwrap();

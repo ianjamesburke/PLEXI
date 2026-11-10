@@ -172,7 +172,7 @@ impl PaneLaunchSpec {
                 return Err("spawn_pane cannot set both terminal and path target".to_string());
             }
             (type_id, Some(_)) if !type_id.is_empty() => {
-                return Err("spawn_pane cannot set both app id and path target".to_string());
+                return Err("spawn_pane cannot set both plugin id and path target".to_string());
             }
             ("", None) => return Err("spawn_pane target is empty".to_string()),
             _ => return Err("invalid spawn_pane target".to_string()),
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn from_spawn_pane_rejects_agent_on_app_target() {
+    fn from_spawn_pane_rejects_agent_on_view_target() {
         let err = PaneLaunchSpec::from_spawn_pane(&agent_spawn("snake", Some("c-large"), None))
             .unwrap_err();
 
@@ -377,7 +377,7 @@ mod tests {
 
         let err = PaneLaunchSpec::from_spawn_pane(&request).unwrap_err();
 
-        assert_eq!(err, "spawn_pane cannot set both app id and path target");
+        assert_eq!(err, "spawn_pane cannot set both plugin id and path target");
     }
 
     #[test]
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn from_spawn_pane_rejects_worktree_on_app_target() {
+    fn from_spawn_pane_rejects_worktree_on_view_target() {
         let mut request = spawn_pane("snake", None, &[]);
         if let HostRequest::SpawnPane { worktree, .. } = &mut request {
             *worktree = Some("feature/0668-test".to_string());

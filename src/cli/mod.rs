@@ -270,7 +270,7 @@ pub fn ensure_commands_file(workspace_root: Option<&std::path::Path>) -> std::pa
 
 /// Resolve the workspace root for `commands.toml` lookup from `cwd`.
 ///
-/// Walks up via [`crate::app::registry::resolve_workspace_root`]; if that
+/// Walks up via [`crate::view::registry::resolve_workspace_root`]; if that
 /// returns `None` (for example in a scratch directory under `$HOME`), falls
 /// back to `cwd` itself when `cwd/<workspace_channel_dir()>/commands.toml`
 /// exists and is distinct from [`global_commands_path`].
@@ -625,8 +625,8 @@ pub(crate) mod lease;
 pub mod agent;
 pub mod agents_api;
 pub mod ai;
-pub mod app;
-pub mod app_check;
+pub mod plugin;
+pub mod plugin_check;
 pub mod changes;
 pub mod plugin_state;
 pub mod completions;
@@ -1889,7 +1889,7 @@ pub(super) fn queue_spawn_and_wait(
 /// Decode the definitive reply to an outside-pane queued spawn.
 ///
 /// This is deliberately shared with the queue caller instead of treating a
-/// queue-file write as success: the host may reject the app after it drains
+/// queue-file write as success: the host may reject the plugin after it drains
 /// the file (for example when the CPython bundle is unavailable).
 pub(super) fn queued_spawn_pane_id(content: &str) -> Result<u64, String> {
     if let Some(error) = reply_error(content) {
@@ -1932,14 +1932,14 @@ pub use agents_api::{
     command_view_refused,
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
-pub use app::{
+pub use plugin::{
     view_list,
-    pane_action_cli, app_adopt, app_call_cli, app_tools_cli, assistant_permission_cli,
-    assistant_send_cli, assistant_tool_cli, needs_you_api_cli, needs_you_cli, app_info, app_init,
-    app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
-    app_prune_cli, view_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
+    pane_action_cli, plugin_adopt, plugin_call_cli, plugin_tools_cli, assistant_permission_cli,
+    assistant_send_cli, assistant_tool_cli, needs_you_api_cli, needs_you_cli, plugin_info, plugin_init,
+    plugin_inspect_cli, plugin_install_package, plugin_install_with_pin, plugin_list, plugin_package_cli,
+    plugin_prune_cli, view_render, plugin_test_cli, plugin_uninstall, plugin_update_cli, InstallConfirm,
 };
-pub use app_check::app_check_cli;
+pub use plugin_check::plugin_check_cli;
 pub use changes::{
     changes_accept_cli, changes_allow_cli, changes_preview_cli, changes_profile_cli,
     changes_propose_cli, changes_refresh_cli, changes_revert_cli,
@@ -1969,7 +1969,7 @@ pub use install::{
 };
 pub use ledger::ledger_summary_cli;
 pub use list::{freeze_cli, parse_notify_choice};
-pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
+pub use marketplace::{plugin_browse_cli, plugin_publish_cli, plugin_search_cli};
 pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope, NotifyCliArgs};
 pub use open::{
     mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,

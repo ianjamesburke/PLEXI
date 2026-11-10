@@ -1,4 +1,4 @@
-//! CPython-in-WASM adapter boundary for SDK v3 Python apps.
+//! CPython-in-WASM adapter boundary for SDK v3 Python plugins.
 //!
 //! This module owns the deterministic host side of the Python compatibility
 //! path: manifest routing, CPython bundle resolution, and JSON bridge
@@ -28,20 +28,20 @@ use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::app::registry::{PluginManifest, RuntimeExecution};
 
-use super::wasm_app::bindings::plexi::platform::types::{
+use super::wasm_view::bindings::plexi::platform::types::{
     SurfaceHeaderNode, BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine,
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode,
     IndexedNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
     ScrollNode, SpaceNode, SpinnerNode, TextInputNode, TextNode, UiNodeData, UiTree,
 };
 #[cfg(test)]
-use super::wasm_app::bindings::plexi::platform::types::{
+use super::wasm_view::bindings::plexi::platform::types::{
     DeclareToolsEffect, FileReadEffect, FileWriteEffect, HttpFetchEffect, InputEvent, KeyEvent,
     StateSnapshot, TimerEffect, ToolDecl, ToolResultEffect, UiActionEvent, UiValueChangeEvent,
 };
-use super::wasm_app::Alignment;
+use super::wasm_view::Alignment;
 #[cfg(test)]
-use super::wasm_app::{Effect, Grants, StateStore, WasmView};
+use super::wasm_view::{Effect, Grants, StateStore, WasmView};
 use super::wasm_frame::repaint_delay_until;
 
 struct InputState {
@@ -593,9 +593,9 @@ pub struct PythonLaunchConfig {
     pub allowed_hosts: Vec<String>,
     pub theme: std::collections::HashMap<String, String>,
     /// Validated `[state] scopes` from the manifest. Ordered; the first entry
-    /// is the app's default scope. See `crate::host::state_scope`.
+    /// is the plugin's default scope. See `crate::host::state_scope`.
     pub state_scopes: Vec<crate::host::state_scope::StateScope>,
-    /// Validated `[state] format` from the manifest. JSON unless the app
+    /// Validated `[state] format` from the manifest. JSON unless the plugin
     /// declared `format = "markdown"`, in which case the host is
     /// format-blind: the file's bytes round-trip verbatim under a single
     /// `document` key.
@@ -676,7 +676,7 @@ fn python_init_payload(
     size: (f32, f32),
 ) -> Value {
     // Same wire shape the live pane sends: state is always scope-keyed, never
-    // a flat `state` key. `state` here seeds only the app's default scope.
+    // a flat `state` key. `state` here seeds only the plugin's default scope.
     let default_scope = config
         .state_scopes
         .first()
@@ -724,7 +724,7 @@ pub struct WasmPythonRuntime {
     /// Wasmtime compile of the ~20 MB CPython WASI module takes seconds, and
     /// the compile cache is process-global and mutex-guarded, so a parallel
     /// caller can queue behind another one's compile). A caller polling for
-    /// the app's first message must not charge that to the app.
+    /// the plugin's first message must not charge that to the plugin.
     started: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -806,7 +806,7 @@ impl WasmPythonRuntime {
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .map_err(|e| e.to_string())?;
                 log::info!(
-                    "app::{thread_plugin_id}: CPython WASM guest entering _start \
+                    "plugin::{thread_plugin_id}: CPython WASM guest entering _start \
                      (module compiled in {compiled_in:?}, instantiated in {:?})",
                     compile_begin.elapsed() - compiled_in
                 );
@@ -814,7 +814,7 @@ impl WasmPythonRuntime {
                 start.call(&mut store, ()).map_err(|e| e.to_string())
             })
             .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
-        log::info!("app::{plugin_id}: CPython WASM runtime started with read-only SDK and app mounts");
+        log::info!("plugin::{plugin_id}: CPython WASM runtime started with read-only SDK and plugin mounts");
         Ok(Self {
             stdin,
             stdout,
@@ -854,9 +854,9 @@ impl WasmPythonRuntime {
 
     /// Whether the guest is executing Python yet. False while the CPython
     /// module is still being compiled or instantiated on the guest thread —
-    /// work that happens after `launch` returns and is not the app's doing.
-    /// Callers that police how long the app takes to answer start their clock
-    /// from here, so a cold compile is never reported as an unresponsive app.
+    /// work that happens after `launch` returns and is not the plugin's doing.
+    /// Callers that police how long the plugin takes to answer start their clock
+    /// from here, so a cold compile is never reported as an unresponsive plugin.
     pub fn has_started(&self) -> bool {
         self.started.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -883,7 +883,7 @@ impl Drop for WasmPythonRuntime {
     }
 }
 
-/// How long the app itself gets to answer, measured from the moment the guest
+/// How long the plugin itself gets to answer, measured from the moment the guest
 /// starts executing Python — never from `launch`, which returns before the
 /// CPython module has been compiled (see `WasmPythonRuntime::has_started`).
 const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -911,8 +911,8 @@ enum PollVerdict {
 /// different parties. `launch` returns as soon as the guest *thread* is
 /// spawned; the Wasmtime compile of the CPython module happens on that thread
 /// afterwards, behind a process-global cache mutex. Charging that host-side
-/// cold start to the app's response budget is how a guest that crashes at
-/// import gets misreported as an unresponsive app: the single budget expires
+/// cold start to the plugin's response budget is how a guest that crashes at
+/// import gets misreported as an unresponsive plugin: the single budget expires
 /// while the guest is still queued behind a compile, before it has run a line
 /// of Python, so there is no process exit to observe yet.
 struct HeadlessDeadline {
@@ -942,7 +942,7 @@ impl HeadlessDeadline {
     }
 }
 
-/// One-shot headless run of a CPython-in-WASM app through the exact same
+/// One-shot headless run of a CPython-in-WASM plugin through the exact same
 /// runtime the live host uses (`WasmPythonRuntime` running
 /// `plexi_sdk._v3_process`) — for `plexi plugin check` / `plexi view render`.
 /// Boots, waits for `ready`, sends one `render`, and returns the decoded
@@ -959,7 +959,7 @@ pub fn run_headless_frame(
 
 /// Render once, then send a `ui_action` for each handler in order inside the
 /// same guest session, rendering after every action. State accumulates across
-/// clicks, like a real user driving the app. Stops at the first failed action
+/// clicks, like a real user driving the plugin. Stops at the first failed action
 /// — the guest is dead or wedged and later clicks cannot succeed. Returns the
 /// pre-action frame plus one `(handler_id, render result)` entry per
 /// attempted action.
@@ -1030,7 +1030,7 @@ impl HeadlessPythonSession {
             message_type == Some("frame_done")
         })?;
         let message = tree_message.ok_or_else(|| {
-            WasmPythonError::BridgeJson("app emitted frame_done with no component_tree".to_string())
+            WasmPythonError::BridgeJson("plugin emitted frame_done with no component_tree".to_string())
         })?;
         let tree = match message.get("type").and_then(Value::as_str) {
             Some("tree_delta") => {
@@ -1108,13 +1108,13 @@ impl HeadlessPythonSession {
     }
 
     /// The error returned when a deadline expires with the guest still alive.
-    /// Names which clock ran out, so an unresponsive app is never confused with
+    /// Names which clock ran out, so an unresponsive plugin is never confused with
     /// a host that could not get CPython compiled and running.
     fn timeout_error(&mut self, verdict: PollVerdict) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         let what = match verdict {
             PollVerdict::ResponseTimedOut => {
-                format!("timed out waiting for app response after {HEADLESS_DEFAULT_TIMEOUT:?}")
+                format!("timed out waiting for plugin response after {HEADLESS_DEFAULT_TIMEOUT:?}")
             }
             PollVerdict::BootTimedOut => format!(
                 "CPython WASM guest did not start executing within {HEADLESS_BOOT_TIMEOUT:?} \
@@ -1139,7 +1139,7 @@ impl HeadlessPythonSession {
     fn guest_death_error(&self) -> WasmPythonError {
         let stderr = self.runtime.drain_stderr();
         WasmPythonError::BridgeJson(format!(
-            "app exited before responding{}",
+            "plugin exited before responding{}",
             if stderr.trim().is_empty() {
                 String::new()
             } else {
@@ -1255,7 +1255,7 @@ pub struct LivePythonPane {
     /// per-pane, live for the pane's lifetime (deliberately kept across
     /// hot-reload `relaunch`), and are never persisted.
     granted_fs_roots: Vec<PathBuf>,
-    pending_commands: Vec<crate::app::app_trait::ViewCommand>,
+    pending_commands: Vec<crate::app::view_trait::ViewCommand>,
     /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
     /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
     /// calling `ui()`, so this is the pane's only chance to consume it. `ui()`
@@ -1273,7 +1273,7 @@ pub struct LivePythonPane {
     /// calls and its state must survive between them.
     stderr_classifier: GuestStderrClassifier,
     /// Last warn time per unrecognized guest message type. A 1 Hz poll must
-    /// not fill the channel log — and the Logs app that tails it — with the
+    /// not fill the channel log — and the Logs plugin that tails it — with the
     /// same line.
     unhandled_warned_at: HashMap<String, std::time::Instant>,
     /// One info line the first time this pane serves
@@ -1299,7 +1299,7 @@ struct PythonUiTree {
 /// A decoded frame or bridge message handed from the decoder thread to the
 /// paint thread (stint 0438). JSON + tree decode happen on the decoder thread;
 /// the paint thread only picks up the ready result. Decode durations ride
-/// along so the per-app perf log keeps reporting `json_ms` / `tree_ms`.
+/// along so the per-plugin perf log keeps reporting `json_ms` / `tree_ms`.
 enum DecodedOutput {
     Tree {
         frame_id: Option<u64>,
@@ -1331,7 +1331,7 @@ struct ScheduledWake {
     at: std::time::Instant,
     /// The guest's frame interval while it drives its own cadence in
     /// continuous mode; `None` when the pending wake is not the frame cadence
-    /// (scheduled-mode apps, or a continuous app whose pipeline is full and
+    /// (scheduled-mode plugins, or a continuous plugin whose pipeline is full and
     /// whose next admission therefore depends on this very frame arriving).
     continuous_interval: Option<std::time::Duration>,
 }
@@ -1351,11 +1351,11 @@ type WakeSchedule = Arc<Mutex<WakeScheduleState>>;
 /// Whether a decoded frame needs its own immediate repaint wake, or can ride
 /// the repaint the paint thread already scheduled.
 ///
-/// Suppression only applies to an app driving a continuous cadence, where the
+/// Suppression only applies to an plugin driving a continuous cadence, where the
 /// pending wake is by construction at most one frame interval away — so the
 /// cost is a fraction of a frame of presentation latency, in exchange for not
 /// forcing a second full-host repaint per guest frame. An input-driven
-/// (scheduled-mode) app never suppresses: its frames are the *response* to
+/// (scheduled-mode) plugin never suppresses: its frames are the *response* to
 /// input, nothing else is scheduled to show them, and latency there is
 /// perceptible.
 ///
@@ -1518,13 +1518,13 @@ fn decode_loop(
                             if !awaiting_full {
                                 awaiting_full = true;
                                 log::warn!(
-                                    "app::{plugin_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
+                                    "plugin::{plugin_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
                                 );
                                 if let Err(error) =
                                     stdin.push_json_line(&json!({"type": "request_full_tree"}))
                                 {
                                     log::error!(
-                                        "app::{plugin_id}: failed to request full-tree resync: {error}"
+                                        "plugin::{plugin_id}: failed to request full-tree resync: {error}"
                                     );
                                 }
                             }
@@ -1915,19 +1915,19 @@ fn json_value_kind(value: &Value) -> &'static str {
 #[cfg(test)]
 fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
     if let Err(error) =
-        crate::workspace::secrets::ensure_app_state_gitignore(&config.workspace_root)
+        crate::workspace::secrets::ensure_plugin_state_gitignore(&config.workspace_root)
     {
         log::warn!(
-            "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+            "plugin::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
             config.plugin_id,
             config.workspace_root.display()
         );
     }
 }
 
-/// Encode a scope's values for disk in the app's declared format.
+/// Encode a scope's values for disk in the plugin's declared format.
 ///
-/// JSON is pretty-printed. Markdown keeps the host format-blind: the app's
+/// JSON is pretty-printed. Markdown keeps the host format-blind: the plugin's
 /// `document` value (which must be a string) is written verbatim — no JSON
 /// envelope, no escaping.
 fn encode_state_file(
@@ -1952,7 +1952,7 @@ fn encode_state_file(
     }
 }
 
-/// Decode a state file's bytes in the app's declared format. The inverse of
+/// Decode a state file's bytes in the plugin's declared format. The inverse of
 /// [`encode_state_file`]: markdown text arrives as `{"document": "<file text>"}`.
 pub(crate) fn decode_state_file(
     bytes: &[u8],
@@ -2012,7 +2012,7 @@ fn read_python_state_file(
             }
             Err(error) => {
                 log::error!(
-                    "app::{plugin_id}: state {} is unreadable ({error}) — state is NOT reset; \
+                    "plugin::{plugin_id}: state {} is unreadable ({error}) — state is NOT reset; \
                      persists are blocked until the file is fixed",
                     path.display()
                 );
@@ -2032,7 +2032,7 @@ fn read_python_state_file(
         }
         Err(error) => {
             let message = format!("read state {}: {error}", path.display());
-            log::error!("app::{plugin_id}: {message} — state is NOT reset");
+            log::error!("plugin::{plugin_id}: {message} — state is NOT reset");
             ScopeState {
                 values: serde_json::Map::new(),
                 digest,
@@ -2051,13 +2051,13 @@ fn format_python_state_load_trace(
 ) -> String {
     match hit {
         Some((bytes, keys)) => format!(
-            "app::{plugin_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
+            "plugin::{plugin_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
             scope.as_str(),
             format.as_str(),
             path.display()
         ),
         None => format!(
-            "app::{plugin_id}: no state found for scope={} format={} at {} (fallback=none)",
+            "plugin::{plugin_id}: no state found for scope={} format={} at {} (fallback=none)",
             scope.as_str(),
             format.as_str(),
             path.display()
@@ -2074,7 +2074,7 @@ fn format_python_state_persist_trace(
     replaced: bool,
 ) -> String {
     format!(
-        "app::{plugin_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
+        "plugin::{plugin_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
         scope.as_str(),
         format.as_str(),
         path.display()
@@ -2213,7 +2213,7 @@ fn load_python_states(
                 ),
                 Err(error) => {
                     log::error!(
-                        "app::{}: cannot resolve state path for scope {}: {error}",
+                        "plugin::{}: cannot resolve state path for scope {}: {error}",
                         config.plugin_id,
                         scope.as_str()
                     );
@@ -2296,7 +2296,7 @@ fn pump_mcp_inbound(
                 }
                 LowWaterArm::WrongInput { token } => {
                     log::error!(
-                        "app::{plugin_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
+                        "plugin::{plugin_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
@@ -2321,7 +2321,7 @@ fn pump_mcp_inbound(
                 LowWaterArm::BelowThreshold => break,
                 LowWaterArm::IdentityExhausted => {
                     log::error!(
-                        "app::{plugin_id}: guest stdin low-water identity space exhausted; closing stdin"
+                        "plugin::{plugin_id}: guest stdin low-water identity space exhausted; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
@@ -2391,7 +2391,7 @@ fn deliver_mcp_line(
         Ok(()) => {
             if let crate::host::mcp_client::McpLine::Closed(reason) = &line {
                 connections.remove(&server_id);
-                log::info!("app::{plugin_id}: mcp server {server_id} closed: {reason}");
+                log::info!("plugin::{plugin_id}: mcp server {server_id} closed: {reason}");
             }
             McpDelivery::Delivered
         }
@@ -2406,7 +2406,7 @@ fn deliver_mcp_line(
             McpDelivery::GuestGone
         }
         Err(error) => {
-            log::error!("app::{plugin_id}: deliver MCP line to guest failed — dropped: {error}");
+            log::error!("plugin::{plugin_id}: deliver MCP line to guest failed — dropped: {error}");
             McpDelivery::Delivered
         }
     }
@@ -2432,7 +2432,7 @@ fn drop_undeliverable_mcp_backlog(
         dropped += 1;
         if let crate::host::mcp_client::McpLine::Closed(reason) = &l {
             connections.remove(&sid);
-            log::info!("app::{plugin_id}: mcp server {sid} closed: {reason}");
+            log::info!("plugin::{plugin_id}: mcp server {sid} closed: {reason}");
         }
         next = rx.try_recv().ok();
     }
@@ -2440,7 +2440,7 @@ fn drop_undeliverable_mcp_backlog(
     if !*closed_logged {
         *closed_logged = true;
         log::error!(
-            "app::{plugin_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
+            "plugin::{plugin_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
         );
     }
 }
@@ -2501,11 +2501,11 @@ pub(crate) enum OutboundEventError {
 impl LivePythonPane {
     /// Send an event to the CPython guest. Failure means the message was
     /// dropped: malformed JSON, closed stdin, or the guest-stdin hard cap.
-    /// Log loudly so a dead or wedged app is diagnosable from plexi.log.
+    /// Log loudly so a dead or wedged plugin is diagnosable from plexi.log.
     fn send_to_runtime(&self, event: &Value) {
         if let Err(error) = self.runtime.send(event) {
             log::error!(
-                "app::{}: send to CPython runtime failed: {error}",
+                "plugin::{}: send to CPython runtime failed: {error}",
                 self.plugin_id
             );
         }
@@ -2623,14 +2623,14 @@ impl LivePythonPane {
         ) {
             Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {
                 log::info!(
-                    "app::{}: registered directed pipe '{pipe_id}' on Python runtime",
+                    "plugin::{}: registered directed pipe '{pipe_id}' on Python runtime",
                     self.plugin_id
                 );
                 true
             }
             Err(error) => {
                 log::warn!(
-                    "app::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
+                    "plugin::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
                     self.plugin_id
                 );
                 false
@@ -2648,7 +2648,7 @@ impl LivePythonPane {
     pub fn set_context_root(&mut self, root: &Path) {
         if self.context_root != root {
             log::info!(
-                "app::{}: context root changed {} -> {} — state scope resolution follows",
+                "plugin::{}: context root changed {} -> {} — state scope resolution follows",
                 self.plugin_id,
                 self.context_root.display(),
                 root.display()
@@ -2668,13 +2668,13 @@ impl LivePythonPane {
         // Stint 0426: the caller already removed `pending_click` from
         // `PlexiApp::pending_pane_clicks` before this call — it is not
         // re-queued there. A fresh click for this frame wins over a carried
-        // one from a prior frame that couldn't be delivered yet (an app is
+        // one from a prior frame that couldn't be delivered yet (an plugin is
         // never sent two independent clicks close enough together for both
         // to still be meaningful); the carried one is dropped in that case.
         let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
         if pending_click.is_some() {
             log::info!(
-                "app::{}: pending pane click/node-click entering render (carried={})",
+                "plugin::{}: pending pane click/node-click entering render (carried={})",
                 self.plugin_id,
                 self.pending_click_carry.is_none()
             );
@@ -2686,7 +2686,7 @@ impl LivePythonPane {
                 // resets pending_click_carry) — fail loud instead of
                 // silently swallowing the click forever.
                 log::error!(
-                    "app::{}: dropping pending pane click — pane is in a fatal error state: {error}",
+                    "plugin::{}: dropping pending pane click — pane is in a fatal error state: {error}",
                     self.plugin_id
                 );
             }
@@ -2698,7 +2698,7 @@ impl LivePythonPane {
             if !valid_python_viewport(size.x, size.y) {
                 if pending_click.is_some() {
                     log::info!(
-                        "app::{}: deferring pending pane click — viewport not yet valid",
+                        "plugin::{}: deferring pending pane click — viewport not yet valid",
                         self.plugin_id
                     );
                     self.pending_click_carry = pending_click;
@@ -2715,7 +2715,7 @@ impl LivePythonPane {
             if self.error.is_some() {
                 if pending_click.is_some() {
                     log::error!(
-                        "app::{}: dropping pending pane click — init send failed",
+                        "plugin::{}: dropping pending pane click — init send failed",
                         self.plugin_id
                     );
                 }
@@ -2753,14 +2753,14 @@ impl LivePythonPane {
             self.timers.clear();
             self.pending_timer_events.clear();
             if self.tree.is_none() {
-                ui.colored_label(colors.danger, "app exited before rendering a frame");
+                ui.colored_label(colors.danger, "plugin exited before rendering a frame");
                 return;
             }
         }
         if !self.ready {
             if pending_click.is_some() {
                 log::info!(
-                    "app::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
+                    "plugin::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
                     self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
@@ -2781,7 +2781,7 @@ impl LivePythonPane {
                 self.error = Some(error.to_string());
                 if pending_click.is_some() {
                     log::error!(
-                        "app::{}: dropping pending pane click — render request send failed: {error}",
+                        "plugin::{}: dropping pending pane click — render request send failed: {error}",
                         self.plugin_id
                     );
                 }
@@ -2805,7 +2805,7 @@ impl LivePythonPane {
             self.perf_canvas_render += result.canvas_time;
             for action in result.actions {
                 log::info!(
-                    "app::{}: emitted UI action at Python host boundary handler={action}",
+                    "plugin::{}: emitted UI action at Python host boundary handler={action}",
                     self.plugin_id
                 );
                 self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
@@ -2827,7 +2827,7 @@ impl LivePythonPane {
         } else {
             if pending_click.is_some() {
                 log::info!(
-                    "app::{}: deferring pending pane click — no committed tree yet",
+                    "plugin::{}: deferring pending pane click — no committed tree yet",
                     self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
@@ -2879,11 +2879,11 @@ impl LivePythonPane {
                     .unwrap_or_else(|e| e.into_inner())
                     .suppressed,
             );
-            // Debug, not info. The Logs app tails this same channel log and
+            // Debug, not info. The Logs plugin tails this same channel log and
             // re-renders whenever the tail changes, so an info sample every
             // window becomes a permanent row of this pane's own telemetry.
             log::debug!(
-                "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
+                "plugin::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
                 self.plugin_id,
                 self.perf_json_decode.as_secs_f64() * 1000.0,
                 self.perf_tree_decode.as_secs_f64() * 1000.0,
@@ -2919,7 +2919,7 @@ impl LivePythonPane {
 
     /// Logic-pass servicing of everything external that feeds this pane: MCP
     /// server lines, HTTP replies, file-pick outcomes, and decoded guest
-    /// messages (which carry the app's own `mcp_send` / `mcp_connect`
+    /// messages (which carry the plugin's own `mcp_send` / `mcp_connect`
     /// requests). `ui` drains too, but eframe never calls `App::ui` while the
     /// window is hidden (minimized or fully occluded) — every external drain
     /// must complete on logic-only passes alone (see the CLAUDE.md trap;
@@ -2958,7 +2958,7 @@ impl LivePythonPane {
             if !self.mcp_backpressured {
                 self.mcp_backpressured = true;
                 log::warn!(
-                    "app::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
+                    "plugin::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
                     self.plugin_id,
                     self.runtime.stdin.buffered_bytes()
                 );
@@ -2966,7 +2966,7 @@ impl LivePythonPane {
         } else if self.mcp_backpressured {
             self.mcp_backpressured = false;
             log::info!(
-                "app::{}: MCP inbound backpressure released",
+                "plugin::{}: MCP inbound backpressure released",
                 self.plugin_id
             );
         }
@@ -2997,7 +2997,7 @@ impl LivePythonPane {
                     let granted = self.register_picked_grants(&paths);
                     if granted.is_empty() {
                         log::error!(
-                            "app::{}: file pick {request_id}: no picked path could be granted; cancelling",
+                            "plugin::{}: file pick {request_id}: no picked path could be granted; cancelling",
                             self.plugin_id
                         );
                         self.queue_outbound_event(
@@ -3015,7 +3015,7 @@ impl LivePythonPane {
                     }
                 }
                 crate::host::services::FilePickOutcome::Cancelled => {
-                    log::info!("app::{}: file pick {request_id} cancelled", self.plugin_id);
+                    log::info!("plugin::{}: file pick {request_id} cancelled", self.plugin_id);
                     self.queue_outbound_event(
                         crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
@@ -3050,12 +3050,12 @@ impl LivePythonPane {
                     self.handle_message(value);
                 }
                 Ok(DecodedOutput::DecodeError(error)) => {
-                    log::error!("app::{}: decode CPython WASM message: {error}", self.plugin_id);
+                    log::error!("plugin::{}: decode CPython WASM message: {error}", self.plugin_id);
                     self.error = Some(error);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::error!("app::{}: CPython WASM decoder thread ended", self.plugin_id);
+                    log::error!("plugin::{}: CPython WASM decoder thread ended", self.plugin_id);
                     break;
                 }
             }
@@ -3081,22 +3081,22 @@ impl LivePythonPane {
         }
     }
 
-    /// One host record per guest stderr line, each carrying the `app::<id>`
-    /// prefix so the whole traceback is greppable by app (stint 0643).
+    /// One host record per guest stderr line, each carrying the `plugin::<id>`
+    /// prefix so the whole traceback is greppable by plugin (stint 0643).
     fn log_guest_stderr(&self, record: &GuestStderrRecord) {
         match record.kind {
             GuestStderrKind::BenignWasiStartup => log::debug!(
-                "app::{} CPython WASM stderr (benign WASI startup noise): {}",
+                "plugin::{} CPython WASM stderr (benign WASI startup noise): {}",
                 self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackException => log::error!(
-                "app::{} CPython WASM stderr exception: {}",
+                "plugin::{} CPython WASM stderr exception: {}",
                 self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackExceptionDetail => log::error!(
-                "app::{} CPython WASM stderr exception (cont): {}",
+                "plugin::{} CPython WASM stderr exception (cont): {}",
                 self.plugin_id,
                 record.line
             ),
@@ -3104,7 +3104,7 @@ impl LivePythonPane {
             | GuestStderrKind::TracebackHeader
             | GuestStderrKind::TracebackFrame
             | GuestStderrKind::TracebackChainSeparator => {
-                log::error!("app::{} CPython WASM stderr: {}", self.plugin_id, record.line)
+                log::error!("plugin::{} CPython WASM stderr: {}", self.plugin_id, record.line)
             }
         }
     }
@@ -3121,11 +3121,11 @@ impl LivePythonPane {
     fn handle_message(&mut self, message: Value) {
         let message_type = bridge_message_type(&message);
         log::debug!(
-            "app::{}: CPython WASM message type={}",
+            "plugin::{}: CPython WASM message type={}",
             self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
-        // Permission polls arrive every second from the Permissions app.
+        // Permission polls arrive every second from the Permissions plugin.
         // Handle them before the generic match so a miss cannot fall through
         // to the unhandled warning and leave the list blank.
         if let Some(kind) = permission_bridge_kind(message_type) {
@@ -3141,7 +3141,7 @@ impl LivePythonPane {
                 self.frame_scheduler
                     .request_render_at(std::time::Instant::now());
                 self.reset_perf_window();
-                log::info!("app::{}: CPython WASM bridge ready", self.plugin_id);
+                log::info!("plugin::{}: CPython WASM bridge ready", self.plugin_id);
             }
             Some("set_title") => {
                 self.title = message
@@ -3206,7 +3206,7 @@ impl LivePythonPane {
                     self.perf_guest_roundtrip += sent_at.elapsed();
                 } else {
                     log::warn!(
-                        "app::{}: CPython WASM completed unknown frame {:?}",
+                        "plugin::{}: CPython WASM completed unknown frame {:?}",
                         self.plugin_id,
                         completed_frame
                     );
@@ -3233,23 +3233,23 @@ impl LivePythonPane {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                log::log!(level, "app::{}: {}", self.plugin_id, text);
+                log::log!(level, "plugin::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
             _ => {
-                match app_command_from_python_message(&message) {
+                match plugin_command_from_python_message(&message) {
                     Ok(Some(command)) => {
-                    if let Some(capability) = required_capability_for_python_app_command(&command) {
+                    if let Some(capability) = required_capability_for_python_plugin_command(&command) {
                         if !self.has_capability(capability) {
                             log::info!(
-                                "app::{}: {} denied: missing capability {capability}",
+                                "plugin::{}: {} denied: missing capability {capability}",
                                 self.plugin_id,
                                 message_type.unwrap_or("<missing>")
                             );
                             return;
                         }
                     }
-                    if let crate::app::app_trait::ViewCommand::OpenDirectedPipe {
+                    if let crate::app::view_trait::ViewCommand::OpenDirectedPipe {
                         ref pipe_id, ..
                     } = command
                     {
@@ -3259,7 +3259,7 @@ impl LivePythonPane {
                     }
                     Ok(None) => self.warn_unhandled_cpython_message(&message),
                     Err(error) => log::warn!(
-                        "app::{}: rejected CPython WASM message: {error}",
+                        "plugin::{}: rejected CPython WASM message: {error}",
                         self.plugin_id
                     ),
                 }
@@ -3272,7 +3272,7 @@ impl LivePythonPane {
     }
 
     fn workspace_path(&self, raw: &str, for_write: bool) -> Result<PathBuf, String> {
-        resolve_app_fs_path(
+        resolve_plugin_fs_path(
             &self.config.workspace_root,
             &self.granted_fs_roots,
             raw,
@@ -3283,7 +3283,7 @@ impl LivePythonPane {
     /// Service one `open_file_picker` request (stint 0508). The dialog (or
     /// scripted queue) runs on a background thread; the outcome re-enters the
     /// pane through `picker_rx` in `drain_runtime`, where grants are
-    /// registered before `FilePicked` reaches the app.
+    /// registered before `FilePicked` reaches the plugin.
     fn handle_open_file_picker(&mut self, message: &Value) {
         use crate::host::services::FilePickRequest;
         let request_id = message
@@ -3293,7 +3293,7 @@ impl LivePythonPane {
             .to_string();
         if request_id.is_empty() {
             log::error!(
-                "app::{}: open_file_picker missing request_id; cancelling",
+                "plugin::{}: open_file_picker missing request_id; cancelling",
                 self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
@@ -3303,7 +3303,7 @@ impl LivePythonPane {
         }
         if !self.has_capability("fs.pick") {
             log::info!(
-                "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
+                "plugin::{}: open_file_picker {request_id} denied: missing capability fs.pick",
                 self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
@@ -3332,7 +3332,7 @@ impl LivePythonPane {
                 Ok(mode) => mode,
                 Err(error) => {
                     log::error!(
-                        "app::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
+                        "plugin::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
                         self.plugin_id
                     );
                     self.queue_outbound_event(
@@ -3343,7 +3343,7 @@ impl LivePythonPane {
             },
         };
         log::info!(
-            "app::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
+            "plugin::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
             self.plugin_id
         );
         let picker = Arc::clone(&self.picker);
@@ -3361,7 +3361,7 @@ impl LivePythonPane {
     }
 
     /// Register picked paths as per-pane fs grants and return the canonical
-    /// paths to deliver to the app. Paths that cannot be resolved (deleted
+    /// paths to deliver to the plugin. Paths that cannot be resolved (deleted
     /// between pick and delivery, unreachable parent) are skipped loudly.
     fn register_picked_grants(&mut self, paths: &[PathBuf]) -> Vec<PathBuf> {
         let mut granted = Vec::new();
@@ -3369,7 +3369,7 @@ impl LivePythonPane {
             match canonicalize_picked_path(path) {
                 Ok(resolved) => {
                     log::info!(
-                        "app::{}: fs grant registered for picked path {}",
+                        "plugin::{}: fs grant registered for picked path {}",
                         self.plugin_id,
                         resolved.display()
                     );
@@ -3378,7 +3378,7 @@ impl LivePythonPane {
                 }
                 Err(error) => {
                     log::error!(
-                        "app::{}: picked path {} not granted: {error}",
+                        "plugin::{}: picked path {} not granted: {error}",
                         self.plugin_id,
                         path.display()
                     );
@@ -3419,7 +3419,7 @@ impl LivePythonPane {
         let response = match result {
             Ok(bytes) => {
                 log::info!(
-                    "app::{}: file_read {:?} -> {} bytes",
+                    "plugin::{}: file_read {:?} -> {} bytes",
                     self.plugin_id,
                     message.get("path").and_then(Value::as_str).unwrap_or("?"),
                     bytes.len()
@@ -3443,7 +3443,7 @@ impl LivePythonPane {
                 .and_then(|path| {
                     decode_file_write_content(message).and_then(|bytes| {
                         log::info!(
-                            "app::{}: file_write {} ({} bytes, binary={})",
+                            "plugin::{}: file_write {} ({} bytes, binary={})",
                             self.plugin_id,
                             path.display(),
                             bytes.len(),
@@ -3463,11 +3463,11 @@ impl LivePythonPane {
 
     /// Serve a capability-gated `read_host_log` request (stint 0444). The host
     /// owns log-path resolution: it tails its own channel log
-    /// (`crate::platform::logging::log_path()`), so the sandboxed app never
+    /// (`crate::platform::logging::log_path()`), so the sandboxed plugin never
     /// names or opens the file and the WASI mounts stay limited to the SDK and
-    /// app dir. The resolved path is echoed back so the app can show it in its
+    /// plugin dir. The resolved path is echoed back so the plugin can show it in its
     /// empty/error state. Both success and failure surface distinctly — a log
-    /// the app cannot reach must never render as a silent blank pane.
+    /// the plugin cannot reach must never render as a silent blank pane.
     fn handle_read_host_log(&mut self, message: &Value) {
         let path = crate::platform::logging::log_path();
         let result = if !self.has_capability("logs.read") {
@@ -3493,7 +3493,7 @@ impl LivePythonPane {
             }),
         };
         if let Err(error) = self.runtime.send(&response) {
-            log::error!("app::{}: send host_log_result: {error}", self.plugin_id);
+            log::error!("plugin::{}: send host_log_result: {error}", self.plugin_id);
         }
     }
 
@@ -3505,7 +3505,7 @@ impl LivePythonPane {
     fn send_permission_inventory(&mut self, notice: &str, status: &str) {
         let entries = Self::permission_entries();
         log::debug!(
-            "app::{}: permission inventory count={} status={status}",
+            "plugin::{}: permission inventory count={} status={status}",
             self.plugin_id,
             entries.len()
         );
@@ -3515,7 +3515,7 @@ impl LivePythonPane {
             "notice": notice,
             "status": status,
         })) {
-            log::error!("app::{}: send permission_inventory: {error}", self.plugin_id);
+            log::error!("plugin::{}: send permission_inventory: {error}", self.plugin_id);
         }
     }
 
@@ -3523,7 +3523,7 @@ impl LivePythonPane {
         if !self.announced_permission_read {
             self.announced_permission_read = true;
             log::info!(
-                "app::{}: serving read_permission_decisions",
+                "plugin::{}: serving read_permission_decisions",
                 self.plugin_id
             );
         }
@@ -3540,14 +3540,14 @@ impl LivePythonPane {
         let due = unhandled_warn_is_due(self.unhandled_warned_at.get(&key).copied(), now);
         if !due {
             log::debug!(
-                "app::{}: repeated unhandled CPython WASM message: {message}",
+                "plugin::{}: repeated unhandled CPython WASM message: {message}",
                 self.plugin_id
             );
             return;
         }
         self.unhandled_warned_at.insert(key, now);
         log::warn!(
-            "app::{}: unhandled CPython WASM message: {message}",
+            "plugin::{}: unhandled CPython WASM message: {message}",
             self.plugin_id
         );
     }
@@ -3569,7 +3569,7 @@ impl LivePythonPane {
             },
         );
         log::info!(
-            "app::{}: permission {action} id={id} human=true",
+            "plugin::{}: permission {action} id={id} human=true",
             self.plugin_id
         );
         let (notice, status) = match &outcome {
@@ -3646,7 +3646,7 @@ impl LivePythonPane {
     }
 
     /// Open a connection to a server the *user* configured. `server_id` is
-    /// resolved against `mcp_servers.toml`; the app never supplies argv, so
+    /// resolved against `mcp_servers.toml`; the plugin never supplies argv, so
     /// `mcp.client` cannot become arbitrary process execution (stint 0382).
     fn handle_mcp_connect(&mut self, message: &Value) {
         let request_id = message
@@ -3660,13 +3660,13 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         log::info!(
-            "app::{}: mcp_connect request_id={request_id} server_id={server_id}",
+            "plugin::{}: mcp_connect request_id={request_id} server_id={server_id}",
             self.plugin_id
         );
 
         let fail = |pane: &mut Self, error: String| {
             log::warn!(
-                "app::{}: mcp_connect failed server_id={server_id}: {error}",
+                "plugin::{}: mcp_connect failed server_id={server_id}: {error}",
                 pane.plugin_id
             );
             pane.send_to_runtime(&json!({
@@ -3687,7 +3687,7 @@ impl LivePythonPane {
         // touches `mcp_servers.toml` or spawns a process for this request.
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
             log::info!(
-                "app::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
+                "plugin::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
                 self.plugin_id
             );
             fail(
@@ -3749,7 +3749,7 @@ impl LivePythonPane {
             wake,
         ) {
             Ok(connection) => {
-                log::info!("app::{}: mcp connected server_id={server_id}", self.plugin_id);
+                log::info!("plugin::{}: mcp connected server_id={server_id}", self.plugin_id);
                 self.mcp_connections.insert(server_id.clone(), connection);
                 self.send_to_runtime(&json!({
                     "type": "mcp_connected",
@@ -3766,7 +3766,7 @@ impl LivePythonPane {
 
     /// Forward one already-serialized JSON-RPC message to a live server. A send
     /// to an unopened server reports closed rather than vanishing — a request
-    /// that never gets a reply is the worst possible failure mode for an app
+    /// that never gets a reply is the worst possible failure mode for an plugin
     /// waiting on a response id.
     fn handle_mcp_send(&mut self, message: &Value) {
         let server_id = message
@@ -3778,7 +3778,7 @@ impl LivePythonPane {
             Some(Value::String(text)) => text.clone(),
             Some(value) => value.to_string(),
             None => {
-                log::warn!("app::{}: mcp_send missing 'message'", self.plugin_id);
+                log::warn!("plugin::{}: mcp_send missing 'message'", self.plugin_id);
                 self.send_to_runtime(&json!({
                     "type": "mcp_closed",
                     "server_id": server_id,
@@ -3788,7 +3788,7 @@ impl LivePythonPane {
             }
         };
         let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
-            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.plugin_id);
+            log::warn!("plugin::{}: mcp_send to unopened server {server_id}", self.plugin_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
@@ -3797,7 +3797,7 @@ impl LivePythonPane {
             return;
         };
         if let Err(e) = connection.send(&payload) {
-            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.plugin_id);
+            log::warn!("plugin::{}: mcp_send failed server={server_id}: {e}", self.plugin_id);
             self.mcp_connections.remove(&server_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -3814,15 +3814,15 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         if self.mcp_connections.remove(&server_id).is_some() {
-            log::info!("app::{}: mcp disconnect server_id={server_id}", self.plugin_id);
+            log::info!("plugin::{}: mcp disconnect server_id={server_id}", self.plugin_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
-                "reason": "disconnected by app",
+                "reason": "disconnected by plugin",
             }));
         } else {
             log::info!(
-                "app::{}: mcp disconnect of unopened server_id={server_id} ignored",
+                "plugin::{}: mcp disconnect of unopened server_id={server_id} ignored",
                 self.plugin_id
             );
         }
@@ -3931,7 +3931,7 @@ impl LivePythonPane {
         );
     }
 
-    /// The app's default state scope: the first declared entry. The scope
+    /// The plugin's default state scope: the first declared entry. The scope
     /// list is validated non-empty at manifest parse; an empty list here can
     /// only come from a hand-built test config and falls back to global.
     fn default_scope(&self) -> crate::host::state_scope::StateScope {
@@ -3971,7 +3971,7 @@ impl LivePythonPane {
         if self.plugin_id == "permissions" {
             let entries = Self::permission_entries();
             log::info!(
-                "app::{}: seeded permission inventory count={}",
+                "plugin::{}: seeded permission inventory count={}",
                 self.plugin_id,
                 entries.len()
             );
@@ -4005,7 +4005,7 @@ impl LivePythonPane {
         self.initialized = true;
         self.viewport_size = Some(size);
         log::info!(
-            "app::{}: sending Python init size={}x{}", self.plugin_id, size.0, size.1
+            "plugin::{}: sending Python init size={}x{}", self.plugin_id, size.0, size.1
         );
         if let Err(error) = self.runtime.send(&json!({
             "type": "init", "plugin_id": self.plugin_id,
@@ -4018,7 +4018,7 @@ impl LivePythonPane {
             "args": self.config.launch_args,
             "size": [size.0, size.1]
         })) {
-            log::error!("app::{}: Python init send failed: {error}", self.plugin_id);
+            log::error!("plugin::{}: Python init send failed: {error}", self.plugin_id);
             self.error = Some(error.to_string());
         }
     }
@@ -4054,13 +4054,13 @@ impl LivePythonPane {
         for kind in wire {
             if let Err(error) = self.runtime.send(&json!({ "type": kind })) {
                 log::error!(
-                    "app::{}: pane {pane_id} {kind} send failed: {error}",
+                    "plugin::{}: pane {pane_id} {kind} send failed: {error}",
                     self.plugin_id
                 );
                 self.error = Some(error.to_string());
                 return;
             }
-            log::info!("app::{}: pane {pane_id} delivered {kind}", self.plugin_id);
+            log::info!("plugin::{}: pane {pane_id} delivered {kind}", self.plugin_id);
         }
         self.presence = target;
     }
@@ -4082,7 +4082,7 @@ impl LivePythonPane {
                     Ok(path) => Some((scope, path)),
                     Err(error) => {
                         log::error!(
-                            "app::{}: cannot resolve state path for scope {}: {error}",
+                            "plugin::{}: cannot resolve state path for scope {}: {error}",
                             self.plugin_id,
                             scope.as_str()
                         );
@@ -4093,7 +4093,7 @@ impl LivePythonPane {
             .collect()
     }
 
-    /// Enough launch context to relaunch this exact app through the normal
+    /// Enough launch context to relaunch this exact plugin through the normal
     /// open path on a workspace restore (stint 0680). Deliberately omits
     /// granted capabilities — those live in `PermissionStore`, re-derived at
     /// restore time from the manifest, never persisted into the workspace.
@@ -4127,14 +4127,14 @@ impl LivePythonPane {
     /// No-ops when the file's content digest matches the cached digest
     /// — this is what suppresses watcher echoes of our own atomic writes. On
     /// a real change the on-disk values replace the scope's values wholesale
-    /// (disk wins; deleted keys vanish) and the app is notified via
+    /// (disk wins; deleted keys vanish) and the plugin is notified via
     /// `state_changed`. On a decode failure the previous values are kept, the
-    /// scope's `error` is set (blocking persists), and the app is notified
+    /// scope's `error` is set (blocking persists), and the plugin is notified
     /// with the error attached.
     pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
         if !self.config.state_scopes.contains(&scope) {
             log::warn!(
-                "app::{}: external state change for undeclared scope '{}' ignored",
+                "plugin::{}: external state change for undeclared scope '{}' ignored",
                 self.plugin_id,
                 scope.as_str()
             );
@@ -4149,7 +4149,7 @@ impl LivePythonPane {
             Ok(path) => path,
             Err(error) => {
                 log::error!(
-                    "app::{}: cannot resolve state path for scope {}: {error}",
+                    "plugin::{}: cannot resolve state path for scope {}: {error}",
                     self.plugin_id,
                     scope.as_str()
                 );
@@ -4162,7 +4162,7 @@ impl LivePythonPane {
         let still_absent = digest.is_none() && cached.digest.is_none() && cached.error.is_none();
         if unchanged_existing || still_absent {
             log::debug!(
-                "app::{}: external state notification for scope {} matches cached identity — \
+                "plugin::{}: external state notification for scope {} matches cached identity — \
                  self-write echo, ignoring",
                 self.plugin_id,
                 scope.as_str()
@@ -4178,8 +4178,8 @@ impl LivePythonPane {
         match &fresh.error {
             None => {
                 log::info!(
-                    "app::{}: state scope={} changed on disk ({}) — replacing in-memory state \
-                     and notifying app",
+                    "plugin::{}: state scope={} changed on disk ({}) — replacing in-memory state \
+                     and notifying plugin",
                     self.plugin_id,
                     scope.as_str(),
                     path.display()
@@ -4190,7 +4190,7 @@ impl LivePythonPane {
             }
             Some(error) => {
                 log::error!(
-                    "app::{}: external change to state scope={} ({}) is unreadable: {error} — \
+                    "plugin::{}: external change to state scope={} ({}) is unreadable: {error} — \
                      keeping previous values; persists blocked until the file is fixed",
                     self.plugin_id,
                     scope.as_str(),
@@ -4209,8 +4209,8 @@ impl LivePythonPane {
         let Some(payload) = payload.and_then(Value::as_object) else {
             return;
         };
-        // Missing scope on the wire means the app's default scope. A scope
-        // the app did not declare is an error — never a silent fallback to
+        // Missing scope on the wire means the plugin's default scope. A scope
+        // the plugin did not declare is an error — never a silent fallback to
         // another scope's file.
         let scope = match scope_raw.and_then(Value::as_str) {
             None => self.default_scope(),
@@ -4218,7 +4218,7 @@ impl LivePythonPane {
                 Ok(scope) => scope,
                 Err(error) => {
                     log::error!(
-                        "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                        "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
                         self.plugin_id
                     );
                     return;
@@ -4227,7 +4227,7 @@ impl LivePythonPane {
         };
         if !self.config.state_scopes.contains(&scope) {
             log::error!(
-                "app::{}: save_plugin_state rejected — scope '{}' is not declared in \
+                "plugin::{}: save_plugin_state rejected — scope '{}' is not declared in \
                  [state] scopes {:?}; state NOT persisted",
                 self.plugin_id,
                 scope.as_str(),
@@ -4241,7 +4241,7 @@ impl LivePythonPane {
             .and_then(|state| state.error.as_ref())
         {
             log::error!(
-                "app::{}: save_plugin_state refused — scope '{}' has an unresolved file error \
+                "plugin::{}: save_plugin_state refused — scope '{}' has an unresolved file error \
                  ({error}); fix the file on disk, a successful re-read clears this",
                 self.plugin_id,
                 scope.as_str()
@@ -4257,7 +4257,7 @@ impl LivePythonPane {
             Ok(path) => path,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
                     self.plugin_id
                 );
                 return;
@@ -4265,14 +4265,14 @@ impl LivePythonPane {
         };
         // Read-back-before-write (disk wins): if the file changed since we
         // last synced with it, an external writer got there first — drop
-        // this persist, reload from disk, and tell the app so it can
+        // this persist, reload from disk, and tell the plugin so it can
         // re-apply its change on top of the fresh state.
         let disk_digest = state_file_digest(&path);
         let cached_digest = self.persisted_states.get(&scope).and_then(|state| state.digest);
         if disk_digest.is_some() && disk_digest != cached_digest {
             log::info!(
-                "app::{}: state scope={} ({}) changed on disk since this instance last synced \
-                 — reloading instead of overwriting; persist dropped, app notified",
+                "plugin::{}: state scope={} ({}) changed on disk since this instance last synced \
+                 — reloading instead of overwriting; persist dropped, plugin notified",
                 self.plugin_id,
                 scope.as_str(),
                 path.display()
@@ -4294,7 +4294,7 @@ impl LivePythonPane {
             Ok(bytes) => bytes,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
                     self.plugin_id
                 );
                 return;
@@ -4307,19 +4307,19 @@ impl LivePythonPane {
             &self.context_root,
         ) {
             log::error!(
-                "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                "plugin::{}: save_plugin_state rejected — {error}; state NOT persisted",
                 self.plugin_id
             );
             return;
         }
         if scope == crate::host::state_scope::StateScope::Context {
-            // A user must never be able to accidentally commit their app
+            // A user must never be able to accidentally commit their plugin
             // state with a project (standing ruling; personal local data).
             if let Err(error) =
-                crate::workspace::secrets::ensure_app_state_gitignore(&self.context_root)
+                crate::workspace::secrets::ensure_plugin_state_gitignore(&self.context_root)
             {
                 log::warn!(
-                    "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
+                    "plugin::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
                     self.plugin_id,
                     self.context_root.display()
                 );
@@ -4350,7 +4350,7 @@ impl LivePythonPane {
                 );
             }
             Err(error) => log::error!(
-                "app::{}: write state {}: {error}",
+                "plugin::{}: write state {}: {error}",
                 self.plugin_id,
                 path.display()
             ),
@@ -4387,7 +4387,7 @@ impl LivePythonPane {
     pub fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         self.send_key_events(python_key_events(input.events()))
     }
 
@@ -4397,20 +4397,20 @@ impl LivePythonPane {
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         self.send_key_events(python_text_input_escape_events(input.events()))
     }
 
     fn send_key_events(
         &mut self,
         events: Vec<Value>,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         if events.is_empty() {
-            crate::app::app_trait::KeyDisposition::Passthrough
+            crate::app::view_trait::KeyDisposition::Passthrough
         } else {
             for event in &events {
                 log::info!(
-                    "app::{}: received key at Python host boundary key={} pressed={}",
+                    "plugin::{}: received key at Python host boundary key={} pressed={}",
                     self.plugin_id,
                     event["key"].as_str().unwrap_or("<missing>"),
                     event["pressed"].as_bool().unwrap_or(false),
@@ -4421,12 +4421,12 @@ impl LivePythonPane {
                 "events": events,
             })) {
                 log::error!(
-                    "app::{}: send key events to CPython WASM: {error}",
+                    "plugin::{}: send key events to CPython WASM: {error}",
                     self.plugin_id
                 );
                 self.error = Some(error.to_string());
             }
-            crate::app::app_trait::KeyDisposition::Consumed
+            crate::app::view_trait::KeyDisposition::Consumed
         }
     }
 
@@ -4444,7 +4444,7 @@ impl LivePythonPane {
             Ok(value) => {
                 if let Err(error) = self.runtime.send(&value) {
                     log::error!(
-                        "app::{}: queue host event to Python runtime: {error}",
+                        "plugin::{}: queue host event to Python runtime: {error}",
                         self.plugin_id
                     );
                     self.error = Some(error.to_string());
@@ -4453,7 +4453,7 @@ impl LivePythonPane {
             }
             Err(error) => {
                 log::error!(
-                    "app::{}: serialize host event for Python runtime: {error}",
+                    "plugin::{}: serialize host event for Python runtime: {error}",
                     self.plugin_id
                 );
                 self.error = Some(error.to_string());
@@ -4466,7 +4466,7 @@ impl LivePythonPane {
     pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {
         self.runtime.stdin.clone()
     }
-    pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::ViewCommand> {
+    pub fn take_pending_commands(&mut self) -> Vec<crate::app::view_trait::ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -4521,7 +4521,7 @@ impl LivePythonPane {
                         Ok(()) => self.drain_runtime(),
                         Err(error) => {
                             log::error!(
-                                "app::{}: background render send failed: {error}", self.plugin_id
+                                "plugin::{}: background render send failed: {error}", self.plugin_id
                             );
                             self.error = Some(error.to_string());
                         }
@@ -4532,7 +4532,7 @@ impl LivePythonPane {
         let produced = self.pending_commands.len().saturating_sub(before);
         if produced > 0 {
             log::info!(
-                "app::{}: serviced {produced} command(s) off screen — pane is not rendering",
+                "plugin::{}: serviced {produced} command(s) off screen — pane is not rendering",
                 self.plugin_id
             );
         }
@@ -4593,7 +4593,7 @@ impl LivePythonPane {
         if self.error.as_deref() != Some(exception) {
             let exception = exception.to_string();
             log::info!(
-                "app::{}: guest entered failed state: {exception}",
+                "plugin::{}: guest entered failed state: {exception}",
                 self.plugin_id
             );
             self.error = Some(exception);
@@ -4627,7 +4627,7 @@ impl LivePythonPane {
         // runtime's stdout. The shared repaint hook carries over so the new
         // decoder can wake the paint loop immediately; the published wake
         // schedule is cleared with the frame scheduler it describes, so the
-        // fresh decoder wakes for the relaunched app's first frames.
+        // fresh decoder wakes for the relaunched plugin's first frames.
         let runtime = WasmPythonRuntime::launch(&self.config)?;
         *self.wake_schedule.lock().unwrap_or_else(|e| e.into_inner()) =
             WakeScheduleState::default();
@@ -4675,12 +4675,12 @@ impl LivePythonPane {
             // nothing at all). Fail loud instead of a silent stale-node
             // click, matching the same policy as the other drop points above.
             log::error!(
-                "app::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
+                "plugin::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
                 self.plugin_id,
                 dropped.target
             );
         }
-        log::info!("app::{}: relaunched CPython WASM runtime", self.plugin_id);
+        log::info!("plugin::{}: relaunched CPython WASM runtime", self.plugin_id);
         Ok(())
     }
 }
@@ -5101,7 +5101,7 @@ fn commit_python_frame(
     Some(sent_at)
 }
 
-use super::wasm_pane::{canonicalize_picked_path, resolve_app_fs_path};
+use super::wasm_pane::{canonicalize_picked_path, resolve_plugin_fs_path};
 #[cfg(test)]
 use super::wasm_pane::resolve_jailed_path;
 
@@ -5142,9 +5142,9 @@ const DEFAULT_HOST_LOG_TAIL_BYTES: usize = 256 * 1024;
 
 /// Read the tail of the host channel log for the capability-gated
 /// `read_host_log` effect (stint 0444). Seeks to the last `max_bytes` and drops
-/// the partial leading line so the app only ever parses whole records. Returns
+/// the partial leading line so the plugin only ever parses whole records. Returns
 /// a typed error string (never an empty success) when the log cannot be reached
-/// so the app can render the failure instead of a blank pane.
+/// so the plugin can render the failure instead of a blank pane.
 fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file =
@@ -5174,10 +5174,10 @@ fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
 /// Manifest capability a Python guest must declare before the host executes
 /// this bridge command. `None` = ungated. Python grants are manifest membership
 /// (`LivePythonPane::has_capability`), not WIT session prompts (#2641).
-fn required_capability_for_python_app_command(
-    command: &crate::app::app_trait::ViewCommand,
+fn required_capability_for_python_plugin_command(
+    command: &crate::app::view_trait::ViewCommand,
 ) -> Option<&'static str> {
-    use crate::app::app_trait::ViewCommand;
+    use crate::app::view_trait::ViewCommand;
     use crate::app::permissions::Capability;
     match command {
         ViewCommand::SpawnView { .. } => Some(Capability::SpawnView.as_str()),
@@ -5197,8 +5197,8 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
 }
 
-fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app::app_trait::ViewCommand>, String> {
-    use crate::app::app_trait::ViewCommand;
+fn plugin_command_from_python_message(message: &Value) -> Result<Option<crate::app::view_trait::ViewCommand>, String> {
+    use crate::app::view_trait::ViewCommand;
     let text = |key: &str| {
         message
             .get(key)
@@ -5568,7 +5568,7 @@ fn validate_cpython_bundle_abi(path: &Path) -> Result<(), WasmPythonError> {
         CpythonBundleAbi::LifecycleComponent => Ok(()),
         CpythonBundleAbi::RawWasiModule => Err(WasmPythonError::RawModuleAbiMismatch {
             path: path.to_path_buf(),
-            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:app/lifecycle init/update/view; Plexi needs a shim component that embeds CPython and exports lifecycle".to_string(),
+            reason: "upstream CPython artifact is a WASI command/runtime, not a component exporting plexi:plugin/lifecycle init/update/view; Plexi needs a shim component that embeds CPython and exports lifecycle".to_string(),
         }),
     }
 }
@@ -5629,7 +5629,7 @@ fn classify_component_load_error(path: &Path, source: wasmtime::Error) -> WasmPy
         return WasmPythonError::RawModuleAbiMismatch {
             path: path.to_path_buf(),
             reason:
-                "artifact is a raw WASM module; expected a component exporting plexi:app/lifecycle"
+                "artifact is a raw WASM module; expected a component exporting plexi:plugin/lifecycle"
                     .to_string(),
         };
     }
@@ -6218,7 +6218,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
         })),
         "Column" | "column" => Ok(UiNodeData::Column(ColumnNode {
             children: u32_list(value, "children")?,
-            // Default inter-child spacing when the app declares none. Absence
+            // Default inter-child spacing when the plugin declares none. Absence
             // means "use the good default"; an explicit `gap: 0.0` still wins
             // and packs children flush (stint 0445).
             gap: optional_f32(value, "gap")?.unwrap_or(crate::ui::style::SPACE_MD),
@@ -6319,7 +6319,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
             }))
         }
         "Badge" | "badge" => Ok(UiNodeData::Badge(
-            super::wasm_app::bindings::plexi::platform::types::BadgeNode {
+            super::wasm_view::bindings::plexi::platform::types::BadgeNode {
                 text: value
                     .get("text")
                     .or_else(|| value.get("label"))
@@ -6748,8 +6748,8 @@ fn decode_badge_color(value: &str) -> Result<BadgeColor, WasmPythonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::wasm_app::bindings::plexi::platform::types::HttpResponse;
-    use crate::host::wasm_app::Modifiers;
+    use crate::host::wasm_view::bindings::plexi::platform::types::HttpResponse;
+    use crate::host::wasm_view::Modifiers;
     use std::sync::Arc;
     use std::task::{Context, Wake, Waker};
     use tempfile::tempdir;
@@ -6818,10 +6818,10 @@ mod tests {
     #[test]
     fn python_bridge_protected_commands_require_capabilities() {
         let required = |message: Value| {
-            app_command_from_python_message(&message)
+            plugin_command_from_python_message(&message)
                 .ok()
                 .flatten()
-                .and_then(|command| required_capability_for_python_app_command(&command))
+                .and_then(|command| required_capability_for_python_plugin_command(&command))
         };
         assert_eq!(
             required(serde_json::json!({"type": "spawn_view", "plugin_id": "x"})),
@@ -6856,13 +6856,13 @@ mod tests {
 
     #[test]
     fn python_bridge_notification_contract_rejects_rich_fields() {
-        let supported = app_command_from_python_message(&serde_json::json!({
+        let supported = plugin_command_from_python_message(&serde_json::json!({
             "type": "show_notification", "title": "Saved", "body": "Done"
         })).expect("message-only notification is supported").expect("message decodes");
-        assert!(matches!(supported, crate::app::app_trait::ViewCommand::ShowNotification {
+        assert!(matches!(supported, crate::app::view_trait::ViewCommand::ShowNotification {
             kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
         } if options.is_empty()));
-        let error = match app_command_from_python_message(&serde_json::json!({
+        let error = match plugin_command_from_python_message(&serde_json::json!({
             "type": "show_notification", "title": "Ask", "body": "Continue?",
             "kind": "choice", "options": [{"label": "yes"}]
         })) {
@@ -6929,7 +6929,7 @@ mod tests {
     }
 
     /// Stint 0678 audit evidence (Q4/Q5): state is addressed by
-    /// `workspace_root`, so the same app id launched under a different root
+    /// `workspace_root`, so the same plugin id launched under a different root
     /// reads a different file and sees nothing. Nothing merges the two, and
     /// nothing warns — this is the "write to a path nobody reads" shape.
     #[test]
@@ -6960,7 +6960,7 @@ mod tests {
         );
     }
 
-    /// Stint 0678 audit evidence that needs a *live* app: a real CPython-WASM
+    /// Stint 0678 audit evidence that needs a *live* plugin: a real CPython-WASM
     /// pane launched through the production path, so the copy of the root that
     /// actually owns the state path — `PythonLaunchConfig::workspace_root` —
     /// is the one under test.
@@ -6983,7 +6983,7 @@ mod tests {
     mod audit_0678 {
         use super::*;
 
-        /// Fails unless an app's persisted bytes are genuinely stranded:
+        /// Fails unless an plugin's persisted bytes are genuinely stranded:
         /// `live` must hold real bytes, and `reachable` — the address the
         /// system can still resolve after the operation under test — must be
         /// a different, empty location. Fixing the defect makes the two agree,
@@ -7007,7 +7007,7 @@ mod tests {
             );
         }
 
-        /// A minimal but real Python app: a manifest the registry accepts and a
+        /// A minimal but real Python plugin: a manifest the registry accepts and a
         /// `.py` entry, which is all `LivePythonPane::launch` needs to start a
         /// runtime. The guest never has to render for the addressing questions
         /// this module asks. Declares `context` scope explicitly — every test
@@ -7015,9 +7015,9 @@ mod tests {
         /// only `context` scope resolves against; the manifest-omitted
         /// default is `global` (home-dir-relative, root-independent) and
         /// would make every address assertion here vacuous.
-        fn write_python_app(parent: &Path, plugin_id: &str) -> PathBuf {
+        fn write_python_plugin(parent: &Path, plugin_id: &str) -> PathBuf {
             let plugin_dir = parent.join(plugin_id);
-            std::fs::create_dir_all(&plugin_dir).expect("app dir");
+            std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
             std::fs::write(
                 plugin_dir.join("manifest.toml"),
                 format!(
@@ -7041,8 +7041,8 @@ mod tests {
             let pane = win
                 .panes
                 .get(&pane_id)
-                .and_then(crate::host::pane::Pane::as_app)
-                .expect("the launched pane is an app pane");
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("the launched pane is an view pane");
             match &pane.runtime {
                 crate::host::pane::ViewRuntime::Python(live) => python_state_path_for_config(&live.config),
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
@@ -7056,17 +7056,17 @@ mod tests {
                 &serde_json::to_vec_pretty(&serde_json::json!({ "items": items }))
                     .expect("serialize"),
             )
-            .expect("the app persists an item");
+            .expect("the plugin persists an item");
         }
 
         /// Q5, positive regression — stint 0680's fix + stint 0686's full
         /// `HostHarness` save→restore round trip. A saved workspace records an
-        /// app pane under its real manifest id with launch context, and booting
+        /// view pane under its real manifest id with launch context, and booting
         /// a fresh `HostHarness::from_profile_dir` against that profile
         /// reconstructs the workspace via `restore_workspace` so the restored
         /// pane resolves the exact state file address the live pane wrote.
         #[test]
-        fn saved_app_pane_can_re_address_its_own_state() {
+        fn saved_view_pane_can_re_address_its_own_state() {
             let profile = tempdir().expect("profile dir");
             let root = tempdir().expect("workspace root");
 
@@ -7075,17 +7075,17 @@ mod tests {
             harness
                 .app
                 .set_context_root(root.path().to_path_buf(), Some(context_id));
-            let plugin_dir = write_python_app(root.path(), "todo");
+            let plugin_dir = write_python_plugin(root.path(), "todo");
 
             let pane_id = harness
                 .app
-                .launch_app_by_path_with_layout_no_review_modal(
+                .launch_view_by_path_with_layout_no_review_modal(
                     &plugin_dir.to_string_lossy(),
                     None,
                     Some(root.path().to_path_buf()),
                     &[],
                 )
-                .expect("launch the app")
+                .expect("launch the plugin")
                 .expect("a Python launch returns a pane id");
 
             let live_address = live_state_address(&harness, pane_id);
@@ -7099,21 +7099,21 @@ mod tests {
                 .iter()
                 .flat_map(|window| &window.panes)
                 .find(|pane| pane.id == pane_id)
-                .expect("the app pane is in the saved workspace")
+                .expect("the view pane is in the saved workspace")
                 .clone();
 
             let manifest_id = harness.app.windows[harness.app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(crate::host::pane::Pane::as_app)
-                .expect("app pane")
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("view pane")
                 .manifest_id
                 .clone();
 
             assert_eq!(
                 record.plugin_id.as_deref(),
                 Some(manifest_id.as_str()),
-                "the saved record must name the real app, not the runtime kind"
+                "the saved record must name the real plugin, not the runtime kind"
             );
             assert_eq!(
                 record.runtime_kind.as_deref(),
@@ -7123,7 +7123,7 @@ mod tests {
             let launch = record
                 .launch
                 .clone()
-                .expect("a Python app pane records launch context");
+                .expect("a Python view pane records launch context");
             let crate::workspace::SavedViewLaunch::Python {
                 plugin_dir: recorded_dir,
                 args,
@@ -7142,8 +7142,8 @@ mod tests {
             let restored_pane = restored_harness.app.windows[restored_harness.app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(crate::host::pane::Pane::as_app)
-                .expect("restored harness must contain the saved app pane");
+                .and_then(crate::host::pane::Pane::as_view)
+                .expect("restored harness must contain the saved view pane");
             assert_eq!(restored_pane.manifest_id, manifest_id);
             assert!(matches!(
                 restored_pane.runtime,
@@ -7157,14 +7157,14 @@ mod tests {
         }
 
         /// Q3 — `set-root` after launch. The context's root moves; the running
-        /// app's address does not, because it was captured into
+        /// plugin's address does not, because it was captured into
         /// `PythonLaunchConfig` at launch and nothing revisits it. Asserted as
         /// a pair: the address is *unchanged*, and it *disagrees* with the
         /// root the context now has. Any addressing fix — call-time resolution
         /// against the live root, or a scope that drops the root entirely —
         /// breaks one half or the other.
         #[test]
-        fn audit_0678_set_context_root_leaves_a_running_app_at_the_old_address() {
+        fn audit_0678_set_context_root_leaves_a_running_plugin_at_the_old_address() {
             let mut harness = crate::testing::HostHarness::new();
             let root_a = tempdir().expect("root a");
             let root_b = tempdir().expect("root b");
@@ -7174,23 +7174,23 @@ mod tests {
                 .set_context_root(root_a.path().to_path_buf(), Some(context_id));
 
             // The launch root is the context root — what `resolve_new_pane_cwd`
-            // yields for an app the registry has no workspace root for.
-            let plugin_dir = write_python_app(root_a.path(), "todo");
+            // yields for an plugin the registry has no workspace root for.
+            let plugin_dir = write_python_plugin(root_a.path(), "todo");
             let pane_id = harness
                 .app
-                .launch_app_by_path_with_layout_no_review_modal(
+                .launch_view_by_path_with_layout_no_review_modal(
                     &plugin_dir.to_string_lossy(),
                     None,
                     Some(root_a.path().to_path_buf()),
                     &[],
                 )
-                .expect("launch the app")
+                .expect("launch the plugin")
                 .expect("a Python launch returns a pane id");
             let at_launch = live_state_address(&harness, pane_id);
             assert_eq!(
                 at_launch,
                 python_state_path_for_config(&state_test_config(root_a.path(), "todo")),
-                "precondition: the running app is addressed under the context root"
+                "precondition: the running plugin is addressed under the context root"
             );
             seed_items(&at_launch, &serde_json::json!(["buy milk"]));
 
@@ -7201,12 +7201,12 @@ mod tests {
             assert_eq!(
                 live_state_address(&harness, pane_id),
                 at_launch,
-                "the running app still writes its launch-time address"
+                "the running plugin still writes its launch-time address"
             );
             assert_state_address_lost(
                 &at_launch,
                 &python_state_path_for_config(&state_test_config(root_b.path(), "todo")),
-                "set_context_root while the app is running",
+                "set_context_root while the plugin is running",
             );
         }
 
@@ -7216,7 +7216,7 @@ mod tests {
         // bytes a later write would never touch. Stints 0651/0652 replaced
         // that implicit fallback with explicit `[state] scopes`: the state
         // module's design principle is "fail loud, no silent fallback" (see
-        // `state_scope::parse_scopes`) — an app that wants both a global and a
+        // `state_scope::parse_scopes`) — an plugin that wants both a global and a
         // context copy declares both scopes and the host never guesses which
         // one it meant. There is no implicit second candidate left to
         // reproduce this shape against.
@@ -7559,12 +7559,12 @@ mod tests {
 
     #[test]
     fn mcp_held_line_rearms_against_relaunched_runtime_stdin() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view(): return None\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let mut pane =
             LivePythonPane::launch(state_test_config(app.path(), "test.mcp-relaunch-held-line"))
                 .expect("launch pane");
@@ -8279,40 +8279,40 @@ mod tests {
         assert!(matches!(read.join().expect("join reader"), Poll::Ready(Ok(()))));
     }
 
-    // ── resolve_app_fs_path (stint 0508: workspace jail + picker grants) ──
+    // ── resolve_plugin_fs_path (stint 0508: workspace jail + picker grants) ──
 
     /// Relative paths keep the exact pre-grant jail behavior.
     #[test]
-    fn resolve_app_fs_path_keeps_relative_workspace_jail() {
+    fn resolve_plugin_fs_path_keeps_relative_workspace_jail() {
         let workspace = tempdir().expect("workspace");
         std::fs::write(workspace.path().join("note.txt"), "hi").expect("seed");
 
-        let resolved = resolve_app_fs_path(workspace.path(), &[], "note.txt", false)
+        let resolved = resolve_plugin_fs_path(workspace.path(), &[], "note.txt", false)
             .expect("workspace-relative read resolves");
         assert_eq!(
             resolved,
             workspace.path().canonicalize().unwrap().join("note.txt")
         );
-        let escape = resolve_app_fs_path(workspace.path(), &[], "../outside.txt", false);
+        let escape = resolve_plugin_fs_path(workspace.path(), &[], "../outside.txt", false);
         assert!(escape.is_err(), "parent-dir escape must stay rejected");
     }
 
     /// Absolute paths are rejected outright when no grant covers them — even
     /// paths inside the workspace itself must go through the relative jail.
     #[test]
-    fn resolve_app_fs_path_rejects_absolute_paths_without_grants() {
+    fn resolve_plugin_fs_path_rejects_absolute_paths_without_grants() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let secret = outside.path().join("secret.txt");
         std::fs::write(&secret, "secret").expect("seed");
 
         let denied =
-            resolve_app_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
+            resolve_plugin_fs_path(workspace.path(), &[], &secret.to_string_lossy(), false);
         assert!(denied.is_err(), "ungranted absolute path must be rejected");
 
         let workspace_file = workspace.path().join("inside.txt");
         std::fs::write(&workspace_file, "inside").expect("seed inside");
-        let denied = resolve_app_fs_path(
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &[],
             &workspace_file.to_string_lossy(),
@@ -8327,7 +8327,7 @@ mod tests {
     /// A file grant covers exactly that file; a sibling in the same directory
     /// stays rejected.
     #[test]
-    fn resolve_app_fs_path_accepts_granted_file_only() {
+    fn resolve_plugin_fs_path_accepts_granted_file_only() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let picked = outside.path().join("picked.txt");
@@ -8337,18 +8337,18 @@ mod tests {
         let grants = vec![canonicalize_picked_path(&picked).expect("grant")];
 
         let allowed =
-            resolve_app_fs_path(workspace.path(), &grants, &picked.to_string_lossy(), false)
+            resolve_plugin_fs_path(workspace.path(), &grants, &picked.to_string_lossy(), false)
                 .expect("granted file readable");
         assert_eq!(allowed, picked.canonicalize().unwrap());
         let denied =
-            resolve_app_fs_path(workspace.path(), &grants, &sibling.to_string_lossy(), false);
+            resolve_plugin_fs_path(workspace.path(), &grants, &sibling.to_string_lossy(), false);
         assert!(denied.is_err(), "sibling of granted file must be rejected");
     }
 
     /// A folder grant covers the subtree, including new write targets, while
     /// paths outside the folder stay rejected.
     #[test]
-    fn resolve_app_fs_path_folder_grant_covers_subtree() {
+    fn resolve_plugin_fs_path_folder_grant_covers_subtree() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let folder = outside.path().join("project");
@@ -8356,21 +8356,21 @@ mod tests {
         std::fs::write(folder.join("inner.txt"), "inner").expect("seed");
         let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
 
-        let read = resolve_app_fs_path(
+        let read = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("inner.txt").to_string_lossy(),
             false,
         );
         assert!(read.is_ok(), "file under granted folder readable: {read:?}");
-        let write = resolve_app_fs_path(
+        let write = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("new.txt").to_string_lossy(),
             true,
         );
         assert!(write.is_ok(), "new file under granted folder writable: {write:?}");
-        let denied = resolve_app_fs_path(
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &outside.path().join("evil.txt").to_string_lossy(),
@@ -8383,18 +8383,18 @@ mod tests {
     /// resolves through the canonicalized parent, and reading it back after
     /// the write succeeds through the same grant.
     #[test]
-    fn resolve_app_fs_path_save_grant_round_trips_new_file() {
+    fn resolve_plugin_fs_path_save_grant_round_trips_new_file() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let target = outside.path().join("exported.txt");
         let grants = vec![canonicalize_picked_path(&target).expect("grant")];
 
         let write =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
+            resolve_plugin_fs_path(workspace.path(), &grants, &target.to_string_lossy(), true)
                 .expect("save-as target writable before it exists");
         std::fs::write(&write, "exported").expect("write");
         let read =
-            resolve_app_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
+            resolve_plugin_fs_path(workspace.path(), &grants, &target.to_string_lossy(), false)
                 .expect("granted save-as target readable after write");
         assert_eq!(std::fs::read_to_string(read).unwrap(), "exported");
     }
@@ -8402,7 +8402,7 @@ mod tests {
     /// A symlink under a granted folder that points outside the grant is
     /// rejected: canonicalization resolves the target before the scope check.
     #[test]
-    fn resolve_app_fs_path_symlink_cannot_escape_grant() {
+    fn resolve_plugin_fs_path_symlink_cannot_escape_grant() {
         let workspace = tempdir().expect("workspace");
         let outside = tempdir().expect("outside");
         let folder = outside.path().join("granted");
@@ -8412,7 +8412,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, folder.join("link.txt")).expect("symlink");
         let grants = vec![canonicalize_picked_path(&folder).expect("grant")];
 
-        let denied = resolve_app_fs_path(
+        let denied = resolve_plugin_fs_path(
             workspace.path(),
             &grants,
             &folder.join("link.txt").to_string_lossy(),
@@ -8828,7 +8828,7 @@ mod tests {
     }
 
     /// Bare Escape drives CloseView, and every command chord belongs to the host.
-    /// Python and component-WASM apps must enforce the same boundary.
+    /// Python and component-WASM plugins must enforce the same boundary.
     #[test]
     fn python_key_events_reserves_all_command_chords_for_the_host() {
         let bare_escape = [egui::Event::Key {
@@ -8864,7 +8864,7 @@ mod tests {
         }];
         assert!(
             python_key_events(&cmd_d).is_empty(),
-            "Cmd+D must never arrive at a Python app as bare delete input"
+            "Cmd+D must never arrive at a Python plugin as bare delete input"
         );
     }
 
@@ -8897,7 +8897,7 @@ mod tests {
     }
 
     #[test]
-    fn python_host_event_wire_delivers_cross_runtime_app_events() {
+    fn python_host_event_wire_delivers_cross_runtime_plugin_events() {
         let wire = encode_python_host_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
             plugin_id: "wasm-counter".to_string(),
@@ -8920,7 +8920,7 @@ mod tests {
 
     #[test]
     fn python_event_effects_use_shared_host_requests() {
-        let subscribe = app_command_from_python_message(&json!({
+        let subscribe = plugin_command_from_python_message(&json!({
             "type": "subscribe_event_streams",
             "request_id": "subscribe-1",
             "plugin_id": "wasm-counter",
@@ -8933,7 +8933,7 @@ mod tests {
         .expect("subscribe command");
         assert!(matches!(
             subscribe,
-            crate::app::app_trait::ViewCommand::PluginEventRequest {
+            crate::app::view_trait::ViewCommand::PluginEventRequest {
                 request: crate::protocol::HostRequest::SubscribePluginEvents {
                     request_id,
                     plugin_id,
@@ -8946,7 +8946,7 @@ mod tests {
                 && event_names == vec!["count.changed".to_string()]
         ));
 
-        let emit = app_command_from_python_message(&json!({
+        let emit = plugin_command_from_python_message(&json!({
             "type": "emit_event",
             "event": "note.saved",
             "actor": "app",
@@ -8960,7 +8960,7 @@ mod tests {
         .expect("emit command");
         assert!(matches!(
             emit,
-            crate::app::app_trait::ViewCommand::PluginEventRequest {
+            crate::app::view_trait::ViewCommand::PluginEventRequest {
                 request: crate::protocol::HostRequest::EmitEvent {
                     event,
                     payload: Some(payload),
@@ -8979,7 +8979,7 @@ mod tests {
             .contains("unsupported CPython-WASM UINode type: Accordion"));
     }
 
-    // Stint 0445: good-by-default inter-child spacing. When an app declares no
+    // Stint 0445: good-by-default inter-child spacing. When an plugin declares no
     // `gap`, the decoder fills in the design-token default; an explicit value
     // (including `0.0`, meaning "pack flush") always wins over the default.
     #[test]
@@ -9188,9 +9188,9 @@ mod tests {
 
     #[test]
     fn external_io_installs_a_wake_target_before_any_paint() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(app.path().join("main.py"), "def init(size, args): return []\n")
-            .expect("write app");
+            .expect("write plugin");
         let mut pane = LivePythonPane::launch(state_test_config(app.path(), "test.hidden-wake"))
             .expect("launch pane");
         pane.service_external_io(&egui::Context::default());
@@ -9268,12 +9268,12 @@ mod tests {
 
     #[test]
     fn state_persist_resolves_against_live_context_root_and_rejects_undeclared_scope() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let root_a = tempdir().expect("root a");
         let root_b = tempdir().expect("root b");
         let config = PythonLaunchConfig {
@@ -9331,7 +9331,7 @@ mod tests {
                 .expect("valid JSON");
         assert_eq!(stale_a, json!({"k": 1}), "old root's file must not be rewritten");
 
-        // A scope the app did not declare is an error at persist time, never
+        // A scope the plugin did not declare is an error at persist time, never
         // a silent fallback to another scope's file.
         let undeclared_root = tempdir().expect("undeclared root");
         let global_only = PythonLaunchConfig {
@@ -9363,7 +9363,7 @@ mod tests {
     }
 
     /// Shared scaffolding for the file-backed state tests (stint 0644):
-    /// a trivial app + a context-scoped launch config against a fresh root.
+    /// a trivial plugin + a context-scoped launch config against a fresh root.
     fn file_state_config(
         plugin_dir: &Path,
         plugin_id: &str,
@@ -9374,7 +9374,7 @@ mod tests {
             plugin_dir.join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         PythonLaunchConfig {
             plugin_id: plugin_id.to_string(),
             plugin_dir: plugin_dir.to_path_buf(),
@@ -9399,7 +9399,7 @@ mod tests {
 
     #[test]
     fn persist_does_not_clobber_a_file_changed_since_load() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.no-clobber", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -9431,7 +9431,7 @@ mod tests {
         assert_eq!(
             on_disk,
             json!({"external": "winner", "padding": 12345}),
-            "disk wins: the app's persist must be dropped, not overwrite the external write"
+            "disk wins: the plugin's persist must be dropped, not overwrite the external write"
         );
         let scope_state = pane
             .persisted_states
@@ -9450,12 +9450,12 @@ mod tests {
         assert_eq!(retried, json!({"app": "retry"}));
     }
 
-    /// Stint 0681: two live panes of one app share one state file. The pane
+    /// Stint 0681: two live panes of one plugin share one state file. The pane
     /// that persists second must not erase the first pane's item — it is
     /// dropped, reloaded from disk, and notified (disk wins).
     #[test]
     fn second_pane_persist_does_not_erase_the_first_panes_items() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let scope = crate::host::state_scope::StateScope::Context;
         let config = || {
@@ -9503,7 +9503,7 @@ mod tests {
     /// identity cannot see.
     #[test]
     fn same_length_foreign_write_inside_the_mtime_window_is_detected() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.same-len", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -9534,7 +9534,7 @@ mod tests {
 
     #[test]
     fn persist_is_atomic_and_leaves_no_partial_file() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -9560,7 +9560,7 @@ mod tests {
 
     #[test]
     fn malformed_state_file_surfaces_error_and_does_not_reset() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.malformed", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -9583,7 +9583,7 @@ mod tests {
         );
 
         // Persists are refused while the error stands — the corrupt file is
-        // never silently replaced with `{}` or the app's payload.
+        // never silently replaced with `{}` or the plugin's payload.
         pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
         assert_eq!(
             std::fs::read(&file).expect("read state"),
@@ -9619,7 +9619,7 @@ mod tests {
 
     #[test]
     fn apply_external_state_replaces_rather_than_merges() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let file = context_state_file(root.path(), "test.replace", "json");
         std::fs::create_dir_all(file.parent().unwrap()).expect("state dir");
@@ -9657,7 +9657,7 @@ mod tests {
 
     #[test]
     fn markdown_format_writes_document_verbatim() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -9697,7 +9697,7 @@ mod tests {
 
     #[test]
     fn markdown_format_rejects_non_string_document() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let config = file_state_config(
             app.path(),
@@ -9719,7 +9719,7 @@ mod tests {
 
     #[test]
     fn python_state_traces_resolved_path_scope_bytes_and_replacement() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         let root = tempdir().expect("context root");
         let scope = crate::host::state_scope::StateScope::Context;
         let format = crate::host::state_scope::StateFormat::Json;
@@ -9728,7 +9728,7 @@ mod tests {
         assert_eq!(
             format_python_state_load_trace("test.trace", scope, format, &file, None),
             format!(
-                "app::test.trace: no state found for scope=context format=json at {} (fallback=none)",
+                "plugin::test.trace: no state found for scope=context format=json at {} (fallback=none)",
                 file.display()
             )
         );
@@ -9759,7 +9759,7 @@ mod tests {
                 false,
             ),
             format!(
-                "app::test.trace: persisted state scope=context format=json bytes={} replaced=false to {}",
+                "plugin::test.trace: persisted state scope=context format=json bytes={} replaced=false to {}",
                 first_bytes.len(),
                 file.display()
             )
@@ -9780,7 +9780,7 @@ mod tests {
                 true,
             ),
             format!(
-                "app::test.trace: persisted state scope=context format=json bytes={} replaced=true to {}",
+                "plugin::test.trace: persisted state scope=context format=json bytes={} replaced=true to {}",
                 second_bytes.len(),
                 file.display()
             )
@@ -9810,7 +9810,7 @@ mod tests {
                 Some((second_bytes.len(), loaded_state.values.len())),
             ),
             format!(
-                "app::test.trace: loaded state scope=context format=json bytes={} keys=2 from {}",
+                "plugin::test.trace: loaded state scope=context format=json bytes={} keys=2 from {}",
                 second_bytes.len(),
                 file.display()
             )
@@ -9819,12 +9819,12 @@ mod tests {
 
     #[test]
     fn persistent_cpython_runtime_handles_lifecycle_without_native_python() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "from plexi_sdk.ui import Canvas, CanvasCircle, Column, Text\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return Column([Text('wasm-python-live'), Canvas([CanvasCircle(41.0, 42.0, 8.0, '#abcdef')])])\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
             plugin_id: "test.wasm-python".to_string(),
             plugin_dir: app.path().to_path_buf(),
@@ -9888,7 +9888,7 @@ mod tests {
     }
 
     /// Run one visible egui pass over the pane, the way `tiling.rs` does for a
-    /// pane the user can see. Used only to get the app past `init` — after
+    /// pane the user can see. Used only to get the plugin past `init` — after
     /// this the test never renders again, standing in for a pane that scrolled
     /// off screen, moved to an inactive context, or sits under an occluded
     /// window.
@@ -9906,7 +9906,7 @@ mod tests {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     runtime.ui(
                         ui,
-                        &crate::app::app_trait::ViewRenderContext {
+                        &crate::app::view_trait::ViewRenderContext {
                             colors,
                             pane_id: 1,
                         },
@@ -9917,7 +9917,7 @@ mod tests {
         );
     }
 
-    /// Stint 0684: an assistant tool call to an app pane that is *not*
+    /// Stint 0684: an assistant tool call to an view pane that is *not*
     /// rendering must still be answered. `tool_dispatch` writes the `ToolCall`
     /// straight into the guest's stdin and blocks on the reply, so the guest
     /// runs and answers regardless of what the host is painting — but the host
@@ -9926,11 +9926,11 @@ mod tests {
     /// window, or otherwise off screen therefore never surfaced its
     /// `ToolResult` and every call to it timed out.
     ///
-    /// The contract this pins: after one visible pass to get the app running,
+    /// The contract this pins: after one visible pass to get the plugin running,
     /// `background_tick` alone must carry a tool call to its result.
     #[test]
     fn python_tool_result_reaches_the_host_without_a_ui_pass() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "from plexi_sdk.effects import AiTool, ExposeTools, ToolResult\n\
@@ -9950,7 +9950,7 @@ mod tests {
              def view():\n\
              \x20   return Column([Text('probe')])\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
             plugin_id: "test.tool-offscreen".to_string(),
             plugin_dir: app.path().to_path_buf(),
@@ -9973,7 +9973,7 @@ mod tests {
             LivePythonPane::launch(config).expect("launch CPython WASM"),
         ));
 
-        // The pane was on screen once: render until the app has declared its
+        // The pane was on screen once: render until the plugin has declared its
         // tools, which is how `tool_dispatch` learns to reach it at all.
         let deadline = std::time::Instant::now()
             + crate::testing::load_aware_timeout(std::time::Duration::from_secs(60));
@@ -9983,10 +9983,10 @@ mod tests {
             exposed = runtime
                 .take_pending_commands()
                 .iter()
-                .any(|cmd| matches!(cmd, crate::app::app_trait::ViewCommand::ExposeTools { .. }));
+                .any(|cmd| matches!(cmd, crate::app::view_trait::ViewCommand::ExposeTools { .. }));
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(exposed, "app never exposed its tools on a visible pass");
+        assert!(exposed, "plugin never exposed its tools on a visible pass");
 
         // Now the pane goes off screen. `tool_dispatch` still reaches the
         // guest — it writes to stdin, which is independent of rendering.
@@ -10013,7 +10013,7 @@ mod tests {
             }
             result = runtime.take_pending_commands().into_iter().find_map(|cmd| {
                 match cmd {
-                    crate::app::app_trait::ViewCommand::ToolResult {
+                    crate::app::view_trait::ViewCommand::ToolResult {
                         call_id,
                         output_json,
                         ..
@@ -10035,12 +10035,12 @@ mod tests {
 
     #[test]
     fn headless_frame_fails_fast_when_the_guest_dies_at_import() {
-        let app = tempdir().expect("app dir");
+        let app = tempdir().expect("plugin dir");
         std::fs::write(
             app.path().join("main.py"),
             "raise RuntimeError('broken on purpose')\n",
         )
-        .expect("write app");
+        .expect("write plugin");
         let config = PythonLaunchConfig {
             plugin_id: "test.broken-guest".to_string(),
             plugin_dir: app.path().to_path_buf(),
@@ -10062,7 +10062,7 @@ mod tests {
             .expect_err("an entry that raises at import must fail the headless probe");
         // The invariant is the *cause*, not the wall clock: a guest that raises
         // at import is detected via its process-exit signal and reported as a
-        // death, never mistaken for a live app or a poll timeout. Asserting on
+        // death, never mistaken for a live plugin or a poll timeout. Asserting on
         // elapsed time flakes under parallel-test CPU contention (the crash can
         // legitimately take longer than the poll budget to surface), so this
         // checks the error path itself.
@@ -10070,7 +10070,7 @@ mod tests {
             panic!("guest death must surface as a BridgeJson error, got {err:?}");
         };
         assert!(
-            message.contains("app exited before responding"),
+            message.contains("plugin exited before responding"),
             "broken guest must take the process-exit death path, not the timeout backstop: {message}"
         );
     }
@@ -10079,14 +10079,14 @@ mod tests {
     fn headless_response_clock_does_not_start_until_the_guest_runs_python() {
         // The whole point of the split: a cold Wasmtime compile of the CPython
         // module happens on the guest thread after `launch` returns, so time
-        // spent there must not be charged to the app. Well past the response
+        // spent there must not be charged to the plugin. Well past the response
         // budget, an unstarted guest is still waiting, not timed out.
         let base = std::time::Instant::now();
         let mut deadline = HeadlessDeadline::new(base);
         assert_eq!(
             deadline.poll(base + HEADLESS_DEFAULT_TIMEOUT * 4, false),
             PollVerdict::KeepWaiting,
-            "a guest that has not begun executing Python cannot be an unresponsive app"
+            "a guest that has not begun executing Python cannot be an unresponsive plugin"
         );
         // And the clock starts when it starts, not retroactively.
         let started_at = base + HEADLESS_DEFAULT_TIMEOUT * 4;
@@ -10105,12 +10105,12 @@ mod tests {
                 true
             ),
             PollVerdict::ResponseTimedOut,
-            "once running, the app owns the response budget"
+            "once running, the plugin owns the response budget"
         );
     }
 
     #[test]
-    fn headless_boot_timeout_is_reported_separately_from_an_unresponsive_app() {
+    fn headless_boot_timeout_is_reported_separately_from_an_unresponsive_plugin() {
         let base = std::time::Instant::now();
         let mut deadline = HeadlessDeadline::new(base);
         assert_eq!(
@@ -10119,7 +10119,7 @@ mod tests {
                 false
             ),
             PollVerdict::BootTimedOut,
-            "a guest that never reaches _start is a host-side boot failure, not a slow app"
+            "a guest that never reaches _start is a host-side boot failure, not a slow plugin"
         );
     }
 
@@ -10217,7 +10217,7 @@ default = true
         // Cloud/remote execution (stints 0286/0287) is future work with no
         // launch path yet — a manifest declaring it must fail loudly rather
         // than silently launching locally. Mirrors the WASM launch-path guard
-        // in `open_installed_wasm_app_pane`.
+        // in `open_installed_wasm_view_pane`.
         let dir = tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("manifest.toml"),
@@ -10350,7 +10350,7 @@ default = true
         let text = read_host_log_tail(&path, DEFAULT_HOST_LOG_TAIL_BYTES).expect("read tail");
 
         assert!(text.contains("[plexi::boot] up"));
-        assert!(text.contains("[app::todo] boom"));
+        assert!(text.contains("[plugin::todo] boom"));
     }
 
     #[test]
@@ -10603,7 +10603,7 @@ default = true
     }
 
     /// Stint 0674: a field declares itself the pane's default text surface with
-    /// `autofocus`. Absent, it must decode false — an app that never asked for
+    /// `autofocus`. Absent, it must decode false — an plugin that never asked for
     /// focus must never steal it.
     #[test]
     fn ui_tree_decodes_text_input_autofocus() {
@@ -10842,8 +10842,8 @@ default = true
     }
 
     #[test]
-    fn decoder_always_wakes_for_a_scheduled_mode_app() {
-        // An input-driven app's frame is the response to input; no cadence is
+    fn decoder_always_wakes_for_a_scheduled_mode_plugin() {
+        // An input-driven plugin's frame is the response to input; no cadence is
         // scheduled to present it, so latency here would be perceptible.
         let now = std::time::Instant::now();
         for ahead in [
@@ -10857,7 +10857,7 @@ default = true
             });
             assert!(
                 decoder_wake_needed(scheduled, now),
-                "scheduled-mode app must wake for a frame {ahead:?} before its next paint"
+                "scheduled-mode plugin must wake for a frame {ahead:?} before its next paint"
             );
         }
     }
@@ -11347,14 +11347,14 @@ default = true
             .any(|node| matches!(&node.data, UiNodeData::Text(text) if text.text.contains("No focus events"))));
     }
 
-    fn native_python_app_view(app_name: &str, module_name: &str) -> UiTree {
+    fn native_python_plugin_view(app_name: &str, module_name: &str) -> UiTree {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
         let output = run_native_python_lifecycle_probe(
             &root.join("sdk/python"),
-            &root.join("plugins").join(app_name),
+            &root.join("apps").join(app_name),
             module_name,
             &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
             &update_bridge_arg(&snapshot, &InputEvent::TimerFired(1)).expect("update arg"),
@@ -11369,7 +11369,7 @@ default = true
     fn native_python_bridge_decodes_kraken_view() {
         // Stint 0389: `SurfaceHeader` decodes to its own live `UiNodeData::SurfaceHeader`
         // node now, not a downgraded `Text` node containing the title.
-        let view = native_python_app_view("kraken", "main");
+        let view = native_python_plugin_view("kraken", "main");
 
         assert!(view.nodes.iter().any(
             |node| matches!(&node.data, UiNodeData::SurfaceHeader(bar) if bar.title.contains("Kraken"))
@@ -11378,7 +11378,7 @@ default = true
 
     #[test]
     fn native_python_bridge_decodes_logs_scroll_view() {
-        let view = native_python_app_view("logs", "logs");
+        let view = native_python_plugin_view("logs", "logs");
 
         assert!(view
             .nodes

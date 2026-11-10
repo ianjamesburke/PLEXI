@@ -1,28 +1,28 @@
 //! Outbound MCP stdio transport (stint 0382).
 //!
 //! Plexi consumes external MCP servers through the plugin-connector plane: a
-//! bridge app hosts the MCP client and re-exposes the server's tools via
-//! `ExposeTools`. This module owns the half of that split the app runtime
+//! bridge plugin hosts the MCP client and re-exposes the server's tools via
+//! `ExposeTools`. This module owns the half of that split the plugin runtime
 //! cannot own — the **server process** — and nothing else.
 //!
 //! The split is deliberate:
 //!
-//! - **The host owns the process.** SDK apps run as CPython-in-Wasmtime with no
-//!   ambient process access, so an app physically cannot spawn a server. More
-//!   importantly it must not be able to: an app-supplied argv would be
+//! - **The host owns the process.** SDK plugins run as CPython-in-Wasmtime with no
+//!   ambient process access, so an plugin physically cannot spawn a server. More
+//!   importantly it must not be able to: an plugin-supplied argv would be
 //!   arbitrary native code execution wearing a capability's clothes.
-//! - **The app owns the protocol.** The native MCP visualizer and Python bridge
+//! - **The plugin owns the protocol.** The native MCP visualizer and Python bridge
 //!   share this transport. This module never parses a JSON-RPC body,
 //!   never knows what `tools/list` means, and never decides what a tool is. It
 //!   moves newline-delimited JSON between a configured child process and the
 //!   owning pane. MCP semantics — initialize, discovery, schema translation,
-//!   call proxying — live in the bridge app.
+//!   call proxying — live in the bridge plugin.
 //!
 //! The containment property that makes the capability safe to grant:
-//! **an app names a server by id; the host resolves the id to an argv from
+//! **an plugin names a server by id; the host resolves the id to an argv from
 //! user-owned config.** `mcp.client` therefore authorizes "talk to a server
 //! the user configured", never "run this command". A compromised or malicious
-//! bridge app cannot reach a binary the user did not already list.
+//! bridge plugin cannot reach a binary the user did not already list.
 //!
 //! **The server is external and untrusted, so its transport cannot exist
 //! without bounds.** Every `McpConnection` is constructed under [`McpLimits`].
@@ -57,7 +57,7 @@
 //! - *Responsiveness*: a server that produces no stdout at all within
 //!   [`McpLimits::first_output_deadline`] is killed and reported closed. The
 //!   protocol-level handshake deadline (initialize → tools/list) lives in the
-//!   bridge app, which owns the protocol.
+//!   bridge plugin, which owns the protocol.
 //! - *Delivery*: inbound lines are serviced from the host's **logic** pass
 //!   (`service_python_pane_runtimes`), never only from paint, and every
 //!   enqueued line fires the connection's [`McpWake`] so an idle or occluded
@@ -90,17 +90,17 @@
 //!
 //! Note: this is the *outbound* direction. `PlexiEvent::McpToolCall` and
 //! `HostRequest::McpToolResult` are the inbound direction — an external MCP
-//! client calling into a Plexi app's `[app.mcp]` surface. The two never meet.
+//! client calling into a Plexi plugin's `[plugin.mcp]` surface. The two never meet.
 //!
-//! **Runtime scope: CPython bridge apps only.** The app-facing messages
+//! **Runtime scope: CPython bridge plugins only.** The plugin-facing messages
 //! (`mcp_connect` / `mcp_send` / `mcp_disconnect` and the `mcp_connected` /
 //! `mcp_message` / `mcp_closed` replies) are handled in `LivePythonPane`,
 //! alongside `http_request` and `file_read`, and never reach the WIT `effect`
-//! variant. Rust WASM component apps therefore cannot open an MCP connection.
+//! variant. Rust WASM component plugins therefore cannot open an MCP connection.
 //! Extending `wit/plexi.wit` changes the component type — the host rejects
 //! every prebuilt component compiled against the old world ("expected variant
 //! of N cases, found M") — so adding the WASM path means rebuilding the
-//! CPython shim bundle and every `apps/wasm-poc/` fixture in the same change.
+//! CPython shim bundle and every `plugins/wasm-poc/` fixture in the same change.
 //! That is a separate unit of work, not a line in this one.
 
 use std::collections::BTreeMap;
@@ -122,14 +122,14 @@ pub const MCP_SERVERS_FILE: &str = "mcp_servers.toml";
 /// resolve an interpreter without them, not because inheritance is the default.
 const INHERITED_ENV: &[&str] = &["PATH", "HOME"];
 
-/// Extra PATH entries prepended for GUI-launched hosts. A macOS app bundle
+/// Extra PATH entries prepended for GUI-launched hosts. A macOS plugin bundle
 /// launched from Finder inherits a minimal `PATH` that omits the Homebrew and
 /// `/usr/local` prefixes where `npx`/`uvx` actually live.
 const PATH_FALLBACK: &str = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin";
 
 /// Max bytes accepted on one stdout line from a server before the connection
 /// is torn down. A single JSON-RPC message larger than this is a runaway
-/// server, not a large legitimate response; truncating it would hand the app
+/// server, not a large legitimate response; truncating it would hand the plugin
 /// a corrupt body, so the connection closes instead.
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -160,9 +160,9 @@ const STDERR_LOG_LINES_PER_WINDOW: u32 = 20;
 /// plus the guest-stdin cap, never unbounded.
 const INBOUND_QUEUE_LINES: usize = 16;
 
-/// Depth of the stdin writer queue. Outbound messages come from the app (tool
+/// Depth of the stdin writer queue. Outbound messages come from the plugin (tool
 /// calls), so the queue protects against a *server* that stops reading, not
-/// against the app: when it fills, `send` fails fast instead of blocking the
+/// against the plugin: when it fills, `send` fails fast instead of blocking the
 /// host thread on a pipe write.
 const OUTBOUND_QUEUE_MESSAGES: usize = 64;
 
@@ -172,7 +172,7 @@ const OUTBOUND_QUEUE_MESSAGES: usize = 64;
 pub struct McpLimits {
     /// A server that writes nothing to stdout within this window after spawn
     /// is killed and reported closed. Generous because a cold `npx -y` may
-    /// download the package before the server ever speaks; the bridge app's
+    /// download the package before the server ever speaks; the bridge plugin's
     /// own handshake timer fires earlier for the interactive stuck-pane case.
     pub first_output_deadline: Duration,
 }

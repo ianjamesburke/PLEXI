@@ -3,14 +3,14 @@
 //! This module is intentionally egui-free so keyboard and pane orchestration
 //! can be regression-tested without the GUI event loop.
 
-/// Hard ceiling on a single app file read or write, enforced host-side in both
-/// app runtimes (CPython bridge and WASM component). Keeps one runaway
+/// Hard ceiling on a single plugin file read or write, enforced host-side in both
+/// plugin runtimes (CPython bridge and WASM component). Keeps one runaway
 /// `file_write`/`file_read` from ballooning the JSON bridge or host memory;
 /// larger media transfers need a streaming seam, not a bigger cap.
 pub const MAX_FILE_IO_BYTES: usize = 64 * 1024 * 1024;
 
 pub mod anchor;
-pub mod app_timeline;
+pub mod plugin_timeline;
 pub mod changes;
 pub mod command;
 pub mod command_view;
@@ -39,7 +39,7 @@ pub mod state_scope;
 pub(crate) mod path_watch;
 pub mod state_watch;
 pub mod typed_pipes;
-pub mod wasm_app;
+pub mod wasm_view;
 mod wasm_engine;
 pub mod wasm_frame;
 pub mod wasm_gpu;

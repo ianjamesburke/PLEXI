@@ -14,11 +14,11 @@
 //! reverse.
 //!
 //! - [`HostSubscriptionService`] is the single broker-gated path that turns a
-//!   subscribe request into a [`SubscriptionRecord`]. Python and Rust WASM app
+//!   subscribe request into a [`SubscriptionRecord`]. Python and Rust WASM plugin
 //!   runtimes use it alongside CLI and host MCP transports.
 //! - The service owns the host grant store, posture, and global timeline. Every
-//!   caller supplies a host-stamped delivery identity; app runtimes also supply
-//!   their host-known app identity and workspace for authorization.
+//!   caller supplies a host-stamped delivery identity; plugin runtimes also supply
+//!   their host-known plugin identity and workspace for authorization.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender;
@@ -29,10 +29,10 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest,
 };
-use crate::host::app_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
+use crate::host::plugin_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
 
-pub fn app_subscriber_id(pane_id: u64) -> String {
+pub fn plugin_subscriber_id(pane_id: u64) -> String {
     format!("app-pane:{pane_id}")
 }
 
@@ -94,13 +94,13 @@ pub fn evaluate_and_record_subscription(
     ))
 }
 
-/// The broker target ids a subscription (read) touches: one `"<app>::<event>"`
-/// per requested event, or a single `"<app>::*"` when subscribing to every
+/// The broker target ids a subscription (read) touches: one `"<plugin>::<event>"`
+/// per requested event, or a single `"<plugin>::*"` when subscribing to every
 /// stream.
 ///
 /// Read and write grants must never satisfy each other: an Allow-Always the user
 /// granted on a read prompt must not silently authorize an emit, and vice versa.
-/// Subscribe targets are the bare `"<app>::<event>"` form; publish targets carry
+/// Subscribe targets are the bare `"<plugin>::<event>"` form; publish targets carry
 /// a `publish:` prefix ([`publish_targets`]) so a grant matches only the
 /// operation it was granted for.
 fn subscription_targets(publisher_plugin_id: &str, event_names: &[String]) -> Vec<String> {
@@ -269,7 +269,7 @@ pub fn record_subscription(
 /// channel.
 pub struct HostSubscribeRequest {
     pub publisher_plugin_id: String,
-    /// Empty = subscribe to all of the app's declared streams.
+    /// Empty = subscribe to all of the plugin's declared streams.
     pub event_names: Vec<String>,
     pub payload_mode: PayloadMode,
     pub trigger_mode: TriggerMode,
@@ -314,7 +314,7 @@ pub struct HostSubscribeRequest {
     /// `PLEXI_PANE_ID` value, closing the gap where any local process could
     /// otherwise claim to be calling from an arbitrary pane. `None` for
     /// transports that already establish identity another way (host MCP's
-    /// bearer credential, a WASM/Python app's own host-known pane id).
+    /// bearer credential, a WASM/Python plugin's own host-known pane id).
     pub peer_ancestry: Option<Vec<u32>>,
     pub cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub reply: SyncSender<HostSubscribeReply>,
@@ -339,7 +339,7 @@ pub struct PendingEventConsent {
     pub broker_actor_id: String,
     /// App-id namespace the streams live under.
     pub plugin_id: String,
-    /// Stream names touched (empty = all of the app's declared streams). Drives
+    /// Stream names touched (empty = all of the plugin's declared streams). Drives
     /// both the consent label and the `AllowAlways` grant targets.
     pub event_names: Vec<String>,
     /// The subscriber/publisher's host-established context id, resolved once
@@ -380,7 +380,7 @@ impl PendingEventConsent {
             if flag.load(std::sync::atomic::Ordering::Acquire))
     }
 
-    /// Human-readable target for the consent modal: `"<app> :: <events>"`.
+    /// Human-readable target for the consent modal: `"<plugin> :: <events>"`.
     pub fn target_label(&self) -> String {
         let streams = if self.event_names.is_empty() {
             "* (all streams)".to_string()
@@ -472,7 +472,7 @@ pub enum HostSubscribeReply {
     },
 }
 
-/// Host-level subscription service for non-app actors (CLI agents reading
+/// Host-level subscription service for non-plugin actors (CLI agents reading
 /// subprocess stdout, host MCP clients). Owns its own grant store + posture
 /// loaded from the profile dir and a clone of the global timeline handle.
 ///
@@ -536,7 +536,7 @@ impl HostSubscriptionService {
     /// Derive the trusted subscriber identity for a transport connection from
     /// the host-stamped pane id. CLI/MCP agents are `Agent`-typed; the id is
     /// namespaced by pane so it never collides with the assistant
-    /// (`agent:assistant`) or a `WASM app runtime` (its `type_id`). A connection with
+    /// (`agent:assistant`) or a `WASM plugin runtime` (its `type_id`). A connection with
     /// no pane context (rare) gets a stable anonymous id.
     pub fn resolve_cli_subscriber(from_pane_id: Option<u64>) -> (ActorType, String) {
         let id = match from_pane_id {
@@ -620,7 +620,7 @@ impl HostSubscriptionService {
         if !undeclared.is_empty() {
             let _ = req.reply.send(HostSubscribeReply::Err {
                 message: format!(
-                    "app '{}' has not declared stream(s): {}",
+                    "plugin '{}' has not declared stream(s): {}",
                     req.publisher_plugin_id,
                     undeclared.join(", ")
                 ),
@@ -720,10 +720,10 @@ impl HostSubscriptionService {
 
         if choice == ConsentChoice::AllowAlways {
             // Persist against the same operation-qualified targets the matching
-            // evaluation uses: subscribe grants the bare `<app>::<stream>`
+            // evaluation uses: subscribe grants the bare `<plugin>::<stream>`
             // targets, publish grants the `publish:`-prefixed ones. A read grant
             // must never authorize a write, so the persisted target must match
-            // the operation being consented to, not just the app + streams.
+            // the operation being consented to, not just the plugin + streams.
             let targets = match action {
                 ConsentAction::Subscribe { .. } => subscription_targets(&plugin_id, &event_names),
                 ConsentAction::Publish { .. } => publish_targets(&plugin_id, &event_names),
@@ -942,7 +942,7 @@ impl HostSubscriptionService {
             if !self.stream_is_declared(context_id, &req.plugin_id, &ev.event) {
                 let _ = req.reply.send(HostPublishReply::Err {
                     message: format!(
-                        "app '{}' has not declared stream '{}' in this context — declare it first",
+                        "plugin '{}' has not declared stream '{}' in this context — declare it first",
                         req.plugin_id, ev.event
                     ),
                 });
@@ -1056,10 +1056,10 @@ mod tests {
     use super::*;
     use crate::protocol::{PluginEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource};
-    use crate::host::app_timeline::EmittedEvent;
+    use crate::host::plugin_timeline::EmittedEvent;
 
     /// Fixed owning/viewer context for tests that don't exercise
-    /// cross-context behavior (that's `app_timeline.rs`'s job) — keeps every
+    /// cross-context behavior (that's `plugin_timeline.rs`'s job) — keeps every
     /// existing same-context assertion unchanged.
     const CTX: u64 = 1;
 
@@ -1155,11 +1155,11 @@ mod tests {
     }
 
     #[test]
-    fn app_subscription_uses_app_actor_for_broker_and_pane_for_delivery() {
+    fn view_subscription_uses_view_actor_for_broker_and_pane_for_delivery() {
         let timeline = timeline_with_stream();
         let mut store = GrantStore::default();
         let mut grant = allow_grant("notes-app", "event-probe::probe.tick");
-        grant.actor_type = ActorType::App;
+        grant.actor_type = ActorType::Plugin;
         grant.workspace_root = Some(PathBuf::from("/workspace/notes"));
         store.record(grant);
         let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
@@ -1171,8 +1171,8 @@ mod tests {
             trigger_mode: TriggerMode::Conversation,
             resource_id: None,
             from_pane_id: Some(41),
-            subscriber_override: Some(app_subscriber_id(41)),
-            subscriber_type_override: Some(ActorType::App),
+            subscriber_override: Some(plugin_subscriber_id(41)),
+            subscriber_type_override: Some(ActorType::Plugin),
             broker_actor_override: Some("notes-app".to_string()),
             workspace_root_override: Some(PathBuf::from("/workspace/notes")),
             context_id_override: Some(CTX),
@@ -1188,13 +1188,13 @@ mod tests {
             ..
         } = receiver.recv().unwrap()
         else {
-            panic!("app subscription should be allowed");
+            panic!("plugin subscription should be allowed");
         };
-        assert_eq!(subscriber_type, ActorType::App);
+        assert_eq!(subscriber_type, ActorType::Plugin);
         assert_eq!(subscriber_id, "app-pane:41");
         let timeline = timeline.lock().unwrap();
         let subscription = &timeline.subscriptions()[0];
-        assert_eq!(subscription.subscriber_type, ActorType::App);
+        assert_eq!(subscription.subscriber_type, ActorType::Plugin);
         assert_eq!(subscription.subscriber_id, "app-pane:41");
     }
 
@@ -1328,7 +1328,7 @@ mod tests {
         }
     }
 
-    /// `classify_subscribe_request` rejects a stream the app never declared,
+    /// `classify_subscribe_request` rejects a stream the plugin never declared,
     /// before the broker is consulted.
     #[test]
     fn handle_request_rejects_undeclared_stream() {
@@ -1572,7 +1572,7 @@ mod tests {
         assert_eq!(timeline.lock().unwrap().events()[0].actor_id, "mcp:host");
     }
 
-    /// Emitting on a stream the app never declared is refused before the broker,
+    /// Emitting on a stream the plugin never declared is refused before the broker,
     /// with a precise error and nothing recorded.
     #[test]
     fn publish_emit_rejects_undeclared_stream() {

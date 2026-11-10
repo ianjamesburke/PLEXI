@@ -1,6 +1,6 @@
 use crate::ui::theme::Colors;
 
-/// The result of an overlay's or app's keyboard handler.
+/// The result of an overlay's or plugin's keyboard handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeyDisposition {
     /// The handler consumed the event; downstream handlers must not run.
@@ -9,25 +9,25 @@ pub(crate) enum KeyDisposition {
     Passthrough,
 }
 
-/// Context passed to an app during rendering.
+/// Context passed to an plugin during rendering.
 pub struct ViewRenderContext<'a> {
     pub colors: &'a Colors,
-    /// Host pane id of the pane being rendered. Apps use it to register their
+    /// Host pane id of the pane being rendered. Plugins use it to register their
     /// text surfaces against `SurfaceKey::Pane(pane_id)` so the post-frame
     /// focus reconciler can project host input ownership onto egui focus.
     pub pane_id: u64,
 }
 
-/// Commands an app can issue back to the system.
+/// Commands an plugin can issue back to the system.
 pub enum ViewCommand {
-    Fleet(crate::app::agents_app::FleetAction),
-    /// A capability-gated effect returned by a WASM component. The app model
-    /// executes it through the same host services that native apps use.
+    Fleet(crate::app::agents_view::FleetAction),
+    /// A capability-gated effect returned by a WASM component. The plugin model
+    /// executes it through the same host services that native plugins use.
     WasmHostEffect {
         pane_id: u64,
         effect: crate::host::wasm_pane::WasmHostEffect,
     },
-    /// Register the app's v3.7 connector tools with the host broker.
+    /// Register the plugin's v3.7 connector tools with the host broker.
     ExposeTools {
         tools: Vec<crate::protocol::AiTool>,
         pane_id: Option<u64>,
@@ -53,7 +53,7 @@ pub enum ViewCommand {
         origin_context_id: u64,
         reply: std::sync::mpsc::SyncSender<crate::plexi_ai::tool_dispatch::ToolCallResult>,
     },
-    /// Request the host to spawn a new app pane.
+    /// Request the host to spawn a new view pane.
     /// `layout`: "split_h" (right), "split_v" (below, default), or "overlay".
     /// `args`: passed as argv to the child process.
     SpawnView {
@@ -135,7 +135,7 @@ pub enum ViewCommand {
         timeout_secs: Option<u64>,
         on_dismiss: Option<String>,
     },
-    /// Route a NotifyAction event back to the app pane that sent the Notify.
+    /// Route a NotifyAction event back to the view pane that sent the Notify.
     DeliverNotifyAction {
         pane_id: u64,
         notify_id: String,
@@ -148,7 +148,7 @@ pub enum ViewCommand {
     },
     /// Canvas Terminal Binding Primitives (#78). The host opens a fresh
     /// terminal next to `sender_pane_id`, sets the new terminal as the
-    /// sender app's `linked_pane_id`, and emits
+    /// sender plugin's `linked_pane_id`, and emits
     /// `PlexiEvent::LinkedTerminalReady { request_id, terminal_pane_id }`
     /// back to the sender. `cwd` falls back to the sender's
     /// `workspace_root` when `None`.
@@ -157,9 +157,9 @@ pub enum ViewCommand {
         request_id: String,
         cwd: Option<String>,
         label: Option<String>,
-        /// Where to place the new terminal relative to the requesting app
+        /// Where to place the new terminal relative to the requesting plugin
         /// pane. `false` (default) splits side-by-side with the terminal on
-        /// the right; `true` stacks it underneath. Process apps use the
+        /// the right; `true` stacks it underneath. Process plugins use the
         /// side-by-side default; the CLI renderer requests `true` so its form
         /// sits above its output terminal.
         place_below: bool,
@@ -216,9 +216,9 @@ pub enum ViewCommand {
     },
 }
 
-/// The trait all Plexi apps implement.
+/// The trait all Plexi plugins implement.
 ///
-/// Apps live inside `Pane::App` runtimes.
+/// Plugins live inside `Pane::App` runtimes.
 /// Routing and ledger tags for one external Assistant turn.
 ///
 /// `conversation_id` keeps an external turn off the desktop transcript.
@@ -232,11 +232,11 @@ pub struct ExternalTurnOpts {
     pub kind: Option<String>,
 }
 
-pub trait App: Send {
+pub trait View: Send {
     /// Unique stable identifier, e.g. `"file_browser"`. Used for serialisation.
     fn type_id(&self) -> &'static str;
 
-    /// Pending approval this app is showing, when it is an approval surface.
+    /// Pending approval this plugin is showing, when it is an approval surface.
     fn approval_request_id(&self) -> Option<String> {
         None
     }
@@ -244,12 +244,12 @@ pub trait App: Send {
     /// Human-readable display name shown in the pane title.
     fn display_name(&self) -> String;
 
-    /// Render the app into the given Ui region. `pending_click` (stint 0469) is
+    /// Render the plugin into the given Ui region. `pending_click` (stint 0469) is
     /// a synthetic pointer click queued by `plexi pane click --node` /
     /// `HostHarness::inject_node_click`, delivered the same frame a real click's
-    /// hit-test result would reach. Apps that expose activatable widgets to
+    /// hit-test result would reach. Plugins that expose activatable widgets to
     /// node-targeted clicks match it against their own `egui::Id`s (see File
-    /// Explorer in `src/file_browser/mod.rs`); apps that don't ignore it.
+    /// Explorer in `src/file_browser/mod.rs`); plugins that don't ignore it.
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
@@ -257,19 +257,19 @@ pub trait App: Send {
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     );
 
-    /// Handle raw key input before the app's own render pass.
+    /// Handle raw key input before the plugin's own render pass.
     /// Return `Consumed` to prevent downstream handlers from seeing the event.
     ///
     /// Reads from the frame's [`crate::app::input_router::PlexiInput`] ownership
     /// buffer (via `input.key_pressed(..)` / `input.events()` /
-    /// `input.modifiers()`) rather than `ctx.input()`, so an app and the global
+    /// `input.modifiers()`) rather than `ctx.input()`, so an plugin and the global
     /// hotkey allowlist can never both claim the same key.
     fn handle_key(&mut self, _input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         KeyDisposition::Passthrough
     }
 
-    /// Drain any commands the app has queued since the last call.
-    /// Apps that navigate internally (e.g. file browser) push commands here
+    /// Drain any commands the plugin has queued since the last call.
+    /// Plugins that navigate internally (e.g. file browser) push commands here
     /// so the host can act on them each frame without changing the trait signature.
     fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         vec![]
@@ -278,7 +278,7 @@ pub trait App: Send {
     /// Bind host-owned runtime identity before any external work is serviced.
     fn bind_host_identity(&mut self, _pane_id: u64, _context_id: u64) {}
 
-    /// Pump asynchronous work while the app's context is off-screen.
+    /// Pump asynchronous work while the plugin's context is off-screen.
     fn background_tick(&mut self) {}
 
     /// Whether `background_tick` can currently make progress.
@@ -286,7 +286,7 @@ pub trait App: Send {
         false
     }
 
-    /// Returns true if this app wants to capture all keyboard input, preventing
+    /// Returns true if this plugin wants to capture all keyboard input, preventing
     /// host shortcuts (Cmd+HJKL, Cmd+Enter, etc.) from firing while it is focused.
     /// Only `Cmd+Q` and `Cmd+W` remain active when capture is true.
     fn keyboard_capture(&self) -> bool {
@@ -294,42 +294,42 @@ pub trait App: Send {
     }
 
     /// Whether bare Enter submits the current pane action even while one of its
-    /// declarative text inputs owns egui focus. Apps opt in only where Enter
+    /// declarative text inputs owns egui focus. Plugins opt in only where Enter
     /// has no text-editing meaning; the dispatcher delivers that key before
     /// returning the rest of the input buffer to the focused `TextEdit`.
     fn submit_on_focused_text_input_enter(&self) -> bool {
         false
     }
 
-    /// Returns true if the app wants to close itself (e.g. after saving).
+    /// Returns true if the plugin wants to close itself (e.g. after saving).
     fn wants_close(&self) -> bool {
         false
     }
 
-    /// A user-initiated close asks the app first. Returning false vetoes the
-    /// close: the app shows its own prompt (unsaved buffer) and sets
+    /// A user-initiated close asks the plugin first. Returning false vetoes the
+    /// close: the plugin shows its own prompt (unsaved buffer) and sets
     /// `wants_close` once the user decides. Normal desktop quit also asks;
     /// programmatic closes (CLI, context close, forced host stop) do not.
     fn request_close(&mut self) -> bool {
         true
     }
 
-    /// Off-paint servicing of external state the app mirrors (files on disk).
+    /// Off-paint servicing of external state the plugin mirrors (files on disk).
     /// Runs from `App::logic` every pass for every pane, including panes in
     /// hidden windows and inactive contexts, so it must be cheap when idle.
-    /// Apps arm their own watcher lazily with `wake`. Returns true when
+    /// Plugins arm their own watcher lazily with `wake`. Returns true when
     /// visible state changed.
     fn service_external(&mut self, _wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>) -> bool {
         false
     }
 
     /// Called when the linked terminal's CWD changes.
-    /// Apps that track directories (like the file browser) should update.
+    /// Plugins that track directories (like the file browser) should update.
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
 
-    /// Queue a PlexiEvent to be sent to the app on the next flush.
+    /// Queue a PlexiEvent to be sent to the plugin on the next flush.
     /// Used to deliver host-originated events (e.g. ViewOpened) back to
-    /// external process apps. Built-in apps ignore this by default.
+    /// external process plugins. Built-in plugins ignore this by default.
     fn queue_outbound_event(&mut self, _event: crate::protocol::PlexiEvent) {}
 
     /// Host-owned disabled view retains the original plugin record without executing it.
@@ -345,17 +345,17 @@ pub trait App: Send {
     /// Restore plugin state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 
-    /// The app's current internal font size in points, if supported.
+    /// The plugin's current internal font size in points, if supported.
     #[cfg(test)]
     fn font_size(&self) -> Option<f32> {
         None
     }
 
-    /// Adjust the app's internal font size by `delta` points (positive = larger).
-    /// Only implemented by apps with their own font size, e.g. TextEditorView, FileBrowserView.
+    /// Adjust the plugin's internal font size by `delta` points (positive = larger).
+    /// Only implemented by plugins with their own font size, e.g. TextEditorView, FileBrowserView.
     fn adjust_font_size(&mut self, _delta: f32) {}
 
-    /// Reset the app's internal font size to its default value.
+    /// Reset the plugin's internal font size to its default value.
     fn reset_font_size(&mut self) {}
 
     /// Seed text for the rename-pane overlay. `None` falls back to the pane's
@@ -365,27 +365,27 @@ pub trait App: Send {
         None
     }
 
-    /// Called when the user renames this app's pane. TextEditorView persists
+    /// Called when the user renames this plugin's pane. TextEditorView persists
     /// the new name into the note's frontmatter `title`.
     fn on_pane_renamed(&mut self, _name: &str) {}
 
-    /// The note this app currently has open, if any. The command palette
-    /// lists notes that are open in a pane, so it asks every builtin app
-    /// rather than scanning the notes dir. Apps that are not note editors —
+    /// The note this plugin currently has open, if any. The command palette
+    /// lists notes that are open in a pane, so it asks every builtin plugin
+    /// rather than scanning the notes dir. Plugins that are not note editors —
     /// and TextEditorView on an ordinary file — return `None`.
     fn open_note_path(&self) -> Option<&std::path::Path> {
         None
     }
 
-    /// Read-only, app-owned semantic details appended to `plexi pane state`.
+    /// Read-only, plugin-owned semantic details appended to `plexi pane state`.
     /// Production state is authoritative; callers may only serialize it.
     fn semantic_state(&self) -> Option<serde_json::Value> {
         None
     }
 
-    /// Submit a text turn through a builtin app's normal interactive path.
+    /// Submit a text turn through a builtin plugin's normal interactive path.
     /// Only the host Assistant implements this; the response path is owned by
-    /// the app so callers cannot bypass its model or permission loop.
+    /// the plugin so callers cannot bypass its model or permission loop.
     fn submit_external_turn(
         &mut self,
         _text: String,
@@ -393,12 +393,12 @@ pub trait App: Send {
         _response_file: String,
         _opts: ExternalTurnOpts,
     ) -> Result<(), String> {
-        Err("this app does not accept external turns".to_string())
+        Err("this plugin does not accept external turns".to_string())
     }
 
-    /// Deliver a host file/URL drop through the app's production handler.
+    /// Deliver a host file/URL drop through the plugin's production handler.
     fn drop_file(&mut self, _path_or_url: &str) -> Result<serde_json::Value, String> {
-        Err("this app does not accept file drops".to_string())
+        Err("this plugin does not accept file drops".to_string())
     }
 
     /// Pull a prepared file edit into this pane. The text editor previews it
@@ -407,7 +407,7 @@ pub trait App: Send {
         false
     }
 
-    /// Open-buffer snapshot for change-set conflict checks. Other apps have none.
+    /// Open-buffer snapshot for change-set conflict checks. Other plugins have none.
     fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         None
     }
@@ -433,7 +433,7 @@ pub trait App: Send {
         false
     }
 
-    /// Concrete-type access for host tests that assert on app-internal state
+    /// Concrete-type access for host tests that assert on plugin-internal state
     /// through `ViewRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.
     #[cfg(test)]

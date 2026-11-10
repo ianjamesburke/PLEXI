@@ -9,11 +9,11 @@
   },
   "SplitRight": {
     "cli": "pane new --right",
-    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+    "note": "CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type."
   },
   "SplitDown": {
     "cli": "pane new --down",
-    "note": "CLI chooses terminal or app explicitly; the shortcut mirrors the focused pane type."
+    "note": "CLI chooses terminal or view explicitly; the shortcut mirrors the focused pane type."
   },
   "Navigate": {
     "cli": "pane focus 42",
@@ -59,12 +59,12 @@
     "cli": "pane name 42 name",
     "note": ""
   },
-  "CloseApp": {
+  "CloseView": {
     "cli": "pane close 42",
     "note": ""
   },
   "OpenFileBrowser": {
-    "cli": "app open file_browser",
+    "cli": "view open file_browser",
     "note": ""
   },
   "OpenAgents": {
@@ -87,17 +87,17 @@
     "note": ""
   },
   "OpenSecretsManager": {
-    "cli": "app open secrets_manager"
+    "cli": "view open secrets_manager"
   },
   "OpenAssistant": {
-    "cli": "app open assistant",
+    "cli": "view open assistant",
     "note": ""
   },
   "RenameContext": {
     "cli": "context rename name --context-id 42",
     "note": ""
   },
-  "ForceReloadApp": {
+  "ForceReloadView": {
     "ui-only": "Developer recovery gesture for a focused app; normal source edits reload through the file watcher."
   },
   "NewPageRight": {
@@ -112,10 +112,6 @@
     "cli": "config reload",
     "note": ""
   },
-  "NavBackApp": {
-    "cli": "pane focus --back",
-    "note": "CLI traverses host focus history; app-local navigation remains owned by each app."
-  },
   "FocusHistoryForward": {
     "cli": "pane focus --forward",
     "note": ""
@@ -125,7 +121,7 @@
     "note": ""
   },
   "OpenScratchpad": {
-    "cli": "app open text-editor"
+    "cli": "view open text-editor"
   },
   "PushPaneToSubcontext": {
     "cli": "context push name --pane-id 42",
@@ -220,5 +216,9 @@
   },
   "CancelPaneSelection": {
     "ui-only": "Clears transient desktop selection without changing pane ownership or layout."
+  },
+  "NavBackView": {
+    "cli": "pane focus --back",
+    "note": "CLI traverses host focus history; app-local navigation remains owned by each app."
   }
 }

@@ -64,7 +64,7 @@ fn ps7501_split_across_reads() {
 
 #[test]
 fn ps7501_malformed_pairs_skipped() {
-    let (_, r) = set("novalue:=x:state=working:bad!=1:app=a b:progress=5");
+    let (_, r) = set("novalue:=x:state=working:bad!=1:plugin=a b:progress=5");
     assert_eq!(r.state, State::Working);
     assert_eq!(r.progress, Some(5));
     assert_eq!(r.app, None);
@@ -81,7 +81,7 @@ fn ps7501_unknown_keys_ignored_last_repeat_wins() {
 
 #[test]
 fn ps7501_whitespace_trimmed() {
-    let (_, r) = set(" state = working : app = cargo ");
+    let (_, r) = set(" state = working : plugin = cargo ");
     assert_eq!(r.state, State::Working);
     assert_eq!(r.app.as_deref(), Some("cargo"));
 }
@@ -188,7 +188,7 @@ fn ps7501_progress_range() {
 }
 
 #[test]
-fn ps7501_invalid_app_treated_as_absent() {
+fn ps7501_invalid_view_treated_as_absent() {
     assert_eq!(set("state=idle:app=a.b_c+d-e").1.app.as_deref(), Some("a.b_c+d-e"));
     assert_eq!(set("state=idle:app=a/b").1.app, None);
     let long = "a".repeat(33);
@@ -256,17 +256,17 @@ fn ps7501_clear_subtree_and_clear_all() {
 }
 
 #[test]
-fn ps7501_app_inheritance() {
+fn ps7501_plugin_inheritance() {
     let (mut t, s) = tap();
     feed(&mut t, &osc("state=working:app=deploy"));
     feed(&mut t, &osc("state=working:id=us/east"));
     feed(&mut t, &osc("state=working:id=us:app=mid"));
     feed(&mut t, &osc("state=working:id=eu:app="));
     let g = s.lock().unwrap();
-    assert_eq!(g.effective_app("us/east"), Some("mid"));
-    assert_eq!(g.effective_app("eu"), Some("deploy"));
-    assert_eq!(g.effective_app(""), Some("deploy"));
-    assert_eq!(g.effective_app("nope/deep"), Some("deploy"));
+    assert_eq!(g.effective_plugin("us/east"), Some("mid"));
+    assert_eq!(g.effective_plugin("eu"), Some("deploy"));
+    assert_eq!(g.effective_plugin(""), Some("deploy"));
+    assert_eq!(g.effective_plugin("nope/deep"), Some("deploy"));
 }
 
 #[test]
@@ -494,9 +494,9 @@ fn ps7501_mapping_detail_text() {
 }
 
 #[test]
-fn ps7501_mapping_priority_and_app_inheritance() {
+fn ps7501_mapping_priority_and_plugin_inheritance() {
     use crate::protocol::AgentState as A;
-    // A blocked child beats a working root and inherits the root's app.
+    // A blocked child beats a working root and inherits the root's plugin.
     let got = mapped(&["state=working:app=claude", "state=blocked:kind=question:id=sub"]).unwrap();
     assert_eq!(got.state, A::NeedsYou);
     assert_eq!(got.agent, "claude");
@@ -514,7 +514,7 @@ fn ps7501_mapping_priority_and_app_inheritance() {
     // Tie goes to the most recently updated record.
     let got = mapped(&["state=working:app=old", "state=working:id=b:app=new"]).unwrap();
     assert_eq!(got.agent, "new");
-    // An app on the record itself beats the ancestor's.
+    // An plugin on the record itself beats the ancestor's.
     let got = mapped(&["state=idle:app=root", "state=working:id=a:app=own"]).unwrap();
     assert_eq!(got.agent, "own");
 }

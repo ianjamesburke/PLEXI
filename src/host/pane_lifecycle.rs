@@ -1,4 +1,4 @@
-//! Pane lifecycle facts carried on the existing app event timeline.
+//! Pane lifecycle facts carried on the existing plugin event timeline.
 //!
 //! Publisher `plexi.host.panes` is reserved to the host. The `pane.lifecycle`
 //! stream uses schema_version=1, pane/context IDs, and the tagged payload below.
@@ -9,7 +9,7 @@
 //! provider failure is not an OS crash. PTY exit status carries the observed
 //! kernel exit code or signal, or is explicitly unknown when unavailable. Slot values are lossless byte arrays after the write.
 //! Records have the timeline's in-memory lifetime; this is not a durable replay
-//! or restart contract. CLI wait/follow consumers use `app::event_stream`.
+//! or restart contract. CLI wait/follow consumers use `plugin::event_stream`.
 use crate::protocol::{AgentBlockedReason, AgentState};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -170,7 +170,7 @@ impl PaneLifecycleEvent {
 mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
-    use crate::host::app_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
+    use crate::host::plugin_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
     use crate::protocol::{PluginEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 
     #[test]

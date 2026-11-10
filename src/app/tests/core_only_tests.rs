@@ -15,7 +15,7 @@ fn core_only_refuses_native_and_path_launch_without_allocating_a_view() {
     let profile = profile(true);
     let mut h = HostHarness::from_profile_dir(profile.path());
     for id in ["agents", "text-editor", "file_browser", "assistant", "calc"] {
-        let result = h.app.launch_app_by_id_with_layout(id, None, &[], None);
+        let result = h.app.launch_view_by_id_with_layout(id, None, &[], None);
         assert!(result.is_err(), "{id} must be refused: {result:?}");
         let error = result.unwrap_err();
         assert!(
@@ -25,7 +25,7 @@ fn core_only_refuses_native_and_path_launch_without_allocating_a_view() {
     }
     let result = h
         .app
-        .launch_app_by_path_with_layout("/missing/plugin", None, None, &[]);
+        .launch_view_by_path_with_layout("/missing/plugin", None, None, &[]);
     assert!(result.unwrap_err().contains("core-only mode"));
     assert!(h.app.windows[0].panes.is_empty());
 }
@@ -36,7 +36,7 @@ fn core_only_normal_start_keeps_native_launch() {
     let mut h = HostHarness::from_profile_dir(profile.path());
     assert!(h
         .app
-        .launch_app_by_id_with_layout("agents", None, &[], None)
+        .launch_view_by_id_with_layout("agents", None, &[], None)
         .is_ok());
     assert_eq!(h.app.windows[0].panes.len(), 1);
 }
@@ -48,7 +48,7 @@ fn core_only_restore_save_normal_restart_preserves_plugin_state() {
     {
         let mut h = HostHarness::from_profile_dir(profile.path());
         h.app
-            .launch_app_by_id_with_layout("agents", None, &[], None)
+            .launch_view_by_id_with_layout("agents", None, &[], None)
             .unwrap();
         assert!(h.app.save_workspace_now());
         saved = crate::workspace::WorkspaceFile::load_from(profile.path()).unwrap();
@@ -61,11 +61,11 @@ fn core_only_restore_save_normal_restart_preserves_plugin_state() {
             .values()
             .next()
             .unwrap()
-            .as_app()
+            .as_view()
             .unwrap();
         assert_eq!(pane.runtime.type_id(), "disabled-plugin-view");
         assert!(!pane.runtime.needs_background_tick());
-        h.app.force_reload_focused_app();
+        h.app.force_reload_focused_view();
         assert_eq!(
             h.app.plugin_notice.as_deref(),
             Some(crate::app::core_only::unavailable("agents").as_str())
@@ -84,7 +84,7 @@ fn core_only_restore_save_normal_restart_preserves_plugin_state() {
         .values()
         .next()
         .unwrap()
-        .as_app()
+        .as_view()
         .unwrap();
     assert_eq!(pane.runtime.type_id(), "agents");
 }
@@ -182,7 +182,7 @@ fn core_only_profile_mode_ignores_workspace_and_live_reload() {
     assert_eq!(h.app.config.core_only, Some(true));
     assert!(h
         .app
-        .launch_app_by_id_with_layout("agents", None, &[], None)
+        .launch_view_by_id_with_layout("agents", None, &[], None)
         .is_err());
 }
 
@@ -192,7 +192,7 @@ fn core_only_external_restore_keeps_launch_and_opaque_state_without_touching_pac
     {
         let mut h = HostHarness::from_profile_dir(profile.path());
         h.app
-            .launch_app_by_id_with_layout("agents", None, &[], None)
+            .launch_view_by_id_with_layout("agents", None, &[], None)
             .unwrap();
         assert!(h.app.save_workspace_now());
     }
@@ -214,7 +214,7 @@ fn core_only_external_restore_keeps_launch_and_opaque_state_without_touching_pac
             .values()
             .next()
             .unwrap()
-            .as_app()
+            .as_view()
             .unwrap()
             .runtime
             .type_id(),
@@ -265,7 +265,7 @@ fn core_only_terminal_executes_and_splits() {
     }
     assert_eq!(std::fs::read_to_string(marker).unwrap(), "success");
     h.app
-        .launch_app_by_id_with_layout("terminal", Some("split_v".into()), &[], None)
+        .launch_view_by_id_with_layout("terminal", Some("split_v".into()), &[], None)
         .unwrap();
     assert_eq!(
         h.app.windows[0]
@@ -278,5 +278,5 @@ fn core_only_terminal_executes_and_splits() {
     assert!(h.app.windows[0]
         .panes
         .values()
-        .all(|p| p.as_app().is_none()));
+        .all(|p| p.as_view().is_none()));
 }

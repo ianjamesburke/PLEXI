@@ -1,4 +1,4 @@
-use crate::app::app_trait::{App, ViewCommand, ViewRenderContext};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::app::permissions::PluginPermissions;
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
@@ -146,8 +146,8 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_app::UiTree) -> Self {
-        use crate::host::wasm_app::UiNodeData;
+    pub(crate) fn from_wasm_tree(tree: &crate::host::wasm_view::UiTree) -> Self {
+        use crate::host::wasm_view::UiNodeData;
 
         let nodes = tree
             .nodes
@@ -265,8 +265,8 @@ impl SemanticPaneState {
         }
     }
 
-    pub(crate) fn expose_canvas_commands(&mut self, tree: &crate::host::wasm_app::UiTree) {
-        use crate::host::wasm_app::UiNodeData;
+    pub(crate) fn expose_canvas_commands(&mut self, tree: &crate::host::wasm_view::UiTree) {
+        use crate::host::wasm_view::UiNodeData;
 
         for (state_node, tree_node) in self.nodes.iter_mut().zip(&tree.nodes) {
             if let UiNodeData::Canvas(canvas) = &tree_node.data {
@@ -355,9 +355,9 @@ fn collect_process_semantics(
 }
 
 fn semantic_canvas_command(
-    command: &crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand,
+    command: &crate::host::wasm_view::bindings::plexi::platform::types::CanvasCommand,
 ) -> serde_json::Value {
-    use crate::host::wasm_app::bindings::plexi::platform::types::CanvasCommand;
+    use crate::host::wasm_view::bindings::plexi::platform::types::CanvasCommand;
 
     match command {
         CanvasCommand::Rect(rect) => serde_json::json!({
@@ -399,7 +399,7 @@ fn semantic_canvas_command(
 }
 
 fn semantic_color(
-    color: &crate::host::wasm_app::bindings::plexi::platform::types::Color,
+    color: &crate::host::wasm_view::bindings::plexi::platform::types::Color,
 ) -> String {
     if color.a == u8::MAX {
         format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
@@ -433,7 +433,7 @@ fn process_command_bounds(object: &serde_json::Map<String, serde_json::Value>) -
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
-    App(Box<ViewPane>),
+    View(Box<ViewPane>),
     /// A tile that represents a child context nested inside this one.
     /// Renders a summary card with pane count, status, and per-pane summaries.
     /// Cmd+Enter zooms into the sub-context when this tile has focus.
@@ -491,7 +491,7 @@ impl Pane {
     pub fn id(&self) -> PaneId {
         match self {
             Pane::Terminal(t) => t.id,
-            Pane::App(a) => a.id,
+            Pane::View(a) => a.id,
             Pane::Portal(p) => p.pane_id,
         }
     }
@@ -499,7 +499,7 @@ impl Pane {
     pub fn is_hidden(&self) -> bool {
         match self {
             Pane::Terminal(t) => t.hidden,
-            Pane::App(a) => a.hidden,
+            Pane::View(a) => a.hidden,
             Pane::Portal(p) => p.hidden,
         }
     }
@@ -507,7 +507,7 @@ impl Pane {
     pub fn set_hidden(&mut self, val: bool) {
         match self {
             Pane::Terminal(t) => t.hidden = val,
-            Pane::App(a) => a.hidden = val,
+            Pane::View(a) => a.hidden = val,
             Pane::Portal(p) => p.hidden = val,
         }
     }
@@ -526,16 +526,16 @@ impl Pane {
         }
     }
 
-    pub fn as_app(&self) -> Option<&ViewPane> {
+    pub fn as_view(&self) -> Option<&ViewPane> {
         match self {
-            Pane::App(a) => Some(a),
+            Pane::View(a) => Some(a),
             _ => None,
         }
     }
 
-    pub fn as_app_mut(&mut self) -> Option<&mut ViewPane> {
+    pub fn as_view_mut(&mut self) -> Option<&mut ViewPane> {
         match self {
-            Pane::App(a) => Some(a),
+            Pane::View(a) => Some(a),
             _ => None,
         }
     }
@@ -554,11 +554,11 @@ impl Pane {
         }
     }
 
-    /// True if this pane is an active agent pane (terminal agent or app agent).
+    /// True if this pane is an active agent pane (terminal agent or plugin agent).
     pub fn is_agent_pane(&self) -> bool {
         match self {
             Pane::Terminal(t) => t.is_agent_pane(),
-            Pane::App(a) => a.agent.is_some(),
+            Pane::View(a) => a.agent.is_some(),
             Pane::Portal(_) => false,
         }
     }
@@ -580,7 +580,7 @@ impl Pane {
                 t.observed_agent.as_ref(),
                 std::time::Instant::now(),
             ),
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .agent
                 .as_ref()
                 .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::agent)),
@@ -604,23 +604,23 @@ impl Pane {
                 (report.state, report.detail) = t.effective_agent_state();
                 Some(report)
             }
-            Pane::App(_) => self.agent().cloned(),
+            Pane::View(_) => self.agent().cloned(),
             Pane::Portal(_) => None,
         }
     }
 
-    /// App-reported pip status, checking the outer app then any overlay-replaced
+    /// App-reported pip status, checking the outer plugin then any overlay-replaced
     /// pane underneath (mirrors `agent()`).
     pub fn pip_status(&self) -> Option<crate::protocol::PipStatus> {
         match self {
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .pip_status
                 .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::pip_status)),
             Pane::Terminal(_) | Pane::Portal(_) => None,
         }
     }
 
-    /// An app's yellow health pip keeps its color without implying agent work.
+    /// An plugin's yellow health pip keeps its color without implying agent work.
     pub fn static_health_pip(&self) -> bool {
         self.pip_status() == Some(crate::protocol::PipStatus::Yellow)
             && !self.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working)
@@ -652,7 +652,7 @@ impl Pane {
         }
         match self {
             Pane::Terminal(_) => None,
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .overlay_replaced
                 .as_deref()
                 .and_then(Pane::effective_activity),
@@ -714,7 +714,7 @@ impl Pane {
                 t.agent = agent;
                 (true, changed)
             }
-            Pane::App(a) => {
+            Pane::View(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
                     replaced.set_agent_with_dirty(agent)
                 } else {
@@ -731,11 +731,11 @@ impl Pane {
         }
     }
 
-    /// Set the app-reported pip status. App panes only (mirrors `set_agent`'s
+    /// Set the plugin-reported pip status. View panes only (mirrors `set_agent`'s
     /// overlay delegation). Terminals and portals have no pip surface → false.
     pub fn set_pip_status(&mut self, status: Option<crate::protocol::PipStatus>) -> bool {
         match self {
-            Pane::App(a) => {
+            Pane::View(a) => {
                 if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
                     replaced.set_pip_status(status)
                 } else {
@@ -750,7 +750,7 @@ impl Pane {
     pub fn slots(&self) -> Option<&HashMap<String, PathBuf>> {
         match self {
             Pane::Terminal(t) => Some(&t.slots),
-            Pane::App(a) => Some(&a.slots),
+            Pane::View(a) => Some(&a.slots),
             Pane::Portal(_) => None,
         }
     }
@@ -758,7 +758,7 @@ impl Pane {
     pub fn slots_mut(&mut self) -> Option<&mut HashMap<String, PathBuf>> {
         match self {
             Pane::Terminal(t) => Some(&mut t.slots),
-            Pane::App(a) => Some(&mut a.slots),
+            Pane::View(a) => Some(&mut a.slots),
             Pane::Portal(_) => None,
         }
     }
@@ -775,7 +775,7 @@ impl Pane {
     pub fn resume_from_standby(&mut self) -> bool {
         match self {
             Pane::Terminal(t) => t.resume_from_standby().is_some(),
-            Pane::App(a) => a
+            Pane::View(a) => a
                 .overlay_replaced
                 .as_deref_mut()
                 .is_some_and(|r| r.resume_from_standby()),
@@ -1605,7 +1605,7 @@ mod agent_source_tests {
 }
 
 // ---------------------------------------------------------------------------
-// ViewPane — dedicated app runtime (process or in-process builtin)
+// ViewPane — dedicated plugin runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
 /// What a `PendingPaneClick` is aimed at: a raw screen position (the pixel
@@ -1626,7 +1626,7 @@ pub(crate) enum PaneClickTarget {
 ///
 /// egui's own click detection (`Response::clicked()`) resolves
 /// `viewport.interact_widgets` once, inside `Context::begin_pass`, strictly
-/// before host/app code runs — so a click cannot be faked by mutating
+/// before host/plugin code runs — so a click cannot be faked by mutating
 /// `ctx.input_mut()` mid-pass the way `KeyPane` replays keys (key checks
 /// re-scan `InputState.events` live at widget-render time; pointer-click
 /// detection does not). `PendingPaneClick` is delivered instead through the
@@ -1659,7 +1659,7 @@ pub(crate) enum PointerPhase {
 impl PendingPaneClick {
     /// True when this pending click's target identity-matches `id` — the same
     /// honest node-id equality check `node_click_matches` (wasm_render.rs)
-    /// uses on the WASM/Python path, applied to a Builtin app's own `egui::Id`
+    /// uses on the WASM/Python path, applied to a Builtin plugin's own `egui::Id`
     /// instead of a WASM arena index. Drag-phase samples never activate a
     /// node — only a real `Click` does.
     pub(crate) fn targets_id(&self, id: egui::Id) -> bool {
@@ -1669,9 +1669,9 @@ impl PendingPaneClick {
 }
 
 pub enum ViewRuntime {
-    Builtin(Box<dyn App>),
+    Builtin(Box<dyn View>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
-    /// A sandboxed WASM component app driven by the synchronous effect loop.
+    /// A sandboxed WASM component plugin driven by the synchronous effect loop.
     /// Neither a subprocess nor a native in-process builtin — it runs inside a
     /// per-pane `wasmtime::Store`.
     Wasm(Box<crate::host::wasm_pane::LiveWasmPane>),
@@ -1683,14 +1683,14 @@ impl ViewRuntime {
         text: String,
         request_id: String,
         response_file: String,
-        opts: crate::app::app_trait::ExternalTurnOpts,
+        opts: crate::app::view_trait::ExternalTurnOpts,
     ) -> Result<(), String> {
         match self {
             ViewRuntime::Builtin(app) => {
                 app.submit_external_turn(text, request_id, response_file, opts)
             }
             ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
-                Err("this app does not accept external turns".to_string())
+                Err("this plugin does not accept external turns".to_string())
             }
         }
     }
@@ -1732,7 +1732,7 @@ impl ViewRuntime {
     pub fn handle_key(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         match self {
             ViewRuntime::Builtin(app) => app.handle_key(input),
             ViewRuntime::Python(app) => app.handle_key(input),
@@ -1742,12 +1742,12 @@ impl ViewRuntime {
 
     /// Deliver the one bare Escape that just surrendered a declarative
     /// `TextInput`'s egui focus. Ordinary key routing reserves Escape for the
-    /// host CloseView binding; this narrowly-scoped path lets the field's app
+    /// host CloseView binding; this narrowly-scoped path lets the field's plugin
     /// react to its own focus-loss Escape before that binding is suppressed.
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
+    ) -> crate::app::view_trait::KeyDisposition {
         match self {
             // Preserve the existing builtin TextInput Escape behavior. The
             // caller consumes this one focus-loss Escape before CloseView runs.
@@ -1863,7 +1863,7 @@ impl ViewRuntime {
         }
     }
 
-    /// Deliver the CLI/host semantic action contract to every app runtime.
+    /// Deliver the CLI/host semantic action contract to every plugin runtime.
     pub fn approval_request_id(&self) -> Option<String> {
         match self {
             ViewRuntime::Builtin(app) => app.approval_request_id(),
@@ -1871,7 +1871,7 @@ impl ViewRuntime {
         }
     }
 
-    pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
+    pub fn send_plugin_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
             ViewRuntime::Wasm(app) => {
                 if !args.is_empty() {
@@ -1973,7 +1973,7 @@ impl ViewRuntime {
         match self {
             ViewRuntime::Builtin(app) => app.drop_file(path_or_url),
             ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
-                Err("target app does not accept file drops".to_string())
+                Err("target plugin does not accept file drops".to_string())
             }
         }
     }
@@ -1996,9 +1996,9 @@ impl ViewRuntime {
         }
     }
 
-    /// Enough launch context to relaunch this exact app through the normal
+    /// Enough launch context to relaunch this exact plugin through the normal
     /// open path on a workspace restore (stint 0680). `None` for builtins —
-    /// they restore through `restore_builtin_app_pane`'s `builtin_factory`
+    /// they restore through `restore_builtin_view_pane`'s `builtin_factory`
     /// lookup instead, which needs no relaunch context.
     pub fn launch_spec(&self) -> Option<crate::workspace::SavedViewLaunch> {
         match self {
@@ -2025,7 +2025,7 @@ impl ViewRuntime {
         }
     }
 
-    /// Notify the app that its pane was renamed. See [`App::on_pane_renamed`].
+    /// Notify the plugin that its pane was renamed. See [`App::on_pane_renamed`].
     pub fn on_pane_renamed(&mut self, name: &str) {
         match self {
             ViewRuntime::Builtin(app) => app.on_pane_renamed(name),
@@ -2064,8 +2064,8 @@ impl ViewRuntime {
         }
     }
 
-    /// Current nav stack depth as reported by the app via `PushNav`/`PopNav`.
-    /// Always 0 for builtin apps — they manage their own internal navigation.
+    /// Current nav stack depth as reported by the plugin via `PushNav`/`PopNav`.
+    /// Always 0 for builtin plugins — they manage their own internal navigation.
     pub fn nav_stack_depth(&self) -> usize {
         match self {
             ViewRuntime::Builtin(_) => 0,
@@ -2084,7 +2084,7 @@ impl ViewRuntime {
         }
     }
 
-    /// The `view_id` the app should navigate back to (the entry below current
+    /// The `view_id` the plugin should navigate back to (the entry below current
     /// top, or empty string for root). Used to populate `NavBack { view_id }`.
     pub fn nav_back_view_id(&self) -> String {
         match self {
@@ -2099,7 +2099,7 @@ impl ViewRuntime {
     }
 
     /// Serialize the last-rendered frame (Vec<RenderCommand>) as a JSON array.
-    /// Returns `None` for builtin apps (no accessible frame).
+    /// Returns `None` for builtin plugins (no accessible frame).
     pub(crate) fn frame_json(&self) -> Option<serde_json::Value> {
         match self {
             ViewRuntime::Builtin(_) => None,
@@ -2116,13 +2116,13 @@ pub struct ViewPane {
     pub permissions: PluginPermissions,
     pub manifest_id: String,
     pub name: String,
-    /// Pane group this app joined at spawn. Only `sync_app_cwd` reads it, and
+    /// Pane group this plugin joined at spawn. Only `sync_plugin_cwd` reads it, and
     /// only builtin panes are ever assigned one — see `LaunchSection::join_group`.
     pub pane_group: Option<String>,
-    /// The terminal pane this app was spawned alongside. CdRequest routes here
+    /// The terminal pane this plugin was spawned alongside. CdRequest routes here
     /// directly — no tile-tree walk needed.
     pub linked_pane_id: Option<PaneId>,
-    /// Pane hidden by an overlay app. Closing the app restores this pane instead
+    /// Pane hidden by an overlay plugin. Closing the plugin restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
@@ -2132,7 +2132,7 @@ pub struct ViewPane {
     /// activity for the activity dot. `None` = fall back to agent()/host-observed.
     pub pip_status: Option<crate::protocol::PipStatus>,
     pub slots: HashMap<String, PathBuf>,
-    /// Last semantics committed by the production render path for native apps.
+    /// Last semantics committed by the production render path for native plugins.
     pub(crate) semantic_state: SemanticPaneState,
 }
 
@@ -2148,25 +2148,25 @@ impl ViewPane {
 
 impl Drop for ViewPane {
     fn drop(&mut self) {
-        // Overlay apps reuse the replaced pane's id. Restoring the boxed pane
+        // Overlay plugins reuse the replaced pane's id. Restoring the boxed pane
         // must preserve that pane's connector and subscription registrations.
         if self.overlay_replaced.is_some() {
             log::info!(
-                "app pane: dropped overlay pane={} without clearing restored pane registrations",
+                "view pane: dropped overlay pane={} without clearing restored pane registrations",
                 self.id
             );
             return;
         }
         crate::plexi_ai::tool_dispatch::unregister(self.id);
-        let (subscriptions, deliveries) = crate::host::app_timeline::global()
+        let (subscriptions, deliveries) = crate::host::plugin_timeline::global()
             .lock()
             .unwrap()
             .clear_subscriber(
-                crate::broker::ActorType::App,
-                &crate::host::event_subscriptions::app_subscriber_id(self.id),
+                crate::broker::ActorType::Plugin,
+                &crate::host::event_subscriptions::plugin_subscriber_id(self.id),
             );
         log::info!(
-            "app pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
+            "view pane: dropped pane={} and cleared connector tools, {} event subscription(s), {} queued delivery(ies)",
             self.id,
             subscriptions,
             deliveries

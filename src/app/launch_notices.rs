@@ -1,5 +1,5 @@
 //! One-time launch checks: is this binary the channel's installed build, and
-//! are old copies of the app lying around? Both are reported, never acted on.
+//! are old copies of the plugin lying around? Both are reported, never acted on.
 use super::PlexiApp;
 
 impl PlexiApp {

@@ -5,8 +5,8 @@
 ///
 /// - `"cli:"` -> embedded + cached CLI names, prefixed with `cli:`
 /// - `"mcp:"` -> embedded + user MCP names, prefixed with `mcp:`
-/// - `"app:"` -> installed app IDs, prefixed with `app:`
-/// - `""` or anything else -> all three categories plus bare app IDs
+/// - `"plugin:"` -> installed plugin IDs, prefixed with `plugin:`
+/// - `""` or anything else -> all three categories plus bare plugin IDs
 pub fn complete_open_cli(prefix: &str) -> i32 {
     match prefix {
         "cli:" | "cli" => {
@@ -26,13 +26,13 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
                 println!("mcp:{name}");
             }
         }
-        "app:" | "app" => {
+        "view:" | "view" => {
             for name in crate::app::registry::installed_plugin_ids() {
-                println!("app:{name}");
+                println!("view:{name}");
             }
         }
         _ => {
-            // All categories: bare app IDs + prefixed variants
+            // All categories: bare plugin IDs + prefixed variants
             for name in crate::app::registry::installed_plugin_ids() {
                 println!("{name}");
             }
@@ -124,7 +124,7 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
 
 /// Inject a dynamic completion function for `plexi view open <TAB>` into the
 /// zsh completion script. Replaces the static `type_id` spec with a call to
-/// the hidden `_complete-open` subcommand, which enumerates app IDs, CLI
+/// the hidden `_complete-open` subcommand, which enumerates plugin IDs, CLI
 /// registry names, MCP registry names, and cached descriptors at runtime.
 fn inject_zsh_open_completions(script: &str, binary_name: &str) -> String {
     // The generated script has a line like:
@@ -136,7 +136,7 @@ fn inject_zsh_open_completions(script: &str, binary_name: &str) -> String {
         if line.contains("::type_id") && line.contains("App id to open") {
             // Replace static spec with dynamic completion
             result.push_str(&format!(
-                "':type_id -- App, CLI, or MCP name (app:, cli:, mcp: prefix):__{binary_name}_open_completions' \\",
+                "':type_id -- App, CLI, or MCP name (plugin:, cli:, mcp: prefix):__{binary_name}_open_completions' \\",
             ));
             result.push('\n');
             if !injected_helper {

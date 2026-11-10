@@ -1,14 +1,14 @@
 //! `ai.query` capability broker — issue #284, #383.
 //!
-//! The broker is the host-side bridge between an app's `DrawCommand::AiQuery`
+//! The broker is the host-side bridge between an plugin's `DrawCommand::AiQuery`
 //! and the live Plexi AI backend. The capability gate, model-tier resolution,
 //! ledger append, and outbound `PlexiEvent::AiResponse` are all funnelled
 //! through this module so:
 //!
 //!   1. Tests can replace `LiveAiBroker` with a canned `AiBroker` mock and
 //!      drive `host::wasm_pane` deterministically (no real LLM).
-//!   2. Any PGAP app with `ai.query` can reuse the same broker — the turn
-//!      loop is owned by the app, which calls into `LiveAiBroker` over PGAP.
+//!   2. Any PGAP plugin with `ai.query` can reuse the same broker — the turn
+//!      loop is owned by the plugin, which calls into `LiveAiBroker` over PGAP.
 //!
 //! Today the broker drives the synchronous `turn_loop::run_turn` path (which
 //! itself spawns a worker thread inside the backend) so we never hit the UI
@@ -85,7 +85,7 @@ pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
 }
 
 /// One brokered request — what the routing layer hands to a broker. `plugin_id`
-/// is required so the ledger can attribute spend per-app.
+/// is required so the ledger can attribute spend per-plugin.
 #[derive(Debug, Clone)]
 pub struct AiBrokerRequest {
     pub plugin_id: String,
@@ -115,7 +115,7 @@ pub struct AiBrokerRequest {
     pub cancel: CancelToken,
     /// Override for the default tool-call round cap (see
     /// `MAX_TOOL_ITERATIONS_DEFAULT`). Callers that expect a turn to need many
-    /// rounds (e.g. the assistant's app-build skill) set a higher value so the
+    /// rounds (e.g. the assistant's plugin-build skill) set a higher value so the
     /// turn pauses gracefully later instead of being cut short. `None` uses
     /// the default.
     pub max_tool_iterations: Option<usize>,
@@ -551,7 +551,7 @@ fn run_turn_and_respond(
 
     // High enough for multi-step host workflows (e.g. the build-plexi-plugin
     // pipeline pairs every terminal command with a host.terminals.read).
-    // Callers expecting longer turns (app-build skill) raise this via
+    // Callers expecting longer turns (plugin-build skill) raise this via
     // `AiBrokerRequest::max_tool_iterations`.
     const MAX_TOOL_ITERATIONS_DEFAULT: usize = 30;
     let max_tool_iterations = request
@@ -614,7 +614,7 @@ fn run_turn_and_respond(
             cancel: request.cancel.clone(),
         };
 
-        // Forward every streamed increment live so the app sees tokens as
+        // Forward every streamed increment live so the plugin sees tokens as
         // they arrive — including reasoning deltas and text from tool-call
         // turns (assistant commentary between tool rounds).
         let turn = turn_loop::run_turn(backend, backend_req, &mut *on_delta);
@@ -992,7 +992,7 @@ fn generation_metrics_usable(metrics: &GenerationMetrics) -> bool {
 /// Eventual consistency: if the generation is not yet queryable, OpenRouter
 /// returns 404 or a 200 with `data` absent/null. Three attempts: after 2s,
 /// 5s, and 8s (15s total). Gemini models via OpenRouter are the slowest;
-/// their records appear ~30s post-stream but well within the 35s app timeout.
+/// their records appear ~30s post-stream but well within the 35s plugin timeout.
 /// If still unavailable after all attempts, logs a warning and returns `None`.
 #[derive(Debug, Clone, Copy, Default)]
 struct GenerationMetrics {
@@ -1094,7 +1094,7 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     // queryable immediately after the stream completes. Gemini models via
     // OpenRouter are especially slow: manually confirmed at ~30s. Use three
     // attempts: wait 2s, wait 5s, wait 8s (15s total sleep, well within
-    // the 35s app timeout). A 200 whose token counts are still 0 is treated
+    // the 35s plugin timeout). A 200 whose token counts are still 0 is treated
     // as "not ready" and retried; the stream's own usage is the fallback.
     let mut last_without_tokens: Option<GenerationMetrics> = None;
     for (attempt, delay_secs) in [(1u32, 2u64), (2, 5), (3, 8)] {
@@ -1807,7 +1807,7 @@ mod tests {
             system: "sys".to_string(),
             messages: vec![AiMessage {
                 role: "user".to_string(),
-                content: "build me an app".to_string(),
+                content: "build me an plugin".to_string(),
             }],
             tools: vec![tool],
             workspace_root: None,

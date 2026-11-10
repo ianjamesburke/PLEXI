@@ -309,7 +309,7 @@ fn missing_picker_error(platform: InstallPlatform) -> String {
 
 /// Build the shell expression injected into the calling terminal pane.
 ///
-/// The binary path can contain spaces (notably an installed app bundle path on
+/// The binary path can contain spaces (notably an installed plugin bundle path on
 /// macOS), so it must be shell-quoted as one command argument rather than
 /// interpolated into the expression.
 fn notes_open_command(self_exe: &str, editor: &str) -> String {

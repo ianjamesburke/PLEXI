@@ -151,7 +151,7 @@ impl PlexiApp {
     /// capability and the `allowed_hosts` allowlist, read from the pane's own
     /// permissions rather than from anything the caller declared. Built-in
     /// panes carry an empty allowlist, which the shared check reads as
-    /// unrestricted http(s) — the same posture a manifest app gets when it
+    /// unrestricted http(s) — the same posture a manifest plugin gets when it
     /// declares `net.http` without naming hosts.
     fn assistant_net_policy(&self, origin_pane_id: u64) -> Result<Vec<String>, String> {
         let Some((window_index, _)) = self.find_pane_in_any_window(origin_pane_id) else {
@@ -160,14 +160,14 @@ impl PlexiApp {
         let Some(app) = self.windows[window_index]
             .panes
             .get(&origin_pane_id)
-            .and_then(crate::host::pane::Pane::as_app)
+            .and_then(crate::host::pane::Pane::as_view)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
         };
         if !app.permissions.is_builtin
             && !app.permissions.capabilities.contains(&Capability::NetHttp)
         {
-            return Err("net_capability_missing: origin app lacks net.http".to_string());
+            return Err("net_capability_missing: origin plugin lacks net.http".to_string());
         }
         Ok(app.permissions.allowed_hosts.clone())
     }
@@ -260,7 +260,7 @@ impl PlexiApp {
                     &live,
                 );
                 log::info!(
-                    "assistant_host_tool: host.introspect query={} cli={} apps={} panes={} permissions={}",
+                    "assistant_host_tool: host.introspect query={} cli={} plugins={} panes={} permissions={}",
                     query.unwrap_or(""),
                     doc["cli"].as_array().map(|rows| rows.len()).unwrap_or(0),
                     doc["plugins"].as_array().map(|rows| rows.len()).unwrap_or(0),
@@ -397,9 +397,9 @@ impl PlexiApp {
                 self.close_pane_by_id(id);
                 ToolCallResult::ok_value(serde_json::json!({"ok": true, "pane_id": id}))
             }
-            "host.apps.open" => {
-                let Some(app) = parsed.get("app").and_then(serde_json::Value::as_str) else {
-                    return ToolCallResult::err("invalid_input: app is required".to_string());
+            "host.views.open" => {
+                let Some(app) = parsed.get("plugin").and_then(serde_json::Value::as_str) else {
+                    return ToolCallResult::err("invalid_input: plugin is required".to_string());
                 };
                 let layout = parsed
                     .get("layout")
@@ -418,7 +418,7 @@ impl PlexiApp {
                 let target_pane_id = parsed.get("pane_id").and_then(serde_json::Value::as_u64);
                 if let Some(already) = target_pane_id.and_then(|id| self.assistant_open_editor(id)) {
                     log::info!(
-                        "assistant_host_tool: apps.open already_open pane={} path={}",
+                        "assistant_host_tool: plugins.open already_open pane={} path={}",
                         already.pane_id,
                         already.path
                     );
@@ -428,7 +428,7 @@ impl PlexiApp {
                         "pane_id": already.pane_id,
                         "path": already.path,
                         "dirty": already.dirty,
-                        "app": app,
+                        "plugin": app,
                         "message": "this pane already has the file open; edit it with host.files.edit using the absolute path",
                     }));
                 }
@@ -442,9 +442,9 @@ impl PlexiApp {
                     target_pane_id,
                 }) {
                     Ok(pane_id) => ToolCallResult::ok_value(
-                        serde_json::json!({"ok": true, "pane_id": pane_id, "app": app}),
+                        serde_json::json!({"ok": true, "pane_id": pane_id, "plugin": app}),
                     ),
-                    Err(error) => ToolCallResult::err(format!("open_app_failed: {error}")),
+                    Err(error) => ToolCallResult::err(format!("open_view_failed: {error}")),
                 }
             }
             "host.terminals.open" => {
@@ -700,7 +700,7 @@ impl PlexiApp {
 
     /// Bind the Assistant's existing pane to the terminal it just opened.
     /// `RunInLinkedTerminal` is intentionally link-scoped: the Assistant is a
-    /// built-in app with `terminal.bindings`, while ordinary apps still need
+    /// built-in plugin with `terminal.bindings`, while ordinary plugins still need
     /// their manifest capability and their own linked terminal.
     fn assistant_bind_terminal(
         &mut self,
@@ -719,9 +719,9 @@ impl PlexiApp {
         let Some(app) = window
             .panes
             .get_mut(&origin_pane_id)
-            .and_then(crate::host::pane::Pane::as_app_mut)
+            .and_then(crate::host::pane::Pane::as_view_mut)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
         };
         if !app.permissions.is_builtin
             && !app
@@ -729,7 +729,7 @@ impl PlexiApp {
                 .capabilities
                 .contains(&Capability::TerminalBindings)
         {
-            return Err("origin app lacks terminal.bindings capability".to_string());
+            return Err("origin plugin lacks terminal.bindings capability".to_string());
         }
         app.linked_pane_id = Some(terminal_pane_id);
         Ok(())
@@ -756,9 +756,9 @@ impl PlexiApp {
         let Some(app) = window
             .panes
             .get(&origin_pane_id)
-            .and_then(crate::host::pane::Pane::as_app)
+            .and_then(crate::host::pane::Pane::as_view)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an app pane"));
+            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
         };
         if !app.permissions.is_builtin
             && !app
@@ -766,7 +766,7 @@ impl PlexiApp {
                 .capabilities
                 .contains(&Capability::TerminalBindings)
         {
-            return Err("origin app lacks terminal.bindings capability".to_string());
+            return Err("origin plugin lacks terminal.bindings capability".to_string());
         }
         if app.linked_pane_id != Some(terminal_pane_id) {
             return Err(format!(
@@ -780,7 +780,7 @@ impl PlexiApp {
             "assistant_host_tool: terminal.bindings inject origin={origin_pane_id} terminal={terminal_pane_id} command_chars={} echo=true", command.chars().count()
         );
         // Reuse the production DrawCommand execution path; its link check is
-        // the terminal.bindings capability boundary for app-originated input.
+        // the terminal.bindings capability boundary for plugin-originated input.
         self.dispatch_run_in_linked_terminal(
             origin_pane_id,
             terminal_pane_id,
@@ -793,12 +793,12 @@ impl PlexiApp {
     /// Spawn `type_id` into a new pane, or — when `target_pane_id` is set —
     /// into the vicinity of that existing pane, which must be an idle
     /// terminal (an "empty" pane). Targeting an occupied pane (already
-    /// running an app, or a portal) returns a clear `pane_occupied` error
+    /// running an plugin, or a portal) returns a clear `pane_occupied` error
     /// instead of the opaque `open_..._failed` message a same-pane split
     /// collision used to produce (stint 0374).
     ///
     /// The target's own pane_id is not reused for the new content — the
-    /// new app pane keeps its own freshly allocated id like any other
+    /// new view pane keeps its own freshly allocated id like any other
     /// spawn, and the target is torn down (with full hot-reload/notification
     /// cleanup via `close_pane_by_id`) only after the new pane exists. This
     /// avoids reassigning a live pane's id, which would orphan any
@@ -941,8 +941,8 @@ impl PlexiApp {
                                 term.name.clone().unwrap_or_else(|| "terminal".to_string()),
                                 None,
                             ),
-                            crate::host::pane::Pane::App(app) => {
-                                ("app", app.name.clone(), Some(app.manifest_id.clone()))
+                            crate::host::pane::Pane::View(app) => {
+                                ("view", app.name.clone(), Some(app.manifest_id.clone()))
                             }
                             crate::host::pane::Pane::Portal(portal) => (
                                 "portal",
@@ -988,7 +988,7 @@ impl PlexiApp {
                                 "terminal",
                                 term.name.clone().unwrap_or_else(|| "terminal".to_string()),
                             ),
-                            crate::host::pane::Pane::App(app) => ("app", app.name.clone()),
+                            crate::host::pane::Pane::View(app) => ("view", app.name.clone()),
                             crate::host::pane::Pane::Portal(portal) => {
                                 ("portal", format!("portal:{}", portal.target_context_id))
                             }
@@ -1006,8 +1006,8 @@ impl PlexiApp {
 
     /// Directories the Assistant's file tools may touch. The caller context
     /// root is primary so relative paths and pathless walks behave like a
-    /// coding agent opened in that workspace. The global apps directory stays
-    /// available as an explicit auxiliary root for app authoring.
+    /// coding agent opened in that workspace. The global plugins directory stays
+    /// available as an explicit auxiliary root for plugin authoring.
     fn assistant_file_roots(&self, origin_context_id: u64) -> Vec<std::path::PathBuf> {
         let global_apps = crate::app::registry::plugins_dir();
         let mut roots = Vec::new();
@@ -1058,9 +1058,9 @@ impl PlexiApp {
             .windows
             .iter()
             .find_map(|window| window.panes.get(&pane_id))?;
-        Some(if let Some(app) = pane.as_app() {
+        Some(if let Some(app) = pane.as_view() {
             serde_json::json!({
-                "pane_id": pane_id, "type": "app", "title": app.name,
+                "pane_id": pane_id, "type": "view", "title": app.name,
                 "manifest_id": app.manifest_id, "runtime": app.runtime.runtime_kind(),
                 "semantic": app.semantic_state(),
             })
@@ -1091,7 +1091,7 @@ impl PlexiApp {
                         _ => None,
                     });
                 window.panes.iter().filter_map(move |(id, pane)| {
-                    let app = pane.as_app()?;
+                    let app = pane.as_view()?;
                     if app.runtime.type_id() != "text-editor" {
                         return None;
                     }
@@ -1114,7 +1114,7 @@ impl PlexiApp {
             .windows
             .iter()
             .find_map(|window| window.panes.get(&pane_id))?;
-        let app = pane.as_app()?;
+        let app = pane.as_view()?;
         if app.runtime.type_id() != "text-editor" {
             return None;
         }
@@ -1130,7 +1130,7 @@ impl PlexiApp {
         let mut paths = Vec::new();
         for window in &self.windows {
             for pane in window.panes.values() {
-                let Some(app) = pane.as_app() else {
+                let Some(app) = pane.as_view() else {
                     continue;
                 };
                 if let Some(buffer) = app.runtime.editor_buffer() {
@@ -1478,7 +1478,7 @@ fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
 /// Walk `start` in sorted order via [`crate::search::ScopedWalker`], yielding
 /// files. Skips [`crate::search::DEFAULT_PRUNE_DIRS`], stops at the walk caps,
 /// and never follows symlinks (same rule as packaging): grep/list are read-only
-/// auto-allowed tools, so a symlink inside an apps directory must not widen
+/// auto-allowed tools, so a symlink inside an plugins directory must not widen
 /// their reach beyond the scoped roots. Returns `(files, hit_file_cap)`.
 fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool) {
     if start.is_file() {
@@ -1814,8 +1814,8 @@ mod tests {
         let app = harness.app.windows[0]
             .panes
             .get_mut(&origin)
-            .and_then(crate::host::pane::Pane::as_app_mut)
-            .expect("test pane is an app pane");
+            .and_then(crate::host::pane::Pane::as_view_mut)
+            .expect("test pane is an view pane");
         app.permissions.allowed_hosts = vec!["api.example.com".to_string()];
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -1849,10 +1849,10 @@ mod tests {
     #[test]
     fn scoped_file_helpers_write_read_edit_within_roots_and_reject_escapes() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("plugins");
-        std::fs::create_dir_all(&apps).unwrap();
-        let roots = vec![apps.clone()];
-        let file = apps.join("demo/main.py").display().to_string();
+        let plugins = root.path().join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let roots = vec![plugins.clone()];
+        let file = plugins.join("demo/main.py").display().to_string();
 
         let created = super::write_scoped_file(&roots, &file, "count = 0\nprint(count)\n").unwrap();
         assert!(created.created);
@@ -1886,7 +1886,7 @@ mod tests {
         let outside = super::write_scoped_file(&roots, "/tmp/plexi-escape.py", "x").unwrap_err();
         assert!(outside.starts_with("path_out_of_scope"), "{outside}");
 
-        let traversal = apps.join("demo/../../etc/passwd").display().to_string();
+        let traversal = plugins.join("demo/../../etc/passwd").display().to_string();
         let escaped = super::read_scoped_file(&roots, &traversal).unwrap_err();
         assert!(escaped.starts_with("path_traversal_rejected"), "{escaped}");
 
@@ -1899,10 +1899,10 @@ mod tests {
     #[test]
     fn read_slice_numbers_lines_and_pages_through_the_file() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("plugins");
-        std::fs::create_dir_all(apps.join("demo")).unwrap();
-        let roots = vec![apps.clone()];
-        let file = apps.join("demo/main.py").display().to_string();
+        let plugins = root.path().join("plugins");
+        std::fs::create_dir_all(plugins.join("demo")).unwrap();
+        let roots = vec![plugins.clone()];
+        let file = plugins.join("demo/main.py").display().to_string();
         let body = (1..=10).map(|n| format!("line{n}\n")).collect::<String>();
         super::write_scoped_file(&roots, &file, &body).unwrap();
 
@@ -1928,16 +1928,16 @@ mod tests {
     #[test]
     fn grep_scoped_matches_lines_respects_caps_and_rejects_bad_patterns() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("plugins");
-        std::fs::create_dir_all(apps.join("demo")).unwrap();
-        std::fs::create_dir_all(apps.join("demo/__pycache__")).unwrap();
-        let roots = vec![apps.clone()];
+        let plugins = root.path().join("plugins");
+        std::fs::create_dir_all(plugins.join("demo")).unwrap();
+        std::fs::create_dir_all(plugins.join("demo/__pycache__")).unwrap();
+        let roots = vec![plugins.clone()];
         std::fs::write(
-            apps.join("demo/main.py"),
+            plugins.join("demo/main.py"),
             "def view():\n    return Button('go')\n\ndef update(event):\n    pass\n",
         )
         .unwrap();
-        std::fs::write(apps.join("demo/__pycache__/skip.py"), "def view(): pass\n").unwrap();
+        std::fs::write(plugins.join("demo/__pycache__/skip.py"), "def view(): pass\n").unwrap();
 
         let result = super::grep_scoped(&roots, None, r"def \w+\(", 50).unwrap();
         let matches = result["matches"].as_array().unwrap();
@@ -1954,7 +1954,7 @@ mod tests {
 
         let scoped = super::grep_scoped(
             &roots,
-            Some(&apps.join("demo/main.py").display().to_string()),
+            Some(&plugins.join("demo/main.py").display().to_string()),
             "update",
             50,
         )
@@ -1970,12 +1970,12 @@ mod tests {
     #[test]
     fn list_scoped_walks_sorted_and_skips_junk_dirs() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("plugins");
-        std::fs::create_dir_all(apps.join("demo/.venv")).unwrap();
-        let roots = vec![apps.clone()];
-        std::fs::write(apps.join("demo/manifest.toml"), "x").unwrap();
-        std::fs::write(apps.join("demo/main.py"), "y").unwrap();
-        std::fs::write(apps.join("demo/.venv/junk.py"), "z").unwrap();
+        let plugins = root.path().join("plugins");
+        std::fs::create_dir_all(plugins.join("demo/.venv")).unwrap();
+        let roots = vec![plugins.clone()];
+        std::fs::write(plugins.join("demo/manifest.toml"), "x").unwrap();
+        std::fs::write(plugins.join("demo/main.py"), "y").unwrap();
+        std::fs::write(plugins.join("demo/.venv/junk.py"), "z").unwrap();
 
         let result = super::list_scoped(&roots, None).unwrap();
         let entries = result["entries"].as_array().unwrap();
@@ -2001,21 +2001,21 @@ mod tests {
         assert!(diff.len() < super::MAX_DIFF_CHARS + 200, "{}", diff.len());
     }
 
-    /// Review fix (stint 0421): symlinks inside an apps dir must not widen
+    /// Review fix (stint 0421): symlinks inside an plugins dir must not widen
     /// the auto-allowed grep/list walks beyond the scoped roots.
     #[cfg(unix)]
     #[test]
     fn grep_and_list_walks_never_follow_symlinks() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("plugins");
+        let plugins = root.path().join("plugins");
         let outside = root.path().join("outside");
-        std::fs::create_dir_all(apps.join("demo")).unwrap();
+        std::fs::create_dir_all(plugins.join("demo")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(apps.join("demo/main.py"), "inside = 1\n").unwrap();
+        std::fs::write(plugins.join("demo/main.py"), "inside = 1\n").unwrap();
         std::fs::write(outside.join("secret.py"), "outside = 1\n").unwrap();
-        std::os::unix::fs::symlink(&outside, apps.join("demo/escape")).unwrap();
-        std::os::unix::fs::symlink(outside.join("secret.py"), apps.join("demo/leak.py")).unwrap();
-        let roots = vec![apps.clone()];
+        std::os::unix::fs::symlink(&outside, plugins.join("demo/escape")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.py"), plugins.join("demo/leak.py")).unwrap();
+        let roots = vec![plugins.clone()];
 
         let listed = super::list_scoped(&roots, None).unwrap();
         let paths: Vec<&str> = listed["entries"]
@@ -2323,7 +2323,7 @@ mod tests {
     }
 
     #[test]
-    fn native_open_tools_create_generic_app_and_terminal_panes() {
+    fn native_open_tools_create_generic_view_and_terminal_panes() {
         let mut harness = HostHarness::new();
         let origin = harness.add_test_pane();
         let context = harness.app.windows[0].context_id;
@@ -2340,14 +2340,14 @@ mod tests {
         let after_generic = harness.pane_count();
 
         let app = harness.app.handle_assistant_host_tool(
-            "host.apps.open",
-            r#"{"app":"text-editor","layout":"split_h","args":[]}"#,
+            "host.views.open",
+            r#"{"plugin":"text-editor","layout":"split_h","args":[]}"#,
             origin,
             context,
         );
         assert!(app.error.is_none(), "{:?}", app.error);
         assert!(harness.pane_count() > after_generic);
-        let after_app = harness.pane_count();
+        let after_plugin = harness.pane_count();
 
         let terminal = harness.app.handle_assistant_host_tool(
             "host.terminals.open",
@@ -2356,7 +2356,7 @@ mod tests {
             context,
         );
         assert!(terminal.error.is_none(), "{:?}", terminal.error);
-        assert!(harness.pane_count() > after_app);
+        assert!(harness.pane_count() > after_plugin);
         let terminal_id = serde_json::from_str::<serde_json::Value>(
             terminal.output_json.as_deref().expect("terminal output"),
         )
@@ -2398,10 +2398,10 @@ mod tests {
         );
     }
 
-    /// Stint 0374: `host.apps.open`/`host.panes.open` can target an existing
+    /// Stint 0374: `host.plugins.open`/`host.panes.open` can target an existing
     /// idle terminal pane instead of always spawning a fresh one — the
     /// dogfooding bug where targeting pane 105 for calculator returned an
-    /// opaque `open_pane_failed` and the app landed in a brand-new pane.
+    /// opaque `open_pane_failed` and the plugin landed in a brand-new pane.
     #[test]
     fn native_open_tools_target_existing_empty_terminal_pane() {
         let mut harness = HostHarness::new();
@@ -2423,8 +2423,8 @@ mod tests {
             .expect("terminal pane id");
 
         let opened = harness.app.handle_assistant_host_tool(
-            "host.apps.open",
-            &serde_json::json!({"app": "text-editor", "pane_id": target_id}).to_string(),
+            "host.views.open",
+            &serde_json::json!({"view": "text-editor", "pane_id": target_id}).to_string(),
             origin,
             context,
         );
@@ -2454,7 +2454,7 @@ mod tests {
                 .windows
                 .iter()
                 .any(|window| window.panes.contains_key(&new_id)),
-            "the new app pane should exist"
+            "the new view pane should exist"
         );
     }
 
@@ -2466,8 +2466,8 @@ mod tests {
         let occupied = harness.add_test_pane();
 
         let result = harness.app.handle_assistant_host_tool(
-            "host.apps.open",
-            &serde_json::json!({"app": "text-editor", "pane_id": occupied}).to_string(),
+            "host.views.open",
+            &serde_json::json!({"view": "text-editor", "pane_id": occupied}).to_string(),
             origin,
             context,
         );
@@ -2526,8 +2526,8 @@ mod tests {
             .app
             .set_context_root(workspace.path().to_path_buf(), None);
         let context = harness.app.windows[0].context_id;
-        harness.app.open_builtin_app_pane(
-            Box::new(crate::app::text_editor_app::TextEditorView::new(file.clone())),
+        harness.app.open_builtin_view_pane(
+            Box::new(crate::app::text_editor_view::TextEditorView::new(file.clone())),
             crate::app::permissions::PluginPermissions::builtin(),
             workspace.path().to_path_buf(),
             None,
@@ -2540,7 +2540,7 @@ mod tests {
             .iter()
             .flat_map(|window| window.panes.iter())
             .find_map(|(id, pane)| {
-                let app = pane.as_app()?;
+                let app = pane.as_view()?;
                 (app.runtime.type_id() == "text-editor").then_some(*id)
             })
             .expect("text editor pane");
@@ -2640,7 +2640,7 @@ mod tests {
             .windows
             .iter()
             .find_map(|window| window.panes.get(&editor_id))
-            .and_then(|pane| pane.as_app())
+            .and_then(|pane| pane.as_view())
             .and_then(|app| app.runtime.semantic_details())
             .expect("editor state");
         let change = &state["change_set"];

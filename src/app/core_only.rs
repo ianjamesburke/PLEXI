@@ -1,5 +1,5 @@
 //! Startup-only plugin policy and inert restore views. No plugin factory runs here.
-use crate::app::app_trait::{App, ViewRenderContext};
+use crate::app::view_trait::{View, ViewRenderContext};
 use crate::host::pane::{ViewPane, ViewRuntime, Pane};
 use crate::workspace::SavedPane;
 
@@ -41,7 +41,7 @@ struct DisabledPluginView {
     original: SavedPane,
 }
 
-impl App for DisabledPluginView {
+impl View for DisabledPluginView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -91,7 +91,7 @@ pub(crate) fn disabled_plugin_pane(saved: &SavedPane) -> Pane {
         saved.id,
         saved.plugin_id
     );
-    Pane::App(Box::new(ViewPane {
+    Pane::View(Box::new(ViewPane {
         pip_status: None,
         id: saved.id,
         runtime: ViewRuntime::Builtin(Box::new(DisabledPluginView {

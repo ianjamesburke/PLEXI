@@ -1,6 +1,6 @@
 //! Live command view over agents API records.
 //!
-//! The pane and `command-view --follow` read [`crate::agent::runs::projection`].
+//! The pane and `agents-dashboard --follow` read [`crate::agent::runs::projection`].
 //! This module does not keep a board. `enqueue`, `pause`, and `block` are not
 //! commands here, and `resolve` / `allow` do not grant.
 
@@ -33,7 +33,7 @@ pub fn publish(workspace: &Path, summary: &str) {
     };
     log::info!("command_view: revision={revision} {summary}");
     let payload = crate::agent::runs::projection(workspace);
-    let timeline = crate::host::app_timeline::global();
+    let timeline = crate::host::plugin_timeline::global();
     let Ok(mut timeline) = timeline.lock() else {
         log::warn!("command_view: timeline lock failed");
         return;

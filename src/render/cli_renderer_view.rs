@@ -1,15 +1,15 @@
-//! Built-in CLI renderer: a native host app that turns any CLI into a GUI.
+//! Built-in CLI renderer: a native host plugin that turns any CLI into a GUI.
 //!
 //! Parses a `PlexiDescriptor` JSON file (resolved by the Tier 1/2/3 chain in
 //! `cli::descriptor` — native `--plexi`, registry, or recursive `--help`
 //! crawl), renders a navigable command list and per-command form, and executes
 //! the assembled command in a linked terminal pane.
 
-use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext, KeyDisposition};
 use crate::app::canvas_bindings::quote_for_shell;
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
 use crate::ui::{
-    app_chrome::ViewChrome,
+    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     hints::{HintBar, HintGroup},
     style,
@@ -46,7 +46,7 @@ fn clean_version(name: &str, raw: &str) -> String {
 // ── View state ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-enum View {
+enum RendererPage {
     Loading,
     Error(String),
     List,
@@ -55,7 +55,7 @@ enum View {
 
 pub struct CliRendererView {
     descriptor: Option<PlexiDescriptor>,
-    view: View,
+    view: RendererPage,
     /// Breadcrumb path into nested commands (each entry is a command name).
     cmd_path: Vec<String>,
     /// Selected index in the current command list.
@@ -111,18 +111,18 @@ impl CliRendererView {
                         d.name,
                         d.version
                     );
-                    (Some(d), View::Loading)
+                    (Some(d), RendererPage::Loading)
                 }
                 Err(e) => {
                     log::warn!("CliRendererView: bad JSON in {descriptor_path}: {e}");
-                    (None, View::Error(format!("Invalid descriptor JSON: {e}")))
+                    (None, RendererPage::Error(format!("Invalid descriptor JSON: {e}")))
                 }
             },
             Err(e) => {
                 log::warn!("CliRendererView: cannot read {descriptor_path}: {e}");
                 (
                     None,
-                    View::Error(format!("Cannot read {descriptor_path}: {e}")),
+                    RendererPage::Error(format!("Cannot read {descriptor_path}: {e}")),
                 )
             }
         };
@@ -133,12 +133,12 @@ impl CliRendererView {
     /// Open an already resolved descriptor without a temporary file.
     pub fn from_descriptor(descriptor: PlexiDescriptor) -> Self {
         log::info!("CliRendererView: UI upcycle opened '{}'", descriptor.name);
-        Self::with_descriptor(Some(descriptor), View::Loading, String::new())
+        Self::with_descriptor(Some(descriptor), RendererPage::Loading, String::new())
     }
 
     fn with_descriptor(
         descriptor: Option<PlexiDescriptor>,
-        view: View,
+        view: RendererPage,
         descriptor_path: String,
     ) -> Self {
         let binary_name = descriptor
@@ -243,7 +243,7 @@ impl CliRendererView {
         self.cmd_path.push(name);
         if has_children {
             self.selected = 0;
-            self.view = View::List;
+            self.view = RendererPage::List;
         } else if !has_fields {
             // Argless leaves have nothing to configure. Run them directly, but
             // return to this list so the user can run a neighboring command.
@@ -253,7 +253,7 @@ impl CliRendererView {
                 self.request_terminal();
             }
             self.cmd_path.pop();
-            self.view = View::List;
+            self.view = RendererPage::List;
         } else {
             self.field_values.clear();
             self.focused_field = None;
@@ -261,7 +261,7 @@ impl CliRendererView {
                 self.field_values.insert(k, v);
             }
             self.pending_focus = true;
-            self.view = View::Form;
+            self.view = RendererPage::Form;
         }
     }
 
@@ -270,7 +270,7 @@ impl CliRendererView {
             self.selected = 0;
             self.field_values.clear();
             self.focused_field = None;
-            self.view = View::List;
+            self.view = RendererPage::List;
         }
     }
 
@@ -406,7 +406,7 @@ impl CliRendererView {
 
         // Shared SurfaceHeader header
         let header_rect =
-            ViewChrome::new(colors).paint_app_bar(ui, &title, top_desc.as_deref().unwrap_or(""));
+            ViewChrome::new(colors).paint_view_bar(ui, &title, top_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -506,7 +506,7 @@ impl CliRendererView {
 
         // Shared SurfaceHeader header
         let header_rect =
-            ViewChrome::new(colors).paint_app_bar(ui, &title, cmd_desc.as_deref().unwrap_or(""));
+            ViewChrome::new(colors).paint_view_bar(ui, &title, cmd_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -663,7 +663,7 @@ impl Drop for CliRendererView {
 
 // ── App trait ─────────────────────────────────────────────────────────────────
 
-impl App for CliRendererView {
+impl View for CliRendererView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -682,19 +682,19 @@ impl App for CliRendererView {
     }
 
     fn keyboard_capture(&self) -> bool {
-        matches!(self.view, View::Form)
+        matches!(self.view, RendererPage::Form)
     }
 
     fn submit_on_focused_text_input_enter(&self) -> bool {
         // CLI form fields are all single-line controls; bare Enter is the
         // documented Run action, not text entry. Keep this scoped to Form so
         // list navigation and loading/error views retain their normal routing.
-        matches!(self.view, View::Form)
+        matches!(self.view, RendererPage::Form)
     }
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         match &self.view {
-            View::List => {
+            RendererPage::List => {
                 let commands = self.commands_at_path();
                 let count = commands.len();
                 if count == 0 {
@@ -721,7 +721,7 @@ impl App for CliRendererView {
                 }
                 KeyDisposition::Passthrough
             }
-            View::Form => {
+            RendererPage::Form => {
                 if input.key_pressed(egui::Key::Escape) {
                     self.navigate_back();
                     return KeyDisposition::Consumed;
@@ -749,15 +749,15 @@ impl App for CliRendererView {
         // Request terminal on first render
         if !self.terminal_requested && self.descriptor.is_some() {
             self.request_terminal();
-            if self.view == View::Loading {
-                self.view = View::List;
+            if self.view == RendererPage::Loading {
+                self.view = RendererPage::List;
             }
         }
 
         let colors = ctx.colors;
 
         match &self.view {
-            View::Loading => {
+            RendererPage::Loading => {
                 ui.centered_and_justified(|ui| {
                     ui.label(
                         RichText::new("Loading…")
@@ -766,7 +766,7 @@ impl App for CliRendererView {
                     );
                 });
             }
-            View::Error(msg) => {
+            RendererPage::Error(msg) => {
                 let msg = msg.clone();
                 ui.vertical(|ui| {
                     ui.add_space(style::SPACE_XL);
@@ -790,10 +790,10 @@ impl App for CliRendererView {
                     });
                 });
             }
-            View::List => {
+            RendererPage::List => {
                 self.render_list(ui, colors);
             }
-            View::Form => {
+            RendererPage::Form => {
                 self.render_form(ui, colors, ctx.pane_id);
             }
         }
@@ -884,7 +884,7 @@ mod tests {
         ]
     }"#;
 
-    fn app_from_fixture() -> (CliRendererView, tempfile::TempDir) {
+    fn plugin_from_fixture() -> (CliRendererView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("descriptor.json");
         std::fs::write(&path, FIXTURE).expect("write fixture");
@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn loads_descriptor_and_lists_top_level_commands() {
-        let (app, _dir) = app_from_fixture();
+        let (app, _dir) = plugin_from_fixture();
         let d = app.descriptor.as_ref().expect("descriptor loaded");
         assert_eq!(d.name, "demo");
         let names: Vec<&str> = app
@@ -907,18 +907,18 @@ mod tests {
 
     #[test]
     fn navigate_into_leaf_opens_form_with_defaults() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0); // greet — a leaf with fields
-        assert_eq!(app.view, View::Form);
+        assert_eq!(app.view, RendererPage::Form);
         assert_eq!(app.cmd_path, vec!["greet".to_string()]);
         assert!(app.current_command().is_some());
     }
 
     #[test]
     fn navigate_into_parent_opens_list() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(1); // remote — has children
-        assert_eq!(app.view, View::List);
+        assert_eq!(app.view, RendererPage::List);
         let names: Vec<&str> = app
             .commands_at_path()
             .iter()
@@ -929,13 +929,13 @@ mod tests {
 
     #[test]
     fn navigate_into_argless_leaf_runs_in_linked_terminal_and_stays_in_list() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(1); // remote — parent with children
         app.terminal_pane_id = 5; // pretend the linked terminal is ready
 
         app.navigate_into(1); // status — leaf with no flags or args
 
-        assert_eq!(app.view, View::List);
+        assert_eq!(app.view, RendererPage::List);
         assert_eq!(app.cmd_path, vec!["remote".to_string()]);
         assert_eq!(app.last_run, "demo remote status");
         assert!(
@@ -953,12 +953,12 @@ mod tests {
 
     #[test]
     fn argless_leaf_waits_for_linked_terminal_then_runs() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(1); // remote — parent with children
 
         app.navigate_into(1); // status — leaf with no flags or args
 
-        assert_eq!(app.view, View::List);
+        assert_eq!(app.view, RendererPage::List);
         assert_eq!(app.cmd_path, vec!["remote".to_string()]);
         assert_eq!(
             app.pending_auto_run.as_deref(),
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn build_command_string_assembles_flags_and_args() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0); // greet
         app.field_values
             .insert("name".into(), "Ada Lovelace".into());
@@ -1035,7 +1035,7 @@ mod tests {
             )
             .expect("shipped descriptor");
             let mut app = CliRendererView::from_descriptor(descriptor);
-            app.view = View::List;
+            app.view = RendererPage::List;
             app.terminal_pane_id = 42;
             for segment in *path {
                 let index = app
@@ -1054,14 +1054,14 @@ mod tests {
                     KeyDisposition::Consumed
                 );
             }
-            assert_eq!(app.view, View::Form, "{binary}");
+            assert_eq!(app.view, RendererPage::Form, "{binary}");
             app.field_values.insert((*field).into(), (*value).into());
             press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
             assert!(app.take_pending_commands().iter().any(|command| matches!(command,
                 ViewCommand::RunInLinkedTerminal { terminal_pane_id: 42, command, .. } if command == expected
             )), "{binary}");
             press_key(&mut app, egui::Key::Escape, egui::Modifiers::NONE);
-            assert_eq!(app.view, View::List);
+            assert_eq!(app.view, RendererPage::List);
         }
     }
 
@@ -1093,7 +1093,7 @@ mod tests {
             )
             .unwrap();
             let mut app = CliRendererView::from_descriptor(descriptor);
-            app.view = View::List;
+            app.view = RendererPage::List;
             app.terminal_pane_id = 42;
             for segment in path {
                 let index = app
@@ -1140,7 +1140,7 @@ mod tests {
 
     #[test]
     fn form_values_round_trip_through_shell_as_literal_arguments() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0);
         for value in [
             "it's ready",
@@ -1170,7 +1170,7 @@ mod tests {
 
     #[test]
     fn generated_root_form_omits_synthetic_command_name() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         let root = Command {
             name: ROOT_COMMAND_NAME.to_string(),
             description: Some("Run demo with options".to_string()),
@@ -1199,7 +1199,7 @@ mod tests {
         app.navigate_into(0);
         app.field_values.insert("--verbose".into(), "true".into());
 
-        assert_eq!(app.view, View::Form);
+        assert_eq!(app.view, RendererPage::Form);
         assert_eq!(app.build_command_string(), "demo --verbose");
     }
 
@@ -1207,11 +1207,11 @@ mod tests {
     fn renders_without_panicking() {
         // Smoke test: drive a real egui frame through the renderer in List and
         // Form views to catch layout panics on the host UI thread.
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let ctx = egui::Context::default();
         // ListRow renders with the custom "ui-medium" font family, which only
-        // exists once the app's fonts are installed.
+        // exists once the plugin's fonts are installed.
         crate::ui::theme::setup_fonts(&ctx);
 
         let render_once = |app: &mut CliRendererView| {
@@ -1228,7 +1228,7 @@ mod tests {
 
         // First frame transitions Loading → List and requests a terminal.
         render_once(&mut app);
-        assert_eq!(app.view, View::List);
+        assert_eq!(app.view, RendererPage::List);
         assert!(
             app.last_header_rect.is_some(),
             "list view must render shared ViewChrome header"
@@ -1240,7 +1240,7 @@ mod tests {
         // Drill into the form view and render again.
         app.navigate_into(0);
         render_once(&mut app);
-        assert_eq!(app.view, View::Form);
+        assert_eq!(app.view, RendererPage::Form);
         assert!(
             app.last_header_rect.is_some(),
             "form view must render shared ViewChrome header"
@@ -1284,7 +1284,7 @@ mod tests {
 
     #[test]
     fn plain_enter_runs_the_form() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0); // greet — a leaf form
         app.terminal_pane_id = 5; // pretend the linked terminal is ready
         app.field_values.insert("name".into(), "Ada".into());
@@ -1305,7 +1305,7 @@ mod tests {
 
     #[test]
     fn focused_text_field_enter_runs_the_form() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0); // greet — a leaf form with a text field
         app.terminal_pane_id = 5;
         app.field_values.insert("name".into(), "Ada".into());
@@ -1373,7 +1373,7 @@ mod tests {
 
     #[test]
     fn cmd_enter_passes_through_for_pane_zoom() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.navigate_into(0); // greet — a leaf form
         app.terminal_pane_id = 5;
         app.field_values.insert("name".into(), "Ada".into());
@@ -1396,7 +1396,7 @@ mod tests {
 
     #[test]
     fn opening_a_leaf_form_arms_field_focus() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         assert!(!app.pending_focus);
         app.navigate_into(0); // greet — a leaf form with a text field
         assert!(
@@ -1407,7 +1407,7 @@ mod tests {
 
     #[test]
     fn requests_linked_terminal_below() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         app.request_terminal();
         let cmds = app.take_pending_commands();
         let placed_below = cmds.iter().any(|c| {
@@ -1425,7 +1425,7 @@ mod tests {
     #[test]
     fn bad_descriptor_path_yields_error_view() {
         let app = CliRendererView::new("/nonexistent/descriptor/path.json".into());
-        assert!(matches!(app.view, View::Error(_)));
+        assert!(matches!(app.view, RendererPage::Error(_)));
         assert!(app.descriptor.is_none());
     }
 
@@ -1438,7 +1438,7 @@ mod tests {
         std::fs::write(&path, FIXTURE).expect("write temp descriptor");
         assert!(path.exists());
         {
-            let _app = CliRendererView::new(path.to_string_lossy().into_owned());
+            let _plugin = CliRendererView::new(path.to_string_lossy().into_owned());
         }
         assert!(
             !path.exists(),
@@ -1449,7 +1449,7 @@ mod tests {
     /// A non-temp descriptor path (e.g. a test fixture) is never deleted on drop.
     #[test]
     fn drop_leaves_non_temp_descriptor_file() {
-        let (app, dir) = app_from_fixture();
+        let (app, dir) = plugin_from_fixture();
         let path = dir.path().join("descriptor.json");
         assert!(path.exists());
         drop(app);
@@ -1464,7 +1464,7 @@ mod tests {
     /// visible error replaces the stuck "connecting terminal…" label (#2246).
     #[test]
     fn zero_terminal_pane_id_flags_link_failure() {
-        let (mut app, _dir) = app_from_fixture();
+        let (mut app, _dir) = plugin_from_fixture();
         assert!(!app.terminal_link_failed);
         let request_id = app.terminal_request_id.clone();
         app.queue_outbound_event(crate::protocol::PlexiEvent::LinkedTerminalReady {

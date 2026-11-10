@@ -4,10 +4,10 @@
 //! # Invariant carried from `docs/marketplace-hosted.md`
 //!
 //! Hosted services **distribute metadata and broker money**. They never become
-//! a dependency for running a local app. Everything in this module is a
+//! a dependency for running a local plugin. Everything in this module is a
 //! discovery / publish surface layered *on top of* the local package format
-//! (`crate::app::package`) and the local install flow. An installed app never
-//! phones home; the registry being down never breaks an installed app.
+//! (`crate::app::package`) and the local install flow. An installed plugin never
+//! phones home; the registry being down never breaks an installed plugin.
 //!
 //! # No client-side licensing
 //!
@@ -20,7 +20,7 @@
 //!
 //! # What lives here
 //!
-//! - [`Visibility`] / [`Price`] — the marketplace facts an app declares in its
+//! - [`Visibility`] / [`Price`] — the marketplace facts an plugin declares in its
 //!   manifest `[marketplace]` section. They drive public/private listing and
 //!   free/paid gating.
 //! - [`RegistryEntry`] / [`RegistryIndex`] / [`RegistryClient`] — the hosted
@@ -37,7 +37,7 @@ use std::path::PathBuf;
 /// Schema version for the registry index and license files. Bumped whenever a
 /// required field changes so an older host fails loud rather than silently
 /// mis-reading a newer catalog.
-pub const MARKETPLACE_SCHEMA_VERSION: u32 = 1;
+pub const MARKETPLACE_SCHEMA_VERSION: u32 = 2;
 
 /// Default hosted registry index URL. Overridable via
 /// `[marketplace].registry_url` in config. Honest default: points at the
@@ -48,15 +48,15 @@ pub const DEFAULT_REGISTRY_URL: &str = "https://plexiapp.com/registry/v1/index.j
 /// via `[marketplace].cdn_url`.
 pub const DEFAULT_CDN_URL: &str = "https://plexiapp.com/registry/v1/packages";
 
-/// Sidecar written into an installed app dir for hosted marketplace installs.
+/// Sidecar written into an installed plugin dir for hosted marketplace installs.
 /// Update checks use this later to know which registry entry/version produced
 /// the local copy.
 pub const INSTALLED_REGISTRY_SOURCE_FILE: &str = "marketplace_source.toml";
 
 // ── Visibility ────────────────────────────────────────────────────────────────
 
-/// Who can discover an app. Local-first default is [`Visibility::Private`]: an
-/// app is not public until its author explicitly publishes it. Drives whether
+/// Who can discover an plugin. Local-first default is [`Visibility::Private`]: an
+/// plugin is not public until its author explicitly publishes it. Drives whether
 /// `plugin browse`/`plugin search` list it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -79,7 +79,7 @@ impl Visibility {
         }
     }
 
-    /// Whether `plugin browse` (the public catalog view) should list this app.
+    /// Whether `plugin browse` (the public catalog view) should list this plugin.
     pub fn is_listed(self) -> bool {
         matches!(self, Visibility::Public)
     }
@@ -87,8 +87,8 @@ impl Visibility {
 
 // ── Price ─────────────────────────────────────────────────────────────────────
 
-/// What an app costs. Money is stored in integer minor units (cents) to avoid
-/// float rounding. [`Price::Free`] is the default — an app costs nothing unless
+/// What an plugin costs. Money is stored in integer minor units (cents) to avoid
+/// float rounding. [`Price::Free`] is the default — an plugin costs nothing unless
 /// it explicitly says otherwise.
 ///
 /// Serialized form in `manifest.toml`:
@@ -99,7 +99,7 @@ impl Visibility {
 pub enum Price {
     /// A keyword form so `price = "free"` parses cleanly.
     Keyword(FreeKeyword),
-    /// A paid app with an explicit amount + ISO-4217 currency.
+    /// A paid plugin with an explicit amount + ISO-4217 currency.
     Paid {
         amount_cents: u64,
         #[serde(default = "default_currency")]
@@ -108,7 +108,7 @@ pub enum Price {
 }
 
 /// The only legal string value for [`Price::Keyword`]. A dedicated enum keeps
-/// `price = "freee"` a loud parse error instead of a silently-misread paid app.
+/// `price = "freee"` a loud parse error instead of a silently-misread paid plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FreeKeyword {
@@ -155,7 +155,7 @@ impl Price {
 // ── Manifest section ──────────────────────────────────────────────────────────
 
 /// The optional `[marketplace]` manifest section. Absent entirely for a
-/// local-only app, in which case the app is free + private and cannot be
+/// local-only plugin, in which case the plugin is free + private and cannot be
 /// published until the author adds this section.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct MarketplaceManifest {
@@ -165,14 +165,14 @@ pub struct MarketplaceManifest {
     /// Price. Defaults to [`Price::Free`].
     #[serde(default)]
     pub price: Price,
-    /// Publisher account / org slug. Required to publish; `None` for local apps.
+    /// Publisher account / org slug. Required to publish; `None` for local plugins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<String>,
 }
 
 // ── Registry catalog ──────────────────────────────────────────────────────────
 
-/// One app in the hosted catalog. Republishes the local validator output
+/// One plugin in the hosted catalog. Republishes the local validator output
 /// ([`PackageReport`]) plus the marketplace facts and the CDN address. The host
 /// never trusts a registry-supplied trust label over its own validation — on
 /// install it re-validates the downloaded package and recomputes the label.
@@ -218,7 +218,7 @@ pub struct RegistryEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_url: Option<String>,
     /// Declared minimum host version (`[requires].plexi_min`). Lets the catalog
-    /// and install gate reject an incompatible app before download.
+    /// and install gate reject an incompatible plugin before download.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requires_plexi_min: Option<String>,
     /// Declared soft host-version ceiling (`[requires].plexi_max`).
@@ -264,20 +264,21 @@ impl RegistryEntry {
 
 /// The whole catalog. Versioned so an older host refuses a newer schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegistryIndex {
     pub schema_version: u32,
     #[serde(default)]
-    pub apps: Vec<RegistryEntry>,
+    pub plugins: Vec<RegistryEntry>,
 }
 
 impl RegistryIndex {
-    /// Apps that should appear in `plugin browse` — public listings only.
+    /// Plugins that should appear in `plugin browse` — public listings only.
     pub fn listed(&self) -> impl Iterator<Item = &RegistryEntry> {
-        self.apps.iter().filter(|e| e.visibility.is_listed())
+        self.plugins.iter().filter(|e| e.visibility.is_listed())
     }
 
     /// Case-insensitive substring search over id, name, description, and tags.
-    /// Only searches listed (public) apps — unlisted/private apps are not
+    /// Only searches listed (public) plugins — unlisted/private plugins are not
     /// discoverable by query, only by exact id.
     pub fn search<'a>(&'a self, query: &str) -> Vec<&'a RegistryEntry> {
         let q = query.to_lowercase();
@@ -292,10 +293,10 @@ impl RegistryIndex {
     }
 
     /// Look up a single entry by exact id, regardless of visibility. Used by
-    /// install-from-registry — you can install an unlisted/private app if you
-    /// know its id and (for paid apps) hold a license.
+    /// install-from-registry — you can install an unlisted/private plugin if you
+    /// know its id and (for paid plugins) hold a license.
     pub fn get(&self, id: &str) -> Option<&RegistryEntry> {
-        self.apps.iter().find(|e| e.id == id)
+        self.plugins.iter().find(|e| e.id == id)
     }
 }
 
@@ -308,7 +309,7 @@ pub enum RegistryError {
     Parse(String),
     #[error("registry schema_version {found} is newer than supported ({supported})")]
     SchemaTooNew { found: u32, supported: u32 },
-    #[error("no app with id '{0}' in the registry")]
+    #[error("no plugin with id '{0}' in the registry")]
     NotFound(String),
     #[error("download failed: {0}")]
     Download(String),
@@ -354,13 +355,13 @@ impl RegistryClient {
             .map_err(|e| RegistryError::Fetch(e.to_string()))?;
         let index: RegistryIndex =
             serde_json::from_str(&body).map_err(|e| RegistryError::Parse(e.to_string()))?;
-        if index.schema_version > MARKETPLACE_SCHEMA_VERSION {
+        if index.schema_version != MARKETPLACE_SCHEMA_VERSION {
             return Err(RegistryError::SchemaTooNew {
                 found: index.schema_version,
                 supported: MARKETPLACE_SCHEMA_VERSION,
             });
         }
-        log::info!("marketplace: index loaded, {} apps", index.apps.len());
+        log::info!("marketplace: index loaded, {} plugins", index.plugins.len());
         Ok(index)
     }
 
@@ -464,7 +465,7 @@ impl InstalledRegistrySource {
 
     pub fn write_to(&self, plugin_dir: &std::path::Path) -> Result<(), String> {
         std::fs::create_dir_all(plugin_dir)
-            .map_err(|e| format!("create app dir {}: {e}", plugin_dir.display()))?;
+            .map_err(|e| format!("create plugin dir {}: {e}", plugin_dir.display()))?;
         let text = toml::to_string_pretty(self)
             .map_err(|e| format!("serialize registry source metadata: {e}"))?;
         let path = plugin_dir.join(INSTALLED_REGISTRY_SOURCE_FILE);
@@ -678,16 +679,16 @@ mod tests {
     fn index_search_only_lists_public_apps() {
         let index = RegistryIndex {
             schema_version: 1,
-            apps: vec![
+            plugins: vec![
                 entry("public-notes", Price::default(), Visibility::Public),
                 entry("secret-tool", Price::default(), Visibility::Private),
                 entry("unlisted-beta", Price::default(), Visibility::Unlisted),
             ],
         };
         let hits = index.search("");
-        assert_eq!(hits.len(), 1, "only public apps are searchable");
+        assert_eq!(hits.len(), 1, "only public plugins are searchable");
         assert_eq!(hits[0].id, "public-notes");
-        // But a private app is still resolvable by exact id for install.
+        // But a private plugin is still resolvable by exact id for install.
         assert!(index.get("secret-tool").is_some());
         assert!(index.get("unlisted-beta").is_some());
     }
@@ -698,14 +699,14 @@ mod tests {
         let mut free_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
         free_entry.reviewed_native = true;
 
-        // Free apps carry no price gate and no account requirement — with the
+        // Free plugins carry no price gate and no account requirement — with the
         // no-license model, `is_free()` is the whole install-time decision.
         assert!(free_entry.price.is_free());
         assert!(
             crate::app::account::AccountStore::open_at(tmp.path().join("account.toml"))
                 .current()
                 .is_none(),
-            "test starts without a marketplace account, but free apps still proceed"
+            "test starts without a marketplace account, but free plugins still proceed"
         );
     }
 
@@ -819,7 +820,7 @@ mod tests {
 
         let mut catalog_entry = entry("reviewed-notes", Price::default(), Visibility::Public);
         catalog_entry.name = "Reviewed Notes".to_string();
-        catalog_entry.description = "A free reviewed smoke app".to_string();
+        catalog_entry.description = "A free reviewed smoke plugin".to_string();
         catalog_entry.trust_label =
             "Reviewed native process — human-reviewed; not sandboxed".to_string();
         catalog_entry.reviewed_native = true;
@@ -828,7 +829,7 @@ mod tests {
 
         let index = RegistryIndex {
             schema_version: MARKETPLACE_SCHEMA_VERSION,
-            apps: vec![catalog_entry],
+            plugins: vec![catalog_entry],
         };
         let index_url = serve_once(serde_json::to_vec(&index).unwrap(), "application/json");
         let client = RegistryClient::new(Some(index_url.clone()), Some("http://unused".into()));

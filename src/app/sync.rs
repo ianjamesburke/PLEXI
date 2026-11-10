@@ -5,13 +5,13 @@ use crate::host::shell;
 use crate::plexi_ai::broker::PaneContext;
 
 impl PlexiApp {
-    /// Synchronize app panes that join the `cwd` pane group with any terminal's
+    /// Synchronize view panes that join the `cwd` pane group with any terminal's
     /// working directory. Prefers the focused terminal; falls back to any terminal
-    /// in the active context, so the sync still happens when an app pane is
+    /// in the active context, so the sync still happens when an view pane is
     /// the egui-focused tile. Synchronization is a direct
     /// `workspace_root` reassignment plus `ViewRuntime::sync_cwd`; no event is
     /// emitted, and `sync_cwd` is a no-op for Python and WASM panes.
-    pub(super) fn sync_app_cwd(&mut self) {
+    pub(super) fn sync_plugin_cwd(&mut self) {
         self.sync_file_browser_cwd();
         let active = self.active_window;
 
@@ -46,7 +46,7 @@ impl PlexiApp {
             .panes
             .iter()
             .filter_map(|(&id, pane)| {
-                let app = pane.as_app()?;
+                let app = pane.as_view()?;
                 if app.pane_group.as_deref() == Some("cwd") {
                     Some(id)
                 } else {
@@ -57,7 +57,7 @@ impl PlexiApp {
 
         for id in plugin_ids {
             if let Some(pane) = self.windows[active].panes.get_mut(&id) {
-                if let Some(app) = pane.as_app_mut() {
+                if let Some(app) = pane.as_view_mut() {
                     if app.workspace_root != new_cwd {
                         app.workspace_root = new_cwd.clone();
                         app.runtime.sync_cwd(&new_cwd);
@@ -78,7 +78,7 @@ impl PlexiApp {
                 if let Pane::Terminal(terminal) = pane {
                     return Some(terminal);
                 }
-                pane = pane.as_app()?.overlay_replaced.as_deref()?;
+                pane = pane.as_view()?.overlay_replaced.as_deref()?;
             }
         }
 
@@ -88,7 +88,7 @@ impl PlexiApp {
             .panes
             .iter()
             .filter_map(|(&id, pane)| {
-                let app = pane.as_app()?;
+                let app = pane.as_view()?;
                 if app.pane_group.as_deref()
                     != Some(crate::pane_ops::create::FILE_BROWSER_CWD_GROUP)
                 {
@@ -102,7 +102,7 @@ impl PlexiApp {
                         .and_then(underlying_terminal)?
                 } else {
                     // An overlay launched directly from a terminal owns that terminal.
-                    // An overlay launched from an app has no invoking terminal.
+                    // An overlay launched from an plugin has no invoking terminal.
                     app.overlay_replaced.as_deref()?.as_terminal()?
                 };
                 if terminal.exited || terminal.standby_session.is_some() {
@@ -116,7 +116,7 @@ impl PlexiApp {
             if let Some(app) = self.windows[active]
                 .panes
                 .get_mut(&id)
-                .and_then(Pane::as_app_mut)
+                .and_then(Pane::as_view_mut)
             {
                 log::info!(
                     "file_browser: linked terminal cwd changed pane={id} cwd={}",
@@ -141,7 +141,7 @@ impl PlexiApp {
         let mut panes = Vec::with_capacity(current_len);
         for window in &self.windows {
             for pane in window.panes.values() {
-                if let Some(app) = pane.as_app() {
+                if let Some(app) = pane.as_view() {
                     panes.push(PaneContext {
                         type_id: app.manifest_id.clone(),
                         pane_id: app.id,

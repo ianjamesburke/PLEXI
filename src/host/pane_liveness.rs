@@ -115,8 +115,8 @@ fn observed_state(pane: &Pane) -> serde_json::Value {
                 "foreground_command": foreground_command,
             })
         }
-        Pane::App(app_pane) => {
-            let (lifecycle, _) = app_pane.runtime.lifecycle();
+        Pane::View(view_pane) => {
+            let (lifecycle, _) = view_pane.runtime.lifecycle();
             let process_alive = !matches!(lifecycle, "exited" | "failed" | "crashed");
             // App runtimes (in-process WASM/Python) have no OS child of their
             // own to inventory and no PTY output stream to time-stamp; a

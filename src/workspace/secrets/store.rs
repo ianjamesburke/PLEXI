@@ -53,7 +53,7 @@ pub trait NonDestructiveStore: Send + Sync {
 }
 
 /// The full store surface. Adds the destructive ops — upsert and
-/// unconditional delete — that only user-initiated flows (the Secrets app
+/// unconditional delete — that only user-initiated flows (the Secrets plugin
 /// editor, `plexi secret set`/`delete`) may express. Migration and
 /// reconciliation signatures take [`NonDestructiveStore`] and cannot name
 /// these methods.
@@ -635,7 +635,7 @@ impl SecretStore for MacKeychain {
 ///
 /// Why this exists rather than "no store on Linux": with no backend at all
 /// every secret-consuming path — `plexi ai onboard`, the OpenRouter key
-/// lookup, terminal env injection, the Secrets app — is dead code on Linux,
+/// lookup, terminal env injection, the Secrets plugin — is dead code on Linux,
 /// which both breaks the `-D warnings` gate across the whole subsystem and
 /// makes the host unusable for its primary AI flow. A weak-but-honest store
 /// keeps one code path on both platforms; the weakness is logged on first use

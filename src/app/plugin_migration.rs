@@ -23,6 +23,9 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     let ready = journal.join("ready");
     let done = journal.join("complete");
     if done.is_file() {
+        if old.exists() {
+            return Err(format!("legacy apps/ reappeared after plugin migration at {}; use plugins/ and schema_version = 2", root.display()));
+        }
         return Ok(());
     }
     if !old.exists() && !backup.exists() {
@@ -156,4 +159,32 @@ pub(crate) fn migrated_path(path: &Path) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_rename_pack_migration_preserves_pin_and_keeps_original() {
+        let root = tempfile::tempdir().unwrap();
+        let original = "schema_version = 1\n[[app]]\nid = 'notes'\nsource = 'github:example/notes'\nversion = 'v0.4.4'\n";
+        std::fs::write(root.path().join("apps.toml"), original).unwrap();
+        migrate(root.path()).unwrap();
+        migrate(root.path()).unwrap();
+        let pack = super::super::packs::Pack::from_path(&root.path().join("plugins.toml")).unwrap();
+        assert_eq!(pack.plugins[0].version, "v0.4.4");
+        assert_eq!(std::fs::read_to_string(root.path().join(MIGRATION).join("apps.toml")).unwrap(), original);
+    }
+
+    #[test]
+    fn plugin_rename_collision_preserves_both_trees() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("apps")).unwrap();
+        std::fs::create_dir(root.path().join("plugins")).unwrap();
+        assert!(migrate(root.path()).unwrap_err().contains("both apps/ and plugins/"));
+        assert!(root.path().join("apps").is_dir());
+        assert!(root.path().join("plugins").is_dir());
+        assert!(!root.path().join(MIGRATION).join("complete").exists());
+    }
 }

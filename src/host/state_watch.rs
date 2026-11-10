@@ -10,9 +10,9 @@
 //!   never the file itself. Everything writing state uses atomic temp+rename,
 //!   which replaces the inode — a single-file watch dies after the first
 //!   replacement. Events are filtered by file name instead.
-//! - **The watched dirs are shared** (`~/.plexi/plugin_states/` holds every
-//!   app's global state), so filename filtering is mandatory: without it,
-//!   every app's save would fire every other app's watcher.
+//! - **The watched dirs are shared** (`~/.plexi/app_states/` holds every
+//!   plugin's global state), so filename filtering is mandatory: without it,
+//!   every plugin's save would fire every other plugin's watcher.
 //!
 //! Same 250ms debounce-thread pattern as hot_reload; one debouncer thread per
 //! watched pane coalesces a burst into one notice per scope. Self-write
@@ -78,7 +78,7 @@ impl Drop for WatcherHandle {
 }
 
 /// Manages per-pane state-file watchers. The host owns one of these, registers
-/// each file-backed app pane at launch, re-syncs registrations when a pane's
+/// each file-backed view pane at launch, re-syncs registrations when a pane's
 /// resolved state paths change, and unwatches on pane close.
 pub struct StateWatcher {
     watchers: HashMap<PaneId, WatcherHandle>,
@@ -170,7 +170,7 @@ impl StateWatcher {
                             ) {
                                 return;
                             }
-                            // Shared dir: only this app's file counts. An
+                            // Shared dir: only this plugin's file counts. An
                             // atomic rename reports the destination path, so
                             // matching the final file name is sufficient.
                             if ev
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_sibling_app_files() {
+    fn ignores_sibling_plugin_files() {
         let dir = tempdir().unwrap();
         let mine = dir.path().join("mine.json");
         let sibling = dir.path().join("other-app.json");
@@ -398,7 +398,7 @@ mod tests {
         let got = poll_for_notice(&rx, Duration::from_millis(800));
         assert!(
             got.is_none(),
-            "a sibling app's state file must not fire this pane's watcher, got {got:?}"
+            "a sibling plugin's state file must not fire this pane's watcher, got {got:?}"
         );
     }
 

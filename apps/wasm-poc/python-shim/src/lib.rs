@@ -6,7 +6,7 @@
 // conversion to WIT effects and UiTree.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit/world.wit",
 });
 

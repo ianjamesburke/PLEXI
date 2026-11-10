@@ -17,7 +17,7 @@
 //!
 //! Residual: a process running as the same user can still race inside the
 //! random-named `0700` directory between step 3 and `exec`. That actor already
-//! holds the user's full authority; the grant protects the Plexi app boundary,
+//! holds the user's full authority; the grant protects the Plexi plugin boundary,
 //! not the account.
 
 use std::ffi::OsString;
@@ -474,7 +474,7 @@ pub struct Outcome {
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// One launched operation. Dropping it cancels the process group and joins the
-/// supervisor, so closing an app cannot leave its processes behind.
+/// supervisor, so closing an plugin cannot leave its processes behind.
 pub struct RunningOperation {
     cancel: Arc<AtomicBool>,
     rx: Receiver<Outcome>,

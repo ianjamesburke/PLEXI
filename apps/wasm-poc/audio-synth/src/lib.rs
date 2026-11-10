@@ -15,7 +15,7 @@
 // view() renders a simple panel showing note, frequency, and pipe status.
 
 wit_bindgen::generate!({
-    world: "plexi-audio-app",
+    world: "plexi-audio-plugin",
     path: "wit/world.wit",
 });
 

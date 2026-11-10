@@ -2,7 +2,7 @@
 //!
 //! Routes to any OpenRouter model via SSE streaming using `ureq` (blocking,
 //! no tokio). The host reads `OPENROUTER_API_KEY` from the environment at
-//! dispatch time; apps never see the key.
+//! dispatch time; plugins never see the key.
 //!
 //! The SSE streaming worker (`stream_openai_compatible`) speaks the plain
 //! OpenAI chat-completions protocol against any endpoint URL — the `local`
@@ -523,7 +523,7 @@ pub(super) fn stream_openai_compatible(
             }
             // Surface generation progress so the transcript can animate while
             // the model writes a long tool call (stint 0467) — these argument
-            // streams are the longest silent stretch of an app-build turn.
+            // streams are the longest silent stretch of an plugin-build turn.
             let arg_chars: usize = partial_tool_calls.values().map(|p| p.arguments.len()).sum();
             let name = partial_tool_calls
                 .iter()

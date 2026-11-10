@@ -3,7 +3,7 @@ use super::records::{Kind, Record, State};
 use super::{ProgramStatusStore, SharedProgramStatus};
 use crate::protocol::{AgentState, PaneAgentState};
 
-/// Fallback `PaneAgentState::agent` when no record or ancestor names an app.
+/// Fallback `PaneAgentState::agent` when no record or ancestor names an plugin.
 const DEFAULT_APP: &str = "program";
 
 fn rank(state: State) -> u8 {
@@ -61,7 +61,7 @@ pub fn root_or_best_agent_state(
         pane_id,
         state: agent_state(record.state),
         agent: store
-            .effective_app(id)
+            .effective_plugin(id)
             .unwrap_or(DEFAULT_APP)
             .to_owned(),
         detail: detail(record),
@@ -79,7 +79,7 @@ pub fn reported_agent_state(
 }
 
 /// `{"records": [...], "source": "osc7501"}` for `plexi pane status`.
-/// The root record has id `""`; `app` is the inherited one.
+/// The root record has id `""`; `plugin` is the inherited one.
 pub fn records_json(store: &ProgramStatusStore) -> serde_json::Value {
     let records: Vec<serde_json::Value> = store
         .iter()
@@ -91,7 +91,7 @@ pub fn records_json(store: &ProgramStatusStore) -> serde_json::Value {
                 "progress": r.progress,
                 "msg": r.msg,
                 "title": r.title,
-                "app": store.effective_app(id),
+                "app": store.effective_plugin(id),
                 "seen": r.seen,
             })
         })

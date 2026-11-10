@@ -282,11 +282,11 @@ impl CliOpService {
                 request_id,
                 operation_id,
                 code::BUSY,
-                format!("at most {MAX_OUTSTANDING_PER_PANE} operations may be pending or running per app"),
+                format!("at most {MAX_OUTSTANDING_PER_PANE} operations may be pending or running per plugin"),
             )];
         }
         log::info!(
-            "cli_ops: submit app={} request={request_id} operation={operation_id}",
+            "cli_ops: submit plugin={} request={request_id} operation={operation_id}",
             who.plugin_id
         );
         let values = values.clone();
@@ -471,7 +471,7 @@ impl CliOpService {
                 call_id: &call_id,
                 tool,
                 input_json: &input,
-                actor_type: ActorType::App,
+                actor_type: ActorType::Plugin,
                 actor_id: &who.plugin_id,
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
@@ -559,7 +559,7 @@ impl CliOpService {
         if !super::plugin_id_is_path_safe(&who.plugin_id) {
             return Err((
                 code::PACKAGE_INVALID,
-                format!("app id '{}' cannot name a private directory", who.plugin_id),
+                format!("plugin id '{}' cannot name a private directory", who.plugin_id),
             ));
         }
         let manifest_path = who.plugin_dir.join("manifest.toml");
@@ -581,7 +581,7 @@ impl CliOpService {
             return Err((
                 code::PACKAGE_INVALID,
                 format!(
-                    "package declares app id '{}' but the pane runs '{}'",
+                    "package declares plugin id '{}' but the pane runs '{}'",
                     manifest.plugin.id, who.plugin_id
                 ),
             ));
@@ -677,7 +677,7 @@ impl CliOpService {
         let op =
             exec::spawn_supervised(spec, Arc::clone(env.wake)).map_err(|e| exec_failure(&e))?;
         log::info!(
-            "cli_ops: app={} operation={} launched exe={} sha256={}",
+            "cli_ops: plugin={} operation={} launched exe={} sha256={}",
             who.plugin_id,
             admitted.decl.id,
             admitted.identity.path.display(),
@@ -700,8 +700,8 @@ enum Resolved {
 }
 
 fn is_registry_install(plugin_dir: &Path) -> bool {
-    let apps = crate::platform::path::canonical_or_self(&crate::app::registry::plugins_dir());
-    crate::platform::path::canonical_or_self(plugin_dir).starts_with(apps)
+    let plugins = crate::platform::path::canonical_or_self(&crate::app::registry::plugins_dir());
+    crate::platform::path::canonical_or_self(plugin_dir).starts_with(plugins)
 }
 
 /// SHA-256 over the canonical JSON of everything an approval binds.
@@ -738,7 +738,7 @@ pub struct Disclosure<'a> {
 }
 
 impl Disclosure<'_> {
-    /// The app id is a claim by the package, not proof of what the program
+    /// The plugin id is a claim by the package, not proof of what the program
     /// does, and the native program is not confined by anything declared here.
     pub fn text(&self) -> String {
         let scopes = |items: &[String]| {
@@ -754,12 +754,12 @@ impl Disclosure<'_> {
             ""
         };
         format!(
-            "{changed}App \"{app}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
+            "{changed}App \"{plugin}\" (name is self-declared) asks to run operation \"{op}\" ({mode}) in workspace {ws}. \
              Program: {exe} (sha256 {sha}). It declares: read {read}; write {write}; network {net}. \
              This runs a native program with your user account's full authority. Plexi does not confine it, \
              and the declaration above is not enforced.",
             changed = changed,
-            app = self.plugin_id,
+            plugin = self.plugin_id,
             op = self.operation_id,
             mode = match self.mode {
                 OperationMode::Read => "read",

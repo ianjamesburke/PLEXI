@@ -1,6 +1,6 @@
 //! Native master/detail fleet pane. State comes from the host's pure projection.
 use crate::agent::fleet::{AgentRow, AgentsView, DisplayState, FleetFilter};
-use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext, KeyDisposition};
 
 pub enum FleetAction {
     Seen(u64),
@@ -99,7 +99,7 @@ impl AgentsPaneView {
         }
     }
 }
-impl App for AgentsPaneView {
+impl View for AgentsPaneView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self

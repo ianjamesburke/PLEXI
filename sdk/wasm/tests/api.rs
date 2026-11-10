@@ -1,5 +1,5 @@
 use plexi_wasm_sdk::{
-    effects, ui, Alignment, App, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
+    effects, ui, Alignment, View, Effect, InputEvent, SubscribeEventStreamsEffect, ToolDecl,
     UiNodeData,
 };
 
@@ -82,7 +82,7 @@ fn effect_helpers_cover_host_effects() {
 #[derive(Default)]
 struct Example;
 
-impl App for Example {
+impl View for Example {
     fn update(&mut self, _event: InputEvent) -> Vec<Effect> {
         Vec::new()
     }

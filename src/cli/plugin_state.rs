@@ -1,20 +1,20 @@
 //! `plexi plugin state get/set` — the sanctioned surface for reading and writing
-//! a file-backed app's state.
+//! a file-backed plugin's state.
 //!
 //! An agent could write the state file directly; the
 //! file is on disk. These verbs exist to make that *correct*: they resolve the
-//! app's declared state path so no caller ever hardcodes one, they validate the
-//! document in the app's declared format before it reaches disk, they write
-//! through the same atomic path the app's own writes use, and every attempt is
+//! plugin's declared state path so no caller ever hardcodes one, they validate the
+//! document in the plugin's declared format before it reaches disk, they write
+//! through the same atomic path the plugin's own writes use, and every attempt is
 //! traced. Direct file writes stay possible and stay unsupported.
 //!
 //! File access is disk-direct. Inside a pane the host supplies its current root;
 //! outside a pane the nearest `.plexi` ancestor of cwd supplies file scope.
-//! A running app picks writes up through its state watcher.
+//! A running plugin picks writes up through its state watcher.
 //!
 //! Entitlement here is structural, not checked: there is no path argument and
 //! no `--context` flag, so the only reachable files are the calling context's
-//! own state files for an app that declared `[state]`.
+//! own state files for an plugin that declared `[state]`.
 
 use crate::host::state_scope::{StateFormat, StateScope};
 use std::io::Read;
@@ -114,21 +114,21 @@ fn cli_registry() -> Result<crate::app::registry::PluginRegistry, String> {
 
 /// Resolve `plugin_id` + an optional `--scope` to a concrete state file.
 ///
-/// Rejects, each with a named reason: an unknown app, an app that declared no
-/// `[state]` section, a scope the app did not declare, an app id that is not a
+/// Rejects, each with a named reason: an unknown plugin, an plugin that declared no
+/// `[state]` section, a scope the plugin did not declare, an plugin id that is not a
 /// safe file stem, and a resolved path whose parent is not really the scope's
-/// state directory (a symlinked `.plexi/` or `plugin_states/`).
+/// state directory (a symlinked `.plexi/` or `app_states/`).
 fn resolve(
     plugin_id: &str,
     scope_raw: Option<&str>,
     registry: &crate::app::registry::PluginRegistry,
 ) -> Result<ResolvedState, String> {
     let installed = registry.get(plugin_id).ok_or_else(|| {
-        format!("app '{plugin_id}' not found — run `plexi plugin list` to see installed apps")
+        format!("plugin '{plugin_id}' not found — run `plexi plugin list` to see installed plugins")
     })?;
     if !installed.state_declared {
         return Err(format!(
-            "app '{plugin_id}' declares no [state] section — it has no file-backed state to address"
+            "plugin '{plugin_id}' declares no [state] section — it has no file-backed state to address"
         ));
     }
     let declared = &installed.state_scopes;
@@ -137,7 +137,7 @@ fn resolve(
             let requested = StateScope::parse(raw)?;
             if !declared.contains(&requested) {
                 return Err(format!(
-                    "app '{plugin_id}' does not declare the '{}' scope — it declares: {}",
+                    "plugin '{plugin_id}' does not declare the '{}' scope — it declares: {}",
                     requested.as_str(),
                     declared
                         .iter()
@@ -149,10 +149,10 @@ fn resolve(
             requested
         }
         // No flag reaches us as absent (src/cli/AGENTS.md) — the default is the
-        // app's own first declared scope, never a CLI-side constant.
+        // plugin's own first declared scope, never a CLI-side constant.
         None => *declared
             .first()
-            .ok_or_else(|| format!("app '{plugin_id}' declares an empty scope list"))?,
+            .ok_or_else(|| format!("plugin '{plugin_id}' declares an empty scope list"))?,
     };
     let format = installed.state_format;
     let context_root = match scope {
@@ -174,7 +174,7 @@ fn resolve(
     })
 }
 
-/// The document an app with no state file yet should read as. A missing file is
+/// The document an plugin with no state file yet should read as. A missing file is
 /// first launch, not an error — the same rule the host's loader follows.
 fn empty_document(format: StateFormat) -> &'static str {
     match format {
@@ -183,7 +183,7 @@ fn empty_document(format: StateFormat) -> &'static str {
     }
 }
 
-/// `plexi plugin state get <app> [--scope ...]`
+/// `plexi plugin state get <plugin> [--scope ...]`
 pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
     let registry = match cli_registry() {
         Ok(registry) => registry,
@@ -197,7 +197,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
-                "app_state: get app={plugin_id} caller={} rejected — {error}",
+                "app_state: get plugin={plugin_id} caller={} rejected — {error}",
                 caller_label()
             );
             eprintln!("error: {error}");
@@ -211,7 +211,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
             if let Err(error) = crate::host::wasm_python::decode_state_file(&bytes, resolved.format)
             {
                 log::info!(
-                    "app_state: get app={plugin_id} scope={} caller={} path={} rejected — {error}",
+                    "app_state: get plugin={plugin_id} scope={} caller={} path={} rejected — {error}",
                     resolved.scope.as_str(),
                     caller_label(),
                     resolved.path.display()
@@ -224,7 +224,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
                 return 1;
             }
             log::info!(
-                "app_state: get app={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
+                "app_state: get plugin={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -236,7 +236,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             log::info!(
-                "app_state: get app={plugin_id} scope={} format={} caller={} path={} accepted (no file yet)",
+                "app_state: get plugin={plugin_id} scope={} format={} caller={} path={} accepted (no file yet)",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -247,7 +247,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
         }
         Err(error) => {
             log::info!(
-                "app_state: get app={plugin_id} scope={} caller={} path={} rejected — read failed: {error}",
+                "app_state: get plugin={plugin_id} scope={} caller={} path={} rejected — read failed: {error}",
                 resolved.scope.as_str(),
                 caller_label(),
                 resolved.path.display()
@@ -258,7 +258,7 @@ pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
     }
 }
 
-/// `plexi plugin state set <app> [FILE] [--scope ...]`
+/// `plexi plugin state set <plugin> [FILE] [--scope ...]`
 ///
 /// Replaces the document wholesale. Reads `FILE` when given, else stdin. There
 /// is deliberately no partial/merge update — get/set proves the capability, and
@@ -296,7 +296,7 @@ fn set_from(
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
-                "app_state: set app={plugin_id} caller={} rejected — {error}",
+                "app_state: set plugin={plugin_id} caller={} rejected — {error}",
                 caller_label()
             );
             eprintln!("error: {error}");
@@ -306,7 +306,7 @@ fn set_from(
     let mut bytes = Vec::new();
     if let Err(error) = input.read_to_end(&mut bytes) {
         log::info!(
-            "app_state: set app={plugin_id} scope={} caller={} rejected — read input: {error}",
+            "app_state: set plugin={plugin_id} scope={} caller={} rejected — read input: {error}",
             resolved.scope.as_str(),
             caller_label()
         );
@@ -314,10 +314,10 @@ fn set_from(
         return 1;
     }
     // Validate before writing: a rejected document must never reach disk, or
-    // the app wakes to a corrupt file it did not cause.
+    // the plugin wakes to a corrupt file it did not cause.
     if let Err(error) = crate::host::wasm_python::decode_state_file(&bytes, resolved.format) {
         log::info!(
-            "app_state: set app={plugin_id} scope={} format={} caller={} path={} rejected — {error}",
+            "app_state: set plugin={plugin_id} scope={} format={} caller={} path={} rejected — {error}",
             resolved.scope.as_str(),
             resolved.format.as_str(),
             caller_label(),
@@ -333,7 +333,7 @@ fn set_from(
         // A user must never be able to accidentally commit their plugin state with
         // a project — same standing ruling the host's own write path follows.
         if let Err(error) =
-            crate::workspace::secrets::ensure_app_state_gitignore(&resolved.context_root)
+            crate::workspace::secrets::ensure_plugin_state_gitignore(&resolved.context_root)
         {
             log::warn!(
                 "app_state: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
@@ -344,7 +344,7 @@ fn set_from(
     match crate::platform::fs::atomic_write(&resolved.path, &bytes) {
         Ok(()) => {
             log::info!(
-                "app_state: set app={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
+                "app_state: set plugin={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -355,7 +355,7 @@ fn set_from(
         }
         Err(error) => {
             log::info!(
-                "app_state: set app={plugin_id} scope={} caller={} path={} rejected — write failed: {error}",
+                "app_state: set plugin={plugin_id} scope={} caller={} path={} rejected — write failed: {error}",
                 resolved.scope.as_str(),
                 caller_label(),
                 resolved.path.display()
@@ -371,26 +371,26 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// Install a minimal app into a staged global apps dir and return a registry
+    /// Install a minimal plugin into a staged global plugins dir and return a registry
     /// that sees it. Same hermetic seam `src/app/registry.rs`'s own tests use —
     /// no chdir, which is process-global and would race the rest of the suite.
-    fn install_app(
+    fn install_plugin(
         state_section: Option<&str>,
     ) -> (tempfile::TempDir, crate::app::registry::PluginRegistry) {
-        let apps = tempdir().expect("apps dir");
-        let plugin_dir = apps.path().join("test.state");
-        std::fs::create_dir_all(&plugin_dir).expect("app dir");
+        let plugins = tempdir().expect("plugins dir");
+        let plugin_dir = plugins.path().join("test.state");
+        std::fs::create_dir_all(&plugin_dir).expect("plugin dir");
         std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").expect("entry");
         let manifest = format!(
-            "schema_version = 1\n\n[app]\nid = \"test.state\"\ntype = \"app\"\n\
-             name = \"State Test\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n{}",
+            "schema_version = 2\n\n[plugin]\nid = \"test.state\"\n\
+             name = \"State Test\"\nversion = \"0.0.1\"\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n[[contributes.views]]\nid = \"test.state.main\"\n{}",
             state_section.unwrap_or("")
         );
         std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
         let bare = tempdir().expect("bare cwd");
         let registry =
-            crate::app::registry::PluginRegistry::load_with_global(bare.path(), apps.path());
-        (apps, registry)
+            crate::app::registry::PluginRegistry::load_with_global(bare.path(), plugins.path());
+        (plugins, registry)
     }
 
     /// Retain a stale spawn-time environment value for negative controls.
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn context_targets_app_state_after_set_root_ignores_stale_environment() {
+    fn context_targets_plugin_state_after_set_root_ignores_stale_environment() {
         use std::io::{BufRead, Write};
         use std::os::unix::net::UnixListener;
         let _guard = env_guard();
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn set_writes_the_document_to_the_apps_declared_state_file() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
@@ -590,15 +590,15 @@ mod tests {
     }
 
     #[test]
-    fn an_app_without_a_state_section_is_not_addressable() {
+    fn an_plugin_without_a_state_section_is_not_addressable() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(None);
+        let (_apps, registry) = install_plugin(None);
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
                 set_from("test.state", &b"{}"[..], None, &registry),
                 1,
-                "an app that declared no [state] must be refused"
+                "an plugin that declared no [state] must be refused"
             );
             let error = resolve("test.state", None, &registry).expect_err("must be refused");
             assert!(
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn an_undeclared_scope_is_refused_rather_than_silently_redirected() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             let error =
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn a_malformed_document_never_reaches_disk() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
@@ -650,18 +650,18 @@ mod tests {
     }
 
     #[test]
-    fn a_traversal_or_absolute_app_id_cannot_address_a_file_outside_the_scope() {
+    fn a_traversal_or_absolute_plugin_id_cannot_address_a_file_outside_the_scope() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             assert_eq!(
                 set_from("../../etc/passwd", &b"{}"[..], None, &registry),
                 1,
-                "a traversal app id must never be writable"
+                "a traversal plugin id must never be writable"
             );
         });
-        // The id gate is the load-bearing part: even for a declared app, such an
+        // The id gate is the load-bearing part: even for a declared plugin, such an
         // id never resolves to a path at all.
         for hostile in ["../../etc/passwd", "/etc/passwd", "a/b"] {
             assert!(
@@ -672,7 +672,7 @@ mod tests {
                     root.path()
                 )
                 .is_err(),
-                "app id {hostile:?} must never resolve to a state path"
+                "plugin id {hostile:?} must never resolve to a state path"
             );
         }
     }
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn a_missing_context_root_errors_instead_of_being_created() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         let missing = root.path().join("no-such-context");
         with_context_root(&missing, || {
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn markdown_state_passes_through_verbatim() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(
+        let (_apps, registry) = install_plugin(Some(
             "\n[state]\nscopes = [\"context\"]\nformat = \"markdown\"\n",
         ));
         let root = tempdir().expect("context root");
@@ -715,9 +715,9 @@ mod tests {
     }
 
     #[test]
-    fn a_symlinked_app_states_dir_is_refused() {
+    fn a_symlinked_plugin_states_dir_is_refused() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         let elsewhere = tempdir().expect("escape target");
         let plexi_dir = root.path().join(".plexi");
@@ -738,9 +738,9 @@ mod tests {
     }
 
     #[test]
-    fn get_on_an_app_with_no_state_file_yet_prints_the_empty_document() {
+    fn get_on_an_plugin_with_no_state_file_yet_prints_the_empty_document() {
         let _guard = env_guard();
-        let (_apps, registry) = install_app(Some(CONTEXT_ONLY));
+        let (_apps, registry) = install_plugin(Some(CONTEXT_ONLY));
         let root = tempdir().expect("context root");
         with_context_root(root.path(), || {
             let resolved = resolve("test.state", None, &registry).expect("resolves");

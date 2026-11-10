@@ -1,4 +1,4 @@
-//! Pane header geometry shared by terminal, app, portal and tabbed callers.
+//! Pane header geometry shared by terminal, plugin, portal and tabbed callers.
 //! The leading state glyph is authoritative: a narrow header never adds a
 //! second copy. Provenance becomes a named icon before shrinking the title.
 

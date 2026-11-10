@@ -184,7 +184,7 @@ fn beta_gated_feature(full_path: &str) -> Option<&'static str> {
         | "plexi account status"
         | "plexi account login"
         | "plexi account logout" => Some("Marketplace account management is a beta surface."),
-        "plexi app publish" | "plexi app browse" | "plexi app search" => {
+        "plexi plugin publish" | "plexi plugin browse" | "plexi plugin search" => {
             Some("Marketplace publishing and catalog browsing are beta surfaces.")
         }
         "plexi events mcp-config" => Some("MCP client configuration is a beta surface."),

@@ -4,11 +4,11 @@ use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 
-use crate::app::app_trait::{App, ViewRenderContext};
+use crate::app::view_trait::{View, ViewRenderContext};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::protocol::VideoState;
 use crate::ui::{
-    app_chrome::ViewChrome,
+    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
@@ -179,7 +179,7 @@ impl VideoPlayerView {
     }
 }
 
-impl App for VideoPlayerView {
+impl View for VideoPlayerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -209,7 +209,7 @@ impl App for VideoPlayerView {
             .frame_size
             .map(|[w, h]| format!("{w}×{h}"))
             .unwrap_or_else(|| "Video Player".to_string());
-        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
+        ViewChrome::new(colors).paint_view_bar(ui, &self.filename(), &subtitle);
 
         let available = ui.available_size();
         let viewport_height = (available.y - 48.0).max(160.0);

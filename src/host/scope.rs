@@ -1,7 +1,7 @@
 //! Host-owned scope/ownership model (stint 0724).
 //!
 //! `ScopeOrigin`/`Scope`/`evaluate_reach` are the one reachability predicate
-//! connector tools, the event bus, directed/typed pipes, and app discovery
+//! connector tools, the event bus, directed/typed pipes, and plugin discovery
 //! route through instead of each reimplementing its own workspace-path or
 //! active-context comparison.
 //!
@@ -37,9 +37,9 @@ pub struct ScopeOrigin {
     pub plugin_id: Option<String>,
 }
 
-/// The scope a resource (app instance, connector tool, event stream, pipe,
+/// The scope a resource (plugin instance, connector tool, event stream, pipe,
 /// ...) is owned at. Distinct from `crate::host::state_scope::StateScope`,
-/// which is app-declared addressing for on-disk state files; `Scope` is the
+/// which is plugin-declared addressing for on-disk state files; `Scope` is the
 /// host's ownership/visibility model for in-memory and wire resources.
 ///
 /// Every resource this model currently owns is either pane-scoped or
@@ -138,7 +138,7 @@ pub fn evaluate_reach(
 
 /// A lifecycle event that makes some previously-resolved scope/origin/source
 /// stale. `PlexiApp::emit_scope_invalidation` fans this out to every live
-/// consumer (`RegistryViews::invalidate`, per-pane app-state root refresh)
+/// consumer (`RegistryViews::invalidate`, per-pane plugin-state root refresh)
 /// so each reacts to one shared vocabulary of "what changed" instead of
 /// re-deriving it from ad hoc call sites.
 #[derive(Debug, Clone)]
@@ -154,7 +154,7 @@ pub enum ScopeInvalidation {
     ContextRemoved { context_id: u64 },
     /// `pane_ops::layout::close_pane_by_id` closed a pane.
     PaneClosed { pane_id: u64, context_id: u64 },
-    /// A filesystem-watched source (e.g. the app registry) reported a change
+    /// A filesystem-watched source (e.g. the plugin registry) reported a change
     /// generation the host has not yet resolved against.
     SourceGenerationChanged { source_path: PathBuf },
 }
@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn app_instance_scope_same_context_is_allowed() {
+    fn view_instance_scope_same_context_is_allowed() {
         let owner = Scope::PluginInstance {
             pane_id: 200,
             plugin_id: "acme.todo".to_string(),
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn app_instance_scope_matching_ids_in_another_context_is_still_rejected() {
+    fn view_instance_scope_matching_ids_in_another_context_is_still_rejected() {
         let owner = Scope::PluginInstance {
             pane_id: 200,
             plugin_id: "acme.todo".to_string(),
@@ -241,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn app_instance_scope_different_context_with_grant_is_allowed_by_grant() {
+    fn view_instance_scope_different_context_with_grant_is_allowed_by_grant() {
         let owner = Scope::PluginInstance {
             pane_id: 200,
             plugin_id: "acme.todo".to_string(),

@@ -1,7 +1,7 @@
 //! Tiled windows, parent-scope navigation, and the experimental tree atlas.
 //! (`SPEC.md` R31–R36, R40, R42).
 
-use crate::app::app_trait::KeyDisposition;
+use crate::app::view_trait::KeyDisposition;
 use crate::app::attention_queue::QueueCategory;
 use crate::app::input_router::PlexiInput;
 use crate::app::PlexiApp;
@@ -1223,7 +1223,7 @@ impl PlexiApp {
                 let name = pane
                     .as_terminal()
                     .and_then(|t| t.name.as_deref())
-                    .or_else(|| pane.as_app().map(|a| a.name.as_str()))
+                    .or_else(|| pane.as_view().map(|a| a.name.as_str()))
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("pane-{pid}"));
                 if let Some(ag) = pane.agent() {

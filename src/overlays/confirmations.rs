@@ -83,9 +83,9 @@ impl PlexiApp {
         }
     }
 
-    /// Capability / secret consent modal for the focused app pane.
+    /// Capability / secret consent modal for the focused view pane.
     /// Called from step 2 of `update()` so it holds exclusive keyboard
-    /// ownership before `dispatch_app_key_events` runs.
+    /// ownership before `dispatch_plugin_key_events` runs.
     pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
         let active = self.active_window;
         let pane_id = self.windows[active].focused_pane.and_then(|tile| {
@@ -95,7 +95,7 @@ impl PlexiApp {
             if let Some(app) = self.windows[active]
                 .panes
                 .get_mut(&pane_id)
-                .and_then(|pane| pane.as_app_mut())
+                .and_then(|pane| pane.as_view_mut())
             {
                 if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
                     runtime.draw_capability_modal(ctx, &self.colors);
@@ -213,7 +213,7 @@ impl PlexiApp {
     /// `DeliverNotifyAction` and removes the notification from the queue.
     /// Esc defers: the modal closes but the notification stays in the
     /// queue (reopen with Cmd+Shift+A to come back to it). No
-    /// NotifyAction is dispatched on Esc — the app hasn't been answered.
+    /// NotifyAction is dispatched on Esc — the plugin hasn't been answered.
     /// Required notifications reject Esc.
     ///
     /// Input map (all kinds):
@@ -234,22 +234,22 @@ impl PlexiApp {
     pub(crate) fn confirm_close_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_close_confirm_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn capability_modal_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     /// Host event-bus consent modal. Surfaces the front parked
@@ -330,8 +330,8 @@ impl PlexiApp {
     pub(crate) fn event_consent_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn draw_raw_wasm_review_modal(&mut self, ctx: &egui::Context) {
@@ -417,7 +417,7 @@ impl PlexiApp {
                 review.plugin_id,
                 review.wasm_path.display()
             );
-            if let Err(err) = self.open_wasm_app_pane(
+            if let Err(err) = self.open_wasm_view_pane(
                 &review.plugin_id,
                 &review.wasm_path,
                 review.workspace_root,
@@ -443,8 +443,8 @@ impl PlexiApp {
     pub(crate) fn raw_wasm_review_handle_key(
         &mut self,
         _input: &mut crate::app::input_router::PlexiInput,
-    ) -> crate::app::app_trait::KeyDisposition {
-        crate::app::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::view_trait::KeyDisposition {
+        crate::app::view_trait::KeyDisposition::Consumed
     }
 
 }

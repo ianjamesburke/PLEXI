@@ -61,7 +61,7 @@ pub enum ComposerEvent {
     Submit,
     /// The user decided the pending permission sheet.
     Permission(PermissionChoice),
-    /// Open the Permissions app from a denied tool row.
+    /// Open the Permissions plugin from a denied tool row.
     ReviewPermissions,
     /// Enter pressed in an open picker/manager overlay: apply the selection.
     OverlayConfirm,
@@ -163,7 +163,7 @@ impl AssistantRenderer {
         colors: &Colors,
         host_pane_id: u64,
     ) -> Option<ComposerEvent> {
-        // Match the terminal/editor surface, not the darker app-pane base
+        // Match the terminal/editor surface, not the darker plugin-pane base
         // fill — the assistant is host chrome, same as the scratchpad.
         ui.painter()
             .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
@@ -571,7 +571,7 @@ impl AssistantRenderer {
         } = *ctx;
         let text = turn.text.as_str();
         match turn.role {
-            // Delivered app events are compact single-line rows.
+            // Delivered plugin events are compact single-line rows.
             TurnRole::Event => {
                 ui.label(
                     RichText::new(text)
@@ -986,7 +986,7 @@ impl AssistantRenderer {
     }
 
     /// The model is writing a tool call — the longest otherwise-silent
-    /// stretch of an app-build turn. Spinner + tool name + cumulative
+    /// stretch of an plugin-build turn. Spinner + tool name + cumulative
     /// argument size + elapsed, so a 60s code generation reads as progress.
     fn draw_tool_progress_row(
         ui: &mut egui::Ui,

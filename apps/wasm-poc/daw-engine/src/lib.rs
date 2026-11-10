@@ -34,7 +34,7 @@
 // through the 0510 drag seam. No control is pointer-only.
 
 wit_bindgen::generate!({
-    world: "plexi-audio-app",
+    world: "plexi-audio-plugin",
     path: "wit/world.wit",
 });
 
@@ -164,7 +164,7 @@ struct Drag {
     cur_length: u64,
 }
 
-struct App {
+struct View {
     model: DawModel,
     /// Negotiated stream shape the engine prepares and renders at.
     config: EngineConfig,
@@ -217,8 +217,8 @@ struct App {
 }
 
 struct Component;
-static mut APP: Option<App> = None;
-fn app() -> &'static mut App {
+static mut APP: Option<View> = None;
+fn app() -> &'static mut View {
     unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().unwrap() }
 }
 
@@ -338,12 +338,12 @@ struct Mixdown {
     samples: Vec<f32>,
 }
 
-impl App {
+impl View {
     fn new(config: EngineConfig) -> Self {
         let mut model = DawModel::new();
         seed_demo_project(&mut model);
         let sel_clip = first_clip_id(&model);
-        App {
+        View {
             model,
             config,
             sources: BTreeMap::new(),
@@ -2276,7 +2276,7 @@ impl Guest for Component {
             }
         };
 
-        let mut app_state = App::new(EngineConfig {
+        let mut app_state = View::new(EngineConfig {
             sample_rate: config.sample_rate,
             channels: config.channels.clamp(1, 2),
         });
@@ -2293,7 +2293,7 @@ impl Guest for Component {
         unsafe { APP = Some(app_state) }
 
         effects.push(Effect::SetTitle("DAW Engine".to_string()));
-        effects.push(Effect::DeclareTools(DeclareToolsEffect { tools: App::tool_decls() }));
+        effects.push(Effect::DeclareTools(DeclareToolsEffect { tools: View::tool_decls() }));
         // Request the file-picker capability up front so save/open/import/export
         // are ready without a mid-session prompt round trip.
         effects.push(Effect::RequestCapability("fs.pick".to_string()));
@@ -2436,8 +2436,8 @@ mod tests {
     use super::*;
     use crate::plexi::platform::types::Point;
 
-    fn seeded() -> App {
-        let mut app = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+    fn seeded() -> View {
+        let mut app = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
         let mut fx = Vec::new();
         app.ensure_source_data(&mut fx);
         // Mirror `init`: prepare the engine so offline mixdown/export work.
@@ -2445,12 +2445,12 @@ mod tests {
         app
     }
 
-    fn key(app: &mut App, k: &str) {
+    fn key(app: &mut View, k: &str) {
         let mut fx = Vec::new();
         app.on_key(k, &mut fx);
     }
 
-    fn action(app: &mut App, handler: &str) {
+    fn action(app: &mut View, handler: &str) {
         let mut fx = Vec::new();
         app.on_action(handler, &mut fx);
     }
@@ -2704,7 +2704,7 @@ mod tests {
         /// Processes an effect batch, recursively delivering the result events
         /// each effect would produce — the closed loop that lets a test drive
         /// one gesture (a pick, a read) to completion.
-        fn pump(&mut self, app: &mut App, effects: Vec<Effect>) {
+        fn pump(&mut self, app: &mut View, effects: Vec<Effect>) {
             for effect in effects {
                 match effect {
                     Effect::FileWrite(w) => {
@@ -2738,7 +2738,7 @@ mod tests {
             }
         }
 
-        fn fire_autosave(&mut self, app: &mut App) {
+        fn fire_autosave(&mut self, app: &mut View) {
             let mut next = Vec::new();
             app.on_timer(AUTOSAVE_TIMER_ID, &mut next);
             self.pump(app, next);
@@ -2751,7 +2751,7 @@ mod tests {
         wav::encode_f32(48_000, 1, &samples).unwrap()
     }
 
-    fn drive_key(host: &mut FakeHost, app: &mut App, k: &str) {
+    fn drive_key(host: &mut FakeHost, app: &mut View, k: &str) {
         let mut fx = Vec::new();
         app.on_key(k, &mut fx);
         host.pump(app, fx);
@@ -2828,7 +2828,7 @@ mod tests {
         let saved_transport = *app.model.transport();
 
         // A fresh app opens the same bundle dir.
-        let mut reopened = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        let mut reopened = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
         host.picks.push_back(vec!["/proj".into()]);
         {
             let mut fx = Vec::new();
@@ -2865,7 +2865,7 @@ mod tests {
             host.fs.insert(k, v);
         }
 
-        let mut reopened = App::new(EngineConfig { sample_rate: 48_000, channels: 2 });
+        let mut reopened = View::new(EngineConfig { sample_rate: 48_000, channels: 2 });
         host.picks.push_back(vec!["/moved".into()]);
         {
             let mut fx = Vec::new();

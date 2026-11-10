@@ -342,9 +342,9 @@ pub(crate) fn paint_tab_bar(
 #[derive(Clone, Copy, PartialEq)]
 pub enum PaneKind {
     Terminal,
-    App,
-    /// Text/editor app pane (manifest `text-editor`). Renders a document glyph
-    /// in the minimap instead of the generic app mark.
+    View,
+    /// Text/editor view pane (manifest `text-editor`). Renders a document glyph
+    /// in the minimap instead of the generic plugin mark.
     TextEditor,
     Portal,
 }
@@ -360,7 +360,7 @@ pub struct MiniPane {
     pub focused: bool,
     /// True when the pane has meaningful content (always true for running panes).
     pub has_content: bool,
-    /// OSC title or app name, if available.
+    /// OSC title or plugin name, if available.
     pub title: Option<String>,
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
@@ -416,7 +416,7 @@ pub struct PlexiBehavior<'a> {
     /// Set when a tab bar switches or reorders tabs.
     pub tab_action: Option<(TileId, TabBarAction)>,
     pub tab_info: HashMap<TileId, TabGroupInfo>,
-    /// Pre-computed display label for each pane: user-set name, then app name, then type string.
+    /// Pre-computed display label for each pane: user-set name, then plugin name, then type string.
     pub tab_labels: HashMap<PaneId, String>,
     pub zoomed_pane: Option<TileId>,
     pub colors: Colors,
@@ -429,7 +429,7 @@ pub struct PlexiBehavior<'a> {
     /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
     /// drifted outside the workspace tree. See issue #308 Phase 1.
     pub workspace_root: Option<PathBuf>,
-    /// The rendered window's context root, pushed into app panes every frame
+    /// The rendered window's context root, pushed into view panes every frame
     /// so state-scope resolution follows `plexi context set-root` at call
     /// time (stint 0652).
     pub context_root: PathBuf,
@@ -544,8 +544,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         if is_drag_hovering {
             if let Some(t) = self.panes.get_mut(pane_id).and_then(Pane::as_terminal_mut) {
                 write_dropped_paths_to_terminal(ui, t);
-            } else if let Some(app) = self.panes.get_mut(pane_id).and_then(Pane::as_app_mut) {
-                deliver_dropped_files_to_app(ui, *pane_id, app);
+            } else if let Some(app) = self.panes.get_mut(pane_id).and_then(Pane::as_view_mut) {
+                deliver_dropped_files_to_plugin(ui, *pane_id, app);
             }
         }
 
@@ -598,7 +598,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             .unwrap_or(visible_rect);
 
         let pane_state = pane.effective_activity().cloned();
-        if let Some(app_pane) = pane.as_app_mut() {
+        if let Some(view_pane) = pane.as_view_mut() {
             ui.painter()
                 .rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
@@ -607,7 +607,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let tab_group = self.tab_info.get(&tile_id);
             let has_tabs = tab_group.is_some();
             if tab_group.is_some() {
-                let is_overtaken = app_pane.overlay_replaced.is_some();
+                let is_overtaken = view_pane.overlay_replaced.is_some();
                 if let Some(action) = render::terminal_pane::render_name_bar_and_tabs(
                     &mut app_ui,
                     render::terminal_pane::NameBarParams {
@@ -623,15 +623,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             }
 
             let pending_click = self.pending_pane_clicks.remove(pane_id);
-            let ui_profile_label = match &app_pane.runtime {
-                ViewRuntime::Python(_) => format!("python:{}", app_pane.manifest_id),
-                ViewRuntime::Wasm(_) => format!("wasm:{}", app_pane.manifest_id),
-                ViewRuntime::Builtin(_) => format!("builtin:{}", app_pane.manifest_id),
+            let ui_profile_label = match &view_pane.runtime {
+                ViewRuntime::Python(_) => format!("python:{}", view_pane.manifest_id),
+                ViewRuntime::Wasm(_) => format!("wasm:{}", view_pane.manifest_id),
+                ViewRuntime::Builtin(_) => format!("builtin:{}", view_pane.manifest_id),
             };
             crate::platform::ui_profile::time(&ui_profile_label, || {
-                render::app_pane::render(
+                render::view_pane::render(
                     &mut app_ui,
-                    app_pane,
+                    view_pane,
                     &self.colors,
                     has_tabs,
                     pending_click,
@@ -930,7 +930,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         tile_id: TileId,
         rect: egui::Rect,
     ) {
-        // Focus outline is painted after tree.ui() in app/mod.rs using the parent
+        // Focus outline is painted after tree.ui() in plugin/mod.rs using the parent
         // painter (full window clip rect), so StrokeKind::Outside fills the inter-pane gap.
         let _ = (painter, tile_id, rect);
     }
@@ -956,7 +956,7 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
     }
 }
 
-pub(crate) fn deliver_dropped_files_to_app(
+pub(crate) fn deliver_dropped_files_to_plugin(
     ui: &egui::Ui,
     pane_id: PaneId,
     app: &mut crate::host::pane::ViewPane,
@@ -964,14 +964,14 @@ pub(crate) fn deliver_dropped_files_to_app(
     for file in ui.input(|i| i.raw.dropped_files.clone()) {
         let Some(path) = file.path else { continue };
         let source = path.to_string_lossy();
-        match dispatch_drop_to_app(pane_id, app, &source, true) {
+        match dispatch_drop_to_plugin(pane_id, app, &source, true) {
             Ok(_) => log::info!("drop: delivery accepted pane_id={pane_id} source_kind=file"),
             Err(error) => log::info!("drop: delivery rejected pane_id={pane_id} reason={error}"),
         }
     }
 }
 
-pub(crate) fn dispatch_drop_to_app(
+pub(crate) fn dispatch_drop_to_plugin(
     pane_id: PaneId,
     app: &mut crate::host::pane::ViewPane,
     source: &str,
@@ -1298,7 +1298,7 @@ pub(crate) fn paint_portal_minimap(
                 icon_alpha
             };
 
-            // Title label (OSC title or app name) at top of pane
+            // Title label (OSC title or plugin name) at top of pane
             let mut content_top = content_area.min.y;
             if let Some(ref title) = pane.title {
                 if cell.width() > 25.0 && cell.height() > 14.0 {
@@ -1338,7 +1338,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             match pane.kind {
-                PaneKind::App => {
+                PaneKind::View => {
                     let block_color = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(),
                         colors.text_dim.g(),

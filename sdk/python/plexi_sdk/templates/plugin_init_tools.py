@@ -1,7 +1,7 @@
 """Assistant-callable tools for __DISPLAY_NAME__.
 
 Each tool is a plain Python function registered with ``@tools.tool``. Keep
-this module free of UI code: it answers the Assistant, ``app/ui.py`` draws.
+this module free of UI code: it answers the Assistant, ``plugin/ui.py`` draws.
 ``main.py`` returns ``tools.expose()`` from ``init`` and calls
 ``tools.dispatch(event)`` first in ``update``.
 

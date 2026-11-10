@@ -1,23 +1,23 @@
-//! App pane render path — extracted from `tiling::PlexiBehavior::pane_ui`.
+//! View pane render path — extracted from `tiling::PlexiBehavior::pane_ui`.
 //!
 //! Chrome bands (overtake bar, nav bar) are allocated in the parent layout via
-//! `allocate_exact_size`, advancing the cursor before the app's `ui()` method
-//! is called. This guarantees that `ui.available_height()` inside every app
+//! `allocate_exact_size`, advancing the cursor before the plugin's `ui()` method
+//! is called. This guarantees that `ui.available_height()` inside every plugin
 //! runtime equals `pane_height - visible_chrome_height`, regardless of which
 //! chrome bands are active.
 
-use crate::app::app_trait::ViewRenderContext;
+use crate::app::view_trait::ViewRenderContext;
 use crate::protocol::PlexiEvent;
 use crate::host::pane::ViewPane;
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
 use egui::RichText;
 
-/// Height of the nav bar shown when the app has pushed at least one view.
+/// Height of the nav bar shown when the plugin has pushed at least one view.
 const NAV_BAR_HEIGHT: f32 = 32.0;
 /// Horizontal padding inside the nav bar.
 const NAV_BAR_PAD: f32 = style::SPACE_SM;
-/// Height of the overtake indicator bar shown when this app replaced another pane.
+/// Height of the overtake indicator bar shown when this plugin replaced another pane.
 const OVERTAKE_BAR_HEIGHT: f32 = 24.0;
 
 /// Total height consumed by visible host chrome bands.
@@ -31,34 +31,34 @@ pub(crate) fn chrome_height(has_overtake: bool, has_nav: bool) -> f32 {
 
 pub fn render(
     ui: &mut egui::Ui,
-    app_pane: &mut ViewPane,
+    view_pane: &mut ViewPane,
     colors: &Colors,
     suppress_overtake: bool,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
     context_root: &std::path::Path,
 ) {
-    // Refresh before the app pumps its bridge messages: a persist handled in
+    // Refresh before the plugin pumps its bridge messages: a persist handled in
     // this frame must resolve against this frame's context root.
-    app_pane.runtime.refresh_context_root(context_root);
-    let has_overtake = app_pane.overlay_replaced.is_some() && !suppress_overtake;
-    let nav_title: Option<String> = app_pane.runtime.nav_top_title().map(|t| t.to_owned());
-    // Resolve before any mutable borrow of app_pane.runtime inside closures below.
+    view_pane.runtime.refresh_context_root(context_root);
+    let has_overtake = view_pane.overlay_replaced.is_some() && !suppress_overtake;
+    let nav_title: Option<String> = view_pane.runtime.nav_top_title().map(|t| t.to_owned());
+    // Resolve before any mutable borrow of view_pane.runtime inside closures below.
     let nav_back_view_id: String = if nav_title.is_some() {
-        app_pane.runtime.nav_back_view_id()
+        view_pane.runtime.nav_back_view_id()
     } else {
         String::new()
     };
 
     if has_overtake || nav_title.is_some() {
         log::debug!(
-            "app_pane::render: chrome_h={:.0} (overtake={has_overtake} nav={})",
+            "view_pane::render: chrome_h={:.0} (overtake={has_overtake} nav={})",
             chrome_height(has_overtake, nav_title.is_some()),
             nav_title.is_some(),
         );
     }
 
     // -- Overtake bar --
-    // allocate_exact_size advances the parent cursor so the app content viewport shrinks.
+    // allocate_exact_size advances the parent cursor so the plugin content viewport shrinks.
     if has_overtake {
         let (bar_rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), OVERTAKE_BAR_HEIGHT),
@@ -68,11 +68,11 @@ pub fn render(
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.add_space(NAV_BAR_PAD);
-                let replaced_label = match app_pane.overlay_replaced.as_deref() {
+                let replaced_label = match view_pane.overlay_replaced.as_deref() {
                     Some(crate::host::pane::Pane::Terminal(t)) => {
                         t.name.as_deref().unwrap_or("Terminal").to_string()
                     }
-                    Some(crate::host::pane::Pane::App(a)) => a.name.clone(),
+                    Some(crate::host::pane::Pane::View(a)) => a.name.clone(),
                     Some(crate::host::pane::Pane::Portal(_)) => "Portal".to_string(),
                     None => unreachable!(),
                 };
@@ -119,7 +119,7 @@ pub fn render(
                     "Back",
                 );
                 if back_btn.clicked() {
-                    app_pane.runtime.queue_outbound_event(PlexiEvent::NavBack {
+                    view_pane.runtime.queue_outbound_event(PlexiEvent::NavBack {
                         view_id: nav_back_view_id.clone(),
                     });
                 }
@@ -135,15 +135,15 @@ pub fn render(
 
     // -- App content in constrained content viewport --
     // ui.available_height() == pane_height - chrome_height(has_overtake, nav_title.is_some())
-    // guaranteed by the allocate_exact_size calls above. Apps read ui.available_height() /
+    // guaranteed by the allocate_exact_size calls above. Plugins read ui.available_height() /
     // available_size() and always see the post-chrome budget with no guesswork.
     let ctx = ViewRenderContext {
         colors,
-        pane_id: app_pane.id,
+        pane_id: view_pane.id,
     };
     let content_rect = ui.available_rect_before_wrap();
-    app_pane.runtime.ui(ui, &ctx, pending_click);
-    if matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
+    view_pane.runtime.ui(ui, &ctx, pending_click);
+    if matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
         if let Some(state) = ui.ctx().viewport(|viewport| {
             viewport
                 .this_pass
@@ -156,7 +156,7 @@ pub fn render(
                     )
                 })
         }) {
-            app_pane.semantic_state = state;
+            view_pane.semantic_state = state;
         }
     }
 }

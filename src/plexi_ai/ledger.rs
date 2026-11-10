@@ -2,7 +2,7 @@
 //! `~/.plexi-alpha/ai-ledger.jsonl` (or the build-appropriate config dir).
 //!
 //! Budget enforcement is active: `check_budget` gates every `ai.query` call
-//! against per-app and global daily spend caps from `[ai]` config.
+//! against per-plugin and global daily spend caps from `[ai]` config.
 //!
 //! Row format (cost_usd is null for subscription billing; client is null when
 //! the run and `[ai] client` both leave it unset; wall_ms is omitted until a
@@ -148,13 +148,13 @@ impl LedgerSummary {
 /// One ledger entry — matches the JSON shape written to disk.
 ///
 /// `plugin_id` and `model` are populated for `ai.query` broker calls (#284) so
-/// the cost ledger can attribute spend per-app and per-model.
+/// the cost ledger can attribute spend per-plugin and per-model.
 #[derive(serde::Serialize)]
 pub struct LedgerRow {
     pub ts: String,
     pub backend: String,
     pub billing: &'static str,
-    /// Originating app id when the call came in via the `ai.query` broker.
+    /// Originating plugin id when the call came in via the `ai.query` broker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugin_id: Option<String>,
     /// Concrete model id resolved by the broker (e.g. "claude-haiku-4-5").
@@ -732,10 +732,10 @@ fn add_u64(total: &mut Option<u64>, value: Option<u64>) {
 
 /// Summary of AI spend for a single calendar day (UTC).
 pub struct DailySpend {
-    /// Total spend across all apps today, in USD.
+    /// Total spend across all plugins today, in USD.
     pub global_usd: f64,
-    /// Per-app spend today, keyed by plugin_id, in USD.
-    pub per_app: HashMap<String, f64>,
+    /// Per-plugin spend today, keyed by plugin_id, in USD.
+    pub per_plugin: HashMap<String, f64>,
 }
 
 /// Read today's ledger and compute total spend. O(n) scan — called before each
@@ -751,7 +751,7 @@ pub fn today_spend() -> DailySpend {
             // No ledger yet — zero spend.
             return DailySpend {
                 global_usd: 0.0,
-                per_app: HashMap::new(),
+                per_plugin: HashMap::new(),
             };
         }
         Err(e) => {
@@ -761,13 +761,13 @@ pub fn today_spend() -> DailySpend {
             );
             return DailySpend {
                 global_usd: 0.0,
-                per_app: HashMap::new(),
+                per_plugin: HashMap::new(),
             };
         }
     };
 
     let mut global_usd = 0.0f64;
-    let mut per_app: HashMap<String, f64> = HashMap::new();
+    let mut per_plugin: HashMap<String, f64> = HashMap::new();
 
     for line in data.lines() {
         let line = line.trim();
@@ -789,13 +789,13 @@ pub fn today_spend() -> DailySpend {
         let cost = v["cost_usd"].as_f64().unwrap_or(0.0);
         global_usd += cost;
         if let Some(plugin_id) = v["plugin_id"].as_str() {
-            *per_app.entry(plugin_id.to_string()).or_insert(0.0) += cost;
+            *per_plugin.entry(plugin_id.to_string()).or_insert(0.0) += cost;
         }
     }
 
     DailySpend {
         global_usd,
-        per_app,
+        per_plugin,
     }
 }
 
@@ -817,17 +817,17 @@ pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result
             spend.global_usd, global_cap
         ));
     }
-    let app_cap = config.effective_per_app_daily_usd();
-    let app_spend = spend.per_app.get(plugin_id).copied().unwrap_or(0.0);
-    if app_spend >= app_cap {
+    let plugin_cap = config.effective_per_plugin_daily_usd();
+    let plugin_spend = spend.per_plugin.get(plugin_id).copied().unwrap_or(0.0);
+    if plugin_spend >= plugin_cap {
         log::warn!(
-            "ai_broker[{plugin_id}]: per-app daily budget exceeded (${:.4} / ${:.2})",
-            app_spend,
-            app_cap,
+            "ai_broker[{plugin_id}]: per-plugin daily budget exceeded (${:.4} / ${:.2})",
+            plugin_spend,
+            plugin_cap,
         );
         return Err(format!(
-            "per-app daily AI budget exceeded for '{plugin_id}' (${:.2} / ${:.2})",
-            app_spend, app_cap
+            "per-plugin daily AI budget exceeded for '{plugin_id}' (${:.2} / ${:.2})",
+            plugin_spend, plugin_cap
         ));
     }
     Ok(())
@@ -922,9 +922,9 @@ mod ledger_tests {
 
     // ── Budget enforcement tests ──────────────────────────────────────────────
 
-    fn budget_config(per_app: f64, global: f64) -> crate::config::AiConfig {
+    fn budget_config(per_plugin: f64, global: f64) -> crate::config::AiConfig {
         crate::config::AiConfig {
-            per_app_daily_usd: Some(per_app),
+            per_plugin_daily_usd: Some(per_plugin),
             global_daily_usd: Some(global),
             ..Default::default()
         }
@@ -958,7 +958,7 @@ mod ledger_tests {
         // which means 0.0 >= 0.0 is true.
         let config = crate::config::AiConfig {
             global_daily_usd: Some(0.0),
-            per_app_daily_usd: Some(1.0),
+            per_plugin_daily_usd: Some(1.0),
             ..Default::default()
         };
         let result = check_budget("app1", &config);
@@ -971,22 +971,22 @@ mod ledger_tests {
     }
 
     #[test]
-    fn check_budget_blocks_per_app_over_limit() {
-        // Set per-app cap to 0.0 so any spend (including 0 >= 0) triggers.
+    fn check_budget_blocks_per_plugin_over_limit() {
+        // Set per-plugin cap to 0.0 so any spend (including 0 >= 0) triggers.
         // But global cap is high so that path doesn't fire first.
         let config = crate::config::AiConfig {
             global_daily_usd: Some(100.0),
-            per_app_daily_usd: Some(0.0),
+            per_plugin_daily_usd: Some(0.0),
             ..Default::default()
         };
-        // With empty ledger, app_spend = 0.0 which is NOT >= 0.0... actually 0.0 >= 0.0 is true.
+        // With empty ledger, plugin_spend = 0.0 which is NOT >= 0.0... actually 0.0 >= 0.0 is true.
         let result = check_budget("app1", &config);
-        assert!(result.is_err(), "should block when per-app spend >= cap");
+        assert!(result.is_err(), "should block when per-plugin spend >= cap");
         let msg = result.unwrap_err();
         assert!(msg.contains("app1"), "error must mention the plugin_id: {msg}");
         assert!(
-            msg.contains("per-app daily"),
-            "error must mention 'per-app daily': {msg}"
+            msg.contains("per-plugin daily"),
+            "error must mention 'per-plugin daily': {msg}"
         );
     }
 

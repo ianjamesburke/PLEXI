@@ -1,6 +1,6 @@
 use egui::{Color32, FontId, Response, RichText, Ui};
 
-use crate::host::wasm_app::bindings::plexi::platform::types::FooterKeyEntry;
+use crate::host::wasm_view::bindings::plexi::platform::types::FooterKeyEntry;
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::style;
 use crate::ui::theme::{self, Colors};
@@ -59,10 +59,10 @@ impl<'a> ViewChrome<'a> {
         ui.add(label)
     }
 
-    pub(crate) fn paint_app_bar(&self, ui: &mut Ui, title: &str, subtitle: &str) -> egui::Rect {
+    pub(crate) fn paint_view_bar(&self, ui: &mut Ui, title: &str, subtitle: &str) -> egui::Rect {
         let has_subtitle = !subtitle.is_empty();
-        let band_h = app_bar_band_height(has_subtitle);
-        let total_h = app_bar_height(subtitle);
+        let band_h = view_bar_band_height(has_subtitle);
+        let total_h = view_bar_height(subtitle);
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), total_h),
             egui::Sense::hover(),
@@ -164,11 +164,11 @@ impl<'a> ViewChrome<'a> {
     }
 }
 
-pub(crate) fn app_bar_height(subtitle: &str) -> f32 {
-    app_bar_band_height(!subtitle.is_empty()) + 1.0
+pub(crate) fn view_bar_height(subtitle: &str) -> f32 {
+    view_bar_band_height(!subtitle.is_empty()) + 1.0
 }
 
-fn app_bar_band_height(has_subtitle: bool) -> f32 {
+fn view_bar_band_height(has_subtitle: bool) -> f32 {
     if has_subtitle {
         APP_BAR_DOUBLE_BAND_H
     } else {
@@ -198,7 +198,7 @@ pub(crate) fn footer_keys_height(ui: &egui::Ui, entries: &[FooterKeyEntry], divi
 mod adoption_tests {
     use super::*;
     #[test]
-    fn adoption_app_bar_elides_instead_of_clipping() {
+    fn adoption_view_bar_elides_instead_of_clipping() {
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let colors = crate::ui::theme::Colors::from_config(
@@ -213,7 +213,7 @@ mod adoption_tests {
             ));
             let capture =
                 crate::ui::layout_report::Capture::begin(ui.painter(), "adoption-fixture");
-            let rect = ViewChrome::new(&colors).paint_app_bar(
+            let rect = ViewChrome::new(&colors).paint_view_bar(
                 ui,
                 "A deliberately long application title with an important suffix",
                 "/a/very/long/unbroken/subtitle/identifier/0123456789abcdef",

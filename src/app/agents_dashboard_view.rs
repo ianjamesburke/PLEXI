@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::app_trait::{App, ViewRenderContext};
+use crate::app::view_trait::{View, ViewRenderContext};
 
 pub struct AgentsDashboardView {
     workspace: PathBuf,
@@ -16,18 +16,18 @@ impl AgentsDashboardView {
     }
 }
 
-impl App for AgentsDashboardView {
+impl View for AgentsDashboardView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 
     fn type_id(&self) -> &'static str {
-        "command-view"
+        "agents-dashboard"
     }
 
     fn display_name(&self) -> String {
-        "Command".to_string()
+        "Agents dashboard".to_string()
     }
 
     fn ui(
@@ -40,7 +40,7 @@ impl App for AgentsDashboardView {
         let lines = crate::agent::runs::pane_lines(&self.workspace);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .id_salt("command-view")
+            .id_salt("agents-dashboard")
             .show(ui, |ui| {
                 for line in lines {
                     let attention = line.starts_with("waiting");

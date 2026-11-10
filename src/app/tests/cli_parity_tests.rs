@@ -236,7 +236,7 @@ fn workspace_snapshot_reports_strip_geometry_without_pane_text() {
     let a = h.add_test_pane();
     let b = h.add_test_pane();
     let context = h.app.router.active().context_id;
-    h.app.windows[0].panes.get_mut(&a).unwrap().as_app_mut().unwrap().name = "private sentinel text".into();
+    h.app.windows[0].panes.get_mut(&a).unwrap().as_view_mut().unwrap().name = "private sentinel text".into();
     h.app.set_context_columns(context, vec![vec![a], vec![b]]);
     h.app.focus_pane_in_strip(a);
     h.run_frames(2);
@@ -291,7 +291,7 @@ fn workspace_snapshot_marks_other_windows_outside_active_view() {
         panes: std::collections::HashMap::new(), focused_pane: None, zoomed_pane: None,
         grid_x: 1, grid_y: 0, window_id, context_id: context,
     });
-    let (tile, second) = h.app.add_app_pane_in_window(1, "second");
+    let (tile, second) = h.app.add_view_pane_in_window(1, "second");
     h.app.windows[1].focused_pane = Some(tile);
     h.app.active_window = 1;
     h.app.context_active_window.insert(context, window_id);

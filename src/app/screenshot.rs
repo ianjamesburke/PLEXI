@@ -6,7 +6,7 @@
 //! live paint target back and delivers it as `egui::Event::Screenshot` in a later
 //! frame's raw input, where [`PlexiApp::fulfill_screenshot_events`] crops,
 //! encodes, and writes the PNG plus the CLI response file. This captures the
-//! host UI — chrome, terminals, apps, overlays — with
+//! host UI — chrome, terminals, plugins, overlays — with
 //! no OS-level screen capture involved. The native backend paints requested
 //! frames into a GPU texture without acquiring or presenting a window drawable,
 //! including when occluded. It uses the same egui context and renderer.

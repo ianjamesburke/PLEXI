@@ -21,7 +21,7 @@ pub(crate) enum SwapResult {
     NoFocus,
 }
 
-/// If `pane_id` is an app pane that was opened as an overlay over another
+/// If `pane_id` is an view pane that was opened as an overlay over another
 /// pane (`hint = Some("overlay")`), restore the original pane and return
 /// `true`. Otherwise return `false` and leave the map unchanged.
 ///
@@ -37,7 +37,7 @@ pub(super) fn restore_overlay_replacement(
     };
 
     match pane {
-        Pane::App(mut app) => {
+        Pane::View(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
                 let (plugin_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
                 log::info!(
@@ -58,7 +58,7 @@ pub(super) fn restore_overlay_replacement(
                 panes.insert(pane_id, *replaced);
                 true
             } else {
-                panes.insert(pane_id, Pane::App(app));
+                panes.insert(pane_id, Pane::View(app));
                 false
             }
         }
@@ -298,7 +298,7 @@ impl PlexiApp {
     /// that mirrors the focused pane's type:
     ///
     /// - Terminal → new terminal in the same cwd
-    /// - App      → fresh instance of the same app (`open_view_by_id`)
+    /// - App      → fresh instance of the same plugin (`open_view_by_id`)
     ///
     /// If no pane is focused, falls back to creating a full-size terminal.
     pub(crate) fn split_focused_mirror(&mut self, placement: Placement) {
@@ -328,15 +328,15 @@ impl PlexiApp {
         let focused_pane_id = *focused_pane_id;
 
         // Determine the focused pane's type for the mirror decision.
-        // Capture app manifest_id up front so we can drop the immutable borrow
+        // Capture plugin manifest_id up front so we can drop the immutable borrow
         // before mutating in the App branch.
         enum Kind {
             Terminal,
-            App(String),
+            View(String),
         }
         let kind = match self.windows[active].panes.get(&focused_pane_id) {
             Some(Pane::Terminal(_)) => Kind::Terminal,
-            Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
+            Some(Pane::View(a)) => Kind::View(a.manifest_id.clone()),
             Some(Pane::Portal(_)) | None => return,
         };
 
@@ -352,18 +352,18 @@ impl PlexiApp {
                 //   true  → Vertical container (stacked below)
                 self.split_focused(!vertical, None, false, false, None);
             }
-            Kind::App(manifest_id) => {
-                // Fresh instance of the same app at the requested placement.
+            Kind::View(manifest_id) => {
+                // Fresh instance of the same plugin at the requested placement.
                 // The layout hint maps directly to the split direction:
                 //   Placement::Right → "split_h" (side-by-side, new pane right)
                 //   Placement::Below → "split_v" (stacked,      new pane below)
                 //
                 // Force a fresh spawn (#0336): a mirror-split of a singleton
-                // (`focus_existing`) app must still duplicate the pane, so it
+                // (`focus_existing`) plugin must still duplicate the pane, so it
                 // bypasses the on_launch dedup policy that would otherwise focus
                 // the original and silently no-op the split.
                 let layout = if vertical { "split_h" } else { "split_v" };
-                let _ = self.launch_app_by_id_with_layout_forced(
+                let _ = self.launch_view_by_id_with_layout_forced(
                     &manifest_id,
                     Some(layout.to_string()),
                     &[],
@@ -887,7 +887,7 @@ impl PlexiApp {
         // deliberately window-local: closing a pane never switches windows.
         let next = is_focused.then(|| self.choose_focus_after_close(ctx_idx, tile_id)).flatten();
 
-        // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
+        // Phase 3: Remove tile and extract pane — defer drop so background plugins can be parked.
         let mut closed_pane_id = None;
         let removed_pane = {
             let ctx = &mut self.windows[ctx_idx];
@@ -948,7 +948,7 @@ impl PlexiApp {
         // ctx borrow is released — reap any routine live-run record for this
         // pane (the destroy half of the overlap guard's register/reap pair;
         // without it a closed run would block its routine forever), then park
-        // background WASM app runtimes; drop everything else.
+        // background WASM plugin runtimes; drop everything else.
         if let Some(pane_id) = closed_pane_id {
             let win_context_id = self.windows[ctx_idx].context_id;
             if let Some(strip) = self.host.strip_mut(win_context_id) {
@@ -969,7 +969,7 @@ impl PlexiApp {
                 }
             }
             self.mark_workspace_dirty();
-            match crate::host::app_timeline::global().lock() {
+            match crate::host::plugin_timeline::global().lock() {
                 Ok(mut timeline) => timeline.close_lifecycle_pane(pane_id),
                 Err(error) => log::error!("pane_lifecycle: closing pane {pane_id}: {error}"),
             }
@@ -986,17 +986,17 @@ impl PlexiApp {
                 log::info!("scheduler: routine '{name}' run ended — pane {pane_id} closed");
             }
         }
-        if let Some(Pane::App(app_pane)) = removed_pane {
-            let pane_id = app_pane.id;
+        if let Some(Pane::View(view_pane)) = removed_pane {
+            let pane_id = view_pane.id;
             // Hot reload (#83): drop any active watcher for this pane.
             // Idempotent — no-op when the pane wasn't being watched.
             self.hot_reload.unwatch(pane_id);
             // State watch (stint 0644): same lifecycle, same idempotence.
             self.state_watch.unwatch(pane_id);
             // Tombstone any notifications this pane posted — they stay visible but
-            // their action buttons are hidden since the app can no longer respond.
+            // their action buttons are hidden since the plugin can no longer respond.
             self.tombstone_pane_notifications(pane_id);
-            // else: builtin app pane drops here
+            // else: builtin view pane drops here
         }
 
         if let Some(new_focus) = next {
@@ -1808,9 +1808,9 @@ impl PlexiApp {
         self.adjust_active_or_remembered_pane_font_size(delta);
     }
 
-    /// Asks the focused app whether a user-initiated close may proceed. An app
+    /// Asks the focused plugin whether a user-initiated close may proceed. An plugin
     /// with unsaved work vetoes and shows its own prompt.
-    pub(crate) fn focused_app_vetoes_close(&mut self) -> bool {
+    pub(crate) fn focused_view_vetoes_close(&mut self) -> bool {
         let active = self.active_window;
         let Some(Tile::Pane(pane_id)) = self.windows[active]
             .focused_pane
@@ -1823,16 +1823,16 @@ impl PlexiApp {
         let Some(app) = self.windows[active]
             .panes
             .get_mut(&pane_id)
-            .and_then(|pane| pane.as_app_mut())
+            .and_then(|pane| pane.as_view_mut())
         else {
             return false;
         };
         !app.runtime.request_close()
     }
 
-    /// Close the focused app pane.
-    pub(crate) fn close_focused_app(&mut self) {
-        if self.focused_app_vetoes_close() {
+    /// Close the focused view pane.
+    pub(crate) fn close_focused_view(&mut self) {
+        if self.focused_view_vetoes_close() {
             return;
         }
         let active = self.active_window;
@@ -1854,12 +1854,12 @@ impl PlexiApp {
             return;
         }
 
-        let is_app = self.windows[active]
+        let is_plugin = self.windows[active]
             .panes
             .get(&pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .is_some();
-        if is_app {
+        if is_plugin {
             let ctx_id = self.windows[active].context_id;
             self.close_tile(active, focused_tile);
             self.windows[active].clear_zoom();

@@ -18,7 +18,7 @@
 // tracks on top.
 
 wit_bindgen::generate!({
-    world: "plexi-audio-app",
+    world: "plexi-audio-plugin",
     path: "wit/world.wit",
 });
 
@@ -48,7 +48,7 @@ const CAP_FS_PICK: &str = "fs.pick";
 /// Repaint cadence so the playhead in the view tracks the RT cursor.
 const TIMER_REFRESH: u32 = 1;
 
-struct App {
+struct View {
     jb: Jukebox,
     /// Picked tracks awaiting their bytes. `file-read` results carry no
     /// request id, so the head of this queue owns the next `FileReadResult`.
@@ -62,8 +62,8 @@ struct App {
 }
 
 struct Component;
-static mut APP: Option<App> = None;
-fn app() -> &'static mut App {
+static mut APP: Option<View> = None;
+fn app() -> &'static mut View {
     unsafe { (*core::ptr::addr_of_mut!(APP)).as_mut().unwrap() }
 }
 
@@ -111,7 +111,7 @@ fn file_stem_name(path: &str) -> String {
     }
 }
 
-impl App {
+impl View {
     fn tool_decls() -> Vec<ToolDecl> {
         tools::tools()
             .into_iter()
@@ -364,7 +364,7 @@ impl Guest for Component {
         ));
 
         unsafe {
-            APP = Some(App {
+            APP = Some(View {
                 jb,
                 read_queue: VecDeque::new(),
                 inflight: None,
@@ -376,7 +376,7 @@ impl Guest for Component {
 
         vec![
             Effect::SetTitle("Jukebox".to_string()),
-            Effect::DeclareTools(DeclareToolsEffect { tools: App::tool_decls() }),
+            Effect::DeclareTools(DeclareToolsEffect { tools: View::tool_decls() }),
             Effect::SetTimer(TimerEffect { id: TIMER_REFRESH, delay_ms: 200, repeat: true }),
         ]
     }

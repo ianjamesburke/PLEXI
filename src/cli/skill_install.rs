@@ -304,7 +304,7 @@ mod tests {
         for needle in [
             "assistant send",
             "plexi relay",
-            "command-view",
+            "agents-dashboard",
             "plexi ledger",
             "--folder",
             "mcp-config",
@@ -329,27 +329,27 @@ mod tests {
         let assistant_only =
             render_skill(EMBEDDED_SKILL, |f| f == ReleaseFeature::Assistant).unwrap();
         assert!(assistant_only.contains("assistant send"));
-        assert!(!assistant_only.contains("command-view"));
+        assert!(!assistant_only.contains("agents-dashboard"));
         let both = render_skill(EMBEDDED_SKILL, |f| {
-            matches!(f, ReleaseFeature::CommandView | ReleaseFeature::Assistant)
+            matches!(f, ReleaseFeature::AgentsDashboard | ReleaseFeature::Assistant)
         })
         .unwrap();
         assert!(both.contains("assistant send"));
-        assert!(both.contains("command-view"));
+        assert!(both.contains("agents-dashboard"));
 
         // Combined markers remain supported even when the current catalog has
         // no overlapping command owners.
         let fixture =
             "<!-- experiment: command_view, assistant -->\ncombined\n<!-- /experiment -->\n";
         assert!(
-            render_skill(fixture, |f| f == ReleaseFeature::CommandView)
+            render_skill(fixture, |f| f == ReleaseFeature::AgentsDashboard)
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             render_skill(fixture, |f| matches!(
                 f,
-                ReleaseFeature::CommandView | ReleaseFeature::Assistant
+                ReleaseFeature::AgentsDashboard | ReleaseFeature::Assistant
             ))
             .unwrap(),
             "combined\n"

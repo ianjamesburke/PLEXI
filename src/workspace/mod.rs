@@ -67,13 +67,13 @@ pub struct SavedPane {
     #[serde(default)]
     pub heartbeat: Option<SavedPaneHeartbeat>,
     /// `ViewRuntime::type_id()` at save time (`"python-wasm"` / `"wasm"` /
-    /// a builtin's own type id). Distinct from `plugin_id`, which is the app's
+    /// a builtin's own type id). Distinct from `plugin_id`, which is the plugin's
     /// *manifest* identity — the runtime kind alone cannot relaunch anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_kind: Option<String>,
-    /// Enough launch context to relaunch a Python/WASM app pane through the
+    /// Enough launch context to relaunch a Python/WASM view pane through the
     /// normal open path on restore. `None` for builtins (restored via
-    /// `restore_builtin_app_pane`) and for saves written before this field
+    /// `restore_builtin_view_pane`) and for saves written before this field
     /// existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<SavedViewLaunch>,
@@ -183,12 +183,12 @@ pub struct AgentHistoryRecord {
 }
 
 impl SavedPane {
-    /// True for a pre-0680 save of a Python/WASM app pane: `plugin_id` holds the
-    /// *runtime kind* (`ViewRuntime::type_id()`), not the app's manifest id,
+    /// True for a pre-0680 save of a Python/WASM view pane: `plugin_id` holds the
+    /// *runtime kind* (`ViewRuntime::type_id()`), not the plugin's manifest id,
     /// and `runtime_kind`/`launch` are absent because the field didn't exist
     /// yet. There is no recoverable manifest identity in this record, so
     /// restore renders a launch-failed pane naming the runtime kind rather
-    /// than the (unknown) app id — it must never silently substitute a
+    /// than the (unknown) plugin id — it must never silently substitute a
     /// terminal.
     pub fn is_legacy_runtime_kind_id(&self) -> bool {
         self.runtime_kind.is_none()
@@ -208,7 +208,8 @@ pub struct SavedPaneHeartbeat {
 pub enum SavedPaneKind {
     #[default]
     Terminal,
-    App,
+    #[serde(rename = "app")]
+    View,
     #[serde(alias = "sub_context")]
     Portal {
         context_id: u64,
@@ -218,7 +219,7 @@ pub enum SavedPaneKind {
 }
 
 /// Launch context saved alongside a Python/WASM `SavedPane`, sufficient to
-/// relaunch the same app through the normal open path on restore. Never
+/// relaunch the same plugin through the normal open path on restore. Never
 /// carries granted capabilities — those live in `PermissionStore` and are
 /// re-derived at restore time, not persisted into the workspace file.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
@@ -630,8 +631,8 @@ impl WorkspaceFile {
                 return Err(invalid(format!("window {} references missing context {}", window.window_id, window.context_id)));
             }
             for pane in &window.panes {
-                if matches!(pane.kind, SavedPaneKind::App) && pane.plugin_id.is_none() {
-                    return Err(invalid(format!("app pane {} has no app identity", pane.id)));
+                if matches!(pane.kind, SavedPaneKind::View) && pane.plugin_id.is_none() {
+                    return Err(invalid(format!("view pane {} has no plugin identity", pane.id)));
                 }
                 if let SavedPaneKind::Portal { context_id, .. } = pane.kind {
                     if !context_ids.contains(&context_id) { return Err(invalid(format!("portal {} references missing context {context_id}", pane.id))); }
@@ -1304,14 +1305,14 @@ mod tests {
     /// pane type on next launch.
     #[test]
     fn workspace_save_restore_preserves_split_panes() {
-        let kinds = [SavedPaneKind::Terminal, SavedPaneKind::App];
+        let kinds = [SavedPaneKind::Terminal, SavedPaneKind::View];
         for kind in kinds {
             let pane = SavedPane {
                 id: 42,
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
                 name: Some("split-pane".to_string()),
-                plugin_id: matches!(kind, SavedPaneKind::App).then(|| "snake".to_string()),
+                plugin_id: matches!(kind, SavedPaneKind::View).then(|| "snake".to_string()),
                 plugin_state: None,
                 hidden: false,
                 heartbeat: None,

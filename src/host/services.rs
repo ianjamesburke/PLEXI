@@ -1,7 +1,7 @@
 //! HostServices — host side-effect plumbing.
 //!
 //! `EventSink` is the only production field right now; fs/secrets/net/spawn
-//! trait seams live in the app runtimes (`host::wasm_python`, `host::wasm_app`)
+//! trait seams live in the plugin runtimes (`host::wasm_python`, `host::wasm_view`)
 //! and `plugin_registry` until HostModel owns their routing.
 
 use crate::host::effect::HostEffect;
@@ -177,7 +177,7 @@ pub trait NetService: Send + Sync {
 }
 
 /// Production impl — blocking HTTP via `ureq`. Pure-Rust, no tokio.
-/// 10s connect timeout, 30s total timeout so apps cannot wedge the host
+/// 10s connect timeout, 30s total timeout so plugins cannot wedge the host
 /// forever on a hung peer.
 pub struct UreqNetService {
     agent: ureq::Agent,
@@ -448,7 +448,7 @@ impl PickerService for ScriptedPickerService {
     }
 }
 
-/// The picker backend a newly launched app pane should use. Priority:
+/// The picker backend a newly launched view pane should use. Priority:
 /// in-process override (scenes, tests) → `PLEXI_PICKER_SCRIPT` env (live
 /// hosts driven by tester agents) → native `rfd` dialog.
 pub fn default_picker_service() -> std::sync::Arc<dyn PickerService> {

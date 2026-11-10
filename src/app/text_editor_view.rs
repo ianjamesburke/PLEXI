@@ -7,7 +7,7 @@
 //! autosave, save errors, the find/replace bar, focus routing, and host
 //! command surface.
 
-use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext, KeyDisposition};
 use crate::editor::preview::{self, LinkKind, LinkTarget, MarkdownLayoutCache};
 use crate::editor::widget::{CodeTheme, EditorWidget, ImageCache, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
@@ -1946,7 +1946,7 @@ fn paint_editor_header(
     switched_scope
 }
 
-impl App for TextEditorView {
+impl View for TextEditorView {
     fn sync_change_set(&mut self) -> bool {
         self.apply_change_set()
     }
@@ -2184,7 +2184,7 @@ impl App for TextEditorView {
         }
 
         // Fill only the remaining rect, not `max_rect()`: when this editor
-        // overtakes another pane, `app_pane::render` has already allocated the
+        // overtakes another pane, `view_pane::render` has already allocated the
         // overtake bar above us, and filling max_rect would paint over it —
         // leaving an invisible bar-sized gap. Matches the terminal pane
         // background so note panes and terminals read as the same surface.
@@ -3041,13 +3041,13 @@ impl Drop for TextEditorView {
 }
 
 impl super::PlexiApp {
-    /// Arm and drain app file watchers even when no experiment is enabled.
+    /// Arm and drain plugin file watchers even when no experiment is enabled.
     pub(super) fn service_pane_external_io(&mut self) -> bool {
         let started = std::time::Instant::now();
         let mut changed = false;
         for window in &mut self.windows {
             for pane in window.panes.values_mut() {
-                if let Some(app) = pane.as_app_mut() {
+                if let Some(app) = pane.as_view_mut() {
                     changed |= app.runtime.service_external(&self.ui_wake);
                 }
             }
@@ -3073,7 +3073,7 @@ impl super::PlexiApp {
         let mut buffers = Vec::new();
         for window in &mut self.windows {
             for pane in window.panes.values_mut() {
-                let Some(app) = pane.as_app_mut() else {
+                let Some(app) = pane.as_view_mut() else {
                     continue;
                 };
                 changed |= app.runtime.sync_change_set();
@@ -3097,7 +3097,7 @@ impl super::PlexiApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::app_trait::App;
+    use crate::app::view_trait::View;
     use crate::editor::Cursor;
 
     fn isolated_editor(
@@ -3263,7 +3263,7 @@ mod tests {
         std::fs::write(&path, "😀 café\nsecond").unwrap();
         let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
-        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let state = crate::app::view_trait::View::semantic_state(&app).unwrap();
         // Markdown block granularity: the two lines are one paragraph block.
         assert_eq!(state["active_markdown_block"]["source"], "😀 café\nsecond");
         assert_eq!(state["active_markdown_block"]["kind"], "Paragraph");
@@ -3280,7 +3280,7 @@ mod tests {
         let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
         app.doc.apply(EditorCommand::ExtendTo(Cursor::new(2, 3)));
-        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let state = crate::app::view_trait::View::semantic_state(&app).unwrap();
         assert_eq!(state["primary_selection"]["anchor"], 2);
         assert_eq!(state["primary_selection"]["caret"], 11);
         assert_eq!(app.doc.selected_text(), "e\ntwo\nthr");
@@ -3765,13 +3765,13 @@ mod tests {
             }
         );
         assert_eq!(app.doc.semantic_state(app.view.scroll_y), before);
-        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let state = crate::app::view_trait::View::semantic_state(&app).unwrap();
         assert_eq!(state["preview_mode"], "source");
         assert_eq!(state["editor_mode"], "markdown:source");
 
         app.toggle_preview_mode();
         assert_eq!(app.doc.semantic_state(app.view.scroll_y), before);
-        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let state = crate::app::view_trait::View::semantic_state(&app).unwrap();
         assert_eq!(state["preview_mode"], "live_preview");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3786,7 +3786,7 @@ mod tests {
         let revision = app.doc.revision();
 
         let block_at = |app: &TextEditorView| {
-            let s = crate::app::app_trait::App::semantic_state(app).unwrap();
+            let s = crate::app::view_trait::View::semantic_state(app).unwrap();
             (
                 s["active_markdown_block"]["kind"]
                     .as_str()
@@ -3834,7 +3834,7 @@ mod tests {
         });
 
         let result =
-            crate::app::app_trait::App::drop_file(&mut app, &fixture_png().to_string_lossy())
+            crate::app::view_trait::View::drop_file(&mut app, &fixture_png().to_string_lossy())
                 .expect("decodable image drop accepted");
         assert_eq!(result["result"], "accepted");
         let asset = result["asset"].as_str().unwrap().to_string();
@@ -3868,7 +3868,7 @@ mod tests {
         let mut app = TextEditorView::new_for_test_note(path);
 
         let result =
-            crate::app::app_trait::App::drop_file(&mut app, &fixture_png().to_string_lossy())
+            crate::app::view_trait::View::drop_file(&mut app, &fixture_png().to_string_lossy())
                 .expect("tier drop accepted");
         let asset = result["asset"].as_str().unwrap();
         // A tier is flat and owns its own `assets/`, so the reference is a plain
@@ -3897,8 +3897,8 @@ mod tests {
         let mut app = TextEditorView::new_for_test_note(path);
         let source = fixture_png().to_string_lossy().into_owned();
 
-        let first = crate::app::app_trait::App::drop_file(&mut app, &source).unwrap();
-        let second = crate::app::app_trait::App::drop_file(&mut app, &source).unwrap();
+        let first = crate::app::view_trait::View::drop_file(&mut app, &source).unwrap();
+        let second = crate::app::view_trait::View::drop_file(&mut app, &source).unwrap();
         assert_eq!(first["asset"], second["asset"]);
         assert_eq!(second["deduped"], true);
         let assets: Vec<_> = std::fs::read_dir(dir.join("assets"))
@@ -3922,7 +3922,7 @@ mod tests {
         std::fs::write(&fake, b"not an image at all").unwrap();
         let mut app = TextEditorView::new_for_test_note(path);
 
-        let err = crate::app::app_trait::App::drop_file(&mut app, &fake.to_string_lossy())
+        let err = crate::app::view_trait::View::drop_file(&mut app, &fake.to_string_lossy())
             .expect_err("undecodable content rejected");
         assert!(err.contains("not a decodable image"), "{err}");
         assert_eq!(app.doc.text(), "body\n", "note unchanged");
@@ -3940,13 +3940,13 @@ mod tests {
         let mut app = TextEditorView::new_for_test_note(path);
 
         let url = "https://example.com/pic.png";
-        let result = crate::app::app_trait::App::drop_file(&mut app, url).unwrap();
+        let result = crate::app::view_trait::View::drop_file(&mut app, url).unwrap();
         assert_eq!(result["source_kind"], "url");
         assert_eq!(app.doc.text(), format!("![]({url})"));
         assert!(!dir.join("assets").exists(), "no download, no asset");
 
         // Non-http(s) schemes are rejected.
-        let err = crate::app::app_trait::App::drop_file(&mut app, "ftp://example.com/x.png")
+        let err = crate::app::view_trait::View::drop_file(&mut app, "ftp://example.com/x.png")
             .expect_err("non-http scheme rejected");
         assert!(err.contains("unsupported URL scheme"), "{err}");
         app.last_edit = None;
@@ -4042,7 +4042,7 @@ mod tests {
             app.last_link_activation.as_ref().unwrap()["outcome"],
             "opened_note"
         );
-        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        let commands = crate::app::view_trait::View::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
         match &commands[0] {
             ViewCommand::SpawnPane { type_id, args, .. } => {
@@ -4052,7 +4052,7 @@ mod tests {
             _ => panic!("expected SpawnPane command"),
         }
         assert!(
-            crate::app::app_trait::App::take_pending_commands(&mut app).is_empty(),
+            crate::app::view_trait::View::take_pending_commands(&mut app).is_empty(),
             "commands drain once"
         );
 
@@ -4067,7 +4067,7 @@ mod tests {
             !dir.join("missing.md").exists(),
             "never silently creates a file"
         );
-        assert!(crate::app::app_trait::App::take_pending_commands(&mut app).is_empty());
+        assert!(crate::app::view_trait::View::take_pending_commands(&mut app).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4091,7 +4091,7 @@ mod tests {
             app.last_link_activation.as_ref().unwrap()["outcome"],
             "opened_note"
         );
-        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        let commands = crate::app::view_trait::View::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
 
         // Missing wiki target: created as a blank note under the notes dir and
@@ -4104,7 +4104,7 @@ mod tests {
         let created = notes_dir.join("nowhere.md");
         assert!(created.exists(), "missing wiki target must be created");
         assert_eq!(std::fs::read_to_string(&created).unwrap(), "");
-        let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
+        let commands = crate::app::view_trait::View::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1, "creation opens the new note in a pane");
         match &commands[0] {
             ViewCommand::SpawnPane { type_id, args, .. } => {
@@ -4186,7 +4186,7 @@ mod tests {
             "create_failed"
         );
         assert!(!notes_dir.parent().unwrap().join("escape.md").exists());
-        assert!(crate::app::app_trait::App::take_pending_commands(&mut app).is_empty());
+        assert!(crate::app::view_trait::View::take_pending_commands(&mut app).is_empty());
         let _ = std::fs::remove_dir_all(profile);
     }
 
@@ -4203,7 +4203,7 @@ mod tests {
         )
         .unwrap();
         let app = TextEditorView::new_for_test_note(path);
-        let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
+        let state = crate::app::view_trait::View::semantic_state(&app).unwrap();
         let targets: Vec<&str> = state["visible_link_targets"]
             .as_array()
             .unwrap()
@@ -4243,12 +4243,12 @@ mod tests {
         let mut app = TextEditorView::new(path.clone());
         app.adjust_font_size(FONT_SIZE_MAX);
         assert_eq!(app.font_size, FONT_SIZE_MAX);
-        let state = crate::app::app_trait::App::serialize_state(&app).unwrap();
+        let state = crate::app::view_trait::View::serialize_state(&app).unwrap();
         assert_eq!(state["font_size"], FONT_SIZE_MAX as f64);
 
         let mut restored = TextEditorView::new(path.clone());
         assert_eq!(restored.font_size, FONT_SIZE_DEFAULT);
-        crate::app::app_trait::App::restore_state(&mut restored, &state);
+        crate::app::view_trait::View::restore_state(&mut restored, &state);
         assert_eq!(restored.font_size, FONT_SIZE_MAX);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -4263,7 +4263,7 @@ mod tests {
 
         let mut app = TextEditorView::new(path);
         let state = serde_json::json!({ "font_size": FONT_SIZE_MAX + 100.0 });
-        crate::app::app_trait::App::restore_state(&mut app, &state);
+        crate::app::view_trait::View::restore_state(&mut app, &state);
         assert_eq!(app.font_size, FONT_SIZE_MAX);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -4278,7 +4278,7 @@ mod tests {
 
         let mut app = TextEditorView::new(path.clone());
         let state = serde_json::json!({ "path": path.to_string_lossy() });
-        crate::app::app_trait::App::restore_state(&mut app, &state);
+        crate::app::view_trait::View::restore_state(&mut app, &state);
         assert_eq!(app.font_size, FONT_SIZE_DEFAULT);
 
         let _ = std::fs::remove_dir_all(dir);
@@ -4304,7 +4304,7 @@ mod tests {
         let esc_input =
             crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Escape)], egui::Modifiers::NONE);
         assert_eq!(
-            crate::app::app_trait::App::handle_key(&mut app, &esc_input),
+            crate::app::view_trait::View::handle_key(&mut app, &esc_input),
             KeyDisposition::Consumed
         );
         assert!(app.input_released);
@@ -4313,7 +4313,7 @@ mod tests {
         let enter_input =
             crate::app::input_router::PlexiInput::synthetic(vec![key_ev(egui::Key::Enter)], egui::Modifiers::NONE);
         assert_eq!(
-            crate::app::app_trait::App::handle_key(&mut app, &enter_input),
+            crate::app::view_trait::View::handle_key(&mut app, &enter_input),
             KeyDisposition::Consumed
         );
         assert!(!app.input_released);
@@ -4323,7 +4323,7 @@ mod tests {
         // 3. Escape again, then `i` (with Event::Text("i")) clears input_released, sets reclaim_editor_focus, and does not insert "i"
         app.reclaim_editor_focus = false;
         assert_eq!(
-            crate::app::app_trait::App::handle_key(&mut app, &esc_input),
+            crate::app::view_trait::View::handle_key(&mut app, &esc_input),
             KeyDisposition::Consumed
         );
         assert!(app.input_released);
@@ -4333,7 +4333,7 @@ mod tests {
             egui::Modifiers::NONE,
         );
         assert_eq!(
-            crate::app::app_trait::App::handle_key(&mut app, &i_input),
+            crate::app::view_trait::View::handle_key(&mut app, &i_input),
             KeyDisposition::Consumed
         );
         assert!(!app.input_released);
@@ -4347,7 +4347,7 @@ mod tests {
 #[cfg(test)]
 mod data_safety_tests {
     use super::*;
-    use crate::app::app_trait::App;
+    use crate::app::view_trait::View;
 
     fn plain_file(name: &str, body: &str) -> (PathBuf, TextEditorView) {
         let dir = std::env::temp_dir().join(format!(
@@ -4566,7 +4566,7 @@ mod data_safety_tests {
         let file = dir.path().join("note.md");
         std::fs::write(&file, "seed").unwrap();
         let mut harness = crate::testing::HostHarness::new();
-        harness.app.open_builtin_app_pane(
+        harness.app.open_builtin_view_pane(
             Box::new(TextEditorView::new(file.clone())),
             crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
@@ -4580,7 +4580,7 @@ mod data_safety_tests {
             .iter()
             .flat_map(|w| &w.panes)
             .find_map(|(id, pane)| {
-                (pane.as_app()?.runtime.type_id() == "text-editor").then_some(*id)
+                (pane.as_view()?.runtime.type_id() == "text-editor").then_some(*id)
             })
             .unwrap();
         if dirty {

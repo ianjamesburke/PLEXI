@@ -50,7 +50,7 @@ impl SecretActor {
 
     pub fn app(id: &str) -> Self {
         Self {
-            kind: ActorType::App,
+            kind: ActorType::Plugin,
             id: prefixed(id, "app"),
         }
     }
@@ -761,7 +761,7 @@ fn handle_gate_line(line: &str) -> Result<String, String> {
         .unwrap_or("");
     let actor_kind = match kind {
         "agent" => ActorType::Agent,
-        "app" => ActorType::App,
+        "app" => ActorType::Plugin,
         other => return Err(format!("unknown actor kind {other}")),
     };
     if actor_id.is_empty() || name.is_empty() || folder.is_empty() {
@@ -811,7 +811,7 @@ fn proxy_read(actor: &SecretActor, name: &str, folder: &Path) -> Option<Result<R
     }
     let kind = match actor.kind {
         ActorType::Agent => "agent",
-        ActorType::App => "app",
+        ActorType::Plugin => "app",
         ActorType::System => "system",
         ActorType::ManagedPolicy => "policy",
     };
@@ -1102,15 +1102,15 @@ mod tests {
         assert!(matches!(still, ReadResult::PermissionRequired { .. }));
 
         let app = SecretActor::app("mail");
-        let app_blocked =
+        let plugin_blocked =
             read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
         assert!(matches!(
-            app_blocked,
+            plugin_blocked,
             ReadResult::PermissionRequired { .. }
         ));
         grant_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        let app_ok = read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
-        assert!(matches!(app_ok, ReadResult::Value(_)));
+        let plugin_ok = read_folder_secret(&monitor, &store, &app, "FOLDER_E2E_SECRET", &folder).unwrap();
+        assert!(matches!(plugin_ok, ReadResult::Value(_)));
 
         let after = serde_json::to_string(&audit_as_json(&monitor.audit_records())).unwrap();
         assert!(!after.contains(value));

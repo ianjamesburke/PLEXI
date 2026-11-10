@@ -2,7 +2,7 @@
 name = "plexi-wasm-sdk"
 version = "0.1.0"
 edition = "2021"
-description = "Rust SDK for Plexi WASM component apps"
+description = "Rust SDK for Plexi WASM plugins"
 license = "MIT"
 repository = "https://github.com/ianjamesburke/plexi"
 
@@ -10,7 +10,7 @@ repository = "https://github.com/ianjamesburke/plexi"
 wit-bindgen = "0.41"
 
 [package.metadata.component]
-package = "plexi:app"
+package = "plexi:plugin"
 
 [package.metadata.component.target]
 path = "wit"

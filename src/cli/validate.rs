@@ -44,33 +44,37 @@ pub fn validate_cli(path: &str) -> i32 {
         }
     };
 
+    if let Err(error) = toml::from_str::<crate::app::registry::PluginManifest>(&raw) {
+        eprintln!("✗ expected schema_version = 2 with [plugin], [runtime], and [[contributes.views]]: {error}");
+        return 1;
+    }
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
     // Required fields
-    let app_section = toml_val.get("app");
-    let required_fields = ["id", "name", "version", "entry"];
+    let plugin_section = toml_val.get("plugin");
+    let required_fields = ["id", "name", "version"];
     for field in &required_fields {
-        let val = app_section
+        let val = plugin_section
             .and_then(|a| a.get(field))
             .and_then(|v| v.as_str());
         if val.is_none() || val == Some("") {
-            errors.push(format!("  [app].{field} is missing or empty"));
+            errors.push(format!("  [plugin].{field} is missing or empty"));
         }
     }
 
     // description is recommended but not required
-    let has_desc = app_section
+    let has_desc = plugin_section
         .and_then(|a| a.get("description"))
         .and_then(|v| v.as_str())
         .map(|s| !s.is_empty())
         .unwrap_or(false);
     if !has_desc {
-        warnings.push("  [app].description is missing (recommended)".to_string());
+        warnings.push("  [plugin].description is missing (recommended)".to_string());
     }
 
     // Check entry file
-    let entry = app_section
+    let entry = toml_val.get("runtime")
         .and_then(|a| a.get("entry"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
@@ -83,14 +87,14 @@ pub fn validate_cli(path: &str) -> i32 {
             // 0411): the host only ever launches a WASM entry or a `.py`
             // entry — anything else can never actually run, so this dev-facing
             // validator must reject it too, not just the package/install path.
-            let manifest_type = if app_section
-                .and_then(|a| a.get("type"))
+            let manifest_type = if toml_val.get("runtime")
+                .and_then(|a| a.get("kind"))
                 .and_then(|v| v.as_str())
                 == Some("wasm")
             {
                 crate::app::registry::ManifestType::Wasm
             } else {
-                crate::app::registry::ManifestType::App
+                crate::app::registry::ManifestType::Python
             };
             if let Err(e) = crate::app::package::PackageRuntime::from_manifest(manifest_type, entry)
             {
@@ -121,8 +125,8 @@ pub fn validate_cli(path: &str) -> i32 {
 
     // capabilities validation — checked against the real Capability enum.
     // Unknown capability strings are hard errors (fail closed): the host would
-    // refuse to install/launch the app, so validate must too.
-    if let Some(caps) = app_section
+    // refuse to install/launch the plugin, so validate must too.
+    if let Some(caps) = plugin_section
         .and_then(|a| a.get("capabilities"))
         .and_then(|c| c.get("capabilities"))
         .and_then(|v| v.as_array())
@@ -141,7 +145,7 @@ pub fn validate_cli(path: &str) -> i32 {
     }
 
     // Print results
-    let id = app_section
+    let id = plugin_section
         .and_then(|a| a.get("id"))
         .and_then(|v| v.as_str())
         .unwrap_or(path);

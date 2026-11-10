@@ -1,4 +1,4 @@
-//! Debounced external-change watch on one file or one directory, for apps that
+//! Debounced external-change watch on one file or one directory, for plugins that
 //! show live disk state (text editor, file browser).
 //!
 //! Same shape as `crate::host::state_watch`: the watch target is always a

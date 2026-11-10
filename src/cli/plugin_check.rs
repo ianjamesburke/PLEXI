@@ -1,11 +1,11 @@
 use crate::app::registry::PluginManifest;
-use crate::host::wasm_app::UiTree;
+use crate::host::wasm_view::UiTree;
 use crate::host::wasm_python::PythonLaunchConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Build a headless launch config for the live CPython-WASM runtime from an
-/// already-loaded manifest, so `plugin check`/`view render` boot the app exactly
+/// already-loaded manifest, so `plugin check`/`view render` boot the plugin exactly
 /// the way the live host does (`wasm_python::WasmPythonRuntime`), not a
 /// separate native subprocess speaking a different wire protocol.
 fn python_launch_config(
@@ -24,7 +24,7 @@ fn python_launch_config(
 
 /// Same as [`python_launch_config`], for callers that only have the pieces
 /// (e.g. `plexi view render`'s registry-id lookup path, which resolves an
-/// `PluginManifestApp` rather than a full `PluginManifest`).
+/// `PluginIdentity` rather than a full `PluginManifest`).
 pub(crate) fn python_launch_config_from_parts(
     plugin_id: &str,
     plugin_dir: &Path,
@@ -52,7 +52,7 @@ pub(crate) fn python_launch_config_from_parts(
         )
         .to_theme_map(),
         // Headless one-shot renders never persist state; the default scope
-        // list and an app-dir anchor are inert here.
+        // list and an plugin-dir anchor are inert here.
         state_scopes: crate::host::state_scope::default_scopes(),
         state_format: crate::host::state_scope::StateFormat::Json,
         context_root: plugin_dir.to_path_buf(),
@@ -69,8 +69,8 @@ pub(crate) fn ui_tree_to_json(tree: &UiTree) -> serde_json::Value {
     })
 }
 
-fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json::Value {
-    use crate::host::wasm_app::UiNodeData;
+fn indexed_node_to_json(node: &crate::host::wasm_view::IndexedNode) -> serde_json::Value {
+    use crate::host::wasm_view::UiNodeData;
     let data = match &node.data {
         UiNodeData::Empty => serde_json::json!({"type": "Empty"}),
         UiNodeData::Text(t) => serde_json::json!({"type": "Text", "text": t.text}),
@@ -111,8 +111,8 @@ fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json
 const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600), (1200, 800)];
 const SEEDED_PROBE_SIZE: (u32, u32) = (480, 320);
 /// Upper bound on how many discovered handlers the action probe clicks in one
-/// sequence, keeping a button-heavy app's check fast. The probe prints how
-/// many it skipped when an app exceeds it.
+/// sequence, keeping a button-heavy plugin's check fast. The probe prints how
+/// many it skipped when an plugin exceeds it.
 const MAX_ACTION_PROBE_HANDLERS: usize = 8;
 
 #[derive(Debug, Default)]
@@ -120,7 +120,7 @@ struct SdkAnalysis {
     has_init: bool,
     has_update: bool,
     has_view: bool,
-    legacy_app_classes: Vec<String>,
+    legacy_plugin_classes: Vec<String>,
     errors: Vec<String>,
     warnings: Vec<String>,
 }
@@ -128,7 +128,7 @@ struct SdkAnalysis {
 #[derive(Debug, Deserialize)]
 struct PythonAstReport {
     functions: Vec<String>,
-    legacy_app_classes: Vec<String>,
+    legacy_plugin_classes: Vec<String>,
     warnings: Vec<String>,
 }
 
@@ -151,10 +151,10 @@ struct SeedFixture {
     signals: Vec<String>,
 }
 
-pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
+pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
     let plugin_dir = Path::new(path);
     log::info!(
-        "app_check: path={} sizes={sizes:?} png_dir={png_dir:?}",
+        "plugin_check: path={} sizes={sizes:?} png_dir={png_dir:?}",
         plugin_dir.display()
     );
 
@@ -231,10 +231,10 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                 if analysis.has_init && analysis.has_update && analysis.has_view {
                     println!("✓ SDK — module-level init/update/view");
                 }
-                if !analysis.legacy_app_classes.is_empty() {
-                    for class in &analysis.legacy_app_classes {
+                if !analysis.legacy_plugin_classes.is_empty() {
+                    for class in &analysis.legacy_plugin_classes {
                         errors.push(format!(
-                            "SDK — {class} subclasses legacy App; SDK v3 apps use module-level init/update/view functions"
+                            "SDK — {class} subclasses legacy App; SDK v3 plugins use module-level init/update/view functions"
                         ));
                     }
                 }
@@ -247,7 +247,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         // mypy proves attribute/type correctness — e.g. `event.payload` on a
         // `UiValueChange` (which only has `.value`) fails here instead of
         // crashing the guest on the first keystroke.
-        // Findings are errors for every Python app (stint 0457). The
+        // Findings are errors for every Python plugin (stint 0457). The
         // template-version split that spared pre-gate scaffolds existed only
         // to land the gate without turning the maintained set red overnight;
         // that set is annotated now, so there is no warning tier left.
@@ -270,7 +270,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
 
     if !is_python_entry {
         warnings.push(format!(
-            "render — {} is not a Python entry; the live-runtime checker only drives SDK v3 Python apps (CPython-in-WASM), skipping render checks",
+            "render — {} is not a Python entry; the live-runtime checker only drives SDK v3 Python plugins (CPython-in-WASM), skipping render checks",
             entry_path.display()
         ));
     }
@@ -295,7 +295,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             Ok(tree) => {
                 let node_count = tree.nodes.len();
                 if node_count == 0 {
-                    errors.push(format!("render {label} — app emitted an empty frame"));
+                    errors.push(format!("render {label} — plugin emitted an empty frame"));
                     continue;
                 }
                 println!("✓ render {label} — {node_count} node(s)");
@@ -343,7 +343,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                     .display()
             );
             if render_boot_failed {
-                println!("skip seeded probe — app failed to boot during render checks");
+                println!("skip seeded probe — plugin failed to boot during render checks");
             } else if let Some(launch_config) = &launch_config {
                 run_seeded_state_and_action_probe(
                     &manifest,
@@ -359,7 +359,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         Ok(None) => {
             println!("skip state fixture — no fixtures/state.json; seeded probes skipped");
             log::info!(
-                "app_check[{}]: no fixtures/state.json; seeded probes skipped",
+                "plugin_check[{}]: no fixtures/state.json; seeded probes skipped",
                 manifest.plugin.id
             );
         }
@@ -376,7 +376,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     if errors.is_empty() {
         println!("✓ plugin check passed");
         log::info!(
-            "app_check[{}]: passed with {} warning(s)",
+            "plugin_check[{}]: passed with {} warning(s)",
             manifest.plugin.id,
             warnings.len()
         );
@@ -388,7 +388,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             warnings.len()
         );
         log::warn!(
-            "app_check[{}]: failed with {} error(s), {} warning(s)",
+            "plugin_check[{}]: failed with {} error(s), {} warning(s)",
             manifest.plugin.id,
             errors.len(),
             warnings.len()
@@ -463,7 +463,7 @@ fn run_seeded_state_and_action_probe(
         matched.join(", ")
     );
     log::info!(
-        "app_check[{}]: seeded render {label} reflected {:?}",
+        "plugin_check[{}]: seeded render {label} reflected {:?}",
         manifest.plugin.id,
         matched
     );
@@ -472,7 +472,7 @@ fn run_seeded_state_and_action_probe(
     if discovered.is_empty() {
         println!("skip action probe — no clickable handler in seeded render");
         log::info!(
-            "app_check[{}]: no clickable handler in seeded render",
+            "plugin_check[{}]: no clickable handler in seeded render",
             manifest.plugin.id
         );
         return;
@@ -522,7 +522,7 @@ fn run_seeded_state_and_action_probe(
                                     "✓ {action_label} — rendered expected state value {expected}"
                                 );
                                 log::info!(
-                                    "app_check[{}]: {action_label} rendered expected value {expected}",
+                                    "plugin_check[{}]: {action_label} rendered expected value {expected}",
                                     manifest.plugin.id
                                 );
                             } else {
@@ -535,7 +535,7 @@ fn run_seeded_state_and_action_probe(
                             any_effect = true;
                             println!("✓ {action_label} — rendered frame changed after action");
                             log::info!(
-                                "app_check[{}]: {action_label} changed rendered frame",
+                                "plugin_check[{}]: {action_label} changed rendered frame",
                                 manifest.plugin.id
                             );
                         } else {
@@ -726,7 +726,7 @@ pub(super) fn load_local_plugin(plugin_dir: &Path) -> Result<(PluginManifest, Pa
 }
 
 fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
-    let metadata_path = plugin_dir.join(crate::cli::app::SCAFFOLD_METADATA_FILE);
+    let metadata_path = plugin_dir.join(crate::cli::plugin::SCAFFOLD_METADATA_FILE);
     let mut warnings = Vec::new();
 
     let raw = match std::fs::read_to_string(&metadata_path) {
@@ -734,10 +734,10 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             warnings.push(format!(
                 "scaffold metadata — missing {}; old scaffolds are still supported, but run `plexi plugin init --adopt <dir>` (or regenerate with `plexi plugin init`) before relying on drift checks",
-                crate::cli::app::SCAFFOLD_METADATA_FILE
+                crate::cli::plugin::SCAFFOLD_METADATA_FILE
             ));
             log::warn!(
-                "app_check: missing scaffold metadata at {}",
+                "plugin_check: missing scaffold metadata at {}",
                 metadata_path.display()
             );
             return warnings;
@@ -748,7 +748,7 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
                 metadata_path.display()
             ));
             log::warn!(
-                "app_check: could not read scaffold metadata at {}: {e}",
+                "plugin_check: could not read scaffold metadata at {}: {e}",
                 metadata_path.display()
             );
             return warnings;
@@ -763,7 +763,7 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
                 metadata_path.display()
             ));
             log::warn!(
-                "app_check: invalid scaffold metadata at {}: {e}",
+                "plugin_check: invalid scaffold metadata at {}: {e}",
                 metadata_path.display()
             );
             return warnings;
@@ -771,18 +771,18 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
     };
 
     let current_cli = env!("CARGO_PKG_VERSION");
-    let current_sdk = crate::cli::app::python_sdk_version();
+    let current_sdk = crate::cli::plugin::python_sdk_version();
     let current_manifest_schema = crate::app::registry::MANIFEST_SCHEMA_VERSION;
     let current_runtime = crate::app::python_env::PYTHON_APP_VENV_VERSION;
-    let current_template = crate::cli::app::PYTHON_SCAFFOLD_TEMPLATE_VERSION;
-    let (current_channel, current_profile_dir) = crate::cli::app::current_scaffold_channel();
+    let current_template = crate::cli::plugin::PYTHON_SCAFFOLD_TEMPLATE_VERSION;
+    let (current_channel, current_profile_dir) = crate::cli::plugin::current_scaffold_channel();
 
-    if metadata.schema_version != crate::cli::app::SCAFFOLD_METADATA_SCHEMA_VERSION {
+    if metadata.schema_version != crate::cli::plugin::SCAFFOLD_METADATA_SCHEMA_VERSION {
         warnings.push(format!(
             "scaffold metadata — schema_version {} differs from supported {}; run `plexi plugin init --adopt <dir>` or update {}",
             metadata.schema_version,
-            crate::cli::app::SCAFFOLD_METADATA_SCHEMA_VERSION,
-            crate::cli::app::SCAFFOLD_METADATA_FILE
+            crate::cli::plugin::SCAFFOLD_METADATA_SCHEMA_VERSION,
+            crate::cli::plugin::SCAFFOLD_METADATA_FILE
         ));
     }
     if metadata.plexi_cli_version != current_cli {
@@ -805,7 +805,7 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
     }
     if metadata.python_runtime_version != current_runtime {
         warnings.push(format!(
-            "scaffold metadata — generated for Python {}, current app venv runtime is {}; recreate the venv or refresh with `plexi plugin init --adopt <dir>`",
+            "scaffold metadata — generated for Python {}, current plugin venv runtime is {}; recreate the venv or refresh with `plexi plugin init --adopt <dir>`",
             metadata.python_runtime_version, current_runtime
         ));
     }
@@ -828,12 +828,12 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
             metadata.sdk_version, metadata.template_version
         );
         log::info!(
-            "app_check: scaffold metadata current at {}",
+            "plugin_check: scaffold metadata current at {}",
             metadata_path.display()
         );
     } else {
         log::warn!(
-            "app_check: scaffold metadata produced {} warning(s) at {}",
+            "plugin_check: scaffold metadata produced {} warning(s) at {}",
             warnings.len(),
             metadata_path.display()
         );
@@ -842,10 +842,10 @@ fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
     warnings
 }
 
-/// Outcome of the static type-check pass over the app entry (stint 0415).
+/// Outcome of the static type-check pass over the plugin entry (stint 0415).
 enum TypeCheckOutcome {
     Clean,
-    /// mypy exited 1 with findings — the app has type errors.
+    /// mypy exited 1 with findings — the plugin has type errors.
     Findings(String),
     /// mypy is not importable and could not be installed (offline venv);
     /// surfaced as a named warning, never silently skipped.
@@ -870,9 +870,9 @@ fn run_python_type_check(
     )
 }
 
-/// Run mypy over `entry_path` through the app venv's `python`, resolving
+/// Run mypy over `entry_path` through the plugin venv's `python`, resolving
 /// `plexi_sdk` from `pythonpath`. `--check-untyped-defs` is load-bearing:
-/// scaffolded apps leave `update(event)` unannotated, and without the flag
+/// scaffolded plugins leave `update(event)` unannotated, and without the flag
 /// mypy skips untyped function bodies entirely — the exact place authoring
 /// mistakes live. `--follow-imports=silent` type-checks against the SDK's
 /// annotations without reporting on SDK-internal code.
@@ -882,19 +882,19 @@ fn run_python_type_check_with(
     pythonpath: &str,
 ) -> Result<TypeCheckOutcome, String> {
     // The venv resolver can hand back paths relative to the caller's cwd;
-    // the mypy run below changes cwd to the app dir, so resolve everything
+    // the mypy run below changes cwd to the plugin dir, so resolve everything
     // to absolute paths first.
     let entry_path = &entry_path
         .canonicalize()
-        .map_err(|e| format!("could not resolve app entry {}: {e}", entry_path.display()))?;
+        .map_err(|e| format!("could not resolve plugin entry {}: {e}", entry_path.display()))?;
     let python = &python.canonicalize().map_err(|e| {
         format!(
-            "could not resolve app venv python {}: {e}",
+            "could not resolve plugin venv python {}: {e}",
             python.display()
         )
     })?;
     if let Err(probe) = probe_mypy(python) {
-        // One-time install into the app venv, mirroring how app
+        // One-time install into the plugin venv, mirroring how plugin
         // dependencies land there (`python_env::install_dependencies`).
         let install = std::process::Command::new("uv")
             .args(["pip", "install", "--python"])
@@ -909,7 +909,7 @@ fn run_python_type_check_with(
         }
         probe_mypy(python).map_err(|e| format!("mypy installed but still not importable: {e}"))?;
         log::info!(
-            "app_check: installed mypy into the app venv at {}",
+            "plugin_check: installed mypy into the plugin venv at {}",
             python.display()
         );
     }
@@ -934,7 +934,7 @@ fn run_python_type_check_with(
         .map_err(|e| format!("failed to run mypy via {}: {e}", python.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     log::info!(
-        "app_check: mypy over {} exited {:?} ({} finding bytes)",
+        "plugin_check: mypy over {} exited {:?} ({} finding bytes)",
         entry_path.display(),
         output.status.code(),
         stdout.len()
@@ -1040,7 +1040,7 @@ def view_warnings(view, component_state_names):
     return warnings
 
 functions = []
-legacy_app_classes = []
+legacy_plugin_classes = []
 warnings = []
 component_state_names = set()
 for node in tree.body:
@@ -1053,9 +1053,9 @@ for node in tree.body:
             warnings.extend(view_warnings(node, component_state_names))
     if isinstance(node, ast.ClassDef):
         if any(base_name(base) == "App" for base in node.bases):
-            legacy_app_classes.append(node.name)
+            legacy_plugin_classes.append(node.name)
 
-json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes, "warnings": warnings}, sys.stdout)
+json.dump({"functions": functions, "legacy_plugin_classes": legacy_plugin_classes, "warnings": warnings}, sys.stdout)
 "#;
 
     let output = std::process::Command::new(python)
@@ -1081,7 +1081,7 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes, "wa
         has_init: report.functions.iter().any(|name| name == "init"),
         has_update: report.functions.iter().any(|name| name == "update"),
         has_view: report.functions.iter().any(|name| name == "view"),
-        legacy_app_classes: report.legacy_app_classes,
+        legacy_plugin_classes: report.legacy_plugin_classes,
         warnings: report.warnings,
         ..Default::default()
     };
@@ -1089,7 +1089,7 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes, "wa
     for required in ["init", "update", "view"] {
         if !report.functions.iter().any(|name| name == required) {
             analysis.errors.push(format!(
-                "SDK — missing module-level {required}(); SDK v3 apps define init(size, args), update(event), and view()"
+                "SDK — missing module-level {required}(); SDK v3 plugins define init(size, args), update(event), and view()"
             ));
         }
     }
@@ -1098,7 +1098,7 @@ json.dump({"functions": functions, "legacy_app_classes": legacy_app_classes, "wa
 }
 
 #[cfg(test)]
-mod app_check_tests {
+mod plugin_check_tests {
     use std::fs;
     use tempfile::TempDir;
 
@@ -1148,7 +1148,7 @@ mod app_check_tests {
     }
 
     #[test]
-    fn sdk_analysis_accepts_module_level_v3_app() {
+    fn sdk_analysis_accepts_module_level_v3_plugin() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
         fs::write(
@@ -1172,7 +1172,7 @@ def view():
     }
 
     #[test]
-    fn sdk_analysis_rejects_legacy_app_subclass() {
+    fn sdk_analysis_rejects_legacy_plugin_subclass() {
         let dir = TempDir::new().unwrap();
         let entry = dir.path().join("main.py");
         fs::write(
@@ -1199,11 +1199,11 @@ def view():
             .expect("analysis should run");
         assert!(
             analysis
-                .legacy_app_classes
+                .legacy_plugin_classes
                 .iter()
                 .any(|class| class == "Bad"),
             "{:?}",
-            analysis.legacy_app_classes
+            analysis.legacy_plugin_classes
         );
     }
 
@@ -1317,7 +1317,7 @@ def view():
         let _channel = crate::config::set_test_channel("alpha");
         let dir = TempDir::new().unwrap();
         fs::write(
-            dir.path().join(crate::cli::app::SCAFFOLD_METADATA_FILE),
+            dir.path().join(crate::cli::plugin::SCAFFOLD_METADATA_FILE),
             r#"schema_version = 1
 generated_by = "plexi plugin init"
 plexi_cli_version = "0.0.0"
@@ -1360,7 +1360,7 @@ profile_dir = ".plexi-beta"
     }
 
     #[test]
-    fn app_adopt_writes_scaffold_metadata_without_touching_sources() {
+    fn plugin_adopt_writes_scaffold_metadata_without_touching_sources() {
         let _channel = crate::config::set_test_channel("alpha");
         let dir = TempDir::new().unwrap();
         let manifest_content = "schema_version = 2\n\n[plugin]\nid = \"adopted\"\nname = \"Adopted\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"custom.py\"\n\n[[contributes.views]]\nid = \"adopted.main\"\ndefault = true\n";
@@ -1368,10 +1368,10 @@ profile_dir = ".plexi-beta"
         fs::write(dir.path().join("manifest.toml"), manifest_content).unwrap();
         fs::write(dir.path().join("custom.py"), entry_content).unwrap();
 
-        let code = crate::cli::app::app_adopt(dir.path().to_str().unwrap());
+        let code = crate::cli::plugin::plugin_adopt(dir.path().to_str().unwrap());
         assert_eq!(code, 0);
 
-        let metadata_path = dir.path().join(crate::cli::app::SCAFFOLD_METADATA_FILE);
+        let metadata_path = dir.path().join(crate::cli::plugin::SCAFFOLD_METADATA_FILE);
         assert!(metadata_path.exists());
         let metadata_raw = fs::read_to_string(&metadata_path).unwrap();
         assert!(metadata_raw.contains("generated_by = \"plexi plugin init --adopt\""));
@@ -1425,7 +1425,7 @@ profile_dir = ".plexi-beta"
     /// Discovery must find every clickable handler in render order without an
     /// allowlist — the mimo tictactoe run shipped a first-click crash because
     /// the old probe only recognized `counter-increment` and skipped the
-    /// app's real `cell-*`/`reset` handlers entirely.
+    /// plugin's real `cell-*`/`reset` handlers entirely.
     #[test]
     fn discover_action_handlers_finds_all_unique_on_click_ids() {
         let frame = serde_json::json!({
@@ -1495,10 +1495,10 @@ profile_dir = ".plexi-beta"
         assert!(err.contains("must be a plain JSON object"), "{err}");
     }
 
-    /// The render loop at the bottom of `app_check_cli` maps
+    /// The render loop at the bottom of `plugin_check_cli` maps
     /// `run_headless_frame`'s `Err(e)` to `errors.push(format!("render {label} — {e}"))`
     /// (never a silent log-and-continue), so a component tree that fails to
-    /// decode — e.g. an app emitting `Badge(color="blue")`, which the host
+    /// decode — e.g. an plugin emitting `Badge(color="blue")`, which the host
     /// decoder rejects (see `decode_badge_color`) — must surface as a named
     /// `plexi plugin check` error, not merely an ERROR-level log line while the
     /// check itself reports success.
@@ -1524,7 +1524,7 @@ profile_dir = ".plexi-beta"
 mod type_check_tests {
     use super::*;
 
-    /// Stint 0415, both halves of the contract: (1) an app reading a field
+    /// Stint 0415, both halves of the contract: (1) an plugin reading a field
     /// that doesn't exist on an SDK event (`UiValueChange.payload` — it only
     /// has `.value`) fails the type gate instead of crashing the guest at
     /// runtime; (2) a mixed-children `Column([Text, Button])` type-checks

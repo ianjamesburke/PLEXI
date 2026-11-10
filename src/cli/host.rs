@@ -11,7 +11,7 @@
 //! `host start` seeds panes via the same spawn-queue directory `plexi open`
 //! and `plexi pane new` use outside a pane (`host_config_dir(channel).join("spawn-queue")`),
 //! so no new host-side boot protocol is introduced — `drain_spawn_queue()`
-//! picks the seeded panes up on the launched app's first frame.
+//! picks the seeded panes up on the launched plugin's first frame.
 //!
 //! All channel-scoped paths here go through `host_config_dir(channel)`, not
 //! `crate::config::config_dir()` — the latter lets the bare `plexi` binary
@@ -130,7 +130,7 @@ fn placement_to_layout(spec: &PaneSpec) -> Result<&'static str, String> {
 /// The pane/context-scoped `PLEXI_*` vars that must never leak into a
 /// `host start`-launched process — reading them to decide what to launch
 /// would reintroduce the exact channel-leak trap this command exists to
-/// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into app
+/// eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks into plugin
 /// tooling"). `PLEXI_CHANNEL` itself is stripped unconditionally too, then
 /// re-added explicitly from the resolved channel — never inherited.
 const STRIP_VARS: &[&str] = &[
@@ -215,7 +215,7 @@ pub(crate) fn host_child_env(
 /// pane's `PLEXI_CHANNEL` would silently redirect every socket/spawn-queue
 /// path to the wrong channel's profile — the exact leak trap this command
 /// exists to eliminate (see root CLAUDE.md Traps: "`PLEXI_CHANNEL` leaks
-/// into app tooling"). This function always derives the profile dir from
+/// into plugin tooling"). This function always derives the profile dir from
 /// `channel`, which callers resolve once via `resolve_channel_paths()`
 /// (binary-basename-only, ignoring env).
 fn host_config_dir(channel: Option<&str>) -> PathBuf {
@@ -513,7 +513,7 @@ fn unix_socket_inode<'a>(line: &'a str, target: &str) -> Option<&'a str> {
     (rest.trim_start() == target).then_some(inode)
 }
 
-/// Launches this channel's app bundle detached (survives the CLI process
+/// Launches this channel's plugin bundle detached (survives the CLI process
 /// exiting), seeds any declared panes via the spawn-queue before launch, and
 /// blocks until a `notify.sock` round trip confirms the host is ready (or the
 /// timeout elapses). Errors non-zero if a host for this channel is already

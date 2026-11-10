@@ -1,11 +1,11 @@
 //! Unified permissions broker — `docs/prm/permissions-broker.md`.
 //!
-//! Generalizes the app capability permission model (`plugin_id::workspace::cap`
+//! Generalizes the plugin capability permission model (`plugin_id::workspace::cap`
 //! → Green/Yellow/Red) into one host broker that evaluates
-//! `actor -> action -> target -> scope -> decision` for apps, agents, the
+//! `actor -> action -> target -> scope -> decision` for plugins, agents, the
 //! system, and managed policy.
 //!
-//! Phase A scope: grant model + persistence + legacy migration + the PGAP app
+//! Phase A scope: grant model + persistence + legacy migration + the PGAP plugin
 //! capability path. Event streams, undo, model routing enforcement, and the
 //! `/permissions` UI surface come later; their target types exist as data only.
 
@@ -31,7 +31,9 @@ const STORE_LABEL: &str = "grant_store";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActorType {
-    App,
+    // Grant-store identity is stable across the public vocabulary change.
+    #[serde(rename = "app")]
+    Plugin,
     Agent,
     System,
     ManagedPolicy,
@@ -218,7 +220,7 @@ pub struct GrantRecord {
     /// Actor + tool + resource, ignoring the argument fingerprint.
     ///
     /// Exact one-shot and session grants stay fingerprint-bound. An explicit
-    /// Always deny, and an allow created from the Permissions app, set this so
+    /// Always deny, and an allow created from the Permissions plugin, set this so
     /// the next call of that tool is answered without a matching payload.
     /// A `tool_scoped` row matches its resource id when one is set, and any
     /// resource when it is not. It does not also require package, instance,
@@ -228,14 +230,14 @@ pub struct GrantRecord {
     /// Tool scope for an agent run: actor, tool, and resource still have to
     /// match, but argument bytes do not. Exact call grants leave this false.
     /// A scope grant is still one `GrantRecord` in this store, evaluated by
-    /// `matches`. The Permissions app does not use this flag; it uses
+    /// `matches`. The Permissions plugin does not use this flag; it uses
     /// `tool_scoped`.
     #[serde(default)]
     pub args_unbound: bool,
 }
 
 impl GrantRecord {
-    /// Build the record an app capability decision produces — the migrated
+    /// Build the record an plugin capability decision produces — the migrated
     /// shape from the spec's migration table.
     pub fn plugin_capability(
         plugin_id: &str,
@@ -244,7 +246,7 @@ impl GrantRecord {
         decision: Decision,
     ) -> Self {
         Self {
-            actor_type: ActorType::App,
+            actor_type: ActorType::Plugin,
             actor_id: plugin_id.to_string(),
             actor_scope: ActorScope::User,
             workspace_root: Some(crate::platform::path::canonical_or_self(workspace_root)),
@@ -263,7 +265,7 @@ impl GrantRecord {
     }
 
     /// A capability row addressed by its wire id. `grant_id` is stable so
-    /// `plexi permissions list` and the Permissions app show the same row.
+    /// `plexi permissions list` and the Permissions plugin show the same row.
     pub fn capability_id(
         plugin_id: &str,
         workspace_root: &Path,
@@ -272,7 +274,7 @@ impl GrantRecord {
         source: GrantSource,
     ) -> Self {
         Self {
-            actor_type: ActorType::App,
+            actor_type: ActorType::Plugin,
             actor_id: plugin_id.to_string(),
             actor_scope: ActorScope::User,
             workspace_root: Some(crate::platform::path::canonical_or_self(workspace_root)),
@@ -616,11 +618,11 @@ impl PermissionRequest {
         }
     }
 
-    /// The PGAP app capability check shape.
+    /// The PGAP plugin capability check shape.
     #[cfg(test)]
     pub fn plugin_capability(plugin_id: &str, workspace_root: &Path, cap: Capability) -> Self {
         Self::new(
-            ActorType::App,
+            ActorType::Plugin,
             plugin_id,
             TargetType::Capability,
             cap.as_str(),
@@ -1006,7 +1008,7 @@ impl GrantStore {
         self.file.data.records.push(record);
     }
 
-    /// Replace every capability row for this app, workspace, and id, whatever
+    /// Replace every capability row for this plugin, workspace, and id, whatever
     /// its source. A human click and an auto-grant are one row.
     pub fn upsert_capability(
         &mut self,
@@ -1018,7 +1020,7 @@ impl GrantStore {
     ) {
         let ws = crate::platform::path::canonical_or_self(workspace_root);
         self.file.data.records.retain(|record| {
-            !(record.actor_type == ActorType::App
+            !(record.actor_type == ActorType::Plugin
                 && record.actor_id == plugin_id
                 && record.target_type == TargetType::Capability
                 && record.target_id == capability_id
@@ -1163,11 +1165,11 @@ impl GrantStore {
         decision
     }
 
-    /// Capability sets for an app launch, equivalent to the legacy
+    /// Capability sets for an plugin launch, equivalent to the legacy
     /// `build_permission_sets` but read from generalized records:
-    /// `(allowed, denied)` capabilities for this app+workspace.
+    /// `(allowed, denied)` capabilities for this plugin+workspace.
     #[cfg(test)]
-    pub fn app_capability_sets(
+    pub fn plugin_capability_sets(
         &self,
         plugin_id: &str,
         workspace_root: &Path,
@@ -1177,7 +1179,7 @@ impl GrantStore {
         let mut allowed = HashSet::new();
         let mut denied = HashSet::new();
         for r in &self.file.data.records {
-            if r.actor_type != ActorType::App
+            if r.actor_type != ActorType::Plugin
                 || r.actor_id != plugin_id
                 || r.target_type != TargetType::Capability
             {
@@ -1505,23 +1507,23 @@ mod tests {
     }
 
     #[test]
-    fn agent_actor_evaluates_same_path_as_app() {
+    fn agent_actor_evaluates_same_path_as_view() {
         // Same target id, different actor types — grants must not bleed.
         let mut store = GrantStore::default();
         store.record(agent_grant(Decision::Allow, GrantSource::User));
         assert_eq!(store.evaluate(&agent_request(), None), Decision::Allow);
 
-        let app_req = PermissionRequest::new(
-            ActorType::App,
+        let plugin_req = PermissionRequest::new(
+            ActorType::Plugin,
             "chess-opponent",
             TargetType::PluginConnector,
             "chess.make_move",
             None,
         );
         assert_eq!(
-            store.evaluate(&app_req, None),
+            store.evaluate(&plugin_req, None),
             Decision::Ask,
-            "an agent grant must not satisfy an app request"
+            "an agent grant must not satisfy an plugin request"
         );
     }
 
@@ -1670,7 +1672,7 @@ mod tests {
                 .find(|r| r.target_id == cap.as_str())
                 .unwrap_or_else(|| panic!("missing migrated record for {cap}"));
             assert_eq!(r.decision, expected);
-            assert_eq!(r.actor_type, ActorType::App);
+            assert_eq!(r.actor_type, ActorType::Plugin);
             assert_eq!(r.actor_id, "my-app");
             assert_eq!(r.target_type, TargetType::Capability);
             assert_eq!(r.resource_scope, ResourceScope::Workspace);
@@ -1738,14 +1740,14 @@ mod tests {
             Capability::PermissionsManage,
         ]);
         let perms =
-            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+            monitor.materialize_plugin_permissions("sample", ws.path(), &declared, Vec::new());
         assert!(perms.capabilities.contains(&Capability::Timer));
         assert!(!perms.capabilities.contains(&Capability::PermissionsManage));
         let listed = monitor.list_entries();
         assert!(listed.iter().any(|entry| entry.id == "cap:sample:timer"));
         assert!(listed.iter().all(|entry| entry.id != "cap:sample:permissions.manage"));
         let again =
-            monitor.materialize_app_permissions("sample", ws.path(), &declared, Vec::new());
+            monitor.materialize_plugin_permissions("sample", ws.path(), &declared, Vec::new());
         assert_eq!(again.capabilities, perms.capabilities);
         assert_eq!(
             monitor
@@ -1779,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn app_capability_sets_reads_generalized_records() {
+    fn plugin_capability_sets_reads_generalized_records() {
         let ws = tempfile::tempdir().unwrap();
         let mut store = GrantStore::default();
         store.record(GrantRecord::plugin_capability(
@@ -1800,12 +1802,12 @@ mod tests {
             Capability::PanesRead,
             Decision::Allow,
         ));
-        let (allowed, denied) = store.app_capability_sets("my-app", ws.path());
+        let (allowed, denied) = store.plugin_capability_sets("my-app", ws.path());
         assert!(allowed.contains(&Capability::FsWrite));
         assert!(denied.contains(&Capability::NetHttp));
         assert!(
             !allowed.contains(&Capability::PanesRead),
-            "other-app's grant must not bleed"
+            "other-plugin's grant must not bleed"
         );
     }
 
@@ -1816,7 +1818,7 @@ mod tests {
 [permissions]
 default_posture = "review"
 allow = ["host.panes.read"]
-ask = ["app.chess.make_move"]
+ask = ["plugin.chess.make_move"]
 deny = ["host.secrets.read"]
 "#,
         )

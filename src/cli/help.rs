@@ -16,7 +16,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
             "assistant",
             "ai",
             "changes",
-            "command-view",
+            "agents-dashboard",
             "ledger",
             "needs-you",
             "permissions",
@@ -517,7 +517,7 @@ mod tests {
             "assistant",
             "changes",
             "ledger",
-            "command-view",
+            "agents-dashboard",
             "account",
             "routine",
         ] {
@@ -537,7 +537,7 @@ mod tests {
         for gated in ["publish", "browse", "search"] {
             assert!(!app.contains(&gated.to_string()), "{app:?}");
         }
-        for core in ["open", "install", "list", "render", "check"] {
+        for core in ["install", "list", "check"] {
             assert!(app.contains(&core.to_string()), "{app:?}");
         }
         let open = sub_at(&cmd, &["view", "open"]);
@@ -617,8 +617,8 @@ mod tests {
             ),
             (&["plexi", "ai", "setup"], ReleaseFeature::AiSetup),
             (
-                &["plexi", "command-view", "--json"],
-                ReleaseFeature::CommandView,
+                &["plexi", "agents-dashboard", "--json"],
+                ReleaseFeature::AgentsDashboard,
             ),
             (
                 &["plexi", "changes", "refresh", "x"],

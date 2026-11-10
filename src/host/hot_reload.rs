@@ -1,10 +1,10 @@
-//! Hot reload (#83) — watches an app's directory for source changes and
+//! Hot reload (#83) — watches an plugin's directory for source changes and
 //! emits a debounced `ReloadRequest` per pane.
 //!
 //! # Design
 //!
 //! - One `notify::RecommendedWatcher` per watched pane (FSEvents on macOS).
-//! - Recursive watch on the app's directory — the dir is small in practice.
+//! - Recursive watch on the plugin's directory — the dir is small in practice.
 //! - In-house 250ms debounce window (saves trigger 5+ events per save on
 //!   macOS); no extra crate. Per-pane debouncer thread coalesces a burst
 //!   into a single `ReloadRequest`.
@@ -18,7 +18,7 @@
 //!   is a no-op, not a panic.
 //! - The host receives `ReloadRequest { pane_id }` exclusively through the
 //!   channel passed to `HotReloadWatcher::new`. No other side-effects.
-//! - Watching is opt-in (manifest `[app] watch = true`) and gated to
+//! - Watching is opt-in (manifest `[plugin] watch = true`) and gated to
 //!   workspace-local installs by the caller (`PluginRegistry::launch_process`).
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -38,10 +38,10 @@ use crate::spatial::tiling::PaneId;
 /// coalesce into a single reload request.
 pub const DEBOUNCE_MS: u64 = 250;
 
-/// Directory names that never contain app source and must never trigger a
-/// reload — tooling output from running the app's own checks (`plexi app
+/// Directory names that never contain plugin source and must never trigger a
+/// reload — tooling output from running the plugin's own checks (`plexi plugin
 /// check` / `plugin test`) while the pane is open. Checked against every path
-/// component, not just the leaf, so `<app>/.venv/lib/...` is excluded too.
+/// component, not just the leaf, so `<plugin>/.venv/lib/...` is excluded too.
 const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", ".mypy_cache"];
 
 /// Returns true if `path` (an absolute event path somewhere under
@@ -49,9 +49,9 @@ const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", "
 /// *relative to `plugin_dir`* names an excluded tooling directory or a
 /// dotfile/dot-directory.
 ///
-/// Only components below `plugin_dir` are examined: the app's own absolute
+/// Only components below `plugin_dir` are examined: the plugin's own absolute
 /// path (e.g. a dotfile in the user's home directory ancestry — every
-/// installed app lives under `~/.plexi-<channel>/apps/<name>`) must never
+/// installed plugin lives under `~/.plexi-<channel>/plugins/<name>`) must never
 /// affect the classification. Single source of truth for the exclusion
 /// set — both the event filter and any future caller (docs, tests) go
 /// through this function rather than re-deriving the list.
@@ -60,7 +60,7 @@ const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", "
 /// non-canonical event path, a differing symlink resolution), there is
 /// nothing safe to classify, so the event is treated as relevant rather
 /// than scanning the full path — which would misclassify every event for
-/// any installed app, since `~/.plexi-<channel>/...` is itself a dot-dir
+/// any installed plugin, since `~/.plexi-<channel>/...` is itself a dot-dir
 /// ancestor. Watching a bit too much beats hot reload dying silently.
 fn is_reload_relevant(path: &Path, plugin_dir: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(plugin_dir) else {
@@ -121,8 +121,8 @@ impl Drop for WatcherHandle {
 }
 
 /// Manages per-pane file-system watchers. The host owns one of these and
-/// asks for a watcher each time a watching-eligible app launches; the
-/// host calls `unwatch(pane_id)` when the pane closes (or the app reloads
+/// asks for a watcher each time a watching-eligible plugin launches; the
+/// host calls `unwatch(pane_id)` when the pane closes (or the plugin reloads
 /// — though reload reuses the same watcher since the dir is unchanged).
 pub struct HotReloadWatcher {
     /// One handle per actively-watched pane.
@@ -166,7 +166,7 @@ impl HotReloadWatcher {
         // `/private/var`, so a tempdir-style path and the paths FSEvents
         // reports for it differ textually even though they name the same
         // directory. Without this, `strip_prefix` below silently falls
-        // back to the full path and every component of the app's own
+        // back to the full path and every component of the plugin's own
         // (often dot-prefixed, e.g. under a `.tmp*` tempdir) ancestry gets
         // misclassified as excluded.
         let watch_dir = plugin_dir
@@ -190,7 +190,7 @@ impl HotReloadWatcher {
                         return;
                     }
                     // Filter out tooling output (`.venv`, `__pycache__`,
-                    // etc.) so running the app's own checks does not
+                    // etc.) so running the plugin's own checks does not
                     // restart the pane — see `is_reload_relevant`. An
                     // event with no paths carries nothing to classify, so
                     // it is never filtered.
@@ -333,10 +333,10 @@ mod tests {
     #[test]
     fn is_reload_relevant_fails_open_when_path_is_not_under_plugin_dir() {
         // A prefix mismatch (non-canonical event path, differing symlink
-        // resolution) leaves nothing safe to classify. Every installed app
-        // lives under `~/.plexi-<channel>/apps/<name>` — itself a dot-dir
+        // resolution) leaves nothing safe to classify. Every installed plugin
+        // lives under `~/.plexi-<channel>/plugins/<name>` — itself a dot-dir
         // ancestor — so falling back to scanning the full path would
-        // misclassify every event for an installed app as irrelevant and
+        // misclassify every event for an installed plugin as irrelevant and
         // kill hot reload silently. Fail open instead.
         let plugin_dir = Path::new("/Users/.plexi-alpha/apps/foo");
         let unrelated = Path::new("/Users/.plexi-alpha/apps/bar/main.py");

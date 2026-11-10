@@ -4,7 +4,7 @@ use serde::Serialize;
 struct DoctorReport {
     healthy: bool,
     installation: serde_json::Value,
-    apps: Vec<PluginReport>,
+    plugins: Vec<PluginReport>,
     llm_servers: Vec<LlmServerReport>,
     openrouter: OpenRouterReport,
 }
@@ -212,7 +212,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         crate::config::active_workspace_root().as_deref(),
     );
 
-    // Probe for local LLM servers and OpenRouter before the app audit.
+    // Probe for local LLM servers and OpenRouter before the plugin audit.
     let llm_servers = discover_llm_servers();
     let openrouter = check_openrouter();
 
@@ -222,7 +222,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             let report = DoctorReport {
                 healthy: installation_healthy,
                 installation,
-                apps: Vec::new(),
+                plugins: Vec::new(),
                 llm_servers,
                 openrouter,
             };
@@ -234,7 +234,7 @@ pub fn doctor_cli(json: bool) -> i32 {
                 }
             }
         } else {
-            println!("No apps installed.");
+            println!("No plugins installed.");
             print_shell_section(&installation["shell"]);
             print_llm_section(&llm_servers);
             print_openrouter_section(&openrouter);
@@ -262,7 +262,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         let report = DoctorReport {
             healthy,
             installation,
-            apps: sick_apps,
+            plugins: sick_apps,
             llm_servers,
             openrouter,
         };
@@ -283,12 +283,12 @@ pub fn doctor_cli(json: bool) -> i32 {
         println!("Checking {total} installed app(s)...\n");
 
         if healthy {
-            println!("  {green}\u{2713}{reset} {total} app(s) -- all capabilities satisfied");
+            println!("  {green}\u{2713}{reset} {total} plugin(s) -- all capabilities satisfied");
         } else {
             let ok_count = total - sick_count;
             if ok_count > 0 {
                 println!(
-                    "  {green}\u{2713}{reset} {ok_count} app(s) -- all capabilities satisfied"
+                    "  {green}\u{2713}{reset} {ok_count} plugin(s) -- all capabilities satisfied"
                 );
             }
             for app in &sick_apps {
@@ -309,7 +309,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         print_openrouter_section(&openrouter);
     }
 
-    log::info!("cli:doctor: audit complete -- {total} app(s), {sick_count} unhealthy");
+    log::info!("cli:doctor: audit complete -- {total} plugin(s), {sick_count} unhealthy");
 
     if healthy {
         0

@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::app_trait::ViewCommand;
+use crate::app::view_trait::ViewCommand;
 use crate::host::context::Window;
 use crate::testing::HostHarness;
 
@@ -780,7 +780,7 @@ fn enqueue_notification_honours_master_switch() {
 
     for source in [
         crate::app::notifications::NotifySource::Cli,
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         crate::app::notifications::NotifySource::Wasm,
         crate::app::notifications::NotifySource::HostInternal,
     ] {
@@ -848,7 +848,7 @@ fn enqueue_notification_rejects_when_live_queue_is_full() {
         })
         .collect();
     assert!(!h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         PendingNotification {
             notify_id: "rejected-at-capacity".into(),
             ..Default::default()
@@ -892,7 +892,7 @@ fn enqueue_notification_only_interrupts_for_decisions() {
     h.app.notifications_enabled = true;
 
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         cue_test_notification("visible"),
     );
 
@@ -916,7 +916,7 @@ fn enqueue_notification_only_interrupts_for_decisions() {
         host_action: None,
     });
     h.app
-        .enqueue_notification(crate::app::notifications::NotifySource::App, choice);
+        .enqueue_notification(crate::app::notifications::NotifySource::View, choice);
 
     assert!(
         h.app.attention_queue.ask_count() >= 1,
@@ -1053,7 +1053,7 @@ fn plain_cli_notify_interrupts_and_focus_mode_mutes() {
     );
 }
 
-/// 0566: the session is held on the app — a local binding would drop at end of
+/// 0566: the session is held on the plugin — a local binding would drop at end of
 /// scope and cut playback off.
 #[test]
 fn enqueue_notification_holds_cue_session() {
@@ -1158,19 +1158,19 @@ fn spawn_real_terminal_pane(
     Some((pane_id, child_pid, ctx_id, window_id))
 }
 
-/// 0608: a parked app has no sender window. Window-scoped delivery must stay
+/// 0608: a parked plugin has no sender window. Window-scoped delivery must stay
 /// in its stamped context rather than inheriting whatever window is active at
 /// dispatch.
 #[test]
-fn parked_app_window_notification_narrows_without_active_window_provenance() {
+fn parked_view_window_notification_narrows_without_active_window_provenance() {
     let mut h = HostHarness::new();
     h.app.notifications_enabled = true;
     let context_id = h.app.router.active().context_id;
     let (scope, source_window_id) = h
         .app
-        .resolve_app_notification_provenance(0, crate::protocol::NotifyScope::Window);
+        .resolve_plugin_notification_provenance(0, crate::protocol::NotifyScope::Window);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         PendingNotification {
             notify_id: "parked-window-scope".into(),
             sender_pane_id: 0,
@@ -1783,7 +1783,7 @@ fn resurfaces_when_origin_pane_window_comes_into_view() {
 
     let notify_id = "resurface-basic";
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification(notify_id, pane_id),
     );
     assert!(
@@ -1822,7 +1822,7 @@ fn resurfaces_for_unfocused_sibling_pane_in_multi_pane_window() {
 
     let notify_id = "resurface-sibling";
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification(notify_id, pane_b),
     );
     assert!(
@@ -1928,7 +1928,7 @@ fn resurface_runs_on_hidden_occluded_frames() {
     h.app.active_window = win1_idx;
     h.app.router.set_active(1);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-hidden", pane_id),
     );
     h.app.current_notify_id = None;
@@ -1977,7 +1977,7 @@ fn background_tab_pane_is_not_in_view() {
 
     // Switching the active tab brings pane_b into view and fires a resurface.
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-tab", pane_b),
     );
     assert!(!h.app.pending_notifications[0].origin_in_view);
@@ -2042,7 +2042,7 @@ fn focus_mode_suppresses_resurface() {
     h.app.active_window = win1_idx;
     h.app.router.set_active(1);
     h.app.enqueue_notification(
-        crate::app::notifications::NotifySource::App,
+        crate::app::notifications::NotifySource::View,
         resurface_test_notification("resurface-focus-mode", pane_id),
     );
     h.app.current_notify_id = None;

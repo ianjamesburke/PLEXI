@@ -1,6 +1,6 @@
 use crate::config::KeybindingsConfig;
 
-// ─── Reserved Plexi shortcuts (apps must NOT consume these) ───────────────
+// ─── Reserved Plexi shortcuts (plugins must NOT consume these) ───────────────
 //
 // Cmd+D / Cmd+Shift+D       — split horizontal / vertical (terminal)
 // Cmd+\                       — split focused pane to the right (mirror type)
@@ -37,9 +37,9 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+Option+N          — new child context under current context (empty, auto-zoom)
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
-// Escape (app active)         — close app
+// Escape (plugin active)         — close plugin
 //
-// Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
+// Plugins should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
 // K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
 // ───────────────────────────────────────────────────────────────────────────
@@ -92,14 +92,14 @@ pub enum Action {
     UiScaleReset,
     ScrollUp,
     ScrollDown,
-    /// Dismiss the active app surface and return to full terminal.
+    /// Dismiss the active plugin surface and return to full terminal.
     CloseView,
-    /// Open the file browser app in the focused terminal.
+    /// Open the file browser plugin in the focused terminal.
     OpenFileBrowser,
     OpenAgents,
     NextBlockedAgent,
     FocusApproval,
-    /// Open the quick note app (full pane, no terminal split).
+    /// Open the quick note plugin (full pane, no terminal split).
     OpenQuickNote,
     /// Open config file in the text editor.
     OpenConfig,
@@ -113,10 +113,10 @@ pub enum Action {
     ToggleAttentionQueue,
     /// Zoom in one level on the zoom ladder (Cmd+Enter).
     ZoomIn,
-    /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
+    /// Force-reload the focused view pane (#83). Bound to Cmd+Option+R.
     /// Cmd+R is RenamePane and Cmd+Shift+R is RenameContext, so the
     /// Option (Alt) modifier is the next free chord. No-op when the
-    /// focused pane isn't a process-backed app.
+    /// focused pane isn't a process-backed plugin.
     ForceReloadView,
     /// Create a new window to the right of the active one on the same
     /// grid row. Bound to Cmd+N.
@@ -128,7 +128,7 @@ pub enum Action {
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
-    /// Pop app navigation, falling back to focus history. Unbound by default.
+    /// Pop plugin navigation, falling back to focus history. Unbound by default.
     NavBackView,
     /// Step forward through pane focus history. Unbound by default.
     FocusHistoryForward,
@@ -225,7 +225,7 @@ pub struct KeyBindings {
     pub reload_config: (egui::Modifiers, egui::Key),
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
     pub open_assistant: (egui::Modifiers, egui::Key),
-    pub force_reload_app: (egui::Modifiers, egui::Key),
+    pub force_reload_view: (egui::Modifiers, egui::Key),
     pub toggle_attention_queue: (egui::Modifiers, egui::Key),
     pub zoom_in: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
@@ -343,7 +343,7 @@ impl Default for KeyBindings {
             reload_config: (cmd_shift(), egui::Key::Comma),
             open_secrets_manager: (cmd_shift(), egui::Key::S),
             open_assistant: (cmd_ctrl(), egui::Key::A),
-            force_reload_app: (cmd_alt(), egui::Key::R),
+            force_reload_view: (cmd_alt(), egui::Key::R),
             toggle_attention_queue: (cmd(), egui::Key::I),
             zoom_in: (cmd(), egui::Key::Enter),
             open_scratchpad: (cmd_shift(), egui::Key::Space),
@@ -568,7 +568,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(reload_config, "reload_config");
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(open_assistant, "open_assistant");
-    apply_override!(force_reload_app, "force_reload_plugin");
+    apply_override!(force_reload_view, "force_reload_plugin");
     apply_override!(toggle_attention_queue, "toggle_attention_queue");
     apply_override!(zoom_in, "zoom_in");
     apply_override!(open_scratchpad, "open_scratchpad");
@@ -635,7 +635,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("reload_config", bindings.reload_config),
         ("open_secrets_manager", bindings.open_secrets_manager),
         ("open_assistant", bindings.open_assistant),
-        ("force_reload_plugin", bindings.force_reload_app),
+        ("force_reload_plugin", bindings.force_reload_view),
         ("toggle_attention_queue", bindings.toggle_attention_queue),
         ("zoom_in", bindings.zoom_in),
         ("open_scratchpad", bindings.open_scratchpad),
@@ -740,7 +740,7 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("reload_config", b.reload_config),
             ("open_secrets_manager", b.open_secrets_manager),
             ("open_assistant", b.open_assistant),
-            ("force_reload_plugin", b.force_reload_app),
+            ("force_reload_plugin", b.force_reload_view),
             ("toggle_attention_queue", b.toggle_attention_queue),
             ("zoom_in", b.zoom_in),
             ("open_scratchpad", b.open_scratchpad),
@@ -899,9 +899,9 @@ pub enum BindingContext {
     /// Always active — even when overlays/keyboard capture is on.
     /// Use for Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal.
     Global,
-    /// Active only when no overlay holds focus and no app has keyboard capture.
+    /// Active only when no overlay holds focus and no plugin has keyboard capture.
     Normal,
-    /// Active only when an app surface is focused AND no overlay/capture is active.
+    /// Active only when an plugin surface is focused AND no overlay/capture is active.
     ViewActive,
 }
 
@@ -1403,8 +1403,8 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             action: Action::OpenAssistant,
         },
         BindingEntry {
-            modifiers: b.force_reload_app.0,
-            key: b.force_reload_app.1,
+            modifiers: b.force_reload_view.0,
+            key: b.force_reload_view.1,
             exact: false,
             no_repeat: false,
             context: BindingContext::Normal,
@@ -1442,7 +1442,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenScratchpad,
         },
-        // Notes picker opens from any pane type — terminal, app, text-editor.
+        // Notes picker opens from any pane type — terminal, plugin, text-editor.
         BindingEntry {
             modifiers: b.open_notes_picker.0,
             key: b.open_notes_picker.1,
@@ -1451,7 +1451,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenNotesPicker,
         },
-        // ── ViewActive bindings (only when app surface focused) ───────────────
+        // ── ViewActive bindings (only when plugin surface focused) ───────────────
         // CloseView (Escape) — also suppressed when shortcuts overlay is open.
         BindingEntry {
             modifiers: egui::Modifiers::NONE,
@@ -1547,8 +1547,8 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 
 /// Poll global keyboard actions using the pre-built binding table.
 ///
-/// `view_active` — focused pane has an active app surface (affects Escape/Tab).
-/// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
+/// `view_active` — focused pane has an active plugin surface (affects Escape/Tab).
+/// `keyboard_capture_active` — focused plugin declared `keyboard_capture = true` in its manifest.
 ///   When true, all host shortcuts are suppressed *except* Global-context bindings
 ///   (Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal).
 /// `overlay_open` — an overlay owns keyboard focus. Same suppression as `keyboard_capture_active`.
@@ -1559,15 +1559,15 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 /// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
 /// out of `ctx` for this frame (stint 0240's ownership-transfer router).
 /// The host calls this after the focused overlay owner in two passes: Global
-/// and Normal bindings before focused-app key dispatch, then ViewActive
+/// and Normal bindings before focused-plugin key dispatch, then ViewActive
 /// bindings afterward. Thus host chords are structurally removed before a
-/// guest runtime can see them, while an app or focused text field still owns
+/// guest runtime can see them, while an plugin or focused text field still owns
 /// bare Escape before CloseView.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,
     table: &[BindingEntry],
     claimed_key_releases: &mut std::collections::HashSet<egui::Key>,
-    app_active: bool,
+    view_active: bool,
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
@@ -1593,7 +1593,7 @@ pub fn poll_actions(
                 }
             }
             BindingContext::ViewActive => {
-                if !app_active || keyboard_capture_active || overlay_open {
+                if !view_active || keyboard_capture_active || overlay_open {
                     continue;
                 }
                 // Escape is suppressed when the shortcuts overlay is open so the overlay
@@ -1776,7 +1776,7 @@ mod tests {
         assert!(table.iter().any(|e| e.action == Action::NextBlockedAgent));
     }
 
-    /// Run `poll_actions` for a single Tab keypress with an active app surface.
+    /// Run `poll_actions` for a single Tab keypress with an active plugin surface.
     fn poll_tab() -> Vec<Action> {
         let table = build_binding_table(&KeyBindings::default());
         let ctx = egui::Context::default();
@@ -1807,11 +1807,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_passes_through_to_active_app() {
+    fn tab_passes_through_to_active_view() {
         let actions = poll_tab();
         assert!(
             actions.is_empty(),
-            "plain Tab should not be consumed by host app focus; apps own it"
+            "plain Tab should not be consumed by host plugin focus; plugins own it"
         );
     }
 

@@ -465,7 +465,7 @@ Bind chords to user commands defined in `~/.plexi-<channel>/commands.toml` or `<
     print!(
         r#"### File handlers (`[file_handlers]`)
 
-Choose which app opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
+Choose which view opens each file type from the File Explorer. Keys are bare lowercase extensions (e.g. `md`, not `.md`). Values are handler specs:
 
 | Value | Behavior |
 |---|---|

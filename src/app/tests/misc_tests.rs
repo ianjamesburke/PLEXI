@@ -1,7 +1,7 @@
 use super::super::*;
 
 #[test]
-fn parse_key_str_to_event_uses_sdk_key_names_for_app_panes() {
+fn parse_key_str_to_event_uses_sdk_key_names_for_view_panes() {
     let (key, modifiers) = parse_key_str_to_event("plus");
     assert_eq!(key, "plus");
     assert!(!modifiers.ctrl);
@@ -477,10 +477,10 @@ fn wake_request_is_noop_on_host() {
 }
 
 /// #2283: a `[file_handlers]` entry routes a matching extension into the named
-/// Plexi app via the host open resolver (OpenInPane), rather than falling
+/// Plexi plugin via the host open resolver (OpenInPane), rather than falling
 /// through to the OS opener. Proves resolution tier (a) + the launch path.
 #[test]
-fn file_handler_config_routes_extension_to_app() {
+fn file_handler_config_routes_extension_to_plugin() {
     let ctx = egui::Context::default();
     let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
@@ -509,14 +509,14 @@ fn file_handler_config_routes_extension_to_app() {
 
     let opened_text_editor = app.windows.iter().any(|w| {
         w.panes.values().any(|p| {
-            p.as_app()
+            p.as_view()
                 .map(|a| a.runtime.type_id() == "text-editor")
                 .unwrap_or(false)
         })
     });
     assert!(
         opened_text_editor,
-        "the file_handler-routed pane should be the text-editor app"
+        "the file_handler-routed pane should be the text-editor plugin"
     );
 }
 
@@ -550,7 +550,7 @@ fn stable_routes_only_images_to_native_viewer_apps() {
             assert!(
                 app.windows.iter().any(|w| {
                     w.panes.values().any(|p| {
-                        p.as_app()
+                        p.as_view()
                             .map(|a| a.runtime.type_id() == expected_id)
                             .unwrap_or(false)
                     })
@@ -575,10 +575,10 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let selected_path = dir.path().join("photo.png");
     std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
 
-    let browser: Box<dyn crate::app::app_trait::App> = Box::new(
+    let browser: Box<dyn crate::app::view_trait::View> = Box::new(
         crate::file_browser::FileBrowserView::new(dir.path().to_path_buf()),
     );
-    app.open_builtin_app_pane(
+    app.open_builtin_view_pane(
         browser,
         crate::app::permissions::PluginPermissions::builtin(),
         dir.path().to_path_buf(),
@@ -595,7 +595,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let browser_state_before = app.windows[0]
         .panes
         .get(&browser_pane_id)
-        .and_then(|p| p.as_app())
+        .and_then(|p| p.as_view())
         .and_then(|a| a.runtime.serialize_state())
         .expect("browser state before");
     assert_eq!(browser_state_before["selected"], 0);
@@ -619,7 +619,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
         app.windows[0]
             .panes
             .get(&viewer_pane_id)
-            .and_then(|p| p.as_app())
+            .and_then(|p| p.as_view())
             .map(|a| a.runtime.type_id() == "image-viewer")
             .unwrap_or(false),
         "selected image should open in native image viewer"
@@ -635,7 +635,7 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     let browser_state_after = app.windows[0]
         .panes
         .get(&browser_pane_id)
-        .and_then(|p| p.as_app())
+        .and_then(|p| p.as_view())
         .and_then(|a| a.runtime.serialize_state())
         .expect("browser state after");
     assert_eq!(
@@ -659,7 +659,7 @@ fn file_browser_without_terminal_opens_at_context_root() {
 
     let fb_root = app.windows.iter().find_map(|w| {
         w.panes.values().find_map(|p| {
-            p.as_app()
+            p.as_view()
                 .filter(|a| a.runtime.type_id() == "file_browser")
                 .map(|a| a.workspace_root.clone())
         })
@@ -1166,7 +1166,7 @@ fn file_browser_fresh_open_tracks_terminal_cd() {
         h.run_frames(3);
         // Overlay replacement retains the invoking terminal slot. The harness
         // seed is also a FileBrowser runtime, so never pick an arbitrary runtime.
-        let browser = h.app.windows[0].panes[&terminal].as_app().unwrap();
+        let browser = h.app.windows[0].panes[&terminal].as_view().unwrap();
         assert_eq!(browser.manifest_id, "file_browser");
         assert_eq!(
             browser.workspace_root.canonicalize().unwrap(),
@@ -1248,7 +1248,7 @@ fn file_browser_unavailable_terminal_directory_falls_back() {
 }
 
 #[test]
-fn external_spawn_uses_supplied_cwd_for_app_workspace() {
+fn external_spawn_uses_supplied_cwd_for_plugin_workspace() {
     let mut h = crate::testing::HostHarness::new();
     let expected = h.workspace_root().join("external-caller");
     std::fs::create_dir(&expected).unwrap();
@@ -1278,10 +1278,10 @@ fn external_spawn_uses_supplied_cwd_for_app_workspace() {
         .panes
         .values()
         .find_map(|pane| {
-            pane.as_app()
+            pane.as_view()
                 .filter(|app| app.manifest_id == "file_browser")
         })
-        .expect("external app spawned");
+        .expect("external plugin spawned");
     assert_eq!(browser.workspace_root, expected);
 }
 
@@ -1367,7 +1367,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
         .panes
         .values()
         .find_map(|pane| {
-            pane.as_app()
+            pane.as_view()
                 .filter(|app| app.manifest_id == "file_browser")
         })
         .unwrap();
@@ -1385,7 +1385,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     h.run_frames(3);
     let runtime_cwd = |h: &crate::testing::HostHarness| {
         let state = h.app.windows[0].panes[&browser_id]
-            .as_app()
+            .as_view()
             .unwrap()
             .runtime
             .serialize_state()
@@ -1451,7 +1451,7 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
     std::fs::write(saved.join("two.txt"), "two").unwrap();
     let browser_id = h.add_test_pane();
     let state = serde_json::json!({"cwd": saved, "selected": 1});
-    let restored = crate::pane_ops::create::restore_builtin_app_pane(
+    let restored = crate::pane_ops::create::restore_builtin_view_pane(
         "file_browser",
         browser_id,
         root,
@@ -1461,7 +1461,7 @@ fn file_browser_restore_preserves_saved_navigation_without_caller_link() {
     h.app.windows[0].panes.insert(browser_id, restored);
     let _unrelated = h.add_focused_terminal();
     h.run_frames(3);
-    let app = h.app.windows[0].panes[&browser_id].as_app().unwrap();
+    let app = h.app.windows[0].panes[&browser_id].as_view().unwrap();
     assert!(app.linked_pane_id.is_none());
     let after = app.runtime.serialize_state().unwrap();
     assert_eq!(after["cwd"], state["cwd"]);
@@ -1502,7 +1502,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
         match surface {
             "generic-default" => {
                 h.app
-                    .launch_app_by_id_with_layout("file_browser", Some("split_h".into()), &[], None)
+                    .launch_view_by_id_with_layout("file_browser", Some("split_h".into()), &[], None)
                     .unwrap();
             }
             "artifact" => h.app.dispatch_open_artifact(
@@ -1512,7 +1512,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
             ),
             "generic" => {
                 h.app
-                    .launch_app_by_id_with_layout(
+                    .launch_view_by_id_with_layout(
                         "file_browser",
                         Some("split_h".into()),
                         &[],
@@ -1550,7 +1550,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                 .panes
                 .values()
                 .find_map(|pane| {
-                    pane.as_app()
+                    pane.as_view()
                         .filter(|app| app.manifest_id == "file_browser")
                 })
                 .unwrap();
@@ -1565,7 +1565,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
             .panes
             .values()
             .find_map(|pane| {
-                pane.as_app()
+                pane.as_view()
                     .filter(|app| app.manifest_id == "file_browser")
             })
             .unwrap();

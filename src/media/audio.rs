@@ -23,10 +23,10 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 // ─── Public types ────────────────────────────────────────────────────────────
 
 /// Stable info row for one audio device. Returned by enumeration; consumed by
-/// apps populating an input-device dropdown.
+/// plugins populating an input-device dropdown.
 ///
 /// `id` is the cpal `DeviceId` rendered to a string. It is stable across
-/// reboots on macOS (CoreAudio device UID) but NOT across machines. Apps that
+/// reboots on macOS (CoreAudio device UID) but NOT across machines. Plugins that
 /// persist a "last selected device" should fall back to `default = true`
 /// when the saved id is no longer present.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

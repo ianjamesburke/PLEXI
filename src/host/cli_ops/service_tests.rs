@@ -282,8 +282,8 @@ impl Rig {
         }
     }
 
-    /// A rig whose app was put in place by the real installer, so it lives in
-    /// the registry's apps directory with an install-complete marker.
+    /// A rig whose plugin was put in place by the real installer, so it lives in
+    /// the registry's plugins directory with an install-complete marker.
     fn installed() -> Self {
         let mut rig = Self::new();
         rig._profile_guard = Some(crate::config::set_test_profile_dir(
@@ -296,10 +296,10 @@ impl Rig {
     }
 
     fn install_from(&self, source: &std::path::Path) -> i32 {
-        crate::cli::app::app_install_with_pin(
+        crate::cli::plugin::plugin_install_with_pin(
             &source.to_string_lossy(),
             None,
-            crate::cli::app::InstallConfirm::PreApproved,
+            crate::cli::plugin::InstallConfirm::PreApproved,
             true,
         )
     }
@@ -489,7 +489,7 @@ fn timeout_output_limit_nonzero_and_bad_output_are_typed_and_bounded() {
 }
 
 #[test]
-fn concurrency_is_capped_per_app() {
+fn concurrency_is_capped_per_plugin() {
     let mut rig = Rig::new();
     assert!(rig
         .submit("a", "fixture.long", json!({"ms": 20000}))
@@ -536,7 +536,7 @@ fn cancel_kills_a_running_operation_and_fails_a_parked_one() {
 }
 
 #[test]
-fn closing_the_app_kills_every_process() {
+fn closing_the_plugin_kills_every_process() {
     let mut rig = Rig::new();
     assert!(rig.submit("kids", "fixture.children", json!({})).is_empty());
     rig.decide(ApprovalChoice::Once);
@@ -558,7 +558,7 @@ fn closing_the_app_kills_every_process() {
     while unsafe { libc::kill(pid, 0) } == 0 {
         assert!(
             Instant::now() < deadline,
-            "grandchild {pid} survived app close"
+            "grandchild {pid} survived plugin close"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1199,12 +1199,12 @@ fn an_interrupted_update_keeps_the_previous_install_and_its_grant() {
 }
 
 #[test]
-fn uninstalling_an_app_removes_its_sealed_program_copies_and_only_its_own() {
+fn uninstalling_an_plugin_removes_its_sealed_program_copies_and_only_its_own() {
     let mut rig = Rig::installed();
     rig.seal_base = crate::host::cli_ops::seal_base();
     assert_eq!(rig.run_once_pair()["ok"], true);
     let mine = rig.seal_base.join("ops-app");
-    assert!(mine.is_dir(), "the app has a sealed copy after a launch");
+    assert!(mine.is_dir(), "the plugin has a sealed copy after a launch");
     let other = rig.seal_base.join("other-app/prog/abc");
     std::fs::create_dir_all(&other).unwrap();
     let target_root = rig.plugin_dir.parent().unwrap().to_path_buf();
@@ -1214,7 +1214,7 @@ fn uninstalling_an_app_removes_its_sealed_program_copies_and_only_its_own() {
         !mine.exists(),
         "uninstall must not leave executable copies behind"
     );
-    assert!(other.exists(), "another app's copies are untouched");
+    assert!(other.exists(), "another plugin's copies are untouched");
 }
 
 #[test]

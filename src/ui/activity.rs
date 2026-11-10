@@ -44,7 +44,7 @@ pub fn escalation_color(
     }
 }
 
-/// State color shared by terminal and app pane outlines.
+/// State color shared by terminal and view pane outlines.
 pub fn pane_state_color(pane: &crate::host::pane::Pane, colors: &Colors) -> Option<egui::Color32> {
     if let Some(terminal) = pane.as_terminal() {
         if terminal.exited && terminal.exit_status.as_ref().is_some_and(|status| status.is_failure()) {

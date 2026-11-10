@@ -1,18 +1,18 @@
 //! Built-in error tile rendered when a capability pre-flight check fails.
 
-use crate::app::app_trait::{App, ViewCommand, ViewRenderContext};
+use crate::app::view_trait::{View, ViewCommand, ViewRenderContext};
 use crate::ui::style;
 use egui::RichText;
 
 /// Rendered as a `Pane::App(ViewRuntime::Builtin(...))` when the host detects
-/// that an app's declared capabilities cannot be satisfied by the current
+/// that an plugin's declared capabilities cannot be satisfied by the current
 /// config. No Python process is ever spawned for this pane.
 pub struct LaunchFailedView {
     pub plugin_id: String,
     pub missing: Vec<String>,
 }
 
-impl App for LaunchFailedView {
+impl View for LaunchFailedView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self

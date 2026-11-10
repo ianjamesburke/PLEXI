@@ -1,13 +1,13 @@
-//! Marketplace CLI surface — browse/search the hosted catalog, publish an app,
+//! Marketplace CLI surface — browse/search the hosted catalog, publish an plugin,
 //! and plan bare-id installs (stints `0018`-`0021`, `0340`).
 //!
 //! Every command here is a thin shell over `crate::app::marketplace`. The
 //! invariant from the PRM holds at this layer too: nothing here is required to
-//! run a locally-installed app. Browse/search need the network; if the registry
+//! run a locally-installed plugin. Browse/search need the network; if the registry
 //! is unreachable they fail with a clear message and a nonzero code, but they
-//! never touch installed apps. Paid apps are bought through the marketplace
+//! never touch installed plugins. Paid plugins are bought through the marketplace
 //! (browser checkout); the CLI never charges and there is no client-side
-//! license — a bare CLI install of a paid app is blocked with a pointer.
+//! license — a bare CLI install of a paid plugin is blocked with a pointer.
 
 use crate::app::marketplace::{
     InstalledRegistrySource, MarketplaceManifest, PublishClient, RegistryClient, RegistryEntry,
@@ -23,8 +23,8 @@ fn client() -> RegistryClient {
     )
 }
 
-/// `plexi plugin browse` — list every public app in the hosted catalog.
-pub fn app_browse_cli() -> i32 {
+/// `plexi plugin browse` — list every public plugin in the hosted catalog.
+pub fn plugin_browse_cli() -> i32 {
     log::info!("marketplace: plugin browse");
     let index = match client().fetch_index() {
         Ok(i) => i,
@@ -35,7 +35,7 @@ pub fn app_browse_cli() -> i32 {
     };
     let listed: Vec<&RegistryEntry> = index.listed().collect();
     if listed.is_empty() {
-        println!("No public apps are listed yet.");
+        println!("No public plugins are listed yet.");
         return 0;
     }
     println!("{} public app(s) in the marketplace:\n", listed.len());
@@ -45,7 +45,7 @@ pub fn app_browse_cli() -> i32 {
 }
 
 /// `plexi plugin search <query>` — substring search over the public catalog.
-pub fn app_search_cli(query: &str) -> i32 {
+pub fn plugin_search_cli(query: &str) -> i32 {
     log::info!("marketplace: plugin search query={query:?}");
     let index = match client().fetch_index() {
         Ok(i) => i,
@@ -56,7 +56,7 @@ pub fn app_search_cli(query: &str) -> i32 {
     };
     let hits = index.search(query);
     if hits.is_empty() {
-        println!("No public apps match '{query}'.");
+        println!("No public plugins match '{query}'.");
         return 0;
     }
     println!("{} match(es) for '{query}':\n", hits.len());
@@ -90,23 +90,23 @@ fn print_entry_table(entries: &[&RegistryEntry]) {
 /// hosted catalog and the license store. There is no legacy fallback — the
 /// catalog is the only source for a bare id.
 pub enum InstallPlan {
-    /// Free catalog app, artifact downloaded + checksum-verified. Install this
+    /// Free catalog plugin, artifact downloaded + checksum-verified. Install this
     /// `.plexipkg` directly.
     Package {
         path: PathBuf,
         reviewed_native: bool,
         source_metadata: InstalledRegistrySource,
     },
-    /// Catalog app that resolves to a source spec (e.g. `github:owner/repo`).
+    /// Catalog plugin that resolves to a source spec (e.g. `github:owner/repo`).
     /// Install via the existing source-clone path.
     Source(String),
-    /// No app with this id in the catalog. Abort with a not-found message.
+    /// No plugin with this id in the catalog. Abort with a not-found message.
     NotFound,
     /// The marketplace could not be reached. Abort — a bare id can only be
-    /// resolved through the catalog. (Already-installed apps are unaffected;
+    /// resolved through the catalog. (Already-installed plugins are unaffected;
     /// only *new* installs need the catalog.)
     Unreachable,
-    /// The install cannot proceed (paid app, malformed entry, or download
+    /// The install cannot proceed (paid plugin, malformed entry, or download
     /// failure). A message was already printed.
     Blocked,
 }
@@ -115,9 +115,9 @@ pub enum InstallPlan {
 /// `install_cli`. The catalog is the sole source of truth for a bare id —
 /// there is no legacy resolver and no backwards-compatibility path.
 ///
-/// Paid apps are blocked here: they are bought through the marketplace (browser
+/// Paid plugins are blocked here: they are bought through the marketplace (browser
 /// checkout), and the server gates the paid artifact download on the account's
-/// purchase row. Free apps install from the CDN artifact, or from a declared
+/// purchase row. Free plugins install from the CDN artifact, or from a declared
 /// source spec for github-hosted catalog entries.
 pub fn plan_install(plugin_id: &str) -> InstallPlan {
     let cli = client();
@@ -130,7 +130,7 @@ pub fn plan_install(plugin_id: &str) -> InstallPlan {
         }
     };
 
-    // Host-version pre-check: reject an incompatible app before downloading it.
+    // Host-version pre-check: reject an incompatible plugin before downloading it.
     // A too-old host (or malformed requirement) blocks; a too-new host warns.
     {
         use crate::app::host_version::{check, current};
@@ -148,15 +148,15 @@ pub fn plan_install(plugin_id: &str) -> InstallPlan {
         }
     }
 
-    // Paid apps are purchased through the marketplace, never the CLI: the server
+    // Paid plugins are purchased through the marketplace, never the CLI: the server
     // gates the paid artifact download on the account's purchase row. Block a
-    // bare CLI install of a paid app with a clear pointer. Free apps proceed.
+    // bare CLI install of a paid plugin with a clear pointer. Free plugins proceed.
     if !entry.price.is_free() {
         log::info!(
-            "marketplace: bare install of paid app '{plugin_id}' blocked (buy via marketplace)"
+            "marketplace: bare install of paid plugin '{plugin_id}' blocked (buy via marketplace)"
         );
         eprintln!(
-            "error: '{}' is a paid app ({}). Buy it through the marketplace — open the app in \
+            "error: '{}' is a paid plugin ({}). Buy it through the marketplace — open the plugin in \
              Plexi or visit https://plexiapp.com — then it installs for your account. \
              Log in first with `plexi account login`.",
             entry.id,
@@ -199,7 +199,7 @@ pub fn plan_install(plugin_id: &str) -> InstallPlan {
     InstallPlan::Blocked
 }
 
-/// `plexi plugin publish [<path>]` — validate, package, and submit an app to the
+/// `plexi plugin publish [<path>]` — validate, package, and submit an plugin to the
 /// hosted marketplace. Replaces the old print-only stub.
 ///
 /// Always does the real local work: reads `[marketplace]`, validates the dir,
@@ -208,7 +208,7 @@ pub fn plan_install(plugin_id: &str) -> InstallPlan {
 /// `[marketplace].submit_url` it reports the prepared submission and where the
 /// artifact is, then exits 0. This is the honest "last mile not wired" boundary,
 /// not a silent no-op.
-pub fn app_publish_cli(path: &str) -> i32 {
+pub fn plugin_publish_cli(path: &str) -> i32 {
     log::info!("marketplace: plugin publish path={path}");
     let plugin_dir = match Path::new(path).canonicalize() {
         Ok(p) => p,
@@ -338,7 +338,7 @@ fn read_marketplace_manifest(plugin_dir: &Path) -> Result<MarketplaceManifest, i
     }
     if marketplace.visibility == Visibility::Private {
         eprintln!(
-            "warning: [marketplace].visibility is \"private\" — this app will be submitted but \
+            "warning: [marketplace].visibility is \"private\" — this plugin will be submitted but \
              not publicly listed. Use \"public\" to list it, \"unlisted\" for install-by-id only."
         );
     }

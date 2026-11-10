@@ -1,14 +1,14 @@
-//! `plexi plugin call` — invoke an app-exposed tool from the command socket.
+//! `plexi plugin call` — invoke an plugin-exposed tool from the command socket.
 //!
 //! The call runs through the same `ToolDispatcher` the Assistant and the host
-//! MCP server use, so the app receives an ordinary `ToolCall` and answers with
+//! MCP server use, so the plugin receives an ordinary `ToolCall` and answers with
 //! an ordinary `ToolResult`. The host decides two things the caller cannot:
 //! the viewer context (the calling pane's live context, or the credential's
-//! context for a caller outside any pane) and the caller identity the app sees
+//! context for a caller outside any pane) and the caller identity the plugin sees
 //! (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or `session:<id>`). A missing
 //! pane is never the human `user`.
 //!
-//! `dispatch_call` blocks until the app answers, and the app's answer is
+//! `dispatch_call` blocks until the plugin answers, and the plugin's answer is
 //! drained by `App::logic`, so the call runs on a worker thread and writes the
 //! reply file itself — the frame loop never waits on a guest.
 
@@ -32,7 +32,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
         _resource: &str,
     ) -> Result<crate::broker::gate::ApprovalChoice, String> {
         let started = std::time::Instant::now();
-        log::info!("app_call: waiting for desktop approval pending={pending_id}");
+        log::info!("plugin_call: waiting for desktop approval pending={pending_id}");
         loop {
             let expired = started.elapsed() >= self.timeout;
             if expired || !crate::host::pane_liveness::pid_is_alive(self.peer_pid) {
@@ -41,18 +41,18 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
                     .monitor
                     .approve_pending(pending_id, crate::broker::gate::ApprovalChoice::Deny)
                 {
-                    log::info!("app_call: cancellation pending={pending_id}: {error}");
+                    log::info!("plugin_call: cancellation pending={pending_id}: {error}");
                 }
                 let reason = if expired {
                     "approval_timeout"
                 } else {
                     "caller_exited"
                 };
-                log::info!("app_call: {reason} pending={pending_id}");
+                log::info!("plugin_call: {reason} pending={pending_id}");
                 return Err(format!("{reason}: request was not executed"));
             }
             if let Some(choice) = self.monitor.approval_resolution(pending_id) {
-                log::info!("app_call: desktop resolved pending={pending_id} choice={choice:?}");
+                log::info!("plugin_call: desktop resolved pending={pending_id} choice={choice:?}");
                 return Ok(choice);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -60,7 +60,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
     }
 }
 
-/// The identity an app sees for a verified socket caller. No pane is never
+/// The identity an plugin sees for a verified socket caller. No pane is never
 /// the human `user`.
 /// `--recommend` must name one of the offered `--choice` values.
 pub(crate) fn validate_recommend(recommend: Option<&str>, choices: &[String]) -> Result<(), String> {
@@ -133,7 +133,7 @@ impl PlexiApp {
                         };
                         panes.push(serde_json::json!({
                             "id": pane_id,
-                            "manifest_id": pane.as_app().map(|app| app.manifest_id.as_str()).unwrap_or(""),
+                            "manifest_id": pane.as_view().map(|app| app.manifest_id.as_str()).unwrap_or(""),
                             "bounds": [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
                         }));
                     }
@@ -610,7 +610,7 @@ impl PlexiApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn call_app_tool(
+    pub(crate) fn call_plugin_tool(
         &mut self,
         plugin_id: String,
         tool: String,
@@ -644,7 +644,7 @@ impl PlexiApp {
                     .unwrap_or_else(|| "session:unscoped".to_string());
                 monitor.note_denial(&actor, "app-call", &plugin_id, "", "identity");
                 log::info!(
-                    "app_call: denied app={plugin_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
+                    "plugin_call: denied plugin={plugin_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
                 );
                 let code = match error {
                     crate::broker::gate::IdentityError::StaleCredential => "permission_denied",
@@ -674,7 +674,7 @@ impl PlexiApp {
             match self.find_pane_in_any_window(pane_id) {
                 Some((win_idx, _)) => self.windows[win_idx].context_id,
                 None => {
-                    log::warn!("app_call: refused — verified pane {pane_id} is not live");
+                    log::warn!("plugin_call: refused — verified pane {pane_id} is not live");
                     reply(serde_json::json!({
                         "ok": false,
                         "error_code": "permission_denied",
@@ -720,14 +720,14 @@ impl PlexiApp {
             dispatcher.set_presenter(std::sync::Arc::new(WaitingApproval {
                 monitor: std::sync::Arc::clone(&monitor),
                 peer_pid,
-                timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
+                timeout: crate::cli::plugin::APP_CALL_APPROVAL_TIMEOUT,
             }));
         }
-        let namespaced = match dispatcher.select_app_tool(&plugin_id, &tool, target_pane_id) {
+        let namespaced = match dispatcher.select_plugin_tool(&plugin_id, &tool, target_pane_id) {
             Ok(name) => name,
             Err(error) => {
                 monitor.note_denial(&caller, "app-call", &plugin_id, "", "ambiguous_instance");
-                log::info!("app_call: {error}");
+                log::info!("plugin_call: {error}");
                 reply(serde_json::json!({
                     "ok": false,
                     "error_code": "permission_denied",
@@ -738,7 +738,7 @@ impl PlexiApp {
         };
         let call_id = format!("cli-{}", uuid::Uuid::new_v4());
         log::info!(
-            "app_call: caller={caller} context={context_id} app={plugin_id} tool={tool} call_id={call_id}"
+            "plugin_call: caller={caller} context={context_id} plugin={plugin_id} tool={tool} call_id={call_id}"
         );
         let spawned = std::thread::Builder::new()
             .name("app-call".to_string())
@@ -747,7 +747,7 @@ impl PlexiApp {
                 let body = match (result.error, result.output_json) {
                     (Some(error), _) => {
                         log::info!(
-                            "app_call: call_id={call_id} rejected code={:?}: {error}",
+                            "plugin_call: call_id={call_id} rejected code={:?}: {error}",
                             result.error_code
                         );
                         serde_json::json!({
@@ -760,7 +760,7 @@ impl PlexiApp {
                     (None, Some(output)) => {
                         let output = serde_json::from_str::<serde_json::Value>(&output)
                             .unwrap_or(serde_json::Value::String(output));
-                        log::info!("app_call: call_id={call_id} ok");
+                        log::info!("plugin_call: call_id={call_id} ok");
                         serde_json::json!({"ok": true, "output": output})
                     }
                     (None, None) => serde_json::json!({"ok": true, "output": null}),
@@ -768,11 +768,11 @@ impl PlexiApp {
                 reply(body);
             });
         if let Err(error) = spawned {
-            log::error!("app_call: failed to spawn worker thread: {error}");
+            log::error!("plugin_call: failed to spawn worker thread: {error}");
         }
     }
 
-    pub(crate) fn list_app_tools(
+    pub(crate) fn list_plugin_tools(
         &self,
         plugin_id: Option<&str>,
         explicit_context_id: Option<u64>,
@@ -787,7 +787,7 @@ impl PlexiApp {
         };
         let resolved_context_id = if let Some(ctx_id) = explicit_context_id {
             if !context_known(ctx_id) {
-                log::warn!("app_tools: explicit context_id={ctx_id} not found");
+                log::warn!("plugin_tools: explicit context_id={ctx_id} not found");
                 crate::rpc::write_json_response(
                     response_file,
                     serde_json::json!({
@@ -818,8 +818,8 @@ impl PlexiApp {
 
         let mut tools =
             crate::plexi_ai::tool_dispatch::snapshot_tools_for_context(resolved_context_id);
-        if let Some(filter_app) = plugin_id.map(str::trim).filter(|s| !s.is_empty()) {
-            tools.retain(|entry| entry.plugin_id == filter_app);
+        if let Some(filter_plugin) = plugin_id.map(str::trim).filter(|s| !s.is_empty()) {
+            tools.retain(|entry| entry.plugin_id == filter_plugin);
         }
         log::info!(
             "pane_ipc: kind=list_plugin_tools context_id={resolved_context_id} plugin_id={plugin_id:?} count={}",
@@ -874,7 +874,7 @@ impl PlexiApp {
 
     /// Surface the one recovery action for a host seal key that startup could
     /// not read without prompting. This is deliberately separate from a tool
-    /// approval: it reloads or rotates the host seal and never grants an app
+    /// approval: it reloads or rotates the host seal and never grants an plugin
     /// capability.
     pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
         let monitor =
@@ -940,7 +940,7 @@ impl PlexiApp {
     /// Resolve a Needs-you record from a desktop click or key. Synthetic
     /// input and sockets never reach this: it is the single guarded
     /// desktop path shared by the recovery banner and the attention review.
-    /// Resolving a record never mints an app grant.
+    /// Resolving a record never mints an plugin grant.
     pub(crate) fn resolve_from_desktop(
         &mut self,
         id: &str,
@@ -992,7 +992,7 @@ impl PlexiApp {
     }
 
     /// Answer a creative `Question` / `BlockedRun` Needs-you record from a desktop click.
-    /// Never mints an app grant or widens permission scopes.
+    /// Never mints an plugin grant or widens permission scopes.
     pub(crate) fn answer_from_desktop(
         &mut self,
         id: &str,
@@ -1059,7 +1059,7 @@ impl PlexiApp {
         let app = self
             .windows
             .iter()
-            .find_map(|window| window.panes.get(&pane_id).and_then(|pane| pane.as_app()));
+            .find_map(|window| window.panes.get(&pane_id).and_then(|pane| pane.as_view()));
         let app = app?;
         if app.manifest_id == "permissions" {
             return Some(

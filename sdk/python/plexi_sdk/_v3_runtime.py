@@ -1,4 +1,4 @@
-"""V3AppRuntime: standalone runtime for module-level Plexi apps.
+"""PluginRuntime: standalone runtime for module-level Plexi apps.
 
 Replaces the V3ProcessApp(App) inheritance adapter with a composition-based
 runtime that owns its own protocol transport, frame clock, and state. No
@@ -82,24 +82,24 @@ def _finish_emit_batch() -> None:
         sys.stdout.flush()
 
 
-def _load_module(app_path: Path):
-    parent = str(app_path.parent)
+def _load_module(plugin_path: Path):
+    parent = str(plugin_path.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    spec = importlib.util.spec_from_file_location("plexi_v3_app", app_path)
+    spec = importlib.util.spec_from_file_location("plexi_v3_app", plugin_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not load app module from {app_path!s}")
+        raise RuntimeError(f"could not load app module from {plugin_path!s}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["plexi_v3_app"] = module
     spec.loader.exec_module(module)
     return module
 
 
-class V3AppRuntime:
+class PluginRuntime:
     """Purpose-built runtime for SDK v3 module-level apps (init/update/view)."""
 
-    def __init__(self, app_path: Path, launch_args: list[str] | None = None) -> None:
-        self._module = _load_module(app_path)
+    def __init__(self, plugin_path: Path, launch_args: list[str] | None = None) -> None:
+        self._module = _load_module(plugin_path)
         self._launch_args = launch_args or []
         # Per-scope state, keyed by declared scope name. The first entry of
         # ``_scopes`` is the app's default scope; ``_values`` always aliases
@@ -1029,10 +1029,10 @@ def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         raise SystemExit("usage: python -m plexi_sdk._v3_runtime <app.py> [args...]")
-    app_path = Path(args[0]).resolve()
+    plugin_path = Path(args[0]).resolve()
     launch_args = args[1:]
     _v3_state._host_log = _host_log
-    runtime = V3AppRuntime(app_path, launch_args)
+    runtime = PluginRuntime(plugin_path, launch_args)
     runtime.run()
 
 

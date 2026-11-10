@@ -346,7 +346,7 @@ mod tests {
                 "id": "call-1",
                 "type": "function",
                 "function": {
-                    "name": "host.apps.open",
+                    "name": "host.views.open",
                     "arguments": "{\"app\":\"file_browser\",\"layout\":\"split_h\"}"
                 }
             }]
@@ -370,7 +370,7 @@ mod tests {
                     "id": "call-1",
                     "type": "function",
                     "function": {
-                        "name": "host.apps.open",
+                        "name": "host.views.open",
                         "arguments": "{\"app\":\"file_browser\"}"
                     }
                 }]
@@ -388,7 +388,7 @@ mod tests {
             translated[1],
             serde_json::json!({
                 "role": "tool",
-                "tool_name": "host.apps.open",
+                "tool_name": "host.views.open",
                 "content": "{\"ok\":true,\"pane_id\":5}"
             })
         );
@@ -404,7 +404,7 @@ mod tests {
                     {
                         "id": "call-1",
                         "type": "function",
-                        "function": { "name": "host.apps.open", "arguments": "{}" }
+                        "function": { "name": "host.views.open", "arguments": "{}" }
                     },
                     {
                         "id": "call-2",
@@ -428,7 +428,7 @@ mod tests {
         let translated = messages_for_ollama(&messages).unwrap();
 
         assert_eq!(translated[1]["tool_name"], "host.panes.list");
-        assert_eq!(translated[2]["tool_name"], "host.apps.open");
+        assert_eq!(translated[2]["tool_name"], "host.views.open");
     }
 
     #[test]

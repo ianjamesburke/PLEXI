@@ -1,9 +1,9 @@
 //! App event timeline + undo checkpoints.
 //!
-//! Apps own state. The host owns the timeline. Agents never own plugin state.
+//! Plugins own state. The host owns the timeline. Agents never own plugin state.
 //!
 //! This module is the host-owned record of:
-//! - **Declared event streams**: apps must declare named streams (with a
+//! - **Declared event streams**: plugins must declare named streams (with a
 //!   schema) before emitting on them.
 //! - **App events**: every accepted `HostRequest::EmitEvent` enters the
 //!   timeline. Malformed events are rejected and logged, never recorded.
@@ -31,26 +31,26 @@ fn reserved_host_publisher(plugin_id: &str) -> bool {
 
 // ── Validated event ──────────────────────────────────────────────────────────
 
-/// A validated, host-accepted app event. Constructed only via
+/// A validated, host-accepted plugin event. Constructed only via
 /// [`PluginTimeline::record_event`] so every record in the timeline passed the
 /// required-field checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginEventRecord {
     /// Host-assigned, unique within this timeline.
     pub event_id: u64,
-    /// App that emitted the event (host-stamped, not app-supplied).
+    /// App that emitted the event (host-stamped, not plugin-supplied).
     pub plugin_id: String,
-    /// Host-established context the emitting app instance lives in (stint
+    /// Host-established context the emitting plugin instance lives in (stint
     /// 0724 Phase D) — the owning `Scope::PluginInstance` for reachability.
-    /// Never app-supplied; resolved by the caller from
+    /// Never plugin-supplied; resolved by the caller from
     /// `PlexiApp::origin_for_pane` at the point the event was recorded.
     pub owner_context_id: u64,
-    /// Pane the emitting app instance lives in (host-stamped).
+    /// Pane the emitting plugin instance lives in (host-stamped).
     pub pane_id: u64,
     /// Declared stream name, e.g. `move.played`.
     pub event: String,
     pub actor: PluginEventActor,
-    /// Actor identity. Defaults to the emitting app id when not supplied.
+    /// Actor identity. Defaults to the emitting plugin id when not supplied.
     pub actor_id: String,
     /// Causal tool caller (e.g. `"agent:chess-opponent"`) when this event
     /// was emitted while servicing a `ToolCall`; `None` for organic events.
@@ -58,7 +58,7 @@ pub struct PluginEventRecord {
     pub summary: String,
     /// Document, game, pane, or plugin-instance id.
     pub resource_id: String,
-    /// Scope class of `resource_id` (`pane` when the app didn't say).
+    /// Scope class of `resource_id` (`pane` when the plugin didn't say).
     pub resource_scope: String,
     pub revision_after: String,
     pub payload: Option<serde_json::Value>,
@@ -100,11 +100,11 @@ pub struct EmittedEvent {
 pub enum CheckpointStatus {
     /// Reversible — no rollback attempted.
     Active,
-    /// Verification sent to the app, awaiting `RollbackVerifyResult`.
+    /// Verification sent to the plugin, awaiting `RollbackVerifyResult`.
     Verifying,
-    /// Rollback instruction (`RollbackApply`) was issued to the app.
+    /// Rollback instruction (`RollbackApply`) was issued to the plugin.
     RolledBack,
-    /// The app's current revision no longer matches `revision_after`;
+    /// The plugin's current revision no longer matches `revision_after`;
     /// rollback is blocked pending conflict resolution.
     Conflict,
 }
@@ -163,7 +163,7 @@ impl std::fmt::Display for RollbackError {
     }
 }
 
-/// What the host should send the app to start a rollback: a revision
+/// What the host should send the plugin to start a rollback: a revision
 /// verification question.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
@@ -173,11 +173,11 @@ pub struct RollbackVerifyRequest {
     pub expected_revision: String,
 }
 
-/// The host's decision after the app reports its current revision.
+/// The host's decision after the plugin reports its current revision.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg(test)]
 pub enum RollbackVerdict {
-    /// Revisions match — instruct the app to roll back.
+    /// Revisions match — instruct the plugin to roll back.
     Apply {
         checkpoint_id: String,
         resource_id: String,
@@ -193,10 +193,10 @@ pub enum RollbackVerdict {
 
 // ── Subscriptions ────────────────────────────────────────────────────────────
 
-/// A broker-granted subscription of one actor to one app's event stream(s).
+/// A broker-granted subscription of one actor to one plugin's event stream(s).
 /// Created only through [`PluginTimeline::add_subscription`], which callers must
 /// gate behind a `TargetType::PluginEventStream` broker decision (see
-/// `WASM app runtime::subscribe_event_stream`).
+/// `WASM plugin runtime::subscribe_event_stream`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionRecord {
     pub subscription_id: String,
@@ -204,11 +204,11 @@ pub struct SubscriptionRecord {
     pub subscriber_id: String,
     /// App package identity whose events are subscribed.
     pub plugin_id: String,
-    /// Declared stream names. Empty = all streams the app declares.
+    /// Declared stream names. Empty = all streams the plugin declares.
     pub event_names: Vec<String>,
     pub payload_mode: PayloadMode,
     pub trigger_mode: TriggerMode,
-    /// `None` = any resource the app emits on; `Some` = only that resource.
+    /// `None` = any resource the plugin emits on; `Some` = only that resource.
     pub resource_id: Option<String>,
     pub duration: GrantDuration,
     /// Host-established context the subscriber lives/acts in (stint 0724
@@ -226,7 +226,7 @@ impl SubscriptionRecord {
     /// the event's owning scope is reachable from this subscriber's context
     /// (stint 0724 Phase D — same context only, since no cross-context grant
     /// is ever issued yet), the event name is one of the subscribed names
-    /// (or the subscription covers all of the app's streams), and the
+    /// (or the subscription covers all of the plugin's streams), and the
     /// resource filter (if any) matches.
     fn matches(&self, plugin_id: &str, record: &PluginEventRecord) -> bool {
         if self.plugin_id != plugin_id {
@@ -287,7 +287,7 @@ pub(crate) const EVENT_RING_CAP: usize = 4096;
 
 // ── PluginTimeline ──────────────────────────────────────────────────────────────
 
-/// Host-owned timeline of app events, undo checkpoints, subscriptions, and
+/// Host-owned timeline of plugin events, undo checkpoints, subscriptions, and
 /// pending deliveries. Shared as `Arc<Mutex<PluginTimeline>>`: production panes
 /// all point at [`global()`], harness tests construct isolated instances.
 #[derive(Debug, Default)]
@@ -315,7 +315,7 @@ pub struct PluginTimeline {
 impl PluginTimeline {
     // ── Stream declaration ──────────────────────────────────────────────────
 
-    /// Register an app's declared event streams, namespaced under the
+    /// Register an plugin's declared event streams, namespaced under the
     /// declaring instance's host-established `context_id` (stint 0724 Phase
     /// D) so the same `plugin_id` running in two different contexts never
     /// shares a stream namespace. Replaces any previous declaration for the
@@ -359,7 +359,7 @@ impl PluginTimeline {
             entry.insert(decl.name.clone(), decl);
         }
         log::info!(
-            "app_timeline: '{plugin_id}' (context={context_id}) declared event streams {accepted:?}"
+            "plugin_timeline: '{plugin_id}' (context={context_id}) declared event streams {accepted:?}"
         );
         Ok(accepted)
     }
@@ -381,7 +381,7 @@ impl PluginTimeline {
         out
     }
 
-    /// Declared streams for an app in one context (empty when none declared).
+    /// Declared streams for an plugin in one context (empty when none declared).
     #[cfg(test)]
     pub fn declared_streams(&self, context_id: u64, plugin_id: &str) -> Vec<&EventStreamDecl> {
         self.streams
@@ -442,7 +442,7 @@ impl PluginTimeline {
             .is_some_and(|m| m.contains_key(&emitted.event));
         if !declared {
             return Err(format!(
-                "emit_event: '{}' is not a declared event stream for app '{plugin_id}' \
+                "emit_event: '{}' is not a declared event stream for plugin '{plugin_id}' \
                  in this context — declare it via declare_event_streams first",
                 emitted.event
             ));
@@ -497,7 +497,7 @@ impl PluginTimeline {
                 status: CheckpointStatus::Active,
             };
             log::info!(
-                "app_timeline: undo checkpoint {checkpoint_id} for '{}' ({} -> {})",
+                "plugin_timeline: undo checkpoint {checkpoint_id} for '{}' ({} -> {})",
                 record.plugin_id,
                 record.revision_before.as_deref().unwrap_or("?"),
                 record.revision_after
@@ -510,7 +510,7 @@ impl PluginTimeline {
         let deliveries_queued = self.route_to_subscriptions(plugin_id, &record);
 
         log::info!(
-            "app_timeline: recorded '{}' event {} from '{plugin_id}' (resource={}, rev_after={}, \
+            "plugin_timeline: recorded '{}' event {} from '{plugin_id}' (resource={}, rev_after={}, \
              checkpoint={:?}, deliveries={deliveries_queued})",
             record.event,
             record.event_id,
@@ -529,7 +529,7 @@ impl PluginTimeline {
             Some(record.pane_id),
             None,
             serde_json::to_value(&record).unwrap_or_else(|e| {
-                log::warn!("app_timeline: flight record serialize failed: {e}");
+                log::warn!("plugin_timeline: flight record serialize failed: {e}");
                 serde_json::Value::Null
             }),
         );
@@ -549,7 +549,7 @@ impl PluginTimeline {
         }
         if evicted > 0 && self.next_event_id.is_multiple_of(1024) {
             log::info!(
-                "app_timeline: event ring at capacity {cap}; evicted {evicted} (latest id {})",
+                "plugin_timeline: event ring at capacity {cap}; evicted {evicted} (latest id {})",
                 self.next_event_id
             );
         }
@@ -560,7 +560,7 @@ impl PluginTimeline {
         self.event_cap = cap;
     }
 
-    /// Host-only producer for the pane stream. Public app/CLI entry points
+    /// Host-only producer for the pane stream. Public plugin/CLI entry points
     /// reject this namespace; subscriptions use the ordinary scoped bus.
     pub(crate) fn record_pane_lifecycle(
         &mut self,
@@ -685,7 +685,7 @@ impl PluginTimeline {
         }
         for d in new_deliveries {
             log::info!(
-                "app_timeline: queued delivery {} of '{}' to {:?} '{}' (trigger={:?})",
+                "plugin_timeline: queued delivery {} of '{}' to {:?} '{}' (trigger={:?})",
                 d.delivery_id,
                 d.event,
                 d.subscriber_type,
@@ -711,9 +711,9 @@ impl PluginTimeline {
         &self.checkpoints
     }
 
-    /// Checkpoints for one app, newest first — the listing API for history UI.
+    /// Checkpoints for one plugin, newest first — the listing API for history UI.
     #[cfg(test)]
-    pub fn checkpoints_for_app(&self, plugin_id: &str) -> Vec<&UndoCheckpoint> {
+    pub fn checkpoints_for_plugin(&self, plugin_id: &str) -> Vec<&UndoCheckpoint> {
         let mut out: Vec<&UndoCheckpoint> = self
             .checkpoints
             .iter()
@@ -724,9 +724,9 @@ impl PluginTimeline {
     }
 
     /// Begin a rollback: transition the checkpoint to `Verifying` and return
-    /// the revision-verification question the host must send the app.
+    /// the revision-verification question the host must send the plugin.
     /// Broker gating (`TargetType::UndoCheckpoint`) is the caller's duty —
-    /// see `WASM app runtime::request_rollback`.
+    /// see `WASM plugin runtime::request_rollback`.
     #[cfg(test)]
     pub fn begin_rollback(
         &mut self,
@@ -753,7 +753,7 @@ impl PluginTimeline {
         }
         ckpt.status = CheckpointStatus::Verifying;
         log::info!(
-            "app_timeline: rollback verification started for {checkpoint_id} \
+            "plugin_timeline: rollback verification started for {checkpoint_id} \
              (expect rev '{}')",
             ckpt.revision_after
         );
@@ -764,7 +764,7 @@ impl PluginTimeline {
         })
     }
 
-    /// Resolve the app's answer to a rollback verification. Revision match →
+    /// Resolve the plugin's answer to a rollback verification. Revision match →
     /// `Apply` (checkpoint marked `RolledBack`); mismatch → `Blocked`
     /// (checkpoint marked `Conflict`).
     #[cfg(test)]
@@ -788,7 +788,7 @@ impl PluginTimeline {
         if ckpt.revision_after == current_revision {
             ckpt.status = CheckpointStatus::RolledBack;
             log::info!(
-                "app_timeline: rollback verified for {checkpoint_id} — issuing apply"
+                "plugin_timeline: rollback verified for {checkpoint_id} — issuing apply"
             );
             Ok(RollbackVerdict::Apply {
                 checkpoint_id: ckpt.checkpoint_id.clone(),
@@ -798,7 +798,7 @@ impl PluginTimeline {
         } else {
             ckpt.status = CheckpointStatus::Conflict;
             log::warn!(
-                "app_timeline: rollback blocked for {checkpoint_id} — app at rev \
+                "plugin_timeline: rollback blocked for {checkpoint_id} — plugin at rev \
                  '{current_revision}', checkpoint expects '{}'",
                 ckpt.revision_after
             );
@@ -867,7 +867,7 @@ impl PluginTimeline {
     /// `TargetType::PluginEventStream` request to `Allow` first.
     pub fn add_subscription(&mut self, sub: SubscriptionRecord) {
         log::info!(
-            "app_timeline: subscription {} — {:?} '{}' -> '{}' events {:?} \
+            "plugin_timeline: subscription {} — {:?} '{}' -> '{}' events {:?} \
              (payload={:?}, trigger={:?})",
             sub.subscription_id,
             sub.subscriber_type,
@@ -910,7 +910,7 @@ impl PluginTimeline {
         );
         if removed != (0, 0) {
             log::info!(
-                "app_timeline: cleared subscriber {subscriber_type:?} '{subscriber_id}' — \
+                "plugin_timeline: cleared subscriber {subscriber_type:?} '{subscriber_id}' — \
                  {} subscription(s) removed, {} queued delivery(ies) dropped",
                 removed.0,
                 removed.1
@@ -926,7 +926,7 @@ impl PluginTimeline {
             .retain(|s| s.subscription_id != subscription_id);
         let removed = self.subscriptions.len() != before;
         if removed {
-            log::info!("app_timeline: removed subscription {subscription_id}");
+            log::info!("plugin_timeline: removed subscription {subscription_id}");
         }
         removed
     }
@@ -998,7 +998,7 @@ impl PluginTimeline {
 
 static GLOBAL_TIMELINE: OnceLock<Arc<Mutex<PluginTimeline>>> = OnceLock::new();
 
-/// The host-wide shared timeline. Production `WASM app runtime`s all clone this
+/// The host-wide shared timeline. Production `WASM plugin runtime`s all clone this
 /// handle; tests construct isolated `Arc<Mutex<PluginTimeline>>`s instead.
 pub fn global() -> Arc<Mutex<PluginTimeline>> {
     Arc::clone(GLOBAL_TIMELINE.get_or_init(|| Arc::new(Mutex::new(PluginTimeline::default()))))
@@ -1228,8 +1228,8 @@ mod tests {
         assert_eq!(ckpt.revision_after, "rev-13");
         assert_eq!(ckpt.resource_id, "game-abc");
         assert_eq!(ckpt.status, CheckpointStatus::Active);
-        assert_eq!(t.checkpoints_for_app("chess").len(), 1);
-        assert!(t.checkpoints_for_app("other").is_empty());
+        assert_eq!(t.checkpoints_for_plugin("chess").len(), 1);
+        assert!(t.checkpoints_for_plugin("other").is_empty());
     }
 
     #[test]
@@ -1419,7 +1419,7 @@ mod tests {
             TriggerMode::Conversation,
         ));
 
-        let denied = timeline.remove_subscription_for(ActorType::App, "other", "sub-1");
+        let denied = timeline.remove_subscription_for(ActorType::Plugin, "other", "sub-1");
         assert!(denied.is_err());
         assert_eq!(timeline.subscriptions().len(), 1);
 
@@ -1431,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn app_subscriptions_deliver_across_python_and_wasm_publishers() {
+    fn view_subscriptions_deliver_across_python_and_wasm_publishers() {
         let mut timeline = PluginTimeline::default();
         timeline
             .declare_streams(CTX, "python-notes", vec![decl("note.saved")])
@@ -1442,7 +1442,7 @@ mod tests {
 
         let mut wasm_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
         wasm_subscriber.subscription_id = "wasm-sub".to_string();
-        wasm_subscriber.subscriber_type = ActorType::App;
+        wasm_subscriber.subscriber_type = ActorType::Plugin;
         wasm_subscriber.subscriber_id = "app-pane:41".to_string();
         wasm_subscriber.plugin_id = "python-notes".to_string();
         wasm_subscriber.event_names = vec!["note.saved".to_string()];
@@ -1450,7 +1450,7 @@ mod tests {
 
         let mut python_subscriber = subscription(PayloadMode::Full, TriggerMode::Conversation);
         python_subscriber.subscription_id = "python-sub".to_string();
-        python_subscriber.subscriber_type = ActorType::App;
+        python_subscriber.subscriber_type = ActorType::Plugin;
         python_subscriber.subscriber_id = "app-pane:42".to_string();
         python_subscriber.plugin_id = "wasm-counter".to_string();
         python_subscriber.event_names = vec!["count.changed".to_string()];
@@ -1465,7 +1465,7 @@ mod tests {
                 .deliveries_queued,
             1
         );
-        let wasm_delivery = timeline.take_deliveries_for(ActorType::App, "app-pane:41");
+        let wasm_delivery = timeline.take_deliveries_for(ActorType::Plugin, "app-pane:41");
         assert_eq!(wasm_delivery.len(), 1);
         assert_eq!(wasm_delivery[0].event, "note.saved");
 
@@ -1478,12 +1478,12 @@ mod tests {
                 .deliveries_queued,
             1
         );
-        let python_delivery = timeline.take_deliveries_for(ActorType::App, "app-pane:42");
+        let python_delivery = timeline.take_deliveries_for(ActorType::Plugin, "app-pane:42");
         assert_eq!(python_delivery.len(), 1);
         assert_eq!(python_delivery[0].event, "count.changed");
 
         assert!(timeline
-            .remove_subscription_for(ActorType::App, "app-pane:41", "wasm-sub")
+            .remove_subscription_for(ActorType::Plugin, "app-pane:41", "wasm-sub")
             .unwrap());
         assert_eq!(
             timeline
@@ -1574,7 +1574,7 @@ mod tests {
     /// `evaluate_reach` gate, independent of the higher-level `record_event`
     /// flow above — mirrors Phase C's `tool_dispatch.rs` test style.
     #[test]
-    fn matches_rejects_cross_context_even_with_identical_app_and_event_name() {
+    fn matches_rejects_cross_context_even_with_identical_plugin_and_event_name() {
         let mut same_context = subscription(PayloadMode::Full, TriggerMode::Conversation);
         same_context.subscriber_context_id = CTX;
         let mut cross_context = subscription(PayloadMode::Full, TriggerMode::Conversation);

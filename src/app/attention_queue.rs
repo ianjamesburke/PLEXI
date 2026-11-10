@@ -13,7 +13,7 @@
 //!    on arrival. Shows `"What would you do here?"`, monospace command text, and
 //!    2–4 options (starred recommendation when present). Sends at most one verdict.
 
-use crate::app::app_trait::KeyDisposition;
+use crate::app::view_trait::KeyDisposition;
 use crate::app::input_router::PlexiInput;
 use crate::app::PlexiApp;
 use crate::broker::gate::{ApprovalChoice, NeedsYouKind, PermissionMonitor, ResolveSurface};
@@ -523,7 +523,7 @@ impl PlexiApp {
                     .and_then(|p| {
                         p.as_terminal()
                             .and_then(|t| t.name.as_deref())
-                            .or_else(|| p.as_app().map(|a| a.name.as_str()))
+                            .or_else(|| p.as_view().map(|a| a.name.as_str()))
                             .map(str::to_string)
                     })
                     .unwrap_or_else(|| format!("pane-{pid}"));
@@ -648,7 +648,7 @@ impl PlexiApp {
                 .tool
                 .starts_with(crate::broker::gate::CLI_OPERATION_TOOL_PREFIX);
             let cmd_text = if is_cli_operation {
-                // The summary is already a full sentence naming app, workspace,
+                // The summary is already a full sentence naming plugin, workspace,
                 // program and ambient authority; a tool-name prefix adds nothing.
                 pending.input_summary.clone()
             } else if pending.input_summary.is_empty() || pending.input_summary == "{}" {
@@ -836,9 +836,9 @@ impl PlexiApp {
             } else {
                 QueueCategory::Result
             };
-            let app_receiver = !notif.tombstoned && self.windows.iter()
+            let plugin_receiver = !notif.tombstoned && self.windows.iter()
                 .find_map(|win| win.panes.get(&notif.sender_pane_id))
-                .and_then(|pane| pane.as_app())
+                .and_then(|pane| pane.as_view())
                 .is_some_and(|app| app.runtime.supports_notify_action());
             let response_receiver = notif.response_file.is_some();
             let uncertain = notif.delivery_unknown;
@@ -846,7 +846,7 @@ impl PlexiApp {
                 let host_receiver = option.host_action.as_deref().and_then(|action| action.strip_prefix("pane_focus:"))
                     .and_then(|id| id.parse::<u64>().ok())
                     .is_some_and(|id| self.find_pane_in_any_window(id).is_some());
-                (!uncertain && (app_receiver || response_receiver || host_receiver)).then_some(idx)
+                (!uncertain && (plugin_receiver || response_receiver || host_receiver)).then_some(idx)
             }).collect();
             let options = if !option_indices.is_empty() {
                 option_indices
@@ -946,7 +946,7 @@ impl PlexiApp {
                     let pname = pane
                         .as_terminal()
                         .and_then(|t| t.name.as_deref())
-                        .or_else(|| pane.as_app().map(|a| a.name.as_str()))
+                        .or_else(|| pane.as_view().map(|a| a.name.as_str()))
                         .map(str::to_string)
                         .unwrap_or_else(|| ag.agent.clone());
                     agent_entries.push((win.context_id, pid, pname, ag));
@@ -1496,7 +1496,7 @@ impl PlexiApp {
                     return dest;
                 }
                 let path_str = path.to_string_lossy().into_owned();
-                if let Err(e) = self.launch_app_by_id_with_layout(
+                if let Err(e) = self.launch_view_by_id_with_layout(
                     "text-editor",
                     Some("split_h".into()),
                     &[path_str],
@@ -2798,7 +2798,7 @@ mod tests {
             let center = self.option_button_center(option_idx);
             match stage {
                 0 => {
-                    // pane key (app pane passthrough): queued Key batches. Text batches from
+                    // pane key (view pane passthrough): queued Key batches. Text batches from
                     // pane send carry no Key event and are held until a text surface has focus.
                     self.inject_queued(Self::tap(digit), "pane key digit");
                     self.inject_queued(Self::tap(egui::Key::Enter), "pane key enter");
@@ -3300,7 +3300,7 @@ mod tests {
         let mut h = HostHarness::new();
         let terminal = h.add_focused_terminal();
         for pane_id in [terminal, u64::MAX] {
-            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive an app event");
+            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive an plugin event");
         }
     }
 
@@ -3310,8 +3310,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.md");
         std::fs::write(&path, "note").unwrap();
-        h.app.open_builtin_app_pane(
-            Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(path)),
+        h.app.open_builtin_view_pane(
+            Box::new(crate::app::text_editor_view::TextEditorView::new_for_test_note(path)),
             crate::app::permissions::PluginPermissions::builtin(), dir.path().to_path_buf(), None, Some("split_h"), None,
         );
         let pane_id = h.state().open_panes[0];
@@ -4119,7 +4119,7 @@ mod tests {
                 .windows
                 .iter()
                 .flat_map(|w| w.panes.values())
-                .any(|p| matches!(p, crate::host::pane::Pane::App(app) if app.manifest_id == "text-editor")),
+                .any(|p| matches!(p, crate::host::pane::Pane::View(app) if app.manifest_id == "text-editor")),
             "activating closed human-started result must open text-editor"
         );
     }

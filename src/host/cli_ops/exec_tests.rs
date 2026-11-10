@@ -188,7 +188,7 @@ fn dropping_a_running_operation_kills_its_process_tree() {
     let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
     assert!(pid_alive(pid));
     drop(op);
-    assert!(wait_gone(pid), "grandchild {pid} survived app close");
+    assert!(wait_gone(pid), "grandchild {pid} survived plugin close");
 }
 
 #[test]

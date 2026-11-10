@@ -986,7 +986,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to a terminal pane's PTY stdin, or focuses an app pane and
+/// Writes text to a terminal pane's PTY stdin, or focuses an view pane and
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
@@ -1235,7 +1235,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     };
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
         if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-            // Native app panes report whether the app's key handler consumed
+            // Native view panes report whether the plugin's key handler consumed
             // the key — surface a miss so driving agents don't assume the
             // key acted.
             if let Some(d) = v.get("disposition").and_then(|v| v.as_str()) {
@@ -1250,7 +1250,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
                          surface (applied next frame)"
                     ),
                     _ => eprintln!(
-                        "note: key delivered but not consumed by the app \
+                        "note: key delivered but not consumed by the plugin \
                          (disposition: {d})"
                     ),
                 }
@@ -1546,9 +1546,9 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 
 /// `plexi pane state <id> [--stale-after <secs>]`
 ///
-/// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
+/// Sends a `get_pane_state` command to PLEXI_SOCKET. For view panes, the host
 /// writes a JSON object containing a versioned normalized `semantic` tree.
-/// Process apps also retain the compatible `frame` RenderCommand array.
+/// Process plugins also retain the compatible `frame` RenderCommand array.
 /// For terminal panes, returns a simple status object. Every response also
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
@@ -1965,12 +1965,12 @@ mod submit_tests {
         assert_eq!(outcome.exit_code(), 1);
     }
 
-    /// A refusal (app pane, submit already in flight, pane gone) carries no
+    /// A refusal (view pane, submit already in flight, pane gone) carries no
     /// input line and is still a non-zero exit: nothing was submitted.
     #[test]
     fn refusal_reply_exits_one() {
         let outcome = submit_outcome(
-            r#"{"error":"pane 7 is an app pane; --submit only applies to terminal panes"}"#,
+            r#"{"error":"pane 7 is an view pane; --submit only applies to terminal panes"}"#,
         );
         assert_eq!(outcome.exit_code(), 1);
         assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));

@@ -1,6 +1,6 @@
 //! Pane-operation methods on `PlexiApp`, decomposed by concern:
 //!
-//! - [`create`] — pane / tile / app / agent creation, plus the app-launch
+//! - [`create`] — pane / tile / plugin / agent creation, plus the plugin-launch
 //!   entry points used by the command palette and HostRequest routing.
 //! - [`layout`] — splits, tabs, close, navigation, zoom-free tree
 //!   manipulation on already-created panes.
@@ -19,10 +19,10 @@ mod wrap;
 
 pub(crate) use create::cli_open_placement;
 #[cfg(test)]
-pub(crate) use create::restore_app_pane;
-pub(crate) use create::{restore_app_pane_in_profile, RestoreTarget, RestoredViewPane};
+pub(crate) use create::restore_view_pane;
+pub(crate) use create::{restore_view_pane_in_profile, RestoreTarget, RestoredViewPane};
 pub(crate) use create::restore_assistant_pane;
-pub(crate) use create::restore_builtin_app_pane;
+pub(crate) use create::restore_builtin_view_pane;
 pub(crate) use create::restore_launch_failed_pane;
 pub(crate) use layout::default_squad_layout;
 pub(crate) use layout::insert_split_tile;

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use crate::app::app_trait::{App, ViewRenderContext};
+use crate::app::view_trait::{View, ViewRenderContext};
 use crate::ui::{
-    app_chrome::ViewChrome,
+    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
@@ -71,7 +71,7 @@ impl ImageViewerView {
     }
 }
 
-impl App for ImageViewerView {
+impl View for ImageViewerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -97,7 +97,7 @@ impl App for ImageViewerView {
             .image_size
             .map(|[w, h]| format!("{w}×{h}"))
             .unwrap_or_default();
-        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
+        ViewChrome::new(colors).paint_view_bar(ui, &self.filename(), &subtitle);
 
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {

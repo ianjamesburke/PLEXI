@@ -59,9 +59,9 @@ def _find_renderer() -> str:
     )
 
 
-def _is_v3_module_app(app_path: "str | Path") -> bool:
+def _is_v3_module_plugin(plugin_path: "str | Path") -> bool:
     try:
-        source = Path(app_path).read_text()
+        source = Path(plugin_path).read_text()
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return False
@@ -329,7 +329,7 @@ class PluginHarness:
             h.assert_pixel(10, 10, "#1e1e2e")  # pixel assertion (needs plexi binary)
     """
 
-    def __init__(self, app_path: "str | Path", width: int = 800, height: int = 600,
+    def __init__(self, plugin_path: "str | Path", width: int = 800, height: int = 600,
                  timeout: float = 5.0, host_log_path: "str | Path | None" = None) -> None:
         self._width = width
         self._height = height
@@ -354,13 +354,13 @@ class PluginHarness:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(sys.path)
 
-        command = [sys.executable, str(app_path)]
-        if _is_v3_module_app(app_path):
+        command = [sys.executable, str(plugin_path)]
+        if _is_v3_module_plugin(plugin_path):
             command = [
                 sys.executable,
                 "-m",
                 "plexi_sdk._v3_process",
-                str(app_path),
+                str(plugin_path),
             ]
 
         self._proc = _subprocess.Popen(

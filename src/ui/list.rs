@@ -1070,7 +1070,7 @@ mod tests {
                 &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
             );
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                draw_chip(ui, "app", &colors, 12.0, 30.0);
+                draw_chip(ui, "view", &colors, 12.0, 30.0);
             });
 
             let mut rects = Vec::new();
@@ -1084,7 +1084,7 @@ mod tests {
                 .expect("chip background");
             let (text_pos, galley) = texts
                 .into_iter()
-                .find(|(_, galley)| galley.job.text == "app")
+                .find(|(_, galley)| galley.job.text == "view")
                 .expect("chip text");
             let line_box_center = text_pos.y + galley.size().y / 2.0;
             let center_delta = line_box_center - chip.center().y;
@@ -1100,10 +1100,10 @@ mod tests {
 
     #[test]
     fn list_row_builder_keeps_optional_secondary_empty_by_default() {
-        let row = ListRow::new("note").secondary("").chip("app");
+        let row = ListRow::new("note").secondary("").chip("view");
         assert_eq!(row.body, "note");
         assert!(row.secondary.is_none());
-        assert_eq!(row.chip, Some("app"));
+        assert_eq!(row.chip, Some("view"));
         assert!(row.metadata_chips.is_empty());
         assert!(!row.selected);
     }
@@ -1114,10 +1114,10 @@ mod tests {
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             let row_rect =
                 egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, style::LIST_ROW_H));
-            let plain = ListRow::new("Assistant").secondary("Long app description");
+            let plain = ListRow::new("Assistant").secondary("Long plugin description");
             let metadata = ListRow::new("Assistant")
-                .secondary("Long app description")
-                .metadata_chips(&["app", "ws"]);
+                .secondary("Long plugin description")
+                .metadata_chips(&["view", "ws"]);
 
             assert!(
                 metadata.lanes(ui, row_rect, true).text.right()
@@ -1168,7 +1168,7 @@ mod tests {
     /// Drives one frame of a 30-row list with the given selection and reports
     /// whether the selected row's rect ended up fully inside the scroll
     /// viewport. Uses real egui layout — row spacing, section headers, and
-    /// scroll state all behave exactly as in the app.
+    /// scroll state all behave exactly as in the plugin.
     fn run_list_frame(ctx: &egui::Context, selected: usize) -> bool {
         let mut visible = false;
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {

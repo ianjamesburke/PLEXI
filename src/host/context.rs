@@ -427,7 +427,7 @@ impl Window {
         if let Some(terminal) = pane.as_terminal() {
             shell::get_pid_cwd(terminal.backend.child_pid())
         } else {
-            pane.as_app().map(|app| app.workspace_root.clone())
+            pane.as_view().map(|app| app.workspace_root.clone())
         }
     }
 }

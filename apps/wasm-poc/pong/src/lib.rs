@@ -14,7 +14,7 @@
 // storage buffer read by the vertex shader.
 
 wit_bindgen::generate!({
-    world: "plexi-gpu-app",
+    world: "plexi-gpu-plugin",
     path: "wit/world.wit",
 });
 

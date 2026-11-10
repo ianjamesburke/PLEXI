@@ -43,7 +43,7 @@ impl UiGalleryDataMode {
                 detail: "Secondary metadata",
                 command: "plexi completions zsh",
                 code: "fn main() {\n    println!(\"hello from Plexi\");\n}\n",
-                tags: &["app", "ws"],
+                tags: &["view", "ws"],
                 count: 3,
                 pips: 3,
                 status: "running",
@@ -99,7 +99,7 @@ impl UiGalleryDataMode {
                 detail: "One item",
                 command: "plexi --help",
                 code: "J",
-                tags: &["app"],
+                tags: &["view"],
                 count: 1,
                 pips: 1,
                 status: "running",
@@ -142,7 +142,7 @@ pub(crate) fn gallery_rows(
     for (index, name) in data.names.iter().enumerate() {
         ListRow::new(name)
             .secondary(data.detail)
-            .chip("app")
+            .chip("view")
             .metadata_chips(data.tags)
             .pane_pips(ListRowPips {
                 count: data.pips,
@@ -159,7 +159,7 @@ pub(crate) fn gallery_rows(
     for name in data.names {
         ListRow::new(name)
             .dense()
-            .chip("app")
+            .chip("view")
             .trailing_action("Open")
             .show(ui, colors);
     }
@@ -424,7 +424,7 @@ impl PlexiApp {
                             ui.horizontal_wrapped(|ui| {
                                 key_chip(
                                     ui,
-                                    "app",
+                                    "view",
                                     &colors,
                                     egui::FontId::monospace(style::TEXT_HINT),
                                 );

@@ -40,7 +40,7 @@ use crate::spatial::tiling::PaneId;
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
 
-/// Generic app target used by the scene runner. Builtin ids resolve through
+/// Generic plugin target used by the scene runner. Builtin ids resolve through
 /// the production factory plus the test-only registry below.
 pub(crate) enum HarnessOpenTarget<'a> {
     Process {
@@ -58,13 +58,13 @@ pub(crate) enum HarnessOpenTarget<'a> {
     },
 }
 
-type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::app_trait::App>;
+type HarnessBuiltinFactory = fn(&Path, &[String], u64) -> Box<dyn crate::app::view_trait::View>;
 
 fn assistant_harness_factory(
     workspace_root: &Path,
     _args: &[String],
     context_id: u64,
-) -> Box<dyn crate::app::app_trait::App> {
+) -> Box<dyn crate::app::view_trait::View> {
     let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
         std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
     Box::new(crate::assistant::AssistantView::new(
@@ -83,7 +83,7 @@ fn harness_builtin_factory(
     cwd: &Path,
     args: &[String],
     context_id: u64,
-) -> Option<Box<dyn crate::app::app_trait::App>> {
+) -> Option<Box<dyn crate::app::view_trait::View>> {
     HARNESS_BUILTIN_FACTORIES
         .iter()
         .find(|(candidate, _)| *candidate == id)
@@ -135,7 +135,7 @@ impl PlexiUiHarness {
 
     /// Create a harness with an explicit surface size. Use for screenshot
     /// tests — the default kittest surface is too small for pane chrome and
-    /// app content to be legible in the saved PNG.
+    /// plugin content to be legible in the saved PNG.
     pub fn new_sized(width: f32, height: f32) -> Self {
         Self::new_sized_ppp(width, height, 1.0)
     }
@@ -261,12 +261,12 @@ impl PlexiUiHarness {
         self.workspace.path()
     }
 
-    // ── Real app / host app / portal drivers ─────────────────────────────────
+    // ── Real plugin / host plugin / portal drivers ─────────────────────────────────
 
     /// Open any supported scene target through its normal pane-opening path.
     pub fn open_target(&mut self, target: HarnessOpenTarget<'_>) -> Result<PaneId, String> {
         match target {
-            HarnessOpenTarget::Process { path, args } => self.open_app_at(path, args),
+            HarnessOpenTarget::Process { path, args } => self.open_view_at(path, args),
             HarnessOpenTarget::Wasm { path, args } => {
                 self.open_wasm_at_with_args(path, args.to_vec())
             }
@@ -290,7 +290,7 @@ impl PlexiUiHarness {
         let context_id = self.with_app(|app| app.windows[app.active_window].context_id);
         if let Some(app) = harness_builtin_factory(id, cwd, args, context_id) {
             self.with_app_mut(|host| {
-                host.open_builtin_app_pane(
+                host.open_builtin_view_pane(
                     app,
                     crate::app::permissions::PluginPermissions::builtin(),
                     cwd.to_path_buf(),
@@ -301,7 +301,7 @@ impl PlexiUiHarness {
             });
         } else {
             self.with_app_mut(|host| {
-                host.launch_app_by_id_with_layout(
+                host.launch_view_by_id_with_layout(
                     id,
                     Some("split_v".to_string()),
                     args,
@@ -321,12 +321,12 @@ impl PlexiUiHarness {
             host.windows.iter().any(|window| {
                 matches!(
                     window.panes.get(&pane_id),
-                    Some(Pane::App(app)) if matches!(app.runtime, ViewRuntime::Builtin(_))
+                    Some(Pane::View(app)) if matches!(app.runtime, ViewRuntime::Builtin(_))
                 )
             })
         });
         if !is_builtin {
-            return Err(format!("app id '{id}' did not resolve to a builtin"));
+            return Err(format!("plugin id '{id}' did not resolve to a builtin"));
         }
         Ok(pane_id)
     }
@@ -385,7 +385,7 @@ impl PlexiUiHarness {
         self.inner.query_all_by_label(label).next().is_some()
     }
 
-    /// Launch a real PGAP app process from `plugin_dir` (a directory containing
+    /// Launch a real PGAP plugin process from `plugin_dir` (a directory containing
     /// `manifest.toml`) — the same production path as `plexi view open <path>`.
     /// The child process, IPC threads, and L1 render pipeline are all real.
     /// Returns the new pane's id.
@@ -396,7 +396,7 @@ impl PlexiUiHarness {
     ///
     /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
     /// pass JSON state for deterministic scenes.
-    pub fn open_app_at(&mut self, plugin_dir: &Path, args: &[String]) -> Result<PaneId, String> {
+    pub fn open_view_at(&mut self, plugin_dir: &Path, args: &[String]) -> Result<PaneId, String> {
         if std::env::var_os("PLEXI_SDK_PATH").is_none() {
             let dev_sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("sdk")
@@ -414,7 +414,7 @@ impl PlexiUiHarness {
         });
         let path = plugin_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
+            app.launch_view_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
                 .map(|_| ())
         })?;
         self.with_app(|app| {
@@ -427,7 +427,7 @@ impl PlexiUiHarness {
         })
     }
 
-    /// Open a sandboxed WASM component app, forwarding `args` to the guest's
+    /// Open a sandboxed WASM component plugin, forwarding `args` to the guest's
     /// `init` as its argv (the same path as `plexi view open <path> -- <args>`).
     pub fn open_wasm_at_with_args(
         &mut self,
@@ -440,14 +440,14 @@ impl PlexiUiHarness {
             .unwrap_or("wasm")
             .to_string();
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.with_app_mut(|app| app.open_wasm_app_pane(&plugin_id, wasm_path, cwd, args))
+        self.with_app_mut(|app| app.open_wasm_view_pane(&plugin_id, wasm_path, cwd, args))
     }
 
-    /// Step frames until the real app process behind `pane_id` commits its
+    /// Step frames until the real plugin process behind `pane_id` commits its
     /// first rendered frame (FrameDone observed), sleeping between steps to
-    /// give the child process wall-clock time. Fails with the app's recent
+    /// give the child process wall-clock time. Fails with the plugin's recent
     /// stderr on crash or timeout.
-    pub fn wait_for_app_frame(&mut self, pane_id: PaneId, timeout: Duration) -> Result<(), String> {
+    pub fn wait_for_view_frame(&mut self, pane_id: PaneId, timeout: Duration) -> Result<(), String> {
         enum Probe {
             Rendered,
             Waiting,
@@ -458,17 +458,17 @@ impl PlexiUiHarness {
             self.step();
             let probe = self.with_app(|app| {
                 let win = &app.windows[app.active_window];
-                let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) else {
-                    return Probe::Dead(format!("pane {pane_id} is not an app pane"));
+                let Some(Pane::View(view_pane)) = win.panes.get(&pane_id) else {
+                    return Probe::Dead(format!("pane {pane_id} is not an view pane"));
                 };
-                match &app_pane.runtime {
+                match &view_pane.runtime {
                     ViewRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
                     ViewRuntime::Python(p) => p
                         .error()
                         .map(|error| Probe::Dead(error.to_string()))
                         .unwrap_or(Probe::Waiting),
                     ViewRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
-                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM app")),
+                    _ => Probe::Dead(format!("pane {pane_id} is not a WASM plugin")),
                 }
             });
             match probe {
@@ -478,23 +478,23 @@ impl PlexiUiHarness {
             }
             if start.elapsed() > timeout {
                 return Err(format!(
-                    "timed out after {timeout:?} waiting for first app frame"
+                    "timed out after {timeout:?} waiting for first plugin frame"
                 ));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
     }
 
-    /// Open the built-in file browser host app rooted at `cwd`. Uses the
-    /// production `open_builtin_app_pane` path with a `split_v` hint, which
+    /// Open the built-in file browser host plugin rooted at `cwd`. Uses the
+    /// production `open_builtin_view_pane` path with a `split_v` hint, which
     /// installs as the root pane when the context is empty (the ⌘O shortcut's
     /// `overlay` hint requires an existing focused pane).
     pub fn open_file_browser(&mut self, cwd: std::path::PathBuf) {
         self.with_app_mut(|app| {
-            let fb: Box<dyn crate::app::app_trait::App> =
+            let fb: Box<dyn crate::app::view_trait::View> =
                 Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
             let perms = crate::app::permissions::PluginPermissions::builtin();
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 fb,
                 perms,
                 cwd,
@@ -540,9 +540,9 @@ impl PlexiUiHarness {
         workspace_root: std::path::PathBuf,
     ) {
         self.with_app_mut(|app| {
-            let boxed: Box<dyn crate::app::app_trait::App> = Box::new(assistant);
+            let boxed: Box<dyn crate::app::view_trait::View> = Box::new(assistant);
             let perms = crate::app::permissions::PluginPermissions::builtin();
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 boxed,
                 perms,
                 workspace_root.clone(),
@@ -1029,7 +1029,7 @@ mod tests {
     fn cmd_plus_minus_changes_only_focused_pane_in_seeded_fixture() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
-        let (term_a_id, term_b_id, plugin_id, _tile_a, tile_app) = h.with_app_mut(|app| {
+        let (term_a_id, term_b_id, plugin_id, _tile_a, tile_plugin) = h.with_app_mut(|app| {
             app.sidebar_visible = false;
             let workspace_root = app.router.active().root.clone();
 
@@ -1061,10 +1061,10 @@ mod tests {
             )
             .expect("spawn terminal pane B");
 
-            let id_app = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let id_plugin = app.host.alloc_pane_id();
+            let view_pane = ViewPane {
                 pip_status: None,
-                id: id_app,
+                id: id_plugin,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     workspace_root.clone(),
                 ))),
@@ -1084,17 +1084,17 @@ mod tests {
             let win = &mut app.windows[app.active_window];
             win.panes.insert(id_a, Pane::Terminal(Box::new(term_a)));
             win.panes.insert(id_b, Pane::Terminal(Box::new(term_b)));
-            win.panes.insert(id_app, Pane::App(Box::new(app_pane)));
+            win.panes.insert(id_plugin, Pane::View(Box::new(view_pane)));
 
             let tile_a = win.tree.tiles.insert_pane(id_a);
             let tile_b = win.tree.tiles.insert_pane(id_b);
-            let tile_c = win.tree.tiles.insert_pane(id_app);
+            let tile_c = win.tree.tiles.insert_pane(id_plugin);
 
             let tabs = win.tree.tiles.insert_tab_tile(vec![tile_a, tile_b, tile_c]);
             win.tree.root = Some(tabs);
             win.focused_pane = Some(tile_a);
 
-            (id_a, id_b, id_app, tile_a, tile_c)
+            (id_a, id_b, id_plugin, tile_a, tile_c)
         });
         h.run_steps(3);
 
@@ -1105,10 +1105,10 @@ mod tests {
                 t.font_size
             })
         };
-        let app_font = |h: &PlexiUiHarness, pid: u64| {
+        let plugin_font = |h: &PlexiUiHarness, pid: u64| {
             h.with_app(|app| {
                 let pane = app.windows[app.active_window].panes.get(&pid).unwrap();
-                let Pane::App(a) = pane else { panic!("not app") };
+                let Pane::View(a) = pane else { panic!("not plugin") };
                 let ViewRuntime::Builtin(b) = &a.runtime else { panic!("not builtin") };
                 b.font_size().unwrap_or(0.0)
             })
@@ -1116,7 +1116,7 @@ mod tests {
 
         assert_eq!(term_font(&h, term_a_id), 14.0);
         assert_eq!(term_font(&h, term_b_id), 14.0);
-        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT);
+        assert_eq!(plugin_font(&h, plugin_id), crate::ui::style::TEXT_HINT);
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
 
         // 1. Cmd+= on focused Terminal A
@@ -1124,7 +1124,7 @@ mod tests {
         h.run_steps(3);
         assert_eq!(term_font(&h, term_a_id), 15.0);
         assert_eq!(term_font(&h, term_b_id), 14.0, "unfocused terminal untouched");
-        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "unfocused app untouched");
+        assert_eq!(plugin_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "unfocused plugin untouched");
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0, "ui_scale untouched");
 
         // 2. Cmd+- on focused Terminal A
@@ -1144,14 +1144,14 @@ mod tests {
         h.run_steps(3);
         assert_eq!(term_font(&h, term_a_id), 14.0, "Cmd+Alt+0 resets terminal font");
 
-        // 4. Focus App pane, Cmd+= steps font, Cmd+Alt+0 resets
+        // 4. Focus View pane, Cmd+= steps font, Cmd+Alt+0 resets
         h.with_app_mut(|app| {
-            app.windows[app.active_window].focused_pane = Some(tile_app);
+            app.windows[app.active_window].focused_pane = Some(tile_plugin);
         });
         h.run_steps(3);
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
         h.run_steps(3);
-        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT + 1.0, "focused app font stepped");
+        assert_eq!(plugin_font(&h, plugin_id), crate::ui::style::TEXT_HINT + 1.0, "focused plugin font stepped");
         assert_eq!(term_font(&h, term_a_id), 14.0);
         assert_eq!(term_font(&h, term_b_id), 14.0);
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
@@ -1161,7 +1161,7 @@ mod tests {
             egui::Key::Num0,
         );
         h.run_steps(3);
-        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "Cmd+Alt+0 resets app font");
+        assert_eq!(plugin_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "Cmd+Alt+0 resets plugin font");
     }
 
     /// Cmd+= / Cmd+- in Tree Atlas adjusts only the remembered
@@ -1399,7 +1399,7 @@ mod tests {
         let initial_font = h.with_app(|app| {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
-            let Pane::App(a) = pane else { panic!() };
+            let Pane::View(a) = pane else { panic!() };
             let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
@@ -1410,7 +1410,7 @@ mod tests {
         let font_after_equals = h.with_app(|app| {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
-            let Pane::App(a) = pane else { panic!() };
+            let Pane::View(a) = pane else { panic!() };
             let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
@@ -1422,7 +1422,7 @@ mod tests {
         let font_after_plus = h.with_app(|app| {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
-            let Pane::App(a) = pane else { panic!() };
+            let Pane::View(a) = pane else { panic!() };
             let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
@@ -1481,7 +1481,7 @@ mod tests {
         let font_unchanged = h.with_app(|app| {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
-            let Pane::App(a) = pane else { panic!() };
+            let Pane::View(a) = pane else { panic!() };
             let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
@@ -1496,7 +1496,7 @@ mod tests {
         let font_stepped = h.with_app(|app| {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
-            let Pane::App(a) = pane else { panic!() };
+            let Pane::View(a) = pane else { panic!() };
             let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
@@ -2366,7 +2366,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
                     crate::ui::theme::setup_style(&app.ctx, &app.colors);
                     app.router.get_mut(0).name = "attention demo".to_string().into();
-                    app.windows[app.active_window].panes.get_mut(&id).unwrap().as_app_mut().unwrap().name = "needs_you".into();
+                    app.windows[app.active_window].panes.get_mut(&id).unwrap().as_view_mut().unwrap().name = "needs_you".into();
                     app.enqueue_ask("titlebar-fixture", id, "Review the pending request", 1_000, Vec::new());
                 });
                 h.run_steps(4);
@@ -2579,7 +2579,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -2598,7 +2598,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[window_index];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -2620,7 +2620,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         snapshot: Arc<std::sync::Mutex<PressSnapshot>>,
     }
 
-    impl crate::app::app_trait::App for PressFixture {
+    impl crate::app::view_trait::View for PressFixture {
         fn type_id(&self) -> &'static str {
             "press_fixture"
         }
@@ -2633,7 +2633,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             let layer = ui.layer_id();
@@ -2654,8 +2654,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         .clicked()
                 }
                 _ => {
-                    use crate::host::wasm_app::bindings::plexi::platform::types::ButtonNode;
-                    use crate::host::wasm_app::{ButtonStyle, IndexedNode, UiNodeData, UiTree};
+                    use crate::host::wasm_view::bindings::plexi::platform::types::ButtonNode;
+                    use crate::host::wasm_view::{ButtonStyle, IndexedNode, UiNodeData, UiTree};
                     let tree = UiTree {
                         root: 0,
                         nodes: vec![IndexedNode {
@@ -2680,7 +2680,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 g.get(layer).and_then(|list| {
                     list.all_entries().skip(start).find_map(|shape| {
                         if let egui::Shape::Rect(rect) = &shape.shape {
-                            // The app background spans the pane; the button has rounded corners.
+                            // The plugin background spans the pane; the button has rounded corners.
                             if rect.corner_radius != egui::CornerRadius::ZERO
                                 && rect.fill != egui::Color32::TRANSPARENT
                             {
@@ -2711,7 +2711,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 clicks: 0,
             }));
             h.with_app_mut(|app| {
-                if let Some(Pane::App(pane)) =
+                if let Some(Pane::View(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
                     pane.runtime = ViewRuntime::Builtin(Box::new(PressFixture {
@@ -2860,10 +2860,10 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     }
 
     /// Regression for stint 0351: `HostRequest::KeyPane` (the `plexi pane key`
-    /// socket path) must drive a native app pane through its real
-    /// `App::handle_key` — not the PGAP event queue, which native apps never
+    /// socket path) must drive a native view pane through its real
+    /// `App::handle_key` — not the PGAP event queue, which native plugins never
     /// read. Enter on the File Explorer's selected directory must run the
-    /// app's own Activate flow (navigate_into), and the response file must
+    /// plugin's own Activate flow (navigate_into), and the response file must
     /// report the disposition so driving agents can detect ignored keys.
     #[test]
     fn pane_key_ipc_drives_native_file_browser_handle_key() {
@@ -2878,7 +2878,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .iter()
-                .find_map(|(id, p)| p.as_app().map(|_| *id))
+                .find_map(|(id, p)| p.as_view().map(|_| *id))
                 .expect("file browser pane must exist after open_file_browser")
         });
 
@@ -2901,12 +2901,12 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         );
 
         // Enter on the selected directory (dirs sort first, selected=0) runs
-        // the app's real Activate flow — cwd must now be the subdirectory.
+        // the plugin's real Activate flow — cwd must now be the subdirectory.
         let cwd = h.with_app(|app| {
             app.windows[app.active_window]
                 .panes
                 .get(&pane_id)
-                .and_then(|p| p.as_app())
+                .and_then(|p| p.as_view())
                 .and_then(|a| a.runtime.serialize_state())
                 .and_then(|s| s["cwd"].as_str().map(str::to_string))
                 .expect("file browser must serialize cwd")
@@ -3098,7 +3098,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
 
         let result = h.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(
+            app.launch_view_by_path_with_layout(
                 &fixture.to_string_lossy(),
                 Some("split_v".to_string()),
                 None,
@@ -3117,7 +3117,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             !has_wasm,
@@ -3132,7 +3132,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
@@ -3155,7 +3155,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
-        let grants = crate::host::wasm_app::WasmView::inspect_required_grants(&fixture)
+        let grants = crate::host::wasm_view::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
         let mut store =
             crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
@@ -3171,7 +3171,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
         h.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(
+            app.launch_view_by_path_with_layout(
                 &fixture.to_string_lossy(),
                 Some("split_v".to_string()),
                 None,
@@ -3184,7 +3184,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::View(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
@@ -3194,7 +3194,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
     /// Subcontext portal whose child context holds a `text-editor` pane: the
     /// minimap must render the document glyph (accent text rules, folded corner)
-    /// instead of the generic app grid, with a status pip sized to match the
+    /// instead of the generic plugin grid, with a status pip sized to match the
     /// sidebar. Zoom the portal so the icon is legible in the PNG.
     #[test]
     fn screenshot_portal_text_editor_icon() {
@@ -3240,7 +3240,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let mut child_panes = std::collections::HashMap::new();
-            child_panes.insert(editor_pane_id, Pane::App(Box::new(editor)));
+            child_panes.insert(editor_pane_id, Pane::View(Box::new(editor)));
             let mut child_tiles = egui_tiles::Tiles::default();
             let child_tile = child_tiles.insert_pane(editor_pane_id);
             let child_window_id = app.next_window_id;
@@ -3297,7 +3297,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
     /// Direct paint of `paint_portal_minimap` with hand-built `MiniPane`s — no
     /// PTY needed — so every glyph arm (terminal `>_`, text-editor document,
-    /// generic app grid) and the status pip render in one screenshot for size
+    /// generic plugin grid) and the status pip render in one screenshot for size
     /// verification. The full-plugin test above cannot fabricate a Terminal pane
     /// because that needs a real `TerminalBackend`; this bypasses that by
     /// setting `PaneKind` directly.
@@ -3331,7 +3331,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     0.34,
                     0.67,
                 ),
-                mk(PaneKind::App, false, None, 0.67, 1.0),
+                mk(PaneKind::View, false, None, 0.67, 1.0),
             ],
         }];
 
@@ -3529,11 +3529,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let t_work = tiles.insert_pane(pane_working);
             let t_idle = tiles.insert_pane(pane_idle);
             let t_program = tiles.insert_pane(pane_program);
-            let t_app = tiles.insert_pane(master_pane);
+            let t_plugin = tiles.insert_pane(master_pane);
             let t_blk = tiles.insert_pane(pane_blocked);
             let t_ny = tiles.insert_pane(pane_needs_you);
             let t_err = tiles.insert_pane(pane_error);
-            let top_row = tiles.insert_horizontal_tile(vec![t_program, t_work, t_idle, t_app, t_blk, t_ny, t_err]);
+            let top_row = tiles.insert_horizontal_tile(vec![t_program, t_work, t_idle, t_plugin, t_blk, t_ny, t_err]);
 
             let p_blk = tiles.insert_pane(portal_blocked);
             let p_ny = tiles.insert_pane(portal_needs_you);
@@ -3766,11 +3766,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: PluginPermissions::builtin(),
@@ -3785,7 +3785,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -3825,11 +3825,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorView::new(path.clone()),
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: PluginPermissions::builtin(),
@@ -3844,7 +3844,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -3872,11 +3872,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorView::new(path.clone()),
+                    crate::app::text_editor_view::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: PluginPermissions::builtin(),
@@ -3891,7 +3891,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -3900,14 +3900,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             pane_id
         });
         let with_editor = |h: &mut PlexiUiHarness,
-                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorView)| {
+                           f: &mut dyn FnMut(&mut crate::app::text_editor_view::TextEditorView)| {
             h.with_app_mut(|app| {
                 let win = &mut app.windows[app.active_window];
-                if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
+                if let Some(Pane::View(a)) = win.panes.get_mut(&pane_id) {
                     if let ViewRuntime::Builtin(b) = &mut a.runtime {
                         let ed = b
                             .as_any_mut()
-                            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
+                            .downcast_mut::<crate::app::text_editor_view::TextEditorView>()
                             .expect("text editor");
                         f(ed);
                     }
@@ -3930,7 +3930,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         // Host close path: vetoed, prompt shown, pane still there.
         h.with_app_mut(|app| {
-            assert!(app.focused_app_vetoes_close(), "dirty plain file vetoes close");
+            assert!(app.focused_view_vetoes_close(), "dirty plain file vetoes close");
             assert!(app.windows[app.active_window].panes.contains_key(&pane_id));
         });
         h.run_steps(2);
@@ -3939,7 +3939,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         // Cancel, then an agent writes the file: conflict state.
         with_editor(&mut h, &mut |ed| {
-            use crate::app::app_trait::App as _;
+            use crate::app::view_trait::View as _;
             assert!(!ed.request_close());
         });
         std::fs::write(&path, "agent version\n").expect("external write");
@@ -3967,11 +3967,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: PluginPermissions::builtin(),
@@ -3986,7 +3986,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -4303,7 +4303,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 for win in &mut app.windows {
                     let panes = crate::spatial::tiling::collect_pane_ids_spatial(&win.tree.tiles, win.tree.root().unwrap());
                     for (index, pane_id) in panes.iter().enumerate() {
-                        if let Some(Pane::App(pane)) = win.panes.get_mut(pane_id) {
+                        if let Some(Pane::View(pane)) = win.panes.get_mut(pane_id) {
                             let state = match index % 5 {
                                 0 => Some(crate::protocol::AgentState::Working),
                                 1 => Some(crate::protocol::AgentState::NeedsYou),
@@ -4611,7 +4611,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         })
     }
 
-    /// Fill `window_index` with `count` app panes wired into one horizontal
+    /// Fill `window_index` with `count` view panes wired into one horizontal
     /// container, so the window's tree really reports every pane — inserting
     /// panes without attaching them to the root leaves them invisible to the
     /// spatial walk the sidebar pips are built from.
@@ -4621,7 +4621,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let mut tiles = Vec::with_capacity(count);
             for _ in 0..count {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = ViewPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -4640,7 +4640,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[window_index];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 tiles.push(win.tree.tiles.insert_pane(pane_id));
             }
             let win = &mut app.windows[window_index];
@@ -4755,8 +4755,8 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 crate::protocol::PipStatus::Red,
             ];
             for (i, pane) in app.windows[0].panes.values_mut().enumerate() {
-                if let Pane::App(app_pane) = pane {
-                    app_pane.pip_status = Some(statuses[i % statuses.len()]);
+                if let Pane::View(view_pane) = pane {
+                    view_pane.pip_status = Some(statuses[i % statuses.len()]);
                 }
             }
             app.pending_notifications.extend([
@@ -5486,16 +5486,16 @@ open(out + ".done", "w").close()
     }
 
     /// Visual review for the diffed WASM tree path (stint 0438): a real
-    /// CPython-in-WASM app (breakout) opened and stepped past its first frame,
+    /// CPython-in-WASM plugin (breakout) opened and stepped past its first frame,
     /// so frame 2+ arrive as `tree_delta`s the decoder thread reconstructs and
     /// the paint path renders. Proves the delta pipeline paints a coherent
     /// frame, not just that the assertions pass.
     #[test]
-    fn screenshot_python_app_delta_frames_paint() {
+    fn screenshot_python_plugin_delta_frames_paint() {
         let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
         let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
-        let pane_id = h.open_app_at(&plugin_dir, &[]).expect("open breakout");
-        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+        let pane_id = h.open_view_at(&plugin_dir, &[]).expect("open breakout");
+        h.wait_for_view_frame(pane_id, Duration::from_secs(30))
             .expect("breakout first frame");
         // Advance host frames so the guest emits delta frames that the decoder
         // reconstructs and commits, then screenshot the painted result.
@@ -5507,22 +5507,22 @@ open(out + ".done", "w").close()
             .expect("render delta frame");
     }
 
-    /// Regression: zoomed app panes must render through the shared
-    /// `render::app_pane::render` path (full-rect fill, no collapsing
+    /// Regression: zoomed view panes must render through the shared
+    /// `render::view_pane::render` path (full-rect fill, no collapsing
     /// `egui::Frame`) and exercise the overtake-bar chrome. Guards against
     /// the black-square / missing-chrome zoom bugs (zoom overlay previously
     /// duplicated pane rendering inline and called `runtime.ui()` directly).
     #[test]
-    fn zoomed_app_pane_renders_via_shared_path() {
+    fn zoomed_view_pane_renders_via_shared_path() {
         let mut h = PlexiUiHarness::new();
         let pane_id = add_focused_pane(&mut h);
         h.step();
         h.with_app_mut(|app| {
             let win = &mut app.windows[app.active_window];
             // Set overlay_replaced so the zoom path renders the overtake bar
-            // ("← <replaced> / Esc return") via render::app_pane::render.
-            if let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) {
-                app_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
+            // ("← <replaced> / Esc return") via render::view_pane::render.
+            if let Some(Pane::View(view_pane)) = win.panes.get_mut(&pane_id) {
+                view_pane.overlay_replaced = Some(Box::new(Pane::Portal(Box::new(PortalPane {
                     pane_id: pane_id + 1_000,
                     target_context_id: 42,
                     context_state: None,
@@ -5539,7 +5539,7 @@ open(out + ".done", "w").close()
         });
         h.run_steps(3);
         h.render()
-            .expect("zoomed app pane frame should render without panic");
+            .expect("zoomed view pane frame should render without panic");
         assert!(
             h.with_app(|app| app.windows[app.active_window].zoomed_pane.is_some()),
             "pane should remain zoomed after stepping frames"
@@ -5551,7 +5551,7 @@ open(out + ".done", "w").close()
         width: f32,
     }
 
-    impl crate::app::app_trait::App for GalleryRowsFixture {
+    impl crate::app::view_trait::View for GalleryRowsFixture {
         fn type_id(&self) -> &'static str {
             "gallery_rows_fixture"
         }
@@ -5564,7 +5564,7 @@ open(out + ".done", "w").close()
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             ui.set_width(self.width);
@@ -5582,7 +5582,7 @@ open(out + ".done", "w").close()
             let mut h = PlexiUiHarness::new_sized(900.0, 1000.0);
             let pane_id = add_focused_pane(&mut h);
             h.with_app_mut(|app| {
-                if let Some(Pane::App(pane)) =
+                if let Some(Pane::View(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
                     pane.runtime = ViewRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
@@ -5940,7 +5940,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values()
                 .filter(|p| {
-                    p.as_app()
+                    p.as_view()
                         .map(|a| a.runtime.type_id() == "assistant")
                         .unwrap_or(false)
                 })
@@ -6099,7 +6099,7 @@ open(out + ".done", "w").close()
             crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![Turn {
             role: TurnRole::User,
-            text: "build me a tictactoe app".to_string(),
+            text: "build me a tictactoe plugin".to_string(),
             created_at: "2026-07-19T00:00:00Z".to_string(),
             status: None,
             thoughts: None,
@@ -6144,7 +6144,7 @@ open(out + ".done", "w").close()
         );
     }
 
-    /// Stint 0455: an app-build turn's transcript renders chronologically —
+    /// Stint 0455: an plugin-build turn's transcript renders chronologically —
     /// user message, first assistant segment, individual caret-dropdown tool
     /// rows (never a collapsed "N tool calls" trail), a failed row in the
     /// danger hue, and the final reply as its own bubble below the tools.
@@ -6165,8 +6165,8 @@ open(out + ".done", "w").close()
         write_tool.detail = Some(
             "--- a/main.py\n+++ b/main.py\n@@ -1,1 +1,2 @@\n-pass\n+print(\"hi\")\n".to_string(),
         );
-        let mut check_tool = Turn::tool("plexi.app_check", ToolStatus::Succeeded);
-        check_tool.input_summary = Some(r#"{"app": "guessing-game"}"#.to_string());
+        let mut check_tool = Turn::tool("plexi.plugin_check", ToolStatus::Succeeded);
+        check_tool.input_summary = Some(r#"{"plugin": "guessing-game"}"#.to_string());
         check_tool.output_preview = Some(r#"{"ok": true}"#.to_string());
         let mut failed_tool = Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
         failed_tool.input_summary = Some(r#"{"cmd": "plugin check"}"#.to_string());
@@ -6179,18 +6179,18 @@ open(out + ".done", "w").close()
         assistant.model.turns = vec![
             Turn::now(
                 TurnRole::User,
-                "Build a simple number guessing game as a Plexi app.",
+                "Build a simple number guessing game as a Plexi plugin.",
             ),
             Turn::now(
                 TurnRole::Assistant,
-                "Let me build this for you. Starting with scaffolding the app.",
+                "Let me build this for you. Starting with scaffolding the plugin.",
             ),
             write_tool,
             check_tool,
             failed_tool,
             Turn::now(
                 TurnRole::Assistant,
-                "The Guessing Game app is open! Type a number and press Enter.",
+                "The Guessing Game plugin is open! Type a number and press Enter.",
             ),
         ];
         // An in-flight tool call so the animated running row (spinner +
@@ -6198,7 +6198,7 @@ open(out + ".done", "w").close()
         assistant.model.streaming.in_flight = true;
         assistant.model.tool_call_started(
             "host.build.run",
-            r#"{"args": ["app", "check", "fish-game"]}"#,
+            r#"{"args": ["plugin", "check", "fish-game"]}"#,
         );
 
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
@@ -6320,7 +6320,7 @@ open(out + ".done", "w").close()
                 host.windows
                     .iter()
                     .find_map(|window| window.panes.get(&pane_id))
-                    .and_then(Pane::as_app)
+                    .and_then(Pane::as_view)
                     .map(|pane| pane.semantic_state())
                     .expect("builtin pane state")
             };
@@ -6360,7 +6360,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values()
                 .filter(|p| {
-                    p.as_app()
+                    p.as_view()
                         .map(|a| a.runtime.type_id() == "assistant")
                         .unwrap_or(false)
                 })
@@ -6605,7 +6605,7 @@ open(out + ".done", "w").close()
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: second_pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -6625,7 +6625,7 @@ open(out + ".done", "w").close()
             };
             let win = &mut app.windows[app.active_window];
             win.panes
-                .insert(second_pane_id, Pane::App(Box::new(app_pane)));
+                .insert(second_pane_id, Pane::View(Box::new(view_pane)));
             let second_tile = win.tree.tiles.insert_pane(second_pane_id);
             if let Some(first_tile) = win.tree.root {
                 let root = win
@@ -6738,28 +6738,28 @@ open(out + ".done", "w").close()
     }
 
     #[test]
-    fn pane_chrome_selected_app_keeps_its_state_ring() {
-        let (mut h, terminal, app_pane) = pane_chrome_fixture(1.0);
+    fn pane_chrome_selected_view_keeps_its_state_ring() {
+        let (mut h, terminal, view_pane) = pane_chrome_fixture(1.0);
         h.with_app_mut(|app| {
-            app.windows[app.active_window].panes.get_mut(&app_pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
-                pane_id: app_pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
+            app.windows[app.active_window].panes.get_mut(&view_pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: view_pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
             }));
             let window = app.windows[app.active_window].window_id;
-            app.host.extend_pane_selection(window, terminal, app_pane);
+            app.host.extend_pane_selection(window, terminal, view_pane);
         });
         h.focus_pane(terminal).unwrap();
         h.run_steps(3);
-        let (rect, color) = h.with_app(|app| (app.visible_pane_rect(app_pane).unwrap(), app.colors.state_blocked));
+        let (rect, color) = h.with_app(|app| (app.visible_pane_rect(view_pane).unwrap(), app.colors.state_blocked));
         let ring = h.harness().output().shapes.iter().filter_map(|s| match &s.shape {
             egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(color) && p.points.iter().all(|point| rect.contains(*point)) => Some(p),
             _ => None,
-        }).next().expect("selected app retains its state ring");
+        }).next().expect("selected plugin retains its state ring");
         let left = ring.points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - ring.stroke.width / 2.0;
         assert!((left - rect.left() - crate::ui::style::PANE_FOCUS_WIDTH).abs() < 0.01);
     }
 
     #[test]
-    fn pane_chrome_app_tabs_use_responsive_state_header() {
+    fn pane_chrome_view_tabs_use_responsive_state_header() {
         let mut h = PlexiUiHarness::new_sized(500.0, 300.0);
         h.step();
         let first = add_focused_pane(&mut h);
@@ -6778,13 +6778,13 @@ open(out + ".done", "w").close()
         h.run_steps(3);
         let (layout, fill) = h.with_app(|app| {
             let color = app.colors.status_badge_color(app.colors.state_blocked);
-            (crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, first).expect("app tab header uses shared layout"),
+            (crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, first).expect("plugin tab header uses shared layout"),
              egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 36))
         });
         let badge = h.harness().output().shapes.iter().find_map(|s| match &s.shape {
             egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None,
-        }).expect("wide app tab header shows state chip");
-        if let Some(title) = layout.label_rect { assert!(!title.intersects(badge), "app tab title must not overlap its state chip"); }
+        }).expect("wide plugin tab header shows state chip");
+        if let Some(title) = layout.label_rect { assert!(!title.intersects(badge), "plugin tab title must not overlap its state chip"); }
     }
 
     #[test]
@@ -7168,7 +7168,7 @@ open(out + ".done", "w").close()
 
     struct ViewContrastFixture;
 
-    impl crate::app::app_trait::App for ViewContrastFixture {
+    impl crate::app::view_trait::View for ViewContrastFixture {
         fn type_id(&self) -> &'static str {
             "app_contrast_fixture"
         }
@@ -7181,7 +7181,7 @@ open(out + ".done", "w").close()
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
+            ctx: &crate::app::view_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             // Serialized from the unchanged Stint board build_view at f46a711,
@@ -7195,7 +7195,7 @@ open(out + ".done", "w").close()
     }
 
     #[test]
-    fn screenshot_app_contrast_stint_board() {
+    fn screenshot_plugin_contrast_stint_board() {
         for theme in ["plexi-dawn", "plexi-night", "light-overrides"] {
             let mut h = PlexiUiHarness::new_sized_scaled(1280.0, 800.0, 1.0);
             let pane_id = add_focused_pane(&mut h);
@@ -7212,7 +7212,7 @@ open(out + ".done", "w").close()
                 }
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
-                if let Some(Pane::App(pane)) = app.windows[app.active_window].panes.get_mut(&pane_id) {
+                if let Some(Pane::View(pane)) = app.windows[app.active_window].panes.get_mut(&pane_id) {
                     pane.runtime = ViewRuntime::Builtin(Box::new(ViewContrastFixture));
                 }
             });
@@ -7403,7 +7403,7 @@ open(out + ".done", "w").close()
                               state: crate::protocol::AgentState,
                               detail: Option<&str>| {
                 let pane_id = app.host.alloc_pane_id();
-                let pane = Pane::App(Box::new(ViewPane {
+                let pane = Pane::View(Box::new(ViewPane {
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -7483,7 +7483,7 @@ open(out + ".done", "w").close()
             let ordinary_id = app.host.alloc_pane_id();
             squad.push((
                 ordinary_id,
-                Pane::App(Box::new(ViewPane {
+                Pane::View(Box::new(ViewPane {
                     pip_status: None,
                     id: ordinary_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -7953,7 +7953,7 @@ open(out + ".done", "w").close()
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
 
-        // Need a real focused terminal pane. Seed an app pane, then split — the
+        // Need a real focused terminal pane. Seed an view pane, then split — the
         // split spawns a real TerminalPane and focuses it.
         add_focused_pane(&mut h);
         h.step();
@@ -8019,7 +8019,7 @@ open(out + ".done", "w").close()
                 (pane_id_a, "A very long tab title that should not wrap onto a second line under any circumstances"),
                 (pane_id_b, "Short"),
             ] {
-                let app_pane = ViewPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -8038,7 +8038,7 @@ open(out + ".done", "w").close()
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             }
             let win = &mut app.windows[app.active_window];
             let tile_a = win.tree.tiles.insert_pane(pane_id_a);
@@ -8296,11 +8296,11 @@ open(out + ".done", "w").close()
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
+                    crate::app::text_editor_view::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
                 permissions: PluginPermissions::builtin(),
@@ -8315,7 +8315,7 @@ open(out + ".done", "w").close()
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -8566,7 +8566,7 @@ open(out + ".done", "w").close()
         h.step();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = ViewPane {
+            let view_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
                 runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
@@ -8585,7 +8585,7 @@ open(out + ".done", "w").close()
                 semantic_state: Default::default(),
             };
             let win = &mut app.windows[app.active_window];
-            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
             let tile_id = win.tree.tiles.insert_pane(pane_id);
             if win.tree.root.is_none() {
                 win.tree.root = Some(tile_id);
@@ -8607,7 +8607,7 @@ open(out + ".done", "w").close()
     //      pixels look crisp, then deletes them. Non-scope: no golden-image
     //      diffing (brittle across font-raster changes).
     //   2. Mechanical assertions on the composited host state that stay green
-    //      without a human: app-surface texture dims scale with ppp (0527),
+    //      without a human: plugin-surface texture dims scale with ppp (0527),
     //      the editor's row metric is integer-physical after a real render
     //      (0529), chrome labels clear the WCAG AA contrast floor (0528), and
     //      hand-painted chrome galley origins land on the physical pixel grid
@@ -8615,20 +8615,20 @@ open(out + ".done", "w").close()
     //      the invariant.
     //
     // The `paint_surface_header` title+subtitle band is painted only from
-    // `wasm_render`; rather than depend on a fixture app declaring app-chrome,
+    // `wasm_render`; rather than depend on a fixture plugin declaring plugin-chrome,
     // its two crispness invariants are frozen mechanically below — the subtitle
     // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
     // galleys snap to the grid.
     mod crispness_gate {
         use super::*;
         use crate::app::permissions::{PermissionState, PermissionStore};
-        use crate::app::text_editor_app::TextEditorView;
-        use crate::host::wasm_app::{StateSnapshot, StateStore, WasmView};
+        use crate::app::text_editor_view::TextEditorView;
+        use crate::host::wasm_view::{StateSnapshot, StateStore, WasmView};
         use crate::host::wasm_pane::{SysinfoStats, WasmPane};
 
         /// The two display scales every text surface must stay crisp at: 1.0
         /// (integer) and 2.0 (HiDPI, where off-grid galleys and half-resolution
-        /// app surfaces surface as fuzz).
+        /// plugin surfaces surface as fuzz).
         const GATE_PPP: [f32; 2] = [1.0, 2.0];
 
         fn wasm_fixture(name: &str) -> std::path::PathBuf {
@@ -8647,7 +8647,7 @@ open(out + ".done", "w").close()
             h.with_app_mut(|app| {
                 for win in &mut app.windows {
                     for pane in win.panes.values_mut() {
-                        if let Pane::App(a) = pane {
+                        if let Pane::View(a) = pane {
                             if let ViewRuntime::Builtin(b) = &mut a.runtime {
                                 if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorView>() {
                                     return Some((f.take().expect("f consumed once"))(ed));
@@ -8703,7 +8703,7 @@ open(out + ".done", "w").close()
             std::fs::write(&path, &body).expect("seed note");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = ViewPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(TextEditorView::new_for_test_note(
@@ -8722,7 +8722,7 @@ open(out + ".done", "w").close()
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 let tile_id = win.tree.tiles.insert_pane(pane_id);
                 if win.tree.root.is_none() {
                     win.tree.root = Some(tile_id);
@@ -8750,7 +8750,7 @@ open(out + ".done", "w").close()
             std::fs::create_dir_all(root.join("assets")).expect("seed subdir");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = ViewPane {
+                let view_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
                     runtime: ViewRuntime::Builtin(Box::new(
@@ -8769,7 +8769,7 @@ open(out + ".done", "w").close()
                     semantic_state: Default::default(),
                 };
                 let win = &mut app.windows[app.active_window];
-                win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+                win.panes.insert(pane_id, Pane::View(Box::new(view_pane)));
                 let tile_id = win.tree.tiles.insert_pane(pane_id);
                 if win.tree.root.is_none() {
                     win.tree.root = Some(tile_id);
@@ -8801,7 +8801,7 @@ open(out + ".done", "w").close()
             }
             store.save();
             h.with_app_mut(|app| {
-                app.launch_app_by_path_with_layout(
+                app.launch_view_by_path_with_layout(
                     &fixture.to_string_lossy(),
                     Some("split_v".to_string()),
                     None,
@@ -8870,12 +8870,12 @@ open(out + ".done", "w").close()
 
         // ── Mechanical assertions on composited state ───────────────────────
 
-        /// Stint 0527: a GPU app pane allocates its surface at physical
+        /// Stint 0527: a GPU view pane allocates its surface at physical
         /// resolution (`logical × ppp`), so at ppp 2.0 the texture is exactly
         /// twice the ppp-1.0 texture in each dimension — full-res on HiDPI, no
         /// bilinear upscaling. Drives the production `WasmPane` surface path.
         #[test]
-        fn gate_wasm_app_surface_scales_with_ppp() {
+        fn gate_wasm_view_surface_scales_with_ppp() {
             fn surface_at(ppp: f32) -> (u32, u32) {
                 let app = WasmView::load_ephemeral_run(
                     "pong-crispness",
@@ -8941,7 +8941,7 @@ open(out + ".done", "w").close()
         /// Stint 0528: the labels the host hand-paints in `text_secondary`
         /// (sidebar context names, surface-header subtitles, pane-name bars) clear the
         /// WCAG AA 4.5:1 floor against every background they actually sit on —
-        /// mirroring the contrast check apps get. Reuses the production WCAG
+        /// mirroring the contrast check plugins get. Reuses the production WCAG
         /// math and the default theme.
         #[test]
         fn gate_chrome_labels_meet_wcag_aa_floor() {
@@ -9000,8 +9000,8 @@ open(out + ".done", "w").close()
         }
     }
 
-    /// Stint 0720 visual review: the todo app's add form, autofocused and
-    /// mid-draft. Drives the real app process through the production paths —
+    /// Stint 0720 visual review: the todo plugin's add form, autofocused and
+    /// mid-draft. Drives the real plugin process through the production paths —
     /// `a` opens the form on the guest's raw KeyEvent path, `autofocus` hands
     /// the cursor to the host TextEdit with no click, and the typed draft is
     /// painted from the host-owned buffer while it round-trips to the guest.
@@ -9010,8 +9010,8 @@ open(out + ".done", "w").close()
     fn screenshot_todo_add_form_autofocused_draft() {
         let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
-        let pane_id = h.open_app_at(&plugin_dir, &[]).expect("launch todo");
-        h.wait_for_app_frame(pane_id, Duration::from_secs(30))
+        let pane_id = h.open_view_at(&plugin_dir, &[]).expect("launch todo");
+        h.wait_for_view_frame(pane_id, Duration::from_secs(30))
             .expect("todo renders its first frame");
         h.focus_pane(pane_id).expect("focus todo pane");
         h.run_steps(2);
@@ -9032,7 +9032,7 @@ open(out + ".done", "w").close()
                 app.windows[app.active_window]
                     .panes
                     .get(&pane_id)
-                    .and_then(Pane::as_app)
+                    .and_then(Pane::as_view)
                     .map(|pane| {
                         pane.semantic_state()
                             .nodes
@@ -9209,7 +9209,7 @@ open(out + ".done", "w").close()
                 context_id: ctx_id,
             });
             let second_idx = app.windows.len() - 1;
-            let (tile, p4) = app.add_app_pane_in_window(second_idx, "test");
+            let (tile, p4) = app.add_view_pane_in_window(second_idx, "test");
             app.windows[second_idx].focused_pane = Some(tile);
             app.active_window = second_idx;
             app.context_active_window.insert(ctx_id, win_id);
@@ -9302,7 +9302,7 @@ open(out + ".done", "w").close()
         let leaf_clone = leaf_dir.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(leaf_clone.clone())),
                 PluginPermissions::builtin(),
                 leaf_clone,
@@ -9364,7 +9364,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9403,7 +9403,7 @@ open(out + ".done", "w").close()
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
                 PluginPermissions::builtin(),
                 root_clone,
@@ -9442,7 +9442,7 @@ open(out + ".done", "w").close()
                     .panes
                     .values_mut()
                     .find_map(|p| {
-                        let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                             return None;
                         };
                         b.as_any_mut()
@@ -9483,7 +9483,7 @@ open(out + ".done", "w").close()
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
                 PluginPermissions::builtin(),
                 root_clone,
@@ -9519,7 +9519,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9544,7 +9544,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9583,7 +9583,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9615,7 +9615,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9644,7 +9644,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9673,7 +9673,7 @@ open(out + ".done", "w").close()
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
                 PluginPermissions::builtin(),
                 root_clone,
@@ -9688,7 +9688,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9732,7 +9732,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9763,7 +9763,7 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
@@ -9842,8 +9842,8 @@ open(out + ".done", "w").close()
         let cwd = tmp.path().to_path_buf();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
-                Box::new(crate::render::cli_renderer_app::CliRendererView::new(desc_str)),
+            app.open_builtin_view_pane(
+                Box::new(crate::render::cli_renderer_view::CliRendererView::new(desc_str)),
                 PluginPermissions::builtin(),
                 cwd,
                 None,
@@ -9857,11 +9857,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererView>()
+                        .downcast_mut::<crate::render::cli_renderer_view::CliRendererView>()
                 })
                 .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
@@ -9884,11 +9884,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_view_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererView>()
+                        .downcast_mut::<crate::render::cli_renderer_view::CliRendererView>()
                 })
                 .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
@@ -9913,7 +9913,7 @@ open(out + ".done", "w").close()
         let root_clone = root.clone();
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
-            app.open_builtin_app_pane(
+            app.open_builtin_view_pane(
                 Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
                 PluginPermissions::builtin(),
                 root_clone,
@@ -10878,18 +10878,18 @@ open(out + ".done", "w").close()
     #[derive(Default)]
     struct StripWheelSnapshot { offset: egui::Vec2, raw_y: f32, keys: usize }
     struct StripWheelFixture { horizontal: bool, state: Arc<std::sync::Mutex<StripWheelSnapshot>> }
-    impl crate::app::app_trait::App for StripWheelFixture {
+    impl crate::app::view_trait::View for StripWheelFixture {
         fn type_id(&self) -> &'static str { "strip_wheel_fixture" }
         fn display_name(&self) -> String { "Scroll fixture".into() }
         fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-        fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> crate::app::app_trait::KeyDisposition {
+        fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> crate::app::view_trait::KeyDisposition {
             if input.key_pressed(egui::Key::X) {
                 self.state.lock().unwrap().keys += 1;
-                return crate::app::app_trait::KeyDisposition::Consumed;
+                return crate::app::view_trait::KeyDisposition::Consumed;
             }
-            crate::app::app_trait::KeyDisposition::Passthrough
+            crate::app::view_trait::KeyDisposition::Passthrough
         }
-        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::app_trait::ViewRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
+        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::view_trait::ViewRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
             let raw_y = ui.input(|input| input.events.iter().filter_map(|event| match event {
                 egui::Event::MouseWheel { delta, .. } => Some(delta.y), _ => None,
             }).sum::<f32>());
@@ -10911,7 +10911,7 @@ open(out + ".done", "w").close()
             let first = add_focused_pane(&mut h);
             let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
             h.with_app_mut(|app| {
-                let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
+                let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_view_mut().unwrap();
                 pane.runtime = ViewRuntime::Builtin(Box::new(StripWheelFixture { horizontal, state: state.clone() }));
             });
             h.run_steps(2);
@@ -10945,7 +10945,7 @@ open(out + ".done", "w").close()
                 let path = h.workspace.path().join(format!("note-{index}.md"));
                 std::fs::write(&path, format!("# Project {index}\n\nA populated workspace pane with notes and useful context.\n\n- Review the plan\n- Follow up on the next step\n")).unwrap();
                 h.with_app_mut(|app| {
-                    app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).expect("open note");
+                    app.launch_view_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).expect("open note");
                 });
                 h.run_steps(3);
             }
@@ -10960,7 +10960,7 @@ open(out + ".done", "w").close()
         for (name, layout) in [("first", "split_h"), ("second", "split_h")] {
             let path = h.workspace.path().join(format!("{name}.md"));
             std::fs::write(&path, format!("# {name} project\n\nReview the migration and record the result.\n")).unwrap();
-            h.with_app_mut(|app| app.launch_app_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
+            h.with_app_mut(|app| app.launch_view_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
             h.run_steps(3);
         }
         h.save_screenshot(&evidence_png!("_fresh")).unwrap();
@@ -10975,7 +10975,7 @@ open(out + ".done", "w").close()
             });
             let terminal = app.focused_pane_id().expect("new page terminal");
             let previous: std::collections::HashSet<_> = app.windows[app.active_window].panes.keys().copied().collect();
-            app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).unwrap();
+            app.launch_view_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[path.display().to_string()], None).unwrap();
             let first_editor = app.windows[app.active_window].panes.keys().copied().find(|id| !previous.contains(id)).expect("second-page editor");
             (terminal, first_editor)
         });
@@ -10994,7 +10994,7 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.close_pane_by_id(terminal);
             let previous: std::collections::HashSet<_> = app.windows[app.active_window].panes.keys().copied().collect();
-            app.launch_app_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[companion.display().to_string()], None).unwrap();
+            app.launch_view_by_id_with_layout_forced("text-editor", Some("split_h".into()), &[companion.display().to_string()], None).unwrap();
             let second_editor = app.windows[app.active_window].panes.keys().copied().find(|id| !previous.contains(id)).expect("companion editor");
             let context = app.router.active().context_id;
             let strip = app.ensure_authoritative_strip(context);
@@ -11089,7 +11089,7 @@ open(out + ".done", "w").close()
             for (index, layout) in ["split_h", "split_v", "split_h"].into_iter().enumerate() {
                 let path = h.workspace.path().join(format!("plan-{index}.md"));
                 std::fs::write(&path, format!("# Project {}\n\nOrdinary split workspace.\n\n- Review the implementation\n- Check the running build\n- Record the next step\n", index + 1)).unwrap();
-                h.with_app_mut(|app| app.launch_app_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
+                h.with_app_mut(|app| app.launch_view_by_id_with_layout_forced("text-editor", Some(layout.into()), &[path.display().to_string()], None).unwrap());
                 h.run_steps(3);
                 editors.push((h.with_app(|app| app.active_focused_pane_id().unwrap()), path));
             }

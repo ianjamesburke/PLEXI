@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::app::app_trait::{App, ViewRenderContext};
+use crate::app::view_trait::{View, ViewRenderContext};
 use crate::media::audio::{PlaybackRequest, PlaybackSession};
 use crate::ui::{
-    app_chrome::ViewChrome,
+    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
@@ -100,7 +100,7 @@ impl AudioPlayerView {
     }
 }
 
-impl App for AudioPlayerView {
+impl View for AudioPlayerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -125,7 +125,7 @@ impl App for AudioPlayerView {
             ui.ctx().request_repaint();
         }
         let colors = ctx.colors;
-        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), "Audio Player");
+        ViewChrome::new(colors).paint_view_bar(ui, &self.filename(), "Audio Player");
 
         ui.add_space(style::SPACE_MD);
         ui.horizontal(|ui| {

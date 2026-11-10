@@ -1,6 +1,6 @@
 //! `PlexiInput`: frame-scoped ownership-transfer router for keyboard/text input.
 //!
-//! Historically every consumer (overlays, app panes, `keys::poll_actions`, the
+//! Historically every consumer (overlays, view panes, `keys::poll_actions`, the
 //! vendored terminal widget) independently peeked or mutated the single shared
 //! `ctx.input()` queue. Ownership was enforced retroactively — whichever
 //! consumer's render call happened to run first got the event, and a stray
@@ -16,7 +16,7 @@
 //!      first consumer of the frame; claims Cmd+Q/W/P etc.
 //!   2. The top [`crate::app::FocusKind`] overlay's `*_handle_key`, when an
 //!      overlay owns input.
-//!   3. `dispatch_app_key_events` — the focused app pane's `App::handle_key`,
+//!   3. `dispatch_plugin_key_events` — the focused view pane's `App::handle_key`,
 //!      which reads this buffer directly (see [`PlexiInput::events`] /
 //!      [`PlexiInput::key_pressed`]) instead of `ctx.input()`.
 //!   4. The focused terminal widget. Because the host takes this buffer *before*
@@ -25,7 +25,7 @@
 //!      no longer swallow a key (e.g. Cmd+A select-all) before the terminal
 //!      sees it — the structural fix for the terminal Cmd+A bug.
 //!
-//! Overlay and app/global consumers `give_back` whatever they don't claim so
+//! Overlay and plugin/global consumers `give_back` whatever they don't claim so
 //! the render pass (focused `TextEdit` widgets) still sees it. The focused
 //! terminal is the sole intended keyboard consumer for its frame, so its host
 //! handoff does *not* give events back: anything the terminal ignores is
@@ -39,7 +39,7 @@
 /// typed text, paste, and the clipboard `Copy`/`Cut` shortcut events (on macOS
 /// Cmd+C / Cmd+X arrive as `Event::Copy` / `Event::Cut`, and both the terminal
 /// widget and focused `TextEdit`s consume them). Widening the taken set is safe
-/// for the overlay/app/global consumers because they `give_back` everything
+/// for the overlay/plugin/global consumers because they `give_back` everything
 /// unclaimed before their render pass, so a `TextEdit` still receives an
 /// unclaimed Copy/Cut.
 ///
@@ -279,7 +279,7 @@ impl PlexiInput {
     }
 
     /// Return every event still owned by this buffer to `ctx` so consumers
-    /// later in the frame (a focused `TextEdit`, `dispatch_app_key_events`,
+    /// later in the frame (a focused `TextEdit`, `dispatch_plugin_key_events`,
     /// the terminal widget's own read of `ctx.input()`) see whatever this
     /// frame's router-level consumers didn't claim. No-op if the buffer is
     /// already empty.

@@ -1,6 +1,6 @@
 //! Native, broker-admitted MCP explorer. Transport is host-owned and serviced off paint.
 use super::{descriptor_widgets, mcp_descriptor};
-use crate::app::app_trait::{App, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{View, ViewRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::Command;
 use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
 use crate::broker::{ActorScope, ActorType, TargetType};
@@ -104,7 +104,7 @@ impl McpRendererView {
             call_id: &call,
             tool: &tool,
             input_json: &input,
-            actor_type: ActorType::App,
+            actor_type: ActorType::Plugin,
             actor_id: &actor,
             actor_scope: ActorScope::BuiltIn,
             trust_origin: "host",
@@ -368,7 +368,7 @@ impl McpRendererView {
         changed
     }
 }
-impl App for McpRendererView {
+impl View for McpRendererView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -452,7 +452,7 @@ impl App for McpRendererView {
         if !self.pending.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
-        crate::ui::app_chrome::ViewChrome::new(ctx.colors).paint_app_bar(
+        crate::ui::view_chrome::ViewChrome::new(ctx.colors).paint_view_bar(
             ui,
             &self.display_name(),
             "Explore tools, resources and prompts",
@@ -622,7 +622,7 @@ mod tests {
         .unwrap();
         let cwd = h.workspace_root();
         h.app
-            .launch_app_by_id_with_layout("mcp-renderer", None, &["fixture".into()], Some(cwd))
+            .launch_view_by_id_with_layout("mcp-renderer", None, &["fixture".into()], Some(cwd))
             .unwrap();
         h.hidden_frame();
         let monitor = PermissionMonitor::for_profile(&crate::config::config_dir());
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].tool, "mcp.fixture.connect");
         for pane in h.app.windows[h.app.active_window].panes.values_mut() {
-            if let Some(pane) = pane.as_app_mut() {
+            if let Some(pane) = pane.as_view_mut() {
                 if let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime {
                     if let Some(app) = app.as_any_mut().downcast_mut::<McpRendererView>() {
                         assert_eq!(app.identity.unwrap().0, pane.id);
@@ -731,7 +731,7 @@ done
                 });
             }
             app.result = "Connected. Select an endpoint.".into();
-            host.open_builtin_app_pane(
+            host.open_builtin_view_pane(
                 Box::new(app),
                 crate::app::permissions::PluginPermissions::builtin(),
                 cwd,
@@ -755,7 +755,7 @@ done
             let state = host.windows[host.active_window]
                 .panes
                 .values()
-                .filter_map(|pane| pane.as_app())
+                .filter_map(|pane| pane.as_view())
                 .find(|pane| pane.manifest_id == "mcp-renderer")
                 .unwrap()
                 .runtime

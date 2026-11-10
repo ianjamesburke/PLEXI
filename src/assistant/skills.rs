@@ -24,22 +24,22 @@ impl SkillSource {
 /// with the same name overrides a builtin.
 const BUILTIN_SKILLS: &[&str] = &[include_str!("builtin/build-plexi-plugin.md")];
 
-/// Name of the builtin app-build skill (frontmatter `name:` in
+/// Name of the builtin plugin-build skill (frontmatter `name:` in
 /// `builtin/build-plexi-plugin.md`). Callers that need to special-case an
-/// app-build turn (e.g. injecting the SDK reference, raising the tool-call
+/// plugin-build turn (e.g. injecting the SDK reference, raising the tool-call
 /// cap) match on this instead of repeating the literal.
 pub const APP_BUILD_SKILL_NAME: &str = "build-plexi-plugin";
 
 /// Generated, always-current SDK API reference (`tools/gen_sdk_docs.py` /
 /// `just gen-sdk-docs`, drift-checked by `just check-sdk-docs`). Injected into
-/// the system prompt when the app-build skill is active so the assistant
+/// the system prompt when the plugin-build skill is active so the assistant
 /// doesn't need to explore `plexi_sdk` via PTY reads to learn the API —
 /// exactly that exploration exhausted the tool-call cap in the 2026-07-17
 /// gate run.
 const SDK_API_REFERENCE: &str = include_str!("../../website/src/content/docs/sdk.md");
 
-/// The generated SDK API reference to inject for app-build turns.
-pub fn app_build_sdk_reference() -> &'static str {
+/// The generated SDK API reference to inject for plugin-build turns.
+pub fn plugin_build_sdk_reference() -> &'static str {
     SDK_API_REFERENCE
 }
 
@@ -127,15 +127,15 @@ impl SkillRegistry {
     /// That matcher's 50%-coverage bar is tuned to disambiguate many
     /// similarly-worded user-installed skills, and silently drops short,
     /// noun-heavy prompts against the builtin skill's own description — e.g.
-    /// "Build me a tiny counter app with plus and minus buttons" scores
+    /// "Build me a tiny counter plugin with plus and minus buttons" scores
     /// 2/6 = 0.33 and never matches. Since silently never activating the
-    /// app-build skill strands the assistant without the SDK reference or
+    /// plugin-build skill strands the assistant without the SDK reference or
     /// the raised tool-call cap (stint 0422), this check is independent of
     /// description wording: a build-verb next to a build-noun anywhere in
     /// the prompt is a signal that should never miss for this one,
     /// high-value builtin skill.
-    pub fn app_build_fallback(&self, prompt: &str, enabled: &[String]) -> Option<&SkillDefinition> {
-        if !looks_like_app_build_request(prompt) {
+    pub fn plugin_build_fallback(&self, prompt: &str, enabled: &[String]) -> Option<&SkillDefinition> {
+        if !looks_like_plugin_build_request(prompt) {
             return None;
         }
         if !(enabled.is_empty() || enabled.iter().any(|name| name == APP_BUILD_SKILL_NAME)) {
@@ -147,7 +147,7 @@ impl SkillRegistry {
 
 const BUILD_VERBS: &[&str] = &["build", "make", "create", "write", "code"];
 const BUILD_NOUNS: &[&str] = &[
-    "app",
+    "plugin",
     "plugins",
     "game",
     "games",
@@ -162,7 +162,7 @@ const BUILD_NOUNS: &[&str] = &[
 /// Whether `prompt` reads as a request to build something. Word-boundary
 /// tokenized (not substring `contains`) so it doesn't false-positive on
 /// unrelated words that happen to embed a build noun/verb.
-fn looks_like_app_build_request(prompt: &str) -> bool {
+fn looks_like_plugin_build_request(prompt: &str) -> bool {
     let lower = prompt.to_ascii_lowercase();
     let words: std::collections::HashSet<&str> = lower
         .split(|c: char| !c.is_alphanumeric() && c != '-')
@@ -321,14 +321,14 @@ mod tests {
     }
 
     #[test]
-    fn builtin_app_build_skill_declares_a_high_tier_floor() {
+    fn builtin_view_build_skill_declares_a_high_tier_floor() {
         let root = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(root.path(), root.path());
         let skill = registry.get(APP_BUILD_SKILL_NAME).expect("builtin present");
         assert_eq!(
             skill.tier,
             Some(crate::protocol::ModelTier::High),
-            "app builds must escalate off a default-sourced weak tier"
+            "plugin builds must escalate off a default-sourced weak tier"
         );
         assert!(
             !skill
@@ -337,10 +337,10 @@ mod tests {
             "the skill must not instruct SDK discovery — the API reference is embedded"
         );
         assert!(
-            skill.instructions.contains("other installed apps"),
-            "the no-discovery rule must cover example-app spelunking, not just SDK sources \
+            skill.instructions.contains("other installed plugins"),
+            "the no-discovery rule must cover example-plugin spelunking, not just SDK sources \
              — the 2026-07-19 ant-simulator run reverse-engineered signatures from \
-             installed apps instead"
+             installed plugins instead"
         );
         assert!(
             skill.instructions.contains("App placement"),
@@ -357,8 +357,8 @@ mod tests {
     }
 
     #[test]
-    fn app_build_sdk_reference_is_generated_and_nonempty() {
-        let reference = app_build_sdk_reference();
+    fn plugin_build_sdk_reference_is_generated_and_nonempty() {
+        let reference = plugin_build_sdk_reference();
         assert!(
             !reference.is_empty(),
             "SDK reference must be embedded, not blank"
@@ -369,7 +369,7 @@ mod tests {
         );
         assert!(
             reference.contains("## UI Components") && reference.contains("## Effects"),
-            "must cover the widget/effect API the app-build skill needs"
+            "must cover the widget/effect API the plugin-build skill needs"
         );
         assert!(
             reference.contains("SetTimer(id: int, delay_ms: int, repeat: bool = False)"),
@@ -384,15 +384,15 @@ mod tests {
     }
 
     /// Regression for the 0422 gate-fix follow-up: a real tester prompt
-    /// ("Build me a tiny counter app with plus and minus buttons") scores
+    /// ("Build me a tiny counter plugin with plus and minus buttons") scores
     /// only 2/6 = 0.33 word-overlap against the skill's own description, so
     /// `matching_enabled` misses it — confirming the bug the fallback
-    /// exists to catch. `app_build_fallback` must still activate the skill.
+    /// exists to catch. `plugin_build_fallback` must still activate the skill.
     #[test]
-    fn app_build_fallback_catches_prompt_the_general_matcher_misses() {
+    fn plugin_build_fallback_catches_prompt_the_general_matcher_misses() {
         let root = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(root.path(), root.path());
-        let prompt = "Build me a tiny counter app with plus and minus buttons";
+        let prompt = "Build me a tiny counter plugin with plus and minus buttons";
 
         assert!(
             registry.matching_enabled(prompt, &[]).is_none(),
@@ -401,29 +401,29 @@ mod tests {
              should be revisited"
         );
         let skill = registry
-            .app_build_fallback(prompt, &[])
+            .plugin_build_fallback(prompt, &[])
             .expect("fallback must catch a build-verb + build-noun prompt");
         assert_eq!(skill.name, APP_BUILD_SKILL_NAME);
     }
 
     #[test]
-    fn app_build_fallback_respects_enabled_list_and_ignores_unrelated_prompts() {
+    fn plugin_build_fallback_respects_enabled_list_and_ignores_unrelated_prompts() {
         let root = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(root.path(), root.path());
 
         assert!(registry
-            .app_build_fallback("what's the weather like today", &[])
+            .plugin_build_fallback("what's the weather like today", &[])
             .is_none());
         assert!(registry
-            .app_build_fallback("build me a small app", &["some-other-skill".to_string()])
+            .plugin_build_fallback("build me a small plugin", &["some-other-skill".to_string()])
             .is_none());
         assert!(registry
-            .app_build_fallback("make me a game", &[APP_BUILD_SKILL_NAME.to_string()])
+            .plugin_build_fallback("make me a game", &[APP_BUILD_SKILL_NAME.to_string()])
             .is_some());
     }
 
     #[test]
-    fn builtin_build_plexi_app_ships_and_auto_matches() {
+    fn builtin_build_plexi_view_ships_and_auto_matches() {
         let root = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::load(root.path(), root.path());
         let skill = registry.get(APP_BUILD_SKILL_NAME).unwrap();
@@ -431,10 +431,10 @@ mod tests {
         assert_eq!(skill.source, SkillSource::Builtin);
         assert!(skill
             .instructions
-            .contains(r#"host.build.run {"args": ["app", "init", "<kebab-name>"]}"#));
+            .contains(r#"host.build.run {"args": ["plugin", "init", "<kebab-name>"]}"#));
         assert!(skill
             .instructions
-            .contains(r#"host.build.run {"args": ["app", "check", "<app-dir>"]}"#));
+            .contains(r#"host.build.run {"args": ["plugin", "check", "<plugin-dir>"]}"#));
         assert!(skill.instructions.contains("host.files.write"));
         // The build flow must never route through a user-visible terminal. The
         // skill now names `host.terminals.run` only to forbid it after a scope
@@ -451,7 +451,7 @@ mod tests {
         );
         assert_eq!(
             registry
-                .matching_enabled("build me a small timer app", &[])
+                .matching_enabled("build me a small timer plugin", &[])
                 .unwrap()
                 .name,
             "build-plexi-plugin"

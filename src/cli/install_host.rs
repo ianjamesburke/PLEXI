@@ -1,19 +1,19 @@
 //! App installer (#308 Phase 2).
 //!
 //! Three top-level CLI subcommands route here:
-//!   - `plexi install <source-spec>[@ref]` — clone + place one app
-//!   - `plexi install --pack <path|core>`  — apply every [[app]] in a pack
-//!   - `plexi update apps [<id>]`           — git-pull installed app(s)
+//!   - `plexi install <source-spec>[@ref]` — clone + place one plugin
+//!   - `plexi install --pack <path|core>`  — apply every [[plugin]] in a pack
+//!   - `plexi update plugins [<id>]`           — git-pull installed plugin(s)
 //!   - `plexi uninstall <id>`              — remove the install dir
-//!   - `plexi list`                        — show installed apps
+//!   - `plexi list`                        — show installed plugins
 //!
 //! All git work goes through the [`Cloner`] trait so unit tests can mock it
 //! (mirrors `workspace_secrets::SecretStore`'s pattern). Production uses
 //! [`GitCloner`] which shells out to `git` — no `git2` dependency.
 //!
 //! The bundled core pack is `packs/core.toml` baked in at compile time via
-//! `include_str!`. Sources are `local:<app-name>` — the installer copies
-//! from the embedded `apps/` tree.
+//! `include_str!`. Sources are `local:<plugin-name>` — the installer copies
+//! from the embedded `plugins/` tree.
 
 use crate::app::packs::{parse_source_spec, Pack, PackPlugin, SourceSpec};
 use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
@@ -26,13 +26,13 @@ use std::process::Command;
 pub const CORE_PACK_TOML: &str = include_str!("../../packs/core.toml");
 pub const EXAMPLES_PACK_TOML: &str = include_str!("../../packs/examples.toml");
 
-// All apps under apps/ are embedded at compile time, including apps/dev/.
+// All plugins under plugins/ are embedded at compile time, including apps/dev/.
 // `local:` source-spec installs look up by name in EMBEDDED_APPS.
-// apps/dev/ apps are not referenced by any pack entry, so they are never
+// apps/dev/ plugins are not referenced by any pack entry, so they are never
 // auto-installed — they are only rsync'd to the profile dir by install.sh.
 static EMBEDDED_APPS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
 
-/// Result of installing or updating one app entry. Aggregated for pack apply.
+/// Result of installing or updating one plugin entry. Aggregated for pack apply.
 #[derive(Debug, Clone)]
 pub struct InstallOutcome {
     pub id: String,
@@ -43,7 +43,7 @@ pub struct InstallOutcome {
 pub enum InstallStatus {
     /// Newly installed at the given path.
     Installed(PathBuf),
-    /// Re-extracted a bundled `local:` app over an existing install (pack
+    /// Re-extracted a bundled `local:` plugin over an existing install (pack
     /// apply with `refresh_local`) — how core-plugin updates reach existing
     /// profiles on stable channels.
     Refreshed(PathBuf),
@@ -75,7 +75,7 @@ pub trait Cloner: Send + Sync {
     /// Check out a specific ref (tag, branch, or sha) inside an existing
     /// clone. Optional — `None` = leave on the default branch.
     fn checkout(&self, repo_dir: &Path, git_ref: &str) -> Result<(), String>;
-    /// `git fetch && git pull` — used by `plexi update apps`.
+    /// `git fetch && git pull` — used by `plexi update plugins`.
     fn pull(&self, repo_dir: &Path) -> Result<(), String>;
 }
 
@@ -171,8 +171,8 @@ pub fn split_source_and_ref(input: &str) -> (String, Option<String>) {
     (input.to_string(), None)
 }
 
-/// Install one app from a parsed source spec at an optional git ref.
-/// `target_root` is the channel apps dir (e.g. `~/.plexi-alpha/apps`).
+/// Install one plugin from a parsed source spec at an optional git ref.
+/// `target_root` is the channel plugins dir (e.g. `~/.plexi-alpha/plugins`).
 pub fn install_one(
     cloner: &dyn Cloner,
     source: &SourceSpec,
@@ -203,7 +203,7 @@ fn install_one_git(
     ref_policy: GitRefPolicy,
 ) -> Result<InstallOutcome, String> {
     std::fs::create_dir_all(target_root)
-        .map_err(|e| format!("create apps dir {}: {e}", target_root.display()))?;
+        .map_err(|e| format!("create plugins dir {}: {e}", target_root.display()))?;
 
     // Stage into a sibling `.tmp-<unique>/clone` dir inside `target_root` so
     // we can read the manifest BEFORE committing to the final dest. Same-FS
@@ -256,8 +256,8 @@ fn install_one_git(
     if dest.exists() {
         cleanup(&stage_root);
         return Err(format!(
-            "app '{id}' already installed at {}; \
-             run `plexi uninstall {id}` or `plexi update apps {id}` first",
+            "plugin '{id}' already installed at {}; \
+             run `plexi uninstall {id}` or `plexi update plugins {id}` first",
             dest.display()
         ));
     }
@@ -281,11 +281,11 @@ fn install_one_git(
 
 fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, String> {
     std::fs::create_dir_all(target_root)
-        .map_err(|e| format!("create apps dir {}: {e}", target_root.display()))?;
+        .map_err(|e| format!("create plugins dir {}: {e}", target_root.display()))?;
 
     let example = EMBEDDED_APPS
         .get_dir(name)
-        .ok_or_else(|| format!("local source '{name}' not found in bundled apps"))?;
+        .ok_or_else(|| format!("local source '{name}' not found in bundled plugins"))?;
 
     // Read manifest text from the embedded tree to recover the canonical id.
     let manifest_text = example
@@ -304,13 +304,13 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     let dest = target_root.join(&id);
     if dest.exists() {
         return Err(format!(
-            "app '{id}' already installed at {}",
+            "plugin '{id}' already installed at {}",
             dest.display()
         ));
     }
     // `include_dir::Dir::extract` writes paths relative to the *caller*'s
     // arg using the entries' stored paths (which include `<name>/...` because
-    // we embedded `apps/`). Calling `extract(target_root)` therefore
+    // we embedded `plugins/`). Calling `extract(target_root)` therefore
     // writes `target_root/<name>/manifest.toml`, etc. We just need to ensure
     // `dest` exists first; `extract` panics otherwise on macOS tempdirs.
     std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
@@ -359,7 +359,7 @@ fn read_manifest(repo_dir: &Path) -> Result<PluginManifest, String> {
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
             "manifest schema_version = {} is newer than this Plexi build supports (max {}); \
-             update Plexi to install this app",
+             update Plexi to install this plugin",
             manifest.schema_version, MANIFEST_SCHEMA_VERSION
         ));
     }
@@ -398,26 +398,26 @@ fn provision_venv(plugin_id: &str, plugin_dir: &Path, manifest: &PluginManifest)
         return;
     }
 
-    match crate::app::python_env::ensure_app_venv(plugin_id, plugin_dir, &manifest.plugin.dependencies) {
+    match crate::app::python_env::ensure_plugin_venv(plugin_id, plugin_dir, &manifest.plugin.dependencies) {
         Ok(python) => log::info!(
-            "install[{plugin_id}]: Python app environment ready at {}",
+            "install[{plugin_id}]: Python plugin environment ready at {}",
             python.display()
         ),
         Err(e) => log::warn!(
-            "install[{plugin_id}]: Python app environment setup failed: {e}; app may not launch until `plexi plugin check {}` succeeds",
+            "install[{plugin_id}]: Python plugin environment setup failed: {e}; plugin may not launch until `plexi plugin check {}` succeeds",
             plugin_dir.display()
         ),
     }
 }
 
-/// Apply every `[[app]]` entry in a pack against `target_root`. Errors are
-/// aggregated per app so one bad entry doesn't abort the whole apply.
+/// Apply every `[[plugin]]` entry in a pack against `target_root`. Errors are
+/// aggregated per plugin so one bad entry doesn't abort the whole apply.
 /// Idempotent: an entry whose id is already installed at the same version is
 /// reported as `AlreadyAtVersion`.
 ///
 /// `refresh_local`: re-extract already-installed `local:` entries from this
 /// binary's embedded tree, replacing the installed directory wholesale. This
-/// is the update path for bundled core apps — `local:` versions are
+/// is the update path for bundled core plugins — `local:` versions are
 /// `"bundled"` on both sides, so content, not version, is the ground truth.
 /// Only the explicit installer path (`plexi plugin install --pack core
 /// --refresh`) sets this; launch-time reseeding never clobbers an existing
@@ -428,9 +428,9 @@ pub fn apply_pack(
     target_root: &Path,
     refresh_local: bool,
 ) -> Vec<InstallOutcome> {
-    let mut outcomes = Vec::with_capacity(pack.apps.len());
+    let mut outcomes = Vec::with_capacity(pack.plugins.len());
     let installed = installed_versions(target_root);
-    for entry in &pack.apps {
+    for entry in &pack.plugins {
         outcomes.push(apply_pack_entry(
             cloner,
             entry,
@@ -442,7 +442,7 @@ pub fn apply_pack(
     outcomes
 }
 
-/// Replace an installed `local:` app with the copy embedded in this binary.
+/// Replace an installed `local:` plugin with the copy embedded in this binary.
 fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome {
     let dest = target_root.join(id);
     if let Err(e) = std::fs::remove_dir_all(&dest) {
@@ -526,7 +526,7 @@ fn apply_pack_entry(
 
 /// Walk `<target_root>/<id>/manifest.toml` for every dir entry and harvest
 /// the manifest version. Used to drive `plexi list` and pack-apply
-/// idempotency. Apps without a parseable manifest are skipped silently
+/// idempotency. Plugins without a parseable manifest are skipped silently
 /// (already logged elsewhere by `PluginRegistry`).
 pub fn installed_versions(target_root: &Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
@@ -553,26 +553,26 @@ pub fn uninstall_one(id: &str, target_root: &Path) -> Result<(), String> {
     }
     std::fs::remove_dir_all(&dest).map_err(|e| format!("remove {}: {e}", dest.display()))?;
     log::info!("uninstall: {id}");
-    crate::host::cli_ops::purge_app_copies(id);
+    crate::host::cli_ops::purge_plugin_copies(id);
     Ok(())
 }
 
-/// `git fetch && git pull` a concrete installed app directory. Used by the
+/// `git fetch && git pull` a concrete installed plugin directory. Used by the
 /// workspace-aware CLI update path after registry resolution.
 pub fn update_plugin_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), String> {
     if !dest.exists() {
         return Err(format!("'{id}' is not installed at {}", dest.display()));
     }
     if !dest.join(".git").exists() {
-        return Err("not a git checkout (likely bundled core app)".to_string());
+        return Err("not a git checkout (likely bundled core plugin)".to_string());
     }
     cloner.pull(dest)?;
     log::info!("update: {id} at {}", dest.display());
     Ok(())
 }
 
-/// Export the current set of installed apps under `target_root` as a
-/// `pack.toml` written to `dest_path`. For each app:
+/// Export the current set of installed plugins under `target_root` as a
+/// `pack.toml` written to `dest_path`. For each plugin:
 ///   - If the install dir is a git checkout (`.git/` present), the source is
 ///     `git+<remote-origin-url>` and the version is the current ref
 ///     (`git describe --tags --exact-match` → tag, else short SHA).
@@ -581,14 +581,14 @@ pub fn update_plugin_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(
 ///     unset). These re-install from the binary's embedded examples on
 ///     `plexi install --pack <path>`.
 ///
-/// Apps without a parseable manifest are skipped with a warning.
+/// Plugins without a parseable manifest are skipped with a warning.
 ///
 /// Returns the number of entries written.
 pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String> {
     let entries = match std::fs::read_dir(target_root) {
         Ok(d) => d,
         Err(e) => {
-            return Err(format!("read apps dir {}: {e}", target_root.display()));
+            return Err(format!("read plugins dir {}: {e}", target_root.display()));
         }
     };
 
@@ -631,7 +631,7 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
 
     let mut out = String::new();
     out.push_str("# Generated by `plexi pack export`. Edit freely.\n");
-    out.push_str("schema_version = 1\n\n");
+    out.push_str("schema_version = 2\n\n");
     for (id, source, version) in &rows {
         out.push_str("\n[[plugin]]\n");
         out.push_str(&format!("id      = \"{id}\"\n"));
@@ -648,14 +648,14 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
     std::fs::write(dest_path, out)
         .map_err(|e| format!("write pack to {}: {e}", dest_path.display()))?;
     log::info!(
-        "pack export: wrote {} apps to {}",
+        "pack export: wrote {} plugins to {}",
         rows.len(),
         dest_path.display()
     );
     Ok(rows.len())
 }
 
-/// Best-effort inference of `(source_spec, version)` for one installed app
+/// Best-effort inference of `(source_spec, version)` for one installed plugin
 /// dir. Pure-IO helper for `export_pack`. Public for the CLI test that
 /// wants to assert the local-vs-git split independently of file scanning.
 pub fn infer_source_and_version(plugin_dir: &Path, manifest: &PluginManifest) -> (String, String) {
@@ -756,7 +756,7 @@ fn git_current_ref(repo_dir: &Path) -> Option<String> {
     }
 }
 
-/// Read-only check for a stale build or missing core app.
+/// Read-only check for a stale build or missing core plugin.
 pub fn core_pack_needs_seeding(target_root: &Path) -> bool {
     if !std::fs::read_to_string(target_root.join(".core_build"))
         .is_ok_and(|build| build == env!("PLEXI_BUILD_ID")) {
@@ -767,7 +767,7 @@ pub fn core_pack_needs_seeding(target_root: &Path) -> bool {
 }
 
 /// Apply the bundled core pack into `target_root` on every launch. Only installs
-/// apps that are missing — already-installed apps return `SkippedOtherVersion` or
+/// plugins that are missing — already-installed plugins return `SkippedOtherVersion` or
 /// `AlreadyAtVersion` and are left untouched.
 ///
 /// Respects `reseed = "always"` (default for core) — always runs regardless of
@@ -800,7 +800,7 @@ pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<In
 /// currently empty (first-launch seeding). Idempotent — returns `None` if the
 /// dir is non-empty.
 ///
-/// Respects `reseed = "once"` (default for examples) — skips if apps dir is
+/// Respects `reseed = "once"` (default for examples) — skips if plugins dir is
 /// already populated.
 pub fn apply_examples_pack_if_empty(
     cloner: &dyn Cloner,
@@ -810,7 +810,7 @@ pub fn apply_examples_pack_if_empty(
         Ok(d) => d.flatten().next().is_none(),
         Err(e) => {
             log::warn!(
-                "examples pack: cannot read apps dir {}: {e}",
+                "examples pack: cannot read plugins dir {}: {e}",
                 target_root.display()
             );
             true
@@ -833,17 +833,17 @@ pub fn apply_examples_pack_if_empty(
     Some(apply_pack(cloner, &pack, target_root, false))
 }
 
-/// Returns the set of app IDs defined in the bundled core pack.
+/// Returns the set of plugin IDs defined in the bundled core pack.
 pub fn core_pack_ids() -> std::collections::HashSet<String> {
     Pack::from_toml_str(CORE_PACK_TOML)
-        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
+        .map(|p| p.plugins.into_iter().map(|a| a.id).collect())
         .unwrap_or_default()
 }
 
-/// First-party apps deliberately retired before the v3 SDK migration. An app
+/// First-party plugins deliberately retired before the v3 SDK migration. An plugin
 /// is a quarantine candidate only when its stable former-first-party id is in
 /// this set *and* its source still imports the removed v2 App/RenderContext
-/// surface. The intersection is intentional: a user or marketplace app with
+/// surface. The intersection is intentional: a user or marketplace plugin with
 /// an unfamiliar id is never removed merely because it is not in core.
 const RETIRED_PRE_V3_FIRST_PARTY_APP_IDS: &[&str] = &[
     "assistant",
@@ -876,7 +876,7 @@ const RETIRED_PRE_V3_FIRST_PARTY_APP_IDS: &[&str] = &[
     "workspace",
 ];
 
-/// Return app directories identified as former first-party pre-v3 installs.
+/// Return plugin directories identified as former first-party pre-v3 installs.
 /// This is side-effect free so `plexi plugin prune --dry-run` can report exactly
 /// what a launch-time reconciliation would remove.
 pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
@@ -896,7 +896,7 @@ pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
         if core_ids.contains(id) || !RETIRED_PRE_V3_FIRST_PARTY_APP_IDS.contains(&id) {
             continue;
         }
-        if has_pre_v3_app_imports(&plugin_dir) {
+        if has_pre_v3_plugin_imports(&plugin_dir) {
             candidates.push(plugin_dir);
         }
     }
@@ -906,7 +906,7 @@ pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
 
 /// Quarantine only candidates returned by [`orphaned_pre_v3_first_party_apps`].
 /// The hidden profile directory keeps ambiguous legacy content recoverable while
-/// removing it from normal app discovery. Re-running is a no-op.
+/// removing it from normal plugin discovery. Re-running is a no-op.
 pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
     let candidates = orphaned_pre_v3_first_party_apps(target_root);
     let quarantine = target_root.join(".plexi-quarantine-pre-v3");
@@ -914,9 +914,9 @@ pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<Pat
         let Some(name) = path.file_name() else { continue };
         let destination = quarantine.join(name);
         match std::fs::create_dir_all(&quarantine).and_then(|()| std::fs::rename(path, &destination)) {
-            Ok(()) => log::info!("install: quarantined orphaned pre-v3 app {}", path.display()),
+            Ok(()) => log::info!("install: quarantined orphaned pre-v3 plugin {}", path.display()),
             Err(error) => log::warn!(
-                "install: could not quarantine orphaned pre-v3 app {}: {error}",
+                "install: could not quarantine orphaned pre-v3 plugin {}: {error}",
                 path.display()
             ),
         }
@@ -927,7 +927,7 @@ pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<Pat
         .collect()
 }
 
-fn has_pre_v3_app_imports(plugin_dir: &Path) -> bool {
+fn has_pre_v3_plugin_imports(plugin_dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(plugin_dir) else {
         return false;
     };
@@ -940,7 +940,7 @@ fn has_pre_v3_app_imports(plugin_dir: &Path) -> bool {
             return false;
         }
         if file_type.is_dir() {
-            return has_pre_v3_app_imports(&path);
+            return has_pre_v3_plugin_imports(&path);
         }
         if !file_type.is_file() || path.extension().is_none_or(|extension| extension != "py") {
             return false;
@@ -953,20 +953,21 @@ fn has_pre_v3_app_imports(plugin_dir: &Path) -> bool {
     })
 }
 
-/// Returns the set of app IDs defined in the bundled examples pack.
+/// Returns the set of plugin IDs defined in the bundled examples pack.
 pub fn examples_pack_ids() -> std::collections::HashSet<String> {
     Pack::from_toml_str(EXAMPLES_PACK_TOML)
-        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
+        .map(|p| p.plugins.into_iter().map(|a| a.id).collect())
         .unwrap_or_default()
 }
 
-/// Read `<workspace_root>/<channel_dir>/plugins.toml` and install declared apps into the
-/// workspace-scoped apps dir (`<workspace_root>/<channel_dir>/plugins/`).
+/// Read `<workspace_root>/<channel_dir>/plugins.toml` and install declared plugins into the
+/// workspace-scoped plugins dir (`<workspace_root>/<channel_dir>/plugins/`).
 pub fn apply_workspace_pack(
     workspace_root: &Path,
     cloner: &dyn Cloner,
 ) -> Result<Vec<InstallOutcome>, String> {
     let channel_dir = crate::config::workspace_channel_dir();
+    crate::app::plugin_migration::migrate(&workspace_root.join(&channel_dir))?;
     let plugins_toml = workspace_root.join(&channel_dir).join("plugins.toml");
     if !plugins_toml.exists() {
         return Err(
@@ -977,26 +978,26 @@ pub fn apply_workspace_pack(
     let workspace_apps = crate::app::registry::workspace_plugins_dir(workspace_root);
     std::fs::create_dir_all(&workspace_apps).map_err(|e| {
         format!(
-            "create workspace apps dir {}: {e}",
+            "create workspace plugins dir {}: {e}",
             workspace_apps.display()
         )
     })?;
     log::info!(
-        "install: workspace pack {} → {} ({} apps)",
+        "install: workspace pack {} → {} ({} plugins)",
         plugins_toml.display(),
         workspace_apps.display(),
-        pack.apps.len()
+        pack.plugins.len()
     );
     Ok(apply_pack(cloner, &pack, &workspace_apps, false))
 }
 
-/// Return the set of app IDs declared in `<workspace_root>/<channel_dir>/plugins.toml`.
+/// Return the set of plugin IDs declared in `<workspace_root>/<channel_dir>/plugins.toml`.
 /// Returns an empty set if the file is absent or unparseable.
 pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSet<String> {
     let channel_dir = crate::config::workspace_channel_dir();
     let path = workspace_root.join(&channel_dir).join("plugins.toml");
     match Pack::from_path(&path) {
-        Ok(p) => p.apps.into_iter().map(|a| a.id).collect(),
+        Ok(p) => p.plugins.into_iter().map(|a| a.id).collect(),
         Err(e) => {
             if path.exists() {
                 log::warn!("failed to parse workspace plugins.toml: {e}");
@@ -1126,7 +1127,7 @@ mod install_tests {
     }
 
     #[test]
-    fn python_app_venv_version_matches_sdk_floor() {
+    fn python_plugin_venv_version_matches_sdk_floor() {
         let sdk_pyproject = include_str!("../../sdk/python/pyproject.toml");
         assert!(
             sdk_pyproject.contains(r#"requires-python = ">=3.12""#),
@@ -1192,7 +1193,7 @@ mod install_tests {
             target.path(),
         )
         .expect_err("future schema must refuse");
-        assert!(err.contains("newer than this Plexi build"), "got: {err}");
+        assert!(err.contains("schema_version must be 2"), "got: {err}");
         assert!(
             !target.path().join("future").exists(),
             "failed install must not leave a partial dir"
@@ -1235,7 +1236,7 @@ mod install_tests {
         );
     }
 
-    // D2: per-app Python venv path construction tests.
+    // D2: per-plugin Python venv path construction tests.
 
     #[test]
     fn venv_path_is_inside_plugin_dir() {
@@ -1277,7 +1278,7 @@ mod install_tests {
         let py_in_name = "app.py";
         assert!(
             py_in_name.ends_with(".py"),
-            "app.py should be detected as Python"
+            "plugin.py should be detected as Python"
         );
     }
 }
@@ -1288,7 +1289,7 @@ mod pack_tests {
     use super::*;
 
     fn pack_with(entries: &[(&str, &str, &str)]) -> Pack {
-        let mut text = String::from("schema_version = 1\n\n");
+        let mut text = String::from("schema_version = 2\n\n");
         for (id, source, version) in entries {
             text.push_str(&format!(
                 "\n[[plugin]]\nid = \"{id}\"\nsource = \"{source}\"\nversion = \"{version}\"\n\n"
@@ -1312,9 +1313,9 @@ mod pack_tests {
     }
 
     /// Regression guard (stint 0296 / PR #2359 validation): `refresh_local`
-    /// must re-extract an installed `local:` app from the embedded tree —
+    /// must re-extract an installed `local:` plugin from the embedded tree —
     /// this is the only path by which core-plugin updates reach existing
-    /// profiles on stable channels (launch reseed installs missing apps
+    /// profiles on stable channels (launch reseed installs missing plugins
     /// only).
     #[test]
     fn pack_apply_refresh_local_replaces_stale_install() {
@@ -1434,7 +1435,7 @@ mod pack_export_tests {
 
     /// Helper: write a manifest into `target_root/<id>/manifest.toml` so the
     /// export scanner has something to pick up.
-    fn write_app(target_root: &Path, id: &str, version: &str) {
+    fn write_plugin(target_root: &Path, id: &str, version: &str) {
         let dir = target_root.join(id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1449,19 +1450,19 @@ mod pack_export_tests {
     #[test]
     fn pack_export_writes_valid_pack_to_path() {
         let target = tempfile::tempdir().unwrap();
-        write_app(target.path(), "alpha-app", "0.1.0");
-        write_app(target.path(), "beta-app", "0.2.0");
+        write_plugin(target.path(), "alpha-app", "0.1.0");
+        write_plugin(target.path(), "beta-app", "0.2.0");
 
         let dest = target.path().join("out.toml");
         let n = export_pack(target.path(), &dest).expect("export should succeed");
-        assert_eq!(n, 2, "should export both apps");
+        assert_eq!(n, 2, "should export both plugins");
         let text = std::fs::read_to_string(&dest).expect("dest written");
         // Re-parse the written file via the real Pack parser to prove it's
         // shape-valid and not just textually plausible.
         let parsed = Pack::from_toml_str(&text).expect("written pack must round-trip");
-        assert_eq!(parsed.schema_version, 1);
-        assert_eq!(parsed.apps.len(), 2);
-        let ids: Vec<&str> = parsed.apps.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.plugins.len(), 2);
+        let ids: Vec<&str> = parsed.plugins.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"alpha-app"));
         assert!(ids.contains(&"beta-app"));
     }
@@ -1469,13 +1470,13 @@ mod pack_export_tests {
     #[test]
     fn pack_export_uses_local_scheme_for_non_git_apps() {
         let target = tempfile::tempdir().unwrap();
-        write_app(target.path(), "bundled-thing", "1.0.0");
+        write_plugin(target.path(), "bundled-thing", "1.0.0");
         // No `.git/` dir → infer_source_and_version must produce `local:`.
         let dest = target.path().join("out.toml");
         export_pack(target.path(), &dest).unwrap();
         let parsed = Pack::from_toml_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
         let entry = parsed
-            .apps
+            .plugins
             .iter()
             .find(|a| a.id == "bundled-thing")
             .expect("bundled-thing exported");
@@ -1489,18 +1490,18 @@ mod pack_export_tests {
     #[test]
     fn pack_export_skips_staging_dirs_and_non_apps() {
         let target = tempfile::tempdir().unwrap();
-        write_app(target.path(), "real-app", "0.0.1");
+        write_plugin(target.path(), "real-app", "0.0.1");
         // Staging dir leftover from a crashed install — must be skipped.
         std::fs::create_dir_all(target.path().join(".tmp-install-1234-9999/clone")).unwrap();
-        // A directory that isn't a Plexi app at all (no manifest) — also skipped.
+        // A directory that isn't a Plexi plugin at all (no manifest) — also skipped.
         std::fs::create_dir_all(target.path().join("no-manifest-here")).unwrap();
 
         let dest = target.path().join("out.toml");
         let n = export_pack(target.path(), &dest).unwrap();
-        assert_eq!(n, 1, "only the real app should be exported");
+        assert_eq!(n, 1, "only the real plugin should be exported");
         let parsed = Pack::from_toml_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
-        assert_eq!(parsed.apps.len(), 1);
-        assert_eq!(parsed.apps[0].id, "real-app");
+        assert_eq!(parsed.plugins.len(), 1);
+        assert_eq!(parsed.plugins[0].id, "real-app");
     }
 
     #[test]
@@ -1521,7 +1522,7 @@ mod core_pack_tests {
     use super::test_support::MockCloner;
     use super::*;
 
-    fn plant_python_app(root: &Path, id: &str, source: &str) -> PathBuf {
+    fn plant_python_plugin(root: &Path, id: &str, source: &str) -> PathBuf {
         let plugin_dir = root.join(id);
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
@@ -1539,12 +1540,12 @@ mod core_pack_tests {
     fn reconcile_quarantines_only_identified_orphaned_pre_v3_first_party_apps() {
         let target = tempfile::tempdir().unwrap();
         let legacy = "from plexi_sdk import App, RenderContext\nclass Old(App): pass\n";
-        let stale_quick_note = plant_python_app(target.path(), "quick-note", legacy);
-        let stale_timer = plant_python_app(target.path(), "timer", legacy);
-        let live_core = plant_python_app(target.path(), "balls", legacy);
-        let user_app = plant_python_app(target.path(), "my-private-app", legacy);
-        let marketplace_app = plant_python_app(target.path(), "marketplace-legacy", legacy);
-        let current_v3 = plant_python_app(
+        let stale_quick_note = plant_python_plugin(target.path(), "quick-note", legacy);
+        let stale_timer = plant_python_plugin(target.path(), "timer", legacy);
+        let live_core = plant_python_plugin(target.path(), "balls", legacy);
+        let user_plugin = plant_python_plugin(target.path(), "my-private-app", legacy);
+        let marketplace_plugin = plant_python_plugin(target.path(), "marketplace-legacy", legacy);
+        let current_v3 = plant_python_plugin(
             target.path(),
             "calendar",
             "from plexi_sdk import log, state\nstate.get('today')\n",
@@ -1561,7 +1562,7 @@ mod core_pack_tests {
         assert!(!stale_timer.exists());
         assert!(target.path().join(".plexi-quarantine-pre-v3/quick-note").exists());
         assert!(target.path().join(".plexi-quarantine-pre-v3/timer").exists());
-        for preserved in [&live_core, &user_app, &marketplace_app, &current_v3] {
+        for preserved in [&live_core, &user_plugin, &marketplace_plugin, &current_v3] {
             assert!(preserved.exists(), "must preserve {}", preserved.display());
         }
         assert!(
@@ -1573,7 +1574,7 @@ mod core_pack_tests {
     #[test]
     fn orphaned_pre_v3_dry_run_candidates_leave_directories_unchanged() {
         let target = tempfile::tempdir().unwrap();
-        let stale = plant_python_app(
+        let stale = plant_python_plugin(
             target.path(),
             "quick-note",
             "from plexi_sdk import App, RenderContext\nclass Old(App): pass\n",
@@ -1592,7 +1593,7 @@ mod core_pack_tests {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
 
-        // First call: all apps are missing → should install them.
+        // First call: all plugins are missing → should install them.
         let first = apply_core_pack_always(&cloner, target.path());
         assert!(
             !first.is_empty(),
@@ -1607,7 +1608,7 @@ mod core_pack_tests {
             );
         }
 
-        // Second call: apps are already present → no Installed outcomes.
+        // Second call: plugins are already present → no Installed outcomes.
         let second = apply_core_pack_always(&cloner, target.path());
         let n_installed = second
             .iter()
@@ -1615,7 +1616,7 @@ mod core_pack_tests {
             .count();
         assert_eq!(
             n_installed, 0,
-            "core pack must not re-install already-present apps"
+            "core pack must not re-install already-present plugins"
         );
     }
 
@@ -1636,7 +1637,7 @@ mod core_pack_tests {
         let second = apply_examples_pack_if_empty(&cloner, target.path());
         assert!(
             second.is_none(),
-            "examples pack must NOT re-apply when apps dir is non-empty"
+            "examples pack must NOT re-apply when plugins dir is non-empty"
         );
     }
 
@@ -1645,10 +1646,10 @@ mod core_pack_tests {
         let pack = Pack::from_toml_str(CORE_PACK_TOML)
             .expect("bundled core pack must parse against the current schema");
         assert!(
-            !pack.apps.is_empty(),
-            "core pack should list at least one app"
+            !pack.plugins.is_empty(),
+            "core pack should list at least one plugin"
         );
-        for entry in &pack.apps {
+        for entry in &pack.plugins {
             assert!(
                 parse_source_spec(&entry.source).is_ok(),
                 "core pack entry '{}' has invalid source '{}'",
@@ -1659,10 +1660,10 @@ mod core_pack_tests {
         let examples_pack = Pack::from_toml_str(EXAMPLES_PACK_TOML)
             .expect("bundled examples pack must parse against the current schema");
         assert!(
-            !examples_pack.apps.is_empty(),
-            "examples pack should list at least one app"
+            !examples_pack.plugins.is_empty(),
+            "examples pack should list at least one plugin"
         );
-        for entry in &examples_pack.apps {
+        for entry in &examples_pack.plugins {
             assert!(
                 parse_source_spec(&entry.source).is_ok(),
                 "examples pack entry '{}' has invalid source '{}'",
@@ -1673,14 +1674,14 @@ mod core_pack_tests {
     }
 
     /// Drift guard (stint 0391/0393): every `local:` entry in a bundled pack
-    /// must resolve to a real directory under `apps/` (recursively — pack
-    /// entries may point at `apps/examples/<id>` etc, not just top-level
-    /// `apps/<id>`) whose `manifest.toml` id matches the pack entry id. A
-    /// pack entry that names an app which exists nowhere on disk fails
+    /// must resolve to a real directory under `plugins/` (recursively — pack
+    /// entries may point at `plugins/examples/<id>` etc, not just top-level
+    /// `plugins/<id>`) whose `manifest.toml` id matches the pack entry id. A
+    /// pack entry that names an plugin which exists nowhere on disk fails
     /// silently at install time otherwise (stint 0393: `packs/examples.toml`
     /// carried four such phantom entries for two weeks before anyone
     /// installed on a fresh profile and hit the failure).
-    fn assert_pack_entry_resolves_to_bundled_app(entry: &PackPlugin, pack_label: &str) {
+    fn assert_pack_entry_resolves_to_bundled_plugin(entry: &PackPlugin, pack_label: &str) {
         let spec = parse_source_spec(&entry.source).unwrap_or_else(|e| {
             panic!("{pack_label} entry '{}' has invalid source: {e}", entry.id)
         });
@@ -1694,25 +1695,25 @@ mod core_pack_tests {
             entry.id
         );
         let dir = find_embedded_plugin_dir(&name).unwrap_or_else(|| {
-            panic!("{pack_label} app '{name}' has no directory under apps/ (checked recursively)")
+            panic!("{pack_label} plugin '{name}' has no directory under plugins/ (checked recursively)")
         });
         let manifest_text = dir
             .get_file(format!("{}/manifest.toml", dir.path().display()))
             .and_then(|f| f.contents_utf8())
-            .unwrap_or_else(|| panic!("{pack_label} app '{name}' has no manifest.toml"));
+            .unwrap_or_else(|| panic!("{pack_label} plugin '{name}' has no manifest.toml"));
         let manifest: PluginManifest = toml::from_str(manifest_text)
-            .unwrap_or_else(|e| panic!("{pack_label} app '{name}' manifest invalid: {e}"));
+            .unwrap_or_else(|e| panic!("{pack_label} plugin '{name}' manifest invalid: {e}"));
         assert_eq!(
             manifest.plugin.id, entry.id,
-            "{pack_label} app '{name}' manifest id '{}' must match pack id '{}'",
+            "{pack_label} plugin '{name}' manifest id '{}' must match pack id '{}'",
             manifest.plugin.id, entry.id
         );
     }
 
-    /// Find a directory named `name` anywhere under the embedded `apps/`
+    /// Find a directory named `name` anywhere under the embedded `plugins/`
     /// tree (not just top-level). `include_dir::Dir::get_dir` only matches
     /// an exact relative path, so a bare id like `"coding-agent"` would miss
-    /// `apps/examples/coding-agent` — this walks every directory to find it
+    /// `plugins/examples/coding-agent` — this walks every directory to find it
     /// by its final path component instead.
     fn find_embedded_plugin_dir<'a>(name: &str) -> Option<&'a include_dir::Dir<'a>> {
         fn walk<'a>(dir: &'a include_dir::Dir<'a>, name: &str) -> Option<&'a include_dir::Dir<'a>> {
@@ -1730,26 +1731,26 @@ mod core_pack_tests {
     }
 
     /// Drift guard (stint 0296): `packs/core.toml` is the single source of
-    /// truth for the maintained/core app set. Every entry must resolve to a
-    /// bundled app directory whose manifest id matches, and the installer must
-    /// not carry a competing hardcoded list of those same apps.
+    /// truth for the maintained/core plugin set. Every entry must resolve to a
+    /// bundled plugin directory whose manifest id matches, and the installer must
+    /// not carry a competing hardcoded list of those same plugins.
     #[test]
     fn core_pack_is_canonical_and_consistent() {
         let pack = Pack::from_toml_str(CORE_PACK_TOML).expect("core pack must parse");
         assert!(
-            !pack.apps.is_empty(),
-            "core pack must list at least one app"
+            !pack.plugins.is_empty(),
+            "core pack must list at least one plugin"
         );
 
-        for entry in &pack.apps {
-            assert_pack_entry_resolves_to_bundled_app(entry, "core pack");
+        for entry in &pack.plugins {
+            assert_pack_entry_resolves_to_bundled_plugin(entry, "core pack");
         }
 
         // The maintained set lives ONLY in packs/core.toml. install.sh must
-        // never re-enumerate it: it may only rsync `apps/` or `apps/dev/`
-        // wholesale, never a specific `apps/<core-id>/` path.
+        // never re-enumerate it: it may only rsync `plugins/` or `apps/dev/`
+        // wholesale, never a specific `plugins/<core-id>/` path.
         let install_sh = include_str!("../../scripts/install.sh");
-        for entry in &pack.apps {
+        for entry in &pack.plugins {
             let needle = format!("apps/{}/", entry.id);
             assert!(
                 !install_sh.contains(&needle),
@@ -1759,20 +1760,20 @@ mod core_pack_tests {
         }
     }
 
-    /// Drift guard (stint 0393): every `packs/*.toml` entry must name an app
+    /// Drift guard (stint 0393): every `packs/*.toml` entry must name an plugin
     /// that actually exists on disk. `packs/examples.toml` previously carried
     /// four phantom entries (`typing-tutor`, `mind-map`, `gh-projects`,
-    /// `calendar`) that named apps existing nowhere in the repo — silent
+    /// `calendar`) that named plugins existing nowhere in the repo — silent
     /// until the moment a fresh profile tried to install them.
     #[test]
     fn examples_pack_entries_exist_on_disk() {
         let pack = Pack::from_toml_str(EXAMPLES_PACK_TOML).expect("examples pack must parse");
         assert!(
-            !pack.apps.is_empty(),
-            "examples pack must list at least one app"
+            !pack.plugins.is_empty(),
+            "examples pack must list at least one plugin"
         );
-        for entry in &pack.apps {
-            assert_pack_entry_resolves_to_bundled_app(entry, "examples pack");
+        for entry in &pack.plugins {
+            assert_pack_entry_resolves_to_bundled_plugin(entry, "examples pack");
         }
     }
 
@@ -1831,7 +1832,7 @@ mod workspace_pack_tests {
                 .join("my-tool")
                 .join("manifest.toml")
                 .exists(),
-            "app should be present in workspace apps dir at {}",
+            "plugin should be present in workspace plugins dir at {}",
             workspace_apps.display()
         );
     }

@@ -1,11 +1,11 @@
 //! Live description of this build. The Assistant's `host.introspect` tool and
 //! `plexi plugin info` both read from here. Nothing in this module is a maintained
 //! help document: command names come from the clap tree, plugin tools from the
-//! installed app's source, panes and permission rows from the caller.
+//! installed plugin's source, panes and permission rows from the caller.
 
 use std::path::Path;
 
-/// A tool exposed by a running app pane. Merged onto the declared list.
+/// A tool exposed by a running view pane. Merged onto the declared list.
 #[derive(Debug, Clone)]
 pub struct LiveTool {
     pub plugin_id: String,
@@ -87,7 +87,7 @@ fn ungrounded_citations(answer: &str, evidence: &str) -> Vec<String> {
     bad
 }
 
-/// CLI tree, installed apps, panes, and permission rows. `query` keeps only
+/// CLI tree, installed plugins, panes, and permission rows. `query` keeps only
 /// rows whose text contains it. With no query, the CLI section is the
 /// top-level commands; nested commands appear when a query names them.
 pub fn assemble(
@@ -112,11 +112,11 @@ pub fn assemble(
             })
             .collect::<Vec<_>>(),
     };
-    let mut apps = installed_apps(plugins_dir);
-    merge_live(&mut apps, live_tools);
+    let mut plugins = installed_apps(plugins_dir);
+    merge_live(&mut plugins, live_tools);
     if let Some(query) = query {
         if !contains_query("plugins", query) {
-            apps.retain(|app| app_matches(app, query));
+            plugins.retain(|app| plugin_matches(app, query));
         }
     }
     let panes = rows_for("panes", panes, query);
@@ -125,7 +125,7 @@ pub fn assemble(
         "ok": true,
         "query": query,
         "cli": cli,
-        "plugins": apps,
+        "plugins": plugins,
         "panes": panes,
         "permissions": permissions,
     })
@@ -186,15 +186,15 @@ fn visible_args(cmd: &clap::Command) -> Vec<String> {
 }
 
 fn installed_apps(plugins_dir: &Path) -> Vec<InstalledPlugin> {
-    let mut apps = Vec::new();
+    let mut plugins = Vec::new();
     let entries = match std::fs::read_dir(plugins_dir) {
         Ok(entries) => entries,
         Err(error) => {
             log::info!(
-                "introspect: no installed apps at {}: {error}",
+                "introspect: no installed plugins at {}: {error}",
                 plugins_dir.display()
             );
-            return apps;
+            return plugins;
         }
     };
     for entry in entries.flatten() {
@@ -215,28 +215,28 @@ fn installed_apps(plugins_dir: &Path) -> Vec<InstalledPlugin> {
         };
         let mut tools = Vec::new();
         walk_py(&path, &mut tools);
-        apps.push(InstalledPlugin {
+        plugins.push(InstalledPlugin {
             id: manifest.plugin.id,
             name: manifest.plugin.name,
             description: manifest.plugin.description,
             tools,
         });
     }
-    apps.sort_by(|left, right| left.id.cmp(&right.id));
-    apps
+    plugins.sort_by(|left, right| left.id.cmp(&right.id));
+    plugins
 }
 
-fn merge_live(apps: &mut Vec<InstalledPlugin>, live_tools: &[LiveTool]) {
+fn merge_live(plugins: &mut Vec<InstalledPlugin>, live_tools: &[LiveTool]) {
     for tool in live_tools {
-        if !apps.iter().any(|app| app.id == tool.plugin_id) {
-            apps.push(InstalledPlugin {
+        if !plugins.iter().any(|app| app.id == tool.plugin_id) {
+            plugins.push(InstalledPlugin {
                 id: tool.plugin_id.clone(),
                 name: tool.plugin_id.clone(),
                 description: String::new(),
                 tools: Vec::new(),
             });
         }
-        let Some(app) = apps.iter_mut().find(|app| app.id == tool.plugin_id) else {
+        let Some(app) = plugins.iter_mut().find(|app| app.id == tool.plugin_id) else {
             continue;
         };
         if let Some(existing) = app.tools.iter_mut().find(|row| row.name == tool.name) {
@@ -252,7 +252,7 @@ fn merge_live(apps: &mut Vec<InstalledPlugin>, live_tools: &[LiveTool]) {
             });
         }
     }
-    apps.sort_by(|left, right| left.id.cmp(&right.id));
+    plugins.sort_by(|left, right| left.id.cmp(&right.id));
 }
 
 fn walk_py(dir: &Path, out: &mut Vec<DeclaredTool>) {
@@ -353,7 +353,7 @@ fn strings_before_options(body: &str) -> (String, String) {
     (name, description)
 }
 
-fn app_matches(app: &InstalledPlugin, query: &str) -> bool {
+fn plugin_matches(app: &InstalledPlugin, query: &str) -> bool {
     contains_query(&app.id, query)
         || contains_query(&app.name, query)
         || contains_query(&app.description, query)
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn new_app_tools_appear_and_reenable_answer_cites_only_the_tool() {
+    fn new_plugin_tools_appear_and_reenable_answer_cites_only_the_tool() {
         let dir = tempfile::tempdir().unwrap();
         let app = dir.path().join("widget");
         std::fs::create_dir(&app).unwrap();
@@ -446,7 +446,7 @@ def _ping():
 
         let panes = vec![serde_json::json!({
             "id": 4,
-            "type": "app",
+            "type": "view",
             "title": "Permissions",
             "plugin_id": "permissions"
         })];
