@@ -204,7 +204,7 @@ suite = false               # optional, default true. false = excluded from
 open = { kind = "process", path = "apps/dev/balls", as = "balls", args = ["--state", '{"balls": 3}'] }
 
 [[steps]]
-wait_app_frame = { target = "balls", timeout_s = 15.0 }
+wait_view_frame = { target = "balls", timeout_s = 15.0 }
 
 [[steps]]
 assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contains = "balls" }
@@ -240,7 +240,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
 | `push_to_subcontext = "Name"` | Push the focused pane into a new subcontext (creates a portal). |
-| `wait_app_frame = { target = "<handle>", timeout_s = N }` | Wait for a process app's first committed frame. Fails with the app's stderr on crash or timeout. |
+| `wait_view_frame = { target = "<handle>", timeout_s = N }` | Wait for a process app's first committed frame. Fails with the app's stderr on crash or timeout. |
 | `run_steps = N` | Advance N harness frames. |
 | `assert = { ... }` | Structured assertions — see below. |
 | `expect = { target = "<handle>", after_key = "left", node_changes = "paddle", timeout_s = 2.0 }` | Deliver input normally and poll semantic state. On input timeout the stable failure code is `input_no_effect`; without input it is a normal eventual assertion. |

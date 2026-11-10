@@ -1,4 +1,4 @@
-use crate::app::view_trait::{View, ViewRenderContext, KeyDisposition};
+use crate::app::view_trait::{KeyDisposition, View, ViewRenderContext};
 use crate::ui::button::{self, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::{labels, row, style};
@@ -760,7 +760,9 @@ mod tests {
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_view_pane(
-                Box::new(crate::file_browser::FileBrowserView::new(root.path().into())),
+                Box::new(crate::file_browser::FileBrowserView::new(
+                    root.path().into(),
+                )),
                 PluginPermissions::builtin(),
                 root.path().into(),
                 None,
@@ -819,7 +821,10 @@ mod tests {
         h.save_screenshot(&crate::ui_tests::evidence_png!("_narrow"))
             .unwrap();
         for _ in 0..2 {
-            h.harness().input_mut().events.push(egui::Event::Text("j".into()));
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::Text("j".into()));
             h.run_steps(2);
         }
         h.harness().key_press(egui::Key::Enter);

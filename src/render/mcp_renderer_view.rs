@@ -1,7 +1,7 @@
 //! Native, broker-admitted MCP explorer. Transport is host-owned and serviced off paint.
 use super::{descriptor_widgets, mcp_descriptor};
-use crate::app::view_trait::{View, ViewRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::Command;
+use crate::app::view_trait::{KeyDisposition, View, ViewRenderContext};
 use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
 use crate::broker::{ActorScope, ActorType, TargetType};
 use crate::host::mcp_client::{self, McpConnection, McpLine, McpServerConfig, McpServerRegistry};

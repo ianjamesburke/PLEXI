@@ -283,13 +283,11 @@ pub enum TrustLabel {
 }
 
 impl TrustLabel {
-    /// Honest display string. Never claims sandboxing — none exists in v1.
+    /// Review provenance label; runtime isolation is described separately.
     pub fn display_str(self) -> &'static str {
         match self {
             Self::FirstPartyCore => "Bundled",
-            Self::PythonUnreviewed => {
-                "Unreviewed Python process — runs with your full user permissions"
-            }
+            Self::PythonUnreviewed => "Unreviewed Python plugin",
             Self::ReviewedNative => "Reviewed Python plugin — human-reviewed",
             Self::SandboxedWasm => "Sandboxed WASM — scoped host imports are capability-gated",
         }
@@ -1723,7 +1721,7 @@ values = ["hi"]
         );
         assert_eq!(
             TrustLabel::PythonUnreviewed.display_str(),
-            "Unreviewed Python process — runs with your full user permissions"
+            "Unreviewed Python plugin"
         );
     }
 

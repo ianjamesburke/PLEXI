@@ -7,8 +7,8 @@
 //! chrome bands are active.
 
 use crate::app::view_trait::ViewRenderContext;
-use crate::protocol::PlexiEvent;
 use crate::host::pane::ViewPane;
+use crate::protocol::PlexiEvent;
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
 use egui::RichText;
@@ -143,7 +143,10 @@ pub fn render(
     };
     let content_rect = ui.available_rect_before_wrap();
     view_pane.runtime.ui(ui, &ctx, pending_click);
-    if matches!(view_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
+    if matches!(
+        view_pane.runtime,
+        crate::host::pane::ViewRuntime::Builtin(_)
+    ) {
         if let Some(state) = ui.ctx().viewport(|viewport| {
             viewport
                 .this_pass

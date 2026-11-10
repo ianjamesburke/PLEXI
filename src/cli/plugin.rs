@@ -121,7 +121,10 @@ pub fn plugin_init(
     };
 
     let placement = if global { "global" } else { "workspace" };
-    log::info!("plugin_init: placement={placement} path={}", plugin_dir.display());
+    log::info!(
+        "plugin_init: placement={placement} path={}",
+        plugin_dir.display()
+    );
 
     if plugin_dir.exists() {
         log::info!(
@@ -666,7 +669,10 @@ fn scaffold_wasm_view(plugin_dir: &std::path::Path, name: &str) -> io::Result<()
         plugin_dir.join("AUTHORING.md"),
         include_str!("../../sdk/wasm/AUTHORING.md"),
     )?;
-    std::fs::write(plugin_dir.join(".gitignore"), "/target/\n**/src/bindings.rs\n")?;
+    std::fs::write(
+        plugin_dir.join(".gitignore"),
+        "/target/\n**/src/bindings.rs\n",
+    )?;
 
     let embedded = plugin_dir.join(".plexi-sdk");
     let embedded_sdk = embedded.join("plexi-wasm-sdk");
@@ -714,7 +720,9 @@ pub fn plugin_uninstall(id: &str, assume_yes: bool) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let Some(installed) = registry.get(id) else {
-        eprintln!("error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins");
+        eprintln!(
+            "error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins"
+        );
         return 1;
     };
     let plugin_dir = installed.plugin_dir.clone();
@@ -731,7 +739,9 @@ pub fn plugin_uninstall(id: &str, assume_yes: bool) -> i32 {
     );
     let core_ids = crate::cli::install_host::core_pack_ids();
     if core_ids.contains(id) {
-        eprintln!("note: '{id}' is a core plugin — it will be re-installed on the next Plexi launch");
+        eprintln!(
+            "note: '{id}' is a core plugin — it will be re-installed on the next Plexi launch"
+        );
     }
     if !assume_yes {
         eprint!("Remove plugin '{id}'? [y/N]: ");
@@ -1174,7 +1184,9 @@ fn plugin_install_with_pin_inner(
     let manifest_path = src.join("manifest.toml");
     if !manifest_path.exists() {
         eprintln!("error: no manifest.toml found in {}", src.display());
-        eprintln!("  Is this a Plexi plugin directory? Run `plexi plugin init <name>` to scaffold one.");
+        eprintln!(
+            "  Is this a Plexi plugin directory? Run `plexi plugin init <name>` to scaffold one."
+        );
         return 1;
     }
     let manifest_str = match std::fs::read_to_string(&manifest_path) {
@@ -1659,7 +1671,9 @@ pub fn plugin_info(id: &str) -> i32 {
         &crate::app::registry::plugins_dir(),
     );
     let Some(installed) = registry.get(id) else {
-        eprintln!("error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins");
+        eprintln!(
+            "error: plugin '{id}' not found — run `plexi plugin list` to see installed plugins"
+        );
         return 1;
     };
     let plugin_dir = installed
@@ -1688,12 +1702,22 @@ pub fn plugin_list() -> i32 {
 /// Discover declared views without starting a runtime.
 pub fn view_list(json: bool) -> i32 {
     if super::host::plugin_mode_core_only() {
-        println!("{}", if json { "[]" } else { "No views available: core-only mode is on." });
+        println!(
+            "{}",
+            if json {
+                "[]"
+            } else {
+                "No views available: core-only mode is on."
+            }
+        );
         return 0;
     }
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
-        Err(error) => { eprintln!("error: view list could not read cwd: {error}"); return 1; }
+        Err(error) => {
+            eprintln!("error: view list could not read cwd: {error}");
+            return 1;
+        }
     };
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let mut rows = Vec::new();
@@ -1702,7 +1726,16 @@ pub fn view_list(json: bool) -> i32 {
             if json {
                 rows.push(serde_json::json!({"id": view.id, "plugin_id": plugin.manifest.id, "name": plugin.manifest.name, "default": view.default || plugin.contributes.views.len() == 1}));
             } else {
-                println!("{}\t{}{}", view.id, plugin.manifest.name, if view.default || plugin.contributes.views.len() == 1 { " (default)" } else { "" });
+                println!(
+                    "{}\t{}{}",
+                    view.id,
+                    plugin.manifest.name,
+                    if view.default || plugin.contributes.views.len() == 1 {
+                        " (default)"
+                    } else {
+                        ""
+                    }
+                );
             }
         }
     }
@@ -1730,7 +1763,8 @@ pub fn plugin_prune_cli(dry_run: bool) -> i32 {
         }
         return 0;
     }
-    let removed = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&plugins_dir);
+    let removed =
+        crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&plugins_dir);
     let all_removed = removed.len() == candidates.len();
     for path in removed {
         println!("quarantined {}", path.display());
@@ -1793,9 +1827,11 @@ pub fn view_render(
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (plugin_id, plugin_dir, plugin_bin, capabilities, allowed_hosts) = if std::path::Path::new(plugin)
-        .components()
-        .count()
+    let (plugin_id, plugin_dir, plugin_bin, capabilities, allowed_hosts) = if std::path::Path::new(
+        plugin,
+    )
+    .components()
+    .count()
         > 1
         || std::path::Path::new(plugin).is_dir()
     {
@@ -1815,7 +1851,10 @@ pub fn view_render(
         let manifest_str = match std::fs::read_to_string(&manifest_path) {
             Ok(s) => s,
             Err(e) => {
-                log::warn!("view_render: no manifest.toml in {}: {e}", plugin_dir.display());
+                log::warn!(
+                    "view_render: no manifest.toml in {}: {e}",
+                    plugin_dir.display()
+                );
                 eprintln!("error: no manifest.toml in {}: {e}", plugin_dir.display());
                 eprintln!(
                     "  Is this a Plexi plugin directory? Run `plexi plugin init <name>` to scaffold one."
@@ -1842,7 +1881,10 @@ pub fn view_render(
             );
             return 1;
         }
-        if let Err(error) = manifest.contributes.resolve_view(&manifest.plugin.id, &manifest.plugin.id) {
+        if let Err(error) = manifest
+            .contributes
+            .resolve_view(&manifest.plugin.id, &manifest.plugin.id)
+        {
             eprintln!("error: {error}");
             return 1;
         }
@@ -1855,7 +1897,10 @@ pub fn view_render(
             );
             return 1;
         }
-        log::info!("view_render[{}]: loaded from path '{plugin}'", manifest.plugin.id);
+        log::info!(
+            "view_render[{}]: loaded from path '{plugin}'",
+            manifest.plugin.id
+        );
         (
             manifest.plugin.id,
             plugin_dir,
@@ -1867,7 +1912,9 @@ pub fn view_render(
         // ID-based: registry lookup
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let registry = crate::app::registry::PluginRegistry::load(&cwd);
-        match registry.list().into_iter().find(|a| a.manifest.id == plugin || a.contributes.views.iter().any(|view| view.id == plugin)) {
+        match registry.list().into_iter().find(|a| {
+            a.manifest.id == plugin || a.contributes.views.iter().any(|view| view.id == plugin)
+        }) {
             Some(a) => {
                 if let Err(error) = a.contributes.resolve_view(&a.manifest.id, plugin) {
                     eprintln!("error: {error}");
@@ -2096,7 +2143,10 @@ pub fn plugin_update_cli(id: Option<&str>) -> i32 {
 /// The host delivers a `PlexiEvent::Action { action, args }` to the target view pane.
 /// Returns 0 on success, 1 on error.
 pub fn pane_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
-    log::info!("pane_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
+    log::info!(
+        "pane_action:cli: pane_id={pane_id} action={action:?} argc={}",
+        args.len()
+    );
 
     let mut payload = serde_json::json!({
         "type": "send_pane_action",
@@ -2149,7 +2199,9 @@ pub fn plugin_call_cli(
     let caller_pane_id = std::env::var("PLEXI_PANE_ID")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok());
-    log::info!("plugin_call:cli: plugin={plugin_id:?} tool={tool:?} caller_pane={caller_pane_id:?}");
+    log::info!(
+        "plugin_call:cli: plugin={plugin_id:?} tool={tool:?} caller_pane={caller_pane_id:?}"
+    );
     let mut payload = serde_json::json!({
         "type": "call_plugin_tool",
         "plugin_id": plugin_id,
@@ -3260,7 +3312,8 @@ mod scaffold_marketplace_tests {
             "{\n  \"count\": 3\n}\n"
         );
 
-        let metadata_raw = std::fs::read_to_string(plugin_dir.join(SCAFFOLD_METADATA_FILE)).unwrap();
+        let metadata_raw =
+            std::fs::read_to_string(plugin_dir.join(SCAFFOLD_METADATA_FILE)).unwrap();
         let metadata: toml::Value = toml::from_str(&metadata_raw).unwrap();
         assert_eq!(
             metadata
@@ -3322,7 +3375,8 @@ mod scaffold_marketplace_tests {
         let tools_src = read("plugin/tools.py");
         let ui_src = read("plugin/ui.py");
         assert!(
-            !plugin_dir.join("plugin_tools.py").exists() && !plugin_dir.join("plugin_ui.py").exists(),
+            !plugin_dir.join("plugin_tools.py").exists()
+                && !plugin_dir.join("plugin_ui.py").exists(),
             "v5 scaffold must not write the flat v4 modules"
         );
         assert!(
@@ -3522,7 +3576,7 @@ mod plugin_init_collision_tests {
 #[cfg(test)]
 mod plugin_info_honesty_tests {
     use super::format_plugin_info;
-    use crate::app::registry::{PluginCapabilities, PluginIdentity, ManifestType};
+    use crate::app::registry::{ManifestType, PluginCapabilities, PluginIdentity};
     use crate::plexi_ai::tool_dispatch::LiveToolEntry;
 
     fn sample_manifest(id: &str) -> PluginIdentity {

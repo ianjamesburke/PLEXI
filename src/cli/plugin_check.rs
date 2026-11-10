@@ -1,6 +1,6 @@
 use crate::app::registry::PluginManifest;
-use crate::host::wasm_view::UiTree;
 use crate::host::wasm_python::PythonLaunchConfig;
+use crate::host::wasm_view::UiTree;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -192,7 +192,10 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
         }
     };
 
-    println!("✓ manifest — {} ({})", manifest.plugin.id, manifest.plugin.name);
+    println!(
+        "✓ manifest — {} ({})",
+        manifest.plugin.id, manifest.plugin.name
+    );
     // #0336: reject an invalid `[launch] on_launch` here, the same way
     // `PluginRegistry::load_plugin` does at install time. Without this, an author gets
     // a green `plugin check` and then a silent runtime skip (the launch resolver
@@ -226,7 +229,11 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
 
     let is_python_entry = entry_path.extension().and_then(|ext| ext.to_str()) == Some("py");
     if is_python_entry {
-        match analyze_python_entry(&manifest.plugin.id, &entry_path, &manifest.plugin.dependencies) {
+        match analyze_python_entry(
+            &manifest.plugin.id,
+            &entry_path,
+            &manifest.plugin.dependencies,
+        ) {
             Ok(analysis) => {
                 if analysis.has_init && analysis.has_update && analysis.has_view {
                     println!("✓ SDK — module-level init/update/view");
@@ -251,7 +258,11 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
         // template-version split that spared pre-gate scaffolds existed only
         // to land the gate without turning the maintained set red overnight;
         // that set is annotated now, so there is no warning tier left.
-        match run_python_type_check(&manifest.plugin.id, &entry_path, &manifest.plugin.dependencies) {
+        match run_python_type_check(
+            &manifest.plugin.id,
+            &entry_path,
+            &manifest.plugin.dependencies,
+        ) {
             Ok(TypeCheckOutcome::Clean) => println!("✓ types — mypy clean"),
             Ok(TypeCheckOutcome::Findings(findings)) => {
                 errors.push(format!("types — mypy found errors:\n{findings}"));
@@ -884,9 +895,12 @@ fn run_python_type_check_with(
     // The venv resolver can hand back paths relative to the caller's cwd;
     // the mypy run below changes cwd to the plugin dir, so resolve everything
     // to absolute paths first.
-    let entry_path = &entry_path
-        .canonicalize()
-        .map_err(|e| format!("could not resolve plugin entry {}: {e}", entry_path.display()))?;
+    let entry_path = &entry_path.canonicalize().map_err(|e| {
+        format!(
+            "could not resolve plugin entry {}: {e}",
+            entry_path.display()
+        )
+    })?;
     let python = &python.canonicalize().map_err(|e| {
         format!(
             "could not resolve plugin venv python {}: {e}",

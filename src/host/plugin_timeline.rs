@@ -18,8 +18,8 @@
 //! so the runtime knows whether to inject context, trigger a turn, run an
 //! ambient workflow, or prompt first. Until then deliveries accumulate here.
 
-use crate::protocol::{PluginEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{ActorType, GrantDuration};
+use crate::protocol::{EventStreamDecl, PayloadMode, PluginEventActor, TriggerMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -334,7 +334,12 @@ impl PluginTimeline {
         self.declare_streams_inner(context_id, plugin_id, decls)
     }
 
-    fn declare_streams_inner(&mut self, context_id: u64, plugin_id: &str, decls: Vec<EventStreamDecl>) -> Result<Vec<String>, String> {
+    fn declare_streams_inner(
+        &mut self,
+        context_id: u64,
+        plugin_id: &str,
+        decls: Vec<EventStreamDecl>,
+    ) -> Result<Vec<String>, String> {
         if decls.is_empty() {
             return Err("declare_event_streams: empty stream list".to_string());
         }
@@ -419,7 +424,13 @@ impl PluginTimeline {
         self.record_event_inner(context_id, plugin_id, pane_id, emitted)
     }
 
-    fn record_event_inner(&mut self, context_id: u64, plugin_id: &str, pane_id: u64, emitted: EmittedEvent) -> Result<EventOutcome, String> {
+    fn record_event_inner(
+        &mut self,
+        context_id: u64,
+        plugin_id: &str,
+        pane_id: u64,
+        emitted: EmittedEvent,
+    ) -> Result<EventOutcome, String> {
         // Required-field validation (spec: event name, actor, summary,
         // resource id, revision after).
         if emitted.event.trim().is_empty() {
@@ -540,7 +551,11 @@ impl PluginTimeline {
 
     /// Append to the ring, evicting the oldest event once it is full.
     fn push_event(&mut self, record: PluginEventRecord) {
-        let cap = if self.event_cap == 0 { EVENT_RING_CAP } else { self.event_cap };
+        let cap = if self.event_cap == 0 {
+            EVENT_RING_CAP
+        } else {
+            self.event_cap
+        };
         self.events.push_back(record);
         let mut evicted = 0usize;
         while self.events.len() > cap {
@@ -571,11 +586,15 @@ impl PluginTimeline {
         use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
         if !self.has_stream(context_id, PUBLISHER, STREAM) {
             let schema = schemars::schema_for!(crate::host::pane_lifecycle::PaneLifecycleEvent);
-            self.declare_streams_inner(context_id, PUBLISHER, vec![EventStreamDecl {
-                name: STREAM.into(),
-                schema: serde_json::to_value(schema).map_err(|error| error.to_string())?,
-                description: Some("Host pane lifecycle facts; payload schema_version=1".into()),
-            }])?;
+            self.declare_streams_inner(
+                context_id,
+                PUBLISHER,
+                vec![EventStreamDecl {
+                    name: STREAM.into(),
+                    schema: serde_json::to_value(schema).map_err(|error| error.to_string())?,
+                    description: Some("Host pane lifecycle facts; payload schema_version=1".into()),
+                }],
+            )?;
         }
         let mut payload = serde_json::to_value(event).map_err(|error| error.to_string())?;
         payload["schema_version"] = serde_json::json!(1);
@@ -584,14 +603,27 @@ impl PluginTimeline {
         let kind = payload["kind"].as_str().unwrap_or("unknown");
         let summary = format!("pane {pane_id}: {kind}");
         log::info!("pane_lifecycle: pane={pane_id} context={context_id} kind={kind}");
-        self.record_event_inner(context_id, PUBLISHER, pane_id, EmittedEvent {
-            event: STREAM.into(), actor: PluginEventActor::System,
-            actor_id: Some(PUBLISHER.into()), caused_by: None,
-            summary, resource_id: pane_id.to_string(), resource_scope: Some("pane".into()),
-            revision_after: (self.next_event_id + 1).to_string(), payload: Some(payload),
-            state_ref: None, revision_before: None, rollback_token: None,
-            changed_resources: vec![], suggested_trigger: None,
-        })
+        self.record_event_inner(
+            context_id,
+            PUBLISHER,
+            pane_id,
+            EmittedEvent {
+                event: STREAM.into(),
+                actor: PluginEventActor::System,
+                actor_id: Some(PUBLISHER.into()),
+                caused_by: None,
+                summary,
+                resource_id: pane_id.to_string(),
+                resource_scope: Some("pane".into()),
+                revision_after: (self.next_event_id + 1).to_string(),
+                payload: Some(payload),
+                state_ref: None,
+                revision_before: None,
+                rollback_token: None,
+                changed_resources: vec![],
+                suggested_trigger: None,
+            },
+        )
     }
 
     /// Host-only producer for the command view. The payload is the agents API
@@ -610,9 +642,7 @@ impl PluginTimeline {
                 vec![EventStreamDecl {
                     name: STREAM.into(),
                     schema: serde_json::json!({"type": "object"}),
-                    description: Some(
-                        "Command view projection; one event per revision".into(),
-                    ),
+                    description: Some("Command view projection; one event per revision".into()),
                 }],
             )?;
         }
@@ -787,9 +817,7 @@ impl PluginTimeline {
         }
         if ckpt.revision_after == current_revision {
             ckpt.status = CheckpointStatus::RolledBack;
-            log::info!(
-                "plugin_timeline: rollback verified for {checkpoint_id} — issuing apply"
-            );
+            log::info!("plugin_timeline: rollback verified for {checkpoint_id} — issuing apply");
             Ok(RollbackVerdict::Apply {
                 checkpoint_id: ckpt.checkpoint_id.clone(),
                 resource_id: ckpt.resource_id.clone(),
@@ -824,25 +852,44 @@ impl PluginTimeline {
     }
 
     pub(crate) fn lifecycle_record(&self, event_id: u64) -> Option<&PluginEventRecord> {
-        self.events.iter().rev().find(|event| event.event_id == event_id)
+        self.events
+            .iter()
+            .rev()
+            .find(|event| event.event_id == event_id)
     }
 
     /// Called only after broker approval. Subscription registration precedes this
     /// snapshot; queued deliveries bridge any transition before the snapshot lock.
     pub(crate) fn lifecycle_snapshot(
-        &self, subscription_id: &str, pane_id: u64, predicate: Option<&str>,
+        &self,
+        subscription_id: &str,
+        pane_id: u64,
+        predicate: Option<&str>,
     ) -> Result<Option<PluginEventRecord>, String> {
         use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
-        let sub = self.subscriptions.iter().find(|sub| sub.subscription_id == subscription_id)
+        let sub = self
+            .subscriptions
+            .iter()
+            .find(|sub| sub.subscription_id == subscription_id)
             .ok_or("lifecycle subscription is no longer active")?;
         if sub.plugin_id != PUBLISHER || !sub.event_names.iter().any(|name| name == STREAM) {
             return Err("not a pane lifecycle subscription".into());
         }
-        let records = || self.events.iter().rev().filter(|event|
-            event.plugin_id == PUBLISHER && event.event == STREAM && event.pane_id == pane_id);
-        let exited = records().find(|event| event.payload.as_ref()
-            .is_some_and(|payload| payload["kind"] == "exited"));
-        let context_id = self.pane_locations.get(&pane_id).copied()
+        let records = || {
+            self.events.iter().rev().filter(|event| {
+                event.plugin_id == PUBLISHER && event.event == STREAM && event.pane_id == pane_id
+            })
+        };
+        let exited = records().find(|event| {
+            event
+                .payload
+                .as_ref()
+                .is_some_and(|payload| payload["kind"] == "exited")
+        });
+        let context_id = self
+            .pane_locations
+            .get(&pane_id)
+            .copied()
             .or_else(|| exited.map(|event| event.owner_context_id))
             .ok_or("pane is closed or unknown and has no retained exit")?;
         if context_id != sub.subscriber_context_id {
@@ -851,14 +898,31 @@ impl PluginTimeline {
         let record = if predicate == Some("exited") {
             exited
         } else {
-            records().find(|event| event.payload.as_ref().is_some_and(|payload| {
-                matches!(payload["kind"].as_str(), Some("agent_idle" | "agent_working" |
-                    "agent_blocked" | "agent_reported" | "session_started" | "session_ended" |
-                    "turn_finished" | "turn_failed" | "exited"))
-            }))
+            records().find(|event| {
+                event.payload.as_ref().is_some_and(|payload| {
+                    matches!(
+                        payload["kind"].as_str(),
+                        Some(
+                            "agent_idle"
+                                | "agent_working"
+                                | "agent_blocked"
+                                | "agent_reported"
+                                | "session_started"
+                                | "session_ended"
+                                | "turn_finished"
+                                | "turn_failed"
+                                | "exited"
+                        )
+                    )
+                })
+            })
         };
-        Ok(record.filter(|event| sub.matches(PUBLISHER, event)
-            && predicate.is_some_and(|predicate| lifecycle_matches(event, predicate))).cloned())
+        Ok(record
+            .filter(|event| {
+                sub.matches(PUBLISHER, event)
+                    && predicate.is_some_and(|predicate| lifecycle_matches(event, predicate))
+            })
+            .cloned())
     }
 
     // ── Subscriptions ───────────────────────────────────────────────────────
@@ -985,7 +1049,9 @@ impl PluginTimeline {
     }
 
     pub(crate) fn has_deliveries_for(&self, actor: ActorType, id: &str) -> bool {
-        self.deliveries.iter().any(|d| d.subscriber_type == actor && d.subscriber_id == id)
+        self.deliveries
+            .iter()
+            .any(|d| d.subscriber_type == actor && d.subscriber_id == id)
     }
 
     /// Number of deliveries waiting without draining them.
@@ -1067,7 +1133,9 @@ mod tests {
 
     #[test]
     fn pane_consumer_registration_queue_bridges_transient_match_before_snapshot() {
-        use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source, PUBLISHER, STREAM};
+        use crate::host::pane_lifecycle::{
+            PaneLifecycleEvent, Provenance, Source, PUBLISHER, STREAM,
+        };
         let mut timeline = PluginTimeline::default();
         timeline.locate_lifecycle_pane(7, CTX);
         let mut sub = subscription(PayloadMode::Full, TriggerMode::Conversation);
@@ -1076,19 +1144,37 @@ mod tests {
         sub.resource_id = Some("7".into());
         timeline.add_subscription(sub);
         let provenance = Provenance {
-            source: Source::HostObservation, agent_label: "test".into(),
-            session_id: None, raw_event: None,
+            source: Source::HostObservation,
+            agent_label: "test".into(),
+            session_id: None,
+            raw_event: None,
         };
-        let idle = timeline.record_pane_lifecycle(CTX, 7,
-            &PaneLifecycleEvent::AgentIdle { provenance: provenance.clone() }).unwrap();
-        timeline.record_pane_lifecycle(CTX, 7,
-            &PaneLifecycleEvent::AgentWorking { provenance }).unwrap();
-        assert!(timeline.lifecycle_snapshot("sub-1", 7, Some("idle")).unwrap().is_none());
+        let idle = timeline
+            .record_pane_lifecycle(
+                CTX,
+                7,
+                &PaneLifecycleEvent::AgentIdle {
+                    provenance: provenance.clone(),
+                },
+            )
+            .unwrap();
+        timeline
+            .record_pane_lifecycle(CTX, 7, &PaneLifecycleEvent::AgentWorking { provenance })
+            .unwrap();
+        assert!(timeline
+            .lifecycle_snapshot("sub-1", 7, Some("idle"))
+            .unwrap()
+            .is_none());
         let queued = timeline.take_deliveries_for(ActorType::Agent, "chess-opponent");
-        let matched = queued.iter().filter_map(|d| timeline.lifecycle_record(d.event_id))
-            .find(|event| lifecycle_matches(event, "idle")).unwrap();
-        assert_eq!(matched.event_id, idle.event_id,
-            "registration must preserve a matching transition before the current snapshot");
+        let matched = queued
+            .iter()
+            .filter_map(|d| timeline.lifecycle_record(d.event_id))
+            .find(|event| lifecycle_matches(event, "idle"))
+            .unwrap();
+        assert_eq!(
+            matched.event_id, idle.event_id,
+            "registration must preserve a matching transition before the current snapshot"
+        );
     }
 
     #[test]
@@ -1097,12 +1183,19 @@ mod tests {
         t.set_event_cap_for_test(8);
         let mut ids = Vec::new();
         for _ in 0..20 {
-            ids.push(t.record_event(CTX, "chess", 1, emitted("move.played")).unwrap().event_id);
+            ids.push(
+                t.record_event(CTX, "chess", 1, emitted("move.played"))
+                    .unwrap()
+                    .event_id,
+            );
         }
         assert_eq!(t.events().len(), 8, "ring must stay at its cap");
         let kept: Vec<u64> = t.events().iter().map(|e| e.event_id).collect();
         assert_eq!(kept, ids[12..], "newest events survive, oldest first");
-        assert!(t.lifecycle_record(ids[0]).is_none(), "evicted event is gone");
+        assert!(
+            t.lifecycle_record(ids[0]).is_none(),
+            "evicted event is gone"
+        );
         assert!(t.lifecycle_record(ids[19]).is_some());
     }
 
@@ -1110,7 +1203,8 @@ mod tests {
     fn event_ring_defaults_to_the_documented_capacity() {
         let mut t = timeline_with_stream();
         for _ in 0..(EVENT_RING_CAP + 10) {
-            t.record_event(CTX, "chess", 1, emitted("move.played")).unwrap();
+            t.record_event(CTX, "chess", 1, emitted("move.played"))
+                .unwrap();
         }
         assert_eq!(t.events().len(), EVENT_RING_CAP);
     }
@@ -1632,8 +1726,14 @@ mod tests {
 /// Predicates deliberately describe observed/reported state, never task verdicts.
 pub(crate) fn lifecycle_matches(event: &PluginEventRecord, predicate: &str) -> bool {
     let kind = match predicate {
-        "idle" => "agent_idle", "blocked" => "agent_blocked", "exited" => "exited", _ => return false,
+        "idle" => "agent_idle",
+        "blocked" => "agent_blocked",
+        "exited" => "exited",
+        _ => return false,
     };
     event.plugin_id == crate::host::pane_lifecycle::PUBLISHER
-        && event.payload.as_ref().is_some_and(|payload| payload["kind"] == kind)
+        && event
+            .payload
+            .as_ref()
+            .is_some_and(|payload| payload["kind"] == kind)
 }

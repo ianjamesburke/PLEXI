@@ -8,9 +8,9 @@ use crate::app::view_trait::{View, ViewRenderContext};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::protocol::VideoState;
 use crate::ui::{
-    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
+    view_chrome::ViewChrome,
 };
 
 pub struct VideoPlayerView {

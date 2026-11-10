@@ -63,7 +63,10 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
 /// The identity a plugin sees for a verified socket caller. No pane is never
 /// the human `user`.
 /// `--recommend` must name one of the offered `--choice` values.
-pub(crate) fn validate_recommend(recommend: Option<&str>, choices: &[String]) -> Result<(), String> {
+pub(crate) fn validate_recommend(
+    recommend: Option<&str>,
+    choices: &[String],
+) -> Result<(), String> {
     match recommend {
         None => Ok(()),
         Some(r) if choices.iter().any(|c| c == r) => Ok(()),
@@ -583,23 +586,30 @@ impl PlexiApp {
                     .get("receipt")
                     .and_then(|v| v.as_str())
                     .map(ToString::to_string);
-                if monitor.get_continuation(id).is_some_and(|record| record.request_fingerprint.is_some()) {
-                    log::info!("needs_you: refused external completion of host-owned operation {id}");
+                if monitor
+                    .get_continuation(id)
+                    .is_some_and(|record| record.request_fingerprint.is_some())
+                {
+                    log::info!(
+                        "needs_you: refused external completion of host-owned operation {id}"
+                    );
                     serde_json::json!({
                         "ok": false,
                         "error_code": "host_owned_operation",
                         "error": "pane send outcomes are recorded by the host",
                     })
-                } else { match monitor.complete_continuation(id, state, receipt) {
-                    Ok(continuation) => serde_json::json!({
-                        "ok": true,
-                        "continuation": continuation,
-                    }),
-                    Err(error) => serde_json::json!({
-                        "ok": false,
-                        "error": error,
-                    }),
-                } }
+                } else {
+                    match monitor.complete_continuation(id, state, receipt) {
+                        Ok(continuation) => serde_json::json!({
+                            "ok": true,
+                            "continuation": continuation,
+                        }),
+                        Err(error) => serde_json::json!({
+                            "ok": false,
+                            "error": error,
+                        }),
+                    }
+                }
             }
             _ => serde_json::json!({
                 "ok": false,
@@ -834,7 +844,6 @@ impl PlexiApp {
             }),
         );
     }
-
 
     pub(crate) fn approval_actor_label(&self, actor_id: &str) -> String {
         actor_id

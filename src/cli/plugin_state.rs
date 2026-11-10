@@ -78,7 +78,8 @@ fn cli_context_root() -> Result<PathBuf, String> {
             PathBuf::from(root)
         }
         None => {
-            let cwd = std::env::current_dir().map_err(|error| format!("plugin state cwd: {error}"))?;
+            let cwd =
+                std::env::current_dir().map_err(|error| format!("plugin state cwd: {error}"))?;
             file_context_root(&cwd)?
         }
     };

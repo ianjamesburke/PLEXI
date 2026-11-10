@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use crate::app::view_trait::{View, ViewRenderContext};
 use crate::ui::{
-    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
+    view_chrome::ViewChrome,
 };
 
 pub struct ImageViewerView {

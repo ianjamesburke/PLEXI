@@ -4,9 +4,9 @@ use std::time::Duration;
 use crate::app::view_trait::{View, ViewRenderContext};
 use crate::media::audio::{PlaybackRequest, PlaybackSession};
 use crate::ui::{
-    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
+    view_chrome::ViewChrome,
 };
 
 pub struct AudioPlayerView {

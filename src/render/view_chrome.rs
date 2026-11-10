@@ -1,14 +1,14 @@
-pub(crate) use crate::ui::view_chrome::{footer_keys_height, ViewChrome, TextLabelStyle};
+pub(crate) use crate::ui::view_chrome::{footer_keys_height, TextLabelStyle, ViewChrome};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ThemeConfig;
     use crate::host::wasm_view::bindings::plexi::platform::types::FooterKeyEntry;
-    use crate::ui::view_chrome::chip_row_height;
     use crate::ui::hints::{HintBar, HintGroup};
     use crate::ui::style;
     use crate::ui::theme::Colors;
+    use crate::ui::view_chrome::chip_row_height;
 
     #[test]
     fn semantic_view_chrome_colors_follow_host_theme_tokens() {

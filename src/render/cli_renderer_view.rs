@@ -5,14 +5,14 @@
 //! crawl), renders a navigable command list and per-command form, and executes
 //! the assembled command in a linked terminal pane.
 
-use crate::app::view_trait::{View, ViewCommand, ViewRenderContext, KeyDisposition};
 use crate::app::canvas_bindings::quote_for_shell;
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
+use crate::app::view_trait::{KeyDisposition, View, ViewCommand, ViewRenderContext};
 use crate::ui::{
-    view_chrome::ViewChrome,
     button::{self, ButtonKind},
     hints::{HintBar, HintGroup},
     style,
+    view_chrome::ViewChrome,
 };
 use egui::{self, RichText};
 use std::collections::HashMap;
@@ -115,7 +115,10 @@ impl CliRendererView {
                 }
                 Err(e) => {
                     log::warn!("CliRendererView: bad JSON in {descriptor_path}: {e}");
-                    (None, RendererPage::Error(format!("Invalid descriptor JSON: {e}")))
+                    (
+                        None,
+                        RendererPage::Error(format!("Invalid descriptor JSON: {e}")),
+                    )
                 }
             },
             Err(e) => {
@@ -334,13 +337,17 @@ impl CliRendererView {
             return false;
         }
         self.last_run = cmd.clone();
-        self.pending_commands.push(ViewCommand::RunInLinkedTerminal {
-            sender_pane_id: 0, // host fills this
-            terminal_pane_id: self.terminal_pane_id,
-            command: cmd.clone(),
-            echo: true,
-        });
-        log::info!("CliRendererView: queued run command_chars={}", cmd.chars().count());
+        self.pending_commands
+            .push(ViewCommand::RunInLinkedTerminal {
+                sender_pane_id: 0, // host fills this
+                terminal_pane_id: self.terminal_pane_id,
+                command: cmd.clone(),
+                echo: true,
+            });
+        log::info!(
+            "CliRendererView: queued run command_chars={}",
+            cmd.chars().count()
+        );
         true
     }
 
