@@ -650,6 +650,65 @@ impl App for SecretsApp {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_scope_popup_rows_stay_fixed_on_hover() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 700.0);
+            let root = tempfile::tempdir().unwrap();
+            crate::workspace::secrets::init_workspace(
+                root.path(),
+                &crate::config::workspace_channel_dir(),
+            )
+            .unwrap();
+            h.with_app_mut(|app| {
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                app.sidebar_visible = false;
+                app.open_builtin_app_pane(
+                    Box::new(SecretsApp::new(root.path().into())),
+                    crate::app::permissions::AppPermissions::builtin(),
+                    root.path().into(),
+                    None,
+                    None,
+                    None,
+                );
+            });
+            h.run_steps(4);
+            h.harness().get_by_label("Workspace").click();
+            h.run_steps(3);
+            let global = h.harness().get_by_label("Global").rect();
+            let workspace = h
+                .harness()
+                .get_all_by_label("Workspace")
+                .map(|node| node.rect())
+                .max_by(|a, b| a.top().total_cmp(&b.top()))
+                .expect("workspace option");
+            for (name, rect) in [("global", global), ("workspace", workspace)] {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(rect.center()));
+                h.run_steps(3);
+                assert_eq!(h.harness().get_by_label("Global").rect(), global);
+                let current_workspace = h
+                    .harness()
+                    .get_all_by_label("Workspace")
+                    .map(|node| node.rect())
+                    .max_by(|a, b| a.top().total_cmp(&b.top()))
+                    .unwrap();
+                assert_eq!(current_workspace, workspace);
+                h.save_screenshot(&format!("/tmp/plexi-1216-scope-{theme}-{name}.png"))
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     fn secrets_app_mutations_use_shared_audited_handlers() {
         let profile = tempfile::tempdir().unwrap();
