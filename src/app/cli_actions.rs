@@ -31,14 +31,18 @@ impl PlexiApp {
                 let in_strip = self.active_focused_pane_id().is_some_and(|pane| {
                     self.host.strip(ctx_id).is_some_and(|strip| strip.contains_pane(pane))
                 });
-                let moved = !in_strip && match dir {
+                let moved = match dir {
                     crate::host::keys::Direction::Down => {
                         self.move_focused_pane_to_row_boundary(true)
                     }
                     crate::host::keys::Direction::Up => {
                         self.move_focused_pane_to_row_boundary(false)
                     }
-                    _ => self.move_focused_pane_to_adjacent_window(dir),
+                    _ if !in_strip => self.move_focused_pane_to_adjacent_window(dir),
+                    _ => {
+                        log::info!("pane_swap: horizontal strip boundary direction={dir:?}");
+                        false
+                    }
                 };
                 if moved {
                     self.ctx.request_repaint();

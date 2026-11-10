@@ -16110,7 +16110,23 @@ mod tiled_navigation_frame_tests {
             let other = h.app.windows.iter().find(|w| w.panes.contains_key(&if end { top } else { bottom })).expect("remaining pane");
             assert_ne!(moved.window_id, other.window_id, "{direction:?} must create a window");
             assert_eq!(moved.grid_x < other.grid_x, !end);
+            let strip = h.app.strip_for_context(moved.context_id);
+            assert_eq!(strip.focused_pane, Some(pane));
+            assert_eq!(strip.columns[if end { 1 } else { 0 }].panes, vec![pane]);
         }
+    }
+
+    #[test]
+    fn boundary_swap_strip_horizontal_stays_in_place() {
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        h.focus_pane(pane);
+        h.run_frames(3);
+        let context = h.app.router.active().context_id;
+        assert!(h.app.host.strip(context).unwrap().contains_pane(pane));
+        h.app.swap_pane_action(Direction::Left);
+        assert_eq!(h.app.windows.len(), 1);
+        assert_eq!(h.app.active_focused_pane_id(), Some(pane));
     }
 
     #[test]
