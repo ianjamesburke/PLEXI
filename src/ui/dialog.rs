@@ -109,10 +109,9 @@ impl<'a> ActionModal<'a> {
                 .actions
                 .iter()
                 .map(|action| {
-                    action
-                        .shortcut
-                        .as_ref()
-                        .map_or(0.0, |shortcut| shortcuts::key_combo_width(ui, shortcut.keys))
+                    action.shortcut.as_ref().map_or(0.0, |shortcut| {
+                        shortcuts::key_combo_width(ui, shortcut.keys)
+                    })
                 })
                 .fold(0.0_f32, f32::max);
 
@@ -140,46 +139,249 @@ fn action_row(
     chip_col_w: f32,
     colors: &Colors,
 ) -> egui::Response {
+    let keys = action
+        .shortcut
+        .as_ref()
+        .map(|s| shortcuts::display_tokens(s.keys))
+        .unwrap_or_default();
+    let chip_h = shortcuts::chip_row_height(ui);
+    let widths: Vec<_> = keys
+        .iter()
+        .map(|key| shortcuts::key_combo_width(ui, &[key.as_str()]))
+        .collect();
+    ui.set_min_width(widths.iter().copied().fold(style::BUTTON_H_MD, f32::max));
+    let width = ui.available_width();
+    let bounds = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(width, style::MODAL_ACTION_ROW_H),
+    );
+    let slots = [super::bounded::Slot {
+        id: "shortcut",
+        width: chip_col_w,
+        compact: None,
+        required: true,
+    }];
+    let lane = super::bounded::allocate(
+        bounds,
+        style::PANE_HEADER_TITLE_MIN,
+        style::KEYCHIP_DESC_GAP,
+        &slots,
+    );
+    let inline = lane
+        .as_ref()
+        .is_ok_and(|r| r.text.width() >= style::PANE_HEADER_TITLE_MIN);
+    let label_width = if inline {
+        lane.as_ref().map_or(width, |r| r.text.width())
+    } else {
+        width
+    };
+    let galley = ui.fonts_mut(|f| {
+        f.layout(
+            action.label.into(),
+            crate::ui::theme::font_medium(style::TEXT_CAPTION),
+            egui::Color32::PLACEHOLDER,
+            label_width,
+        )
+    });
+    let mut key_positions = Vec::new();
+    let (mut x, mut y) = (0.0, 0.0);
+    for chip_width in widths {
+        if x > 0.0 && x + chip_width > width {
+            x = 0.0;
+            y += chip_h + style::SPACE_XS;
+        }
+        key_positions.push(egui::vec2(x, y));
+        x += chip_width + style::KEYCHIP_GAP;
+    }
+    let keys_h = if keys.is_empty() { 0.0 } else { y + chip_h };
+    let label_offset = if inline {
+        chip_col_w + style::KEYCHIP_DESC_GAP
+    } else {
+        0.0
+    };
+    let stacked_gap = if keys.is_empty() {
+        0.0
+    } else {
+        style::SPACE_SM
+    };
+    let height = if inline {
+        galley.size().y.max(chip_h) + style::SPACE_XS * 2.0
+    } else {
+        keys_h + stacked_gap + galley.size().y + style::SPACE_XS * 2.0
+    };
     let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), style::MODAL_ACTION_ROW_H),
+        egui::vec2(
+            width,
+            height
+                .max(style::MODAL_ACTION_ROW_H)
+                .max(style::BUTTON_H_MD),
+        ),
         egui::Sense::click(),
     );
-    if response.hovered() {
+    let mut capture = super::layout_report::Capture::begin(ui.painter(), "modal_action");
+    let background = if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        // The fill bleeds into the modal's gutter so the chips can sit flush
-        // with the title and body text. Indenting the chips instead would
-        // reintroduce a second left edge inside the modal.
         ui.painter().rect_filled(
             rect.expand2(egui::vec2(style::SPACE_XS, 0.0)),
             style::RADIUS_SM,
             colors.bg_hover,
         );
-    }
-
-    let center_y = rect.center().y;
-    let chip_x = rect.left();
-    if let Some(shortcut) = &action.shortcut {
-        shortcuts::key_combo_painted(ui, chip_x, center_y, shortcut.keys, colors);
-    }
-
-    // Destructive actions stay distinct without a filled button: the label
-    // carries the danger color while the row geometry matches its siblings.
-    let label_color = match action.kind {
-        ButtonKind::Danger => colors.danger,
-        _ => colors.text_primary,
+        colors.bg_hover
+    } else {
+        colors.bg_sidebar
     };
-    let galley = ui.fonts_mut(|f| {
-        f.layout_no_wrap(
-            action.label.to_string(),
-            crate::ui::theme::font_medium(style::TEXT_CAPTION),
-            label_color,
-        )
-    });
-    let label_pos = egui::Pos2::new(
-        chip_x + chip_col_w + style::KEYCHIP_DESC_GAP,
-        center_y - galley.size().y / 2.0,
+    let key_top = if inline {
+        rect.center().y - chip_h / 2.0
+    } else {
+        rect.top() + style::SPACE_XS
+    };
+    for (key, offset) in keys.iter().zip(key_positions) {
+        shortcuts::paint_key_chip(
+            ui.painter(),
+            rect.left() + offset.x,
+            key_top + offset.y + chip_h / 2.0,
+            key,
+            colors,
+        );
+    }
+    let preferred = if matches!(action.kind, ButtonKind::Danger) {
+        colors.danger
+    } else {
+        colors.text_primary
+    };
+    let color = super::foreground::Surface::over(colors.bg_sidebar, background)
+        .foreground(preferred, super::foreground::Role::SmallText);
+    let label_y = if inline {
+        rect.center().y - galley.size().y / 2.0
+    } else {
+        rect.top() + style::SPACE_XS + keys_h + stacked_gap
+    };
+    let label_pos = egui::pos2(rect.left() + label_offset, label_y);
+    capture.text_slot(
+        "label",
+        &galley,
+        egui::Rect::from_min_size(label_pos, egui::vec2(label_width, galley.size().y)),
     );
-    crate::ui::snap::galley_snapped(ui.painter(), label_pos, galley, label_color);
-
+    ui.painter()
+        .galley_with_override_text_color(label_pos, galley, color);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), action.label)
+    });
+    if !inline {
+        static REFLOW: std::sync::Once = std::sync::Once::new();
+        REFLOW.call_once(|| log::info!("ui: reflowing modal action below shortcut chips"));
+    }
+    capture.finish(
+        ui.painter(),
+        rect,
+        colors.bg_sidebar,
+        vec![super::layout_report::Action {
+            id: "label".into(),
+            name: action.label.into(),
+            painted_label: action.label.into(),
+            hit: response.rect,
+            minimum: egui::Vec2::splat(style::BUTTON_H_MD),
+        }],
+        vec![],
+    );
     response
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use super::*;
+    #[test]
+    fn adoption_modal_keeps_pointer_and_shortcut_activation() {
+        for keyboard in [false, true] {
+            let ctx = egui::Context::default();
+            crate::ui::theme::setup_fonts(&ctx);
+            let colors =
+                Colors::from_config(&crate::ui::theme::preset_colors("plexi-dusk").unwrap());
+            let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+            let actions = [DialogAction::new(
+                "restore",
+                "Restore and open the complete document",
+                ButtonKind::Primary,
+            )
+            .shortcut(DialogShortcut::new(
+                &["Enter"],
+                egui::Modifiers::NONE,
+                egui::Key::Enter,
+            ))];
+            let mut hit = egui::Rect::NOTHING;
+            let mut selected = false;
+            for stage in 0..3 {
+                let mut input = egui::RawInput::default();
+                if stage > 0 {
+                    if keyboard {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: stage == 1,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    } else {
+                        input.events.push(egui::Event::PointerMoved(hit.center()));
+                        input.events.push(egui::Event::PointerButton {
+                            pos: hit.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed: stage == 1,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                }
+                let _ = ctx.run_ui(input, |_| {
+                    selected |= ActionModal::new("reflow-action", "Restore", &actions)
+                        .width(160.0)
+                        .show(&ctx, &colors, |_| {})
+                        .selected
+                        == Some("restore");
+                });
+                hit = crate::ui::layout_report::snapshot(&ctx)
+                    .iter()
+                    .find(|r| r.surface == "modal_action")
+                    .unwrap()
+                    .actions[0]
+                    .hit;
+            }
+            assert!(selected, "keyboard={keyboard}");
+        }
+    }
+
+    #[test]
+    fn adoption_modal_action_wraps_full_label() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+        );
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(160.0);
+            ui.set_clip_rect(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(180.0, 800.0),
+            ));
+            let capture =
+                crate::ui::layout_report::Capture::begin(ui.painter(), "adoption-fixture");
+            let action = DialogAction::new(
+                "restore",
+                "Wiederherstellen und in einem neuen Fenster öffnen",
+                ButtonKind::Danger,
+            )
+            .shortcut(DialogShortcut::new(
+                &["cmd", "shift", "enter"],
+                egui::Modifiers::COMMAND,
+                egui::Key::Enter,
+            ));
+            let width = shortcuts::key_combo_width(ui, action.shortcut.as_ref().unwrap().keys);
+            let rect = action_row(ui, &action, width, &colors).rect;
+            capture.finish(ui.painter(), rect, colors.bg_sidebar, vec![], vec![]);
+        });
+        let reports = crate::ui::layout_report::snapshot(&ctx);
+        assert!(!reports.is_empty());
+        let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
 }

@@ -42,6 +42,7 @@ pub(crate) struct LayoutReport {
     pub actions: Vec<Action>,
     pub exclusions: Vec<Rect>,
     slots: Vec<TextSlot>,
+    scroll: bool,
 }
 
 fn contained(parent: Rect, child: Rect) -> bool {
@@ -105,7 +106,7 @@ impl LayoutReport {
                     && !text.paint.is_negative()
                     && text.paint.width() > 0.0
                     && contained(action.hit, text.paint)
-                    && contained(text.clip, text.paint)
+                    && (self.scroll || contained(text.clip, text.paint))
             }) {
                 errors.push(format!("{}: required label missing or clipped", action.id));
             }
@@ -129,7 +130,7 @@ impl LayoutReport {
     pub fn json(&self) -> serde_json::Value {
         let rect = |r: Rect| [r.left(), r.top(), r.right(), r.bottom()];
         serde_json::json!({
-            "surface": self.surface, "layer": self.layer, "parent": rect(self.parent),
+            "surface": self.surface, "layer": self.layer, "parent": rect(self.parent), "scroll": self.scroll,
             "texts": self.texts.iter().map(|t| serde_json::json!({
                 "slot": t.id, "text": t.text, "allocated": rect(t.allocated), "paint": rect(t.paint),
                 "clip": rect(t.clip), "foreground": t.foreground.to_array(),
@@ -166,6 +167,7 @@ pub(crate) struct Capture {
     surface: &'static str,
     start: Option<usize>,
     slots: Vec<TextSlot>,
+    scroll: bool,
 }
 
 impl Capture {
@@ -177,6 +179,7 @@ impl Capture {
         Self {
             surface,
             slots: Vec::new(),
+            scroll: false,
             start: enabled.then(|| {
                 painter.ctx().graphics(|g| {
                     g.get(painter.layer_id())
@@ -184,6 +187,12 @@ impl Capture {
                 })
             }),
         }
+    }
+
+    /// Scroll containers explicitly own viewport clipping; full allocated
+    /// geometry and labels are still checked, including offscreen rows.
+    pub fn scrolling(&mut self) {
+        self.scroll = true;
     }
 
     pub fn text_slot(&mut self, id: impl Into<String>, galley: &egui::Galley, allocated: Rect) {
@@ -231,6 +240,7 @@ impl Capture {
             actions,
             exclusions,
             slots: self.slots,
+            scroll: self.scroll,
         };
         let mut fills = Vec::new();
         for entry in &entries {
@@ -242,6 +252,9 @@ impl Capture {
                 &mut fills,
                 &mut report.texts,
             );
+        }
+        if !report.scroll {
+            report.texts.retain(|t| t.clip.intersects(t.paint));
         }
         for text in &mut report.texts {
             if let Some(slot) = report
@@ -257,6 +270,13 @@ impl Capture {
             if let Some(action) = report.actions.iter().find(|a| a.painted_label == text.text) {
                 text.id = action.id.clone();
                 text.allocated = action.hit;
+            }
+        }
+        if report.scroll {
+            for text in &mut report.texts {
+                if !contained(text.clip, text.paint) {
+                    text.fit = "scroll";
+                }
             }
         }
         let errors = report.violations();
@@ -308,9 +328,6 @@ fn collect(
         }
         Shape::Text(shape) if !shape.galley.job.text.is_empty() => {
             let paint = shape.galley.rect.translate(shape.pos.to_vec2());
-            if !clip.intersects(paint) {
-                return;
-            }
             let background = fills
                 .iter()
                 .filter(|(r, _)| r.contains(paint.center()))
@@ -378,6 +395,7 @@ mod tests {
             }],
             exclusions: vec![],
             slots: vec![],
+            scroll: false,
         }
     }
     #[test]

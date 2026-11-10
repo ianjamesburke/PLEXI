@@ -116,6 +116,10 @@ perf-clippy:
 clippy:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py clippy --bin plexi -- -D warnings
 
+# Verify host surface registration and scoped raw-composition exceptions.
+check-ui-layout:
+    python3 scripts/check-ui-layout.py --test
+
 build:
     bash scripts/cargo-with-lease.sh python3 scripts/cargo-channel-inputs.py build --release
 

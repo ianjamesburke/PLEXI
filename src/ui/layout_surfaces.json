@@ -169,7 +169,12 @@
     },
     {
       "id": "src/ui/app_chrome.rs",
-      "gap": "Unresolved: app_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_ui_kit_adoption"
+      },
+      "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
+      "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
     },
     {
       "id": "src/ui/badge.rs",
@@ -208,7 +213,12 @@
     },
     {
       "id": "src/ui/dialog.rs",
-      "gap": "Unresolved: dialog has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_ui_kit_adoption"
+      },
+      "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
+      "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
     },
     {
       "id": "src/ui/embedded_bar.rs",
@@ -236,7 +246,12 @@
     },
     {
       "id": "src/ui/list.rs",
-      "gap": "Unresolved: list has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_ui_kit_adoption"
+      },
+      "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
+      "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
     },
     {
       "id": "src/ui/markdown.rs",

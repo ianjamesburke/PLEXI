@@ -5712,7 +5712,7 @@ open(out + ".done", "w").close()
                 assert!(
                     (height
                         - mode.fixture().names.len() as f32
-                            * (crate::ui::style::LIST_ROW_H + crate::ui::style::LIST_ROW_DENSE_H))
+                            * (crate::ui::style::LIST_ROW_H + crate::ui::style::LIST_ROW_DENSE_H.max(crate::ui::style::BUTTON_H_MD)))
                         .abs()
                         < 0.1,
                     "row-height blowout: {mode:?} {width}: {height}"
@@ -5817,6 +5817,46 @@ open(out + ".done", "w").close()
             }
         }
     }
+    #[test]
+    fn screenshot_ui_kit_adoption() {
+        use crate::overlays::ui_gallery::{UiGalleryDataMode, UiGalleryPreview};
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(720.0, 1000.0, scale);
+                apply_fixture_theme(&mut h, theme);
+                let root = h.workspace_root().to_path_buf();
+                let path = root.join("Release evidence — a deliberately long image name with an important distinguishing suffix 0123456789abcdef.png");
+                std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png"), &path).unwrap();
+                h.open_target(HarnessOpenTarget::Builtin { id: "image-viewer", cwd: &root, args: &[path.display().to_string()] }).unwrap();
+                h.run_steps(4);
+                assert_layout_surface(&h, "app_bar");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_appbar"))).unwrap();
+                h.with_app_mut(|app| {
+                    app.show_ui_gallery = true;
+                    app.ctx.data_mut(|d| d.insert_temp(UiGalleryPreview::id(), UiGalleryPreview { mode: UiGalleryDataMode::WorstCase, narrow: true }));
+                });
+                h.run_steps(4);
+                h.harness().get_by_label("Rows").scroll_to_me();
+                h.run_steps(4);
+                assert_layout_surface(&h, "list");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_list"))).unwrap();
+                h.with_app_mut(|app| app.show_ui_gallery = false);
+                seed_context_close_confirm(&mut h, true);
+                assert_layout_surface(&h, "modal_action");
+                h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_modal"))).unwrap();
+            }
+        }
+    }
+
+    fn assert_layout_surface(h: &PlexiUiHarness, surface: &str) {
+        h.with_app(|app| {
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            assert!(reports.iter().any(|r| r.surface == surface), "missing {surface}");
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+    }
+
     #[test]
     fn screenshot_host_ui_gallery_trust_states() {
         let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
