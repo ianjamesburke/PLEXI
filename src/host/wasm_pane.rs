@@ -342,7 +342,7 @@ pub(crate) fn canonicalize_picked_path(path: &Path) -> Result<PathBuf, String> {
     canonicalize_scope(path.to_path_buf(), false)
 }
 
-/// Resolve an plugin-supplied relative path inside `root`, rejecting absolute
+/// Resolve a plugin-supplied relative path inside `root`, rejecting absolute
 /// paths, `..` components, and symlink escapes. `for_write` permits a
 /// not-yet-existing final component as long as its parent resolves inside the
 /// jail. Shared across WASM and Python guest runtimes.
@@ -382,7 +382,7 @@ pub(crate) fn resolve_jailed_path(
     Ok(resolved)
 }
 
-/// Resolve an plugin-supplied fs path against the workspace jail and picker
+/// Resolve a plugin-supplied fs path against the workspace jail and picker
 /// grants (stint 0508). Relative paths stay jailed to `workspace_root` via
 /// [`resolve_jailed_path`]; absolute paths are accepted only when they resolve
 /// under a picker-granted root with canonicalize + symlink-escape discipline.

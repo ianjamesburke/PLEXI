@@ -287,7 +287,7 @@ impl PlexiApp {
 
     /// Drain every view pane's outbound commands and execute them (stint 0688).
     ///
-    /// This is external-client servicing, not rendering: an view pane answers
+    /// This is external-client servicing, not rendering: a view pane answers
     /// assistant tool calls, emits notifications, and requests host actions on
     /// its own schedule, with no dependence on being painted. It therefore runs
     /// from [`eframe::App::logic`], per the rule in the root `AGENTS.md` —

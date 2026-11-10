@@ -1,4 +1,4 @@
-//! Hot reload (#83) — watches an plugin's directory for source changes and
+//! Hot reload (#83) — watches a plugin's directory for source changes and
 //! emits a debounced `ReloadRequest` per pane.
 //!
 //! # Design

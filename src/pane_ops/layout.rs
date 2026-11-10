@@ -21,7 +21,7 @@ pub(crate) enum SwapResult {
     NoFocus,
 }
 
-/// If `pane_id` is an view pane that was opened as an overlay over another
+/// If `pane_id` is a view pane that was opened as an overlay over another
 /// pane (`hint = Some("overlay")`), restore the original pane and return
 /// `true`. Otherwise return `false` and leave the map unchanged.
 ///

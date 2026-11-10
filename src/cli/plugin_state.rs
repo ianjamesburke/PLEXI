@@ -14,7 +14,7 @@
 //!
 //! Entitlement here is structural, not checked: there is no path argument and
 //! no `--context` flag, so the only reachable files are the calling context's
-//! own state files for an plugin that declared `[state]`.
+//! own state files for a plugin that declared `[state]`.
 
 use crate::host::state_scope::{StateFormat, StateScope};
 use std::io::Read;
@@ -114,8 +114,8 @@ fn cli_registry() -> Result<crate::app::registry::PluginRegistry, String> {
 
 /// Resolve `plugin_id` + an optional `--scope` to a concrete state file.
 ///
-/// Rejects, each with a named reason: an unknown plugin, an plugin that declared no
-/// `[state]` section, a scope the plugin did not declare, an plugin id that is not a
+/// Rejects, each with a named reason: an unknown plugin, a plugin that declared no
+/// `[state]` section, a scope the plugin did not declare, a plugin id that is not a
 /// safe file stem, and a resolved path whose parent is not really the scope's
 /// state directory (a symlinked `.plexi/` or `app_states/`).
 fn resolve(
@@ -174,7 +174,7 @@ fn resolve(
     })
 }
 
-/// The document an plugin with no state file yet should read as. A missing file is
+/// The document a plugin with no state file yet should read as. A missing file is
 /// first launch, not an error — the same rule the host's loader follows.
 fn empty_document(format: StateFormat) -> &'static str {
     match format {
@@ -598,7 +598,7 @@ mod tests {
             assert_eq!(
                 set_from("test.state", &b"{}"[..], None, &registry),
                 1,
-                "an plugin that declared no [state] must be refused"
+                "a plugin that declared no [state] must be refused"
             );
             let error = resolve("test.state", None, &registry).expect_err("must be refused");
             assert!(

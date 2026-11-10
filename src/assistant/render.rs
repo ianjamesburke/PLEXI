@@ -986,7 +986,7 @@ impl AssistantRenderer {
     }
 
     /// The model is writing a tool call — the longest otherwise-silent
-    /// stretch of an plugin-build turn. Spinner + tool name + cumulative
+    /// stretch of a plugin-build turn. Spinner + tool name + cumulative
     /// argument size + elapsed, so a 60s code generation reads as progress.
     fn draw_tool_progress_row(
         ui: &mut egui::Ui,

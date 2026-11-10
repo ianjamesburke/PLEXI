@@ -1,6 +1,6 @@
 """Tests for Cli Op Fixture.
 
-Run with:  plexi app test          (from the app directory)
+Run with:  plexi plugin test          (from the app directory)
        or:  uv run --no-project --with pytest pytest tests/
 
 PluginHarness spawns this app as a real subprocess and speaks the PGAP protocol

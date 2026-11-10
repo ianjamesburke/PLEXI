@@ -3680,7 +3680,7 @@ fn launch_into_an_inactive_context_resolves_that_contexts_own_registry() {
         .values()
         .next()
         .and_then(|p| p.as_view())
-        .expect("spawned pane must be an view pane");
+        .expect("spawned pane must be a view pane");
     assert_eq!(spawned.manifest_id, plugin_id);
 }
 

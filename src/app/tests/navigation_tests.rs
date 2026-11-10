@@ -1098,7 +1098,7 @@ fn registry_with_on_launch(
     (tmp, registry)
 }
 
-/// `focus_existing`: relaunching an plugin that is already open in a *different*
+/// `focus_existing`: relaunching a plugin that is already open in a *different*
 /// context focuses the existing pane and jumps to its context instead of
 /// spawning a second instance.
 #[test]

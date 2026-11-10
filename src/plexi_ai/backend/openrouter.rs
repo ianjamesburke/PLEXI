@@ -523,7 +523,7 @@ pub(super) fn stream_openai_compatible(
             }
             // Surface generation progress so the transcript can animate while
             // the model writes a long tool call (stint 0467) — these argument
-            // streams are the longest silent stretch of an plugin-build turn.
+            // streams are the longest silent stretch of a plugin-build turn.
             let arg_chars: usize = partial_tool_calls.values().map(|p| p.arguments.len()).sum();
             let name = partial_tool_calls
                 .iter()

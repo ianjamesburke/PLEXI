@@ -508,7 +508,7 @@ impl OnLaunchPolicy {
 /// manifest validator, the launch path, and the author docs agree.
 pub const VALID_ON_LAUNCH: &[&str] = &["focus_existing", "focus_existing_in_context", "always_new"];
 
-/// The host layout-hint vocabulary an plugin's `[launch] placement` may declare.
+/// The host layout-hint vocabulary a plugin's `[launch] placement` may declare.
 /// Kept in one place so the manifest validator and the launch path agree.
 pub const VALID_PLACEMENTS: &[&str] = &[
     "overlay",
@@ -786,7 +786,7 @@ impl PluginRegistry {
                         && entry_dir.join("settings.toml").is_file()
                     {
                         log::debug!(
-                            "PluginRegistry: {:?} is a runtime agent dir, not an plugin — skipping",
+                            "PluginRegistry: {:?} is a runtime agent dir, not a plugin — skipping",
                             entry_dir.file_name()
                         );
                     } else {
@@ -823,7 +823,7 @@ impl PluginRegistry {
             ));
         }
 
-        // STEP-7: refuse to install an plugin whose declared capabilities include
+        // STEP-7: refuse to install a plugin whose declared capabilities include
         // any unknown string. Silent `→ FsRead` fallback was removed in STEP-2;
         // this replaces it with a loud install-time failure.
         if let Err(e) = crate::app::permissions::parse_capability_strings(
@@ -964,7 +964,7 @@ impl PluginRegistry {
         self.plugins.get(plugin_id).map(|a| a.plugin_dir.clone())
     }
 
-    /// Return the manifest-declared notification scope for an plugin.
+    /// Return the manifest-declared notification scope for a plugin.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
     pub fn default_notification_scope_for(&self, plugin_id: &str) -> crate::protocol::NotifyScope {
         self.plugins
@@ -980,7 +980,7 @@ impl PluginRegistry {
             .and_then(|a| a.launch.startup_message.clone())
     }
 
-    /// Check whether an plugin's declared capabilities are satisfiable by the
+    /// Check whether a plugin's declared capabilities are satisfiable by the
     /// current config. Returns human-readable missing-capability descriptions.
     /// Empty = all satisfied. Does not spawn the process.
     pub fn check_config_capabilities(
@@ -1299,6 +1299,20 @@ pub(crate) fn find_dev_pack_plugin(id: &str, start: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plugin_rename_resolves_only_unique_or_declared_default_views() {
+        let mut contributions = Contributions { views: vec![] };
+        assert!(contributions.resolve_view("notes", "notes").unwrap_err().contains("no view"));
+        contributions.views.push(ViewDeclaration { id: "notes.editor".into(), default: false });
+        assert_eq!(contributions.resolve_view("notes", "notes").unwrap().id, "notes.editor");
+        contributions.views.push(ViewDeclaration { id: "notes.outline".into(), default: false });
+        let error = contributions.resolve_view("notes", "notes").unwrap_err();
+        assert!(error.contains("notes.editor") && error.contains("notes.outline"));
+        assert_eq!(contributions.resolve_view("notes", "notes.outline").unwrap().id, "notes.outline");
+        contributions.views[1].default = true;
+        assert_eq!(contributions.resolve_view("notes", "notes").unwrap().id, "notes.outline");
+    }
+
     #[test]
     fn plugin_rename_migrates_installed_044_package_and_preserves_source() {
         let profile = tempfile::tempdir().unwrap();
@@ -1637,7 +1651,7 @@ mod tests {
 
     /// Shipped plugins are the de facto documentation — an author copies whatever
     /// the exemplars declare. A description that names a state path is a claim
-    /// the plugin cannot keep: the host owns path construction, so an plugin has no
+    /// the plugin cannot keep: the host owns path construction, so a plugin has no
     /// way to guarantee the file it advertises is the one that gets written.
     /// Todo shipped `<workspace_root>/.plexi/todos.json` while persisting
     /// through `PersistState` to `app_states/todo.json` (stint 0646).
@@ -2093,7 +2107,7 @@ default = true
         let scanned = PluginRegistry::load_with_global(bare.path(), global.path());
         assert!(
             scanned.get("bad-policy-app").is_none(),
-            "an plugin with an invalid on_launch policy must not install"
+            "a plugin with an invalid on_launch policy must not install"
         );
     }
 

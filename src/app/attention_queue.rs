@@ -3300,7 +3300,7 @@ mod tests {
         let mut h = HostHarness::new();
         let terminal = h.add_focused_terminal();
         for pane_id in [terminal, u64::MAX] {
-            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive an plugin event");
+            assert_eq!(h.app.deliver_notify_action(pane_id, "dead".into(), "Continue".into(), Some("go".into()), None, None), crate::app::notifications::NotifyDelivery::Unavailable, "a terminal or missing pane cannot receive a plugin event");
         }
     }
 

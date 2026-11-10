@@ -9,7 +9,7 @@ pub(crate) enum KeyDisposition {
     Passthrough,
 }
 
-/// Context passed to an plugin during rendering.
+/// Context passed to a plugin during rendering.
 pub struct ViewRenderContext<'a> {
     pub colors: &'a Colors,
     /// Host pane id of the pane being rendered. Plugins use it to register their
@@ -18,7 +18,7 @@ pub struct ViewRenderContext<'a> {
     pub pane_id: u64,
 }
 
-/// Commands an plugin can issue back to the system.
+/// Commands a plugin can issue back to the system.
 pub enum ViewCommand {
     Fleet(crate::app::agents_view::FleetAction),
     /// A capability-gated effect returned by a WASM component. The plugin model
@@ -262,7 +262,7 @@ pub trait View: Send {
     ///
     /// Reads from the frame's [`crate::app::input_router::PlexiInput`] ownership
     /// buffer (via `input.key_pressed(..)` / `input.events()` /
-    /// `input.modifiers()`) rather than `ctx.input()`, so an plugin and the global
+    /// `input.modifiers()`) rather than `ctx.input()`, so a plugin and the global
     /// hotkey allowlist can never both claim the same key.
     fn handle_key(&mut self, _input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         KeyDisposition::Passthrough

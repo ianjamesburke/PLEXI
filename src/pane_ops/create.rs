@@ -169,7 +169,7 @@ pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<B
         "secrets_manager" => Some(Box::new(crate::app::secrets_view::SecretsView::new(
             cwd.to_path_buf(),
         ))),
-        "command" | "agents-dashboard" => Some(Box::new(
+        "agents-dashboard" => Some(Box::new(
             crate::app::agents_dashboard_view::AgentsDashboardView::new(cwd.to_path_buf()),
         )),
         _ => None,
@@ -180,7 +180,7 @@ fn release_feature_for_plugin_id(id: &str) -> Option<crate::release::ReleaseFeat
     match id {
         "audio-player" | "video-player" => Some(crate::release::ReleaseFeature::MediaIo),
         "com.plexi.daw-engine-poc" => Some(crate::release::ReleaseFeature::Daw),
-        "command" | "agents-dashboard" => Some(crate::release::ReleaseFeature::AgentsDashboard),
+        "agents-dashboard" => Some(crate::release::ReleaseFeature::AgentsDashboard),
         "mcp-renderer" => Some(crate::release::ReleaseFeature::McpClient),
         _ => None,
     }
@@ -216,7 +216,7 @@ fn builtin_restore_args(
             .and_then(|state| state.get("path"))
             .and_then(|path| path.as_str())
             .map(|path| vec![path.to_string()]),
-        "agents" | "file_browser" | "secrets_manager" | "command" | "agents-dashboard" => Some(vec![]),
+        "agents" | "file_browser" | "secrets_manager" | "agents-dashboard" => Some(vec![]),
         _ => None,
     }
 }
@@ -618,7 +618,7 @@ impl PlexiApp {
     }
 
     /// Return the focused terminal's PaneId, if the currently focused pane is a terminal.
-    /// Used to record which terminal an plugin was spawned alongside, so CdRequest can
+    /// Used to record which terminal a plugin was spawned alongside, so CdRequest can
     /// route directly to it without a tile-tree walk.
     fn focused_terminal_id(&self, active: usize) -> Option<PaneId> {
         let ctx = &self.windows[active];
@@ -2254,7 +2254,7 @@ impl PlexiApp {
             .map(|(win_idx, slot, _)| (slot, win_idx))
     }
 
-    /// Resolve an plugin's `[launch] on_launch` policy (#0336) against currently
+    /// Resolve a plugin's `[launch] on_launch` policy (#0336) against currently
     /// open panes before spawning. Returns `Some(existing_pane_id)` when the
     /// launch was satisfied by focusing a live instance — the caller must then
     /// NOT spawn, and must report *that* pane id (never a predicted one).
@@ -2761,7 +2761,7 @@ impl PlexiApp {
         }
     }
 
-    /// Launch an plugin directly from a filesystem path without looking it up in the registry.
+    /// Launch a plugin directly from a filesystem path without looking it up in the registry.
     ///
     /// The plugin runs in-place; its own directory is used as `workspace_root`.
     #[cfg(test)]
@@ -3582,7 +3582,7 @@ pub(crate) fn cli_open_placement(
 /// the file.
 ///
 /// The global tier, not a context tier, because the only caller is
-/// `builtin_factory` — which resolves an plugin id with no host state to consult, so
+/// `builtin_factory` — which resolves a plugin id with no host state to consult, so
 /// it has no context to anchor to. `open_scratchpad` does have one and writes to
 /// the active context's tier instead.
 fn new_scratch_note_path() -> PathBuf {

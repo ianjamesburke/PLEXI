@@ -459,7 +459,7 @@ impl PlexiUiHarness {
             let probe = self.with_app(|app| {
                 let win = &app.windows[app.active_window];
                 let Some(Pane::View(view_pane)) = win.panes.get(&pane_id) else {
-                    return Probe::Dead(format!("pane {pane_id} is not an view pane"));
+                    return Probe::Dead(format!("pane {pane_id} is not a view pane"));
                 };
                 match &view_pane.runtime {
                     ViewRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
@@ -6144,7 +6144,7 @@ open(out + ".done", "w").close()
         );
     }
 
-    /// Stint 0455: an plugin-build turn's transcript renders chronologically —
+    /// Stint 0455: a plugin-build turn's transcript renders chronologically —
     /// user message, first assistant segment, individual caret-dropdown tool
     /// rows (never a collapsed "N tool calls" trail), a failed row in the
     /// danger hue, and the final reply as its own bubble below the tools.
@@ -7953,7 +7953,7 @@ open(out + ".done", "w").close()
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
 
-        // Need a real focused terminal pane. Seed an view pane, then split — the
+        // Need a real focused terminal pane. Seed a view pane, then split — the
         // split spawns a real TerminalPane and focuses it.
         add_focused_pane(&mut h);
         h.step();

@@ -1,4 +1,4 @@
-//! `plexi plugin call` — invoke an plugin-exposed tool from the command socket.
+//! `plexi plugin call` — invoke a plugin-exposed tool from the command socket.
 //!
 //! The call runs through the same `ToolDispatcher` the Assistant and the host
 //! MCP server use, so the plugin receives an ordinary `ToolCall` and answers with
@@ -60,7 +60,7 @@ impl crate::plexi_ai::tool_dispatch::PermissionPresenter for WaitingApproval {
     }
 }
 
-/// The identity an plugin sees for a verified socket caller. No pane is never
+/// The identity a plugin sees for a verified socket caller. No pane is never
 /// the human `user`.
 /// `--recommend` must name one of the offered `--choice` values.
 pub(crate) fn validate_recommend(recommend: Option<&str>, choices: &[String]) -> Result<(), String> {
@@ -874,7 +874,7 @@ impl PlexiApp {
 
     /// Surface the one recovery action for a host seal key that startup could
     /// not read without prompting. This is deliberately separate from a tool
-    /// approval: it reloads or rotates the host seal and never grants an plugin
+    /// approval: it reloads or rotates the host seal and never grants a plugin
     /// capability.
     pub(crate) fn draw_keychain_recovery_banner(&mut self, ctx: &egui::Context) {
         let monitor =
@@ -940,7 +940,7 @@ impl PlexiApp {
     /// Resolve a Needs-you record from a desktop click or key. Synthetic
     /// input and sockets never reach this: it is the single guarded
     /// desktop path shared by the recovery banner and the attention review.
-    /// Resolving a record never mints an plugin grant.
+    /// Resolving a record never mints a plugin grant.
     pub(crate) fn resolve_from_desktop(
         &mut self,
         id: &str,
@@ -992,7 +992,7 @@ impl PlexiApp {
     }
 
     /// Answer a creative `Question` / `BlockedRun` Needs-you record from a desktop click.
-    /// Never mints an plugin grant or widens permission scopes.
+    /// Never mints a plugin grant or widens permission scopes.
     pub(crate) fn answer_from_desktop(
         &mut self,
         id: &str,

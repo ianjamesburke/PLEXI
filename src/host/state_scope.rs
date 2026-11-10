@@ -23,7 +23,7 @@
 //! greppable, and moves with the project.
 //!
 //! Scope is a property of the plugin, not of an instance or a launch: no pane,
-//! placement, or restore decision may change where an plugin's bytes go.
+//! placement, or restore decision may change where a plugin's bytes go.
 //! Resolution happens against the pane's context root at call time, so
 //! `plexi context set-root` immediately redirects where context-scoped state
 //! resolves.
@@ -67,7 +67,7 @@ impl UserDataKind {
     }
 }
 
-/// A state scope an plugin may declare. Ordered lists come from the manifest;
+/// A state scope a plugin may declare. Ordered lists come from the manifest;
 /// the first declared scope is the plugin's default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StateScope {
@@ -101,7 +101,7 @@ impl StateScope {
     }
 }
 
-/// The on-disk format of an plugin's state file. Declared in the manifest
+/// The on-disk format of a plugin's state file. Declared in the manifest
 /// (`[state] format`); the host is format-blind for anything but JSON — a
 /// markdown file's bytes pass through verbatim under a single `document` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -143,12 +143,12 @@ impl StateFormat {
     }
 }
 
-/// The scopes an plugin that omits `[state]` gets.
+/// The scopes a plugin that omits `[state]` gets.
 pub fn default_scopes() -> Vec<StateScope> {
     vec![StateScope::Global]
 }
 
-/// Validate an plugin id before it is used as a state-file name component.
+/// Validate a plugin id before it is used as a state-file name component.
 /// The id becomes `<dir>/<plugin_id>.<ext>` on disk, so anything that could
 /// escape the state directory (separators, traversal, hidden-file prefixes)
 /// is rejected loudly.

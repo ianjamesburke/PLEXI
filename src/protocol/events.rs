@@ -314,7 +314,7 @@ pub enum PlexiEvent {
         name: String,
         input_json: String,
         /// Broker identity of the caller (e.g. `"agent:chess-opponent"` or
-        /// an plugin id). The SDK stamps `caused_by` on events emitted while
+        /// a plugin id). The SDK stamps `caused_by` on events emitted while
         /// this call is being serviced.
         caller_id: String,
         /// Host-stamped authorization envelope. Absent on legacy WASM guests;
@@ -457,7 +457,7 @@ pub enum PlexiEvent {
     /// `max(0, content_height - viewport_height)`.
     ScrollOffset { id: String, offset_y: f32 },
 
-    /// Emitted when the mouse wheel moves over an view pane that has no
+    /// Emitted when the mouse wheel moves over a view pane that has no
     /// host-managed scroll region or list_view under the cursor.
     /// `delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =
     /// scroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from

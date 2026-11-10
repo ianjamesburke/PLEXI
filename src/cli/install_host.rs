@@ -1677,7 +1677,7 @@ mod core_pack_tests {
     /// must resolve to a real directory under `plugins/` (recursively — pack
     /// entries may point at `plugins/examples/<id>` etc, not just top-level
     /// `plugins/<id>`) whose `manifest.toml` id matches the pack entry id. A
-    /// pack entry that names an plugin which exists nowhere on disk fails
+    /// pack entry that names a plugin which exists nowhere on disk fails
     /// silently at install time otherwise (stint 0393: `packs/examples.toml`
     /// carried four such phantom entries for two weeks before anyone
     /// installed on a fresh profile and hit the failure).
@@ -1760,7 +1760,7 @@ mod core_pack_tests {
         }
     }
 
-    /// Drift guard (stint 0393): every `packs/*.toml` entry must name an plugin
+    /// Drift guard (stint 0393): every `packs/*.toml` entry must name a plugin
     /// that actually exists on disk. `packs/examples.toml` previously carried
     /// four phantom entries (`typing-tutor`, `mind-map`, `gh-projects`,
     /// `calendar`) that named plugins existing nowhere in the repo — silent

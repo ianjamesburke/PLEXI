@@ -20,7 +20,7 @@
 //!
 //! # What lives here
 //!
-//! - [`Visibility`] / [`Price`] — the marketplace facts an plugin declares in its
+//! - [`Visibility`] / [`Price`] — the marketplace facts a plugin declares in its
 //!   manifest `[marketplace]` section. They drive public/private listing and
 //!   free/paid gating.
 //! - [`RegistryEntry`] / [`RegistryIndex`] / [`RegistryClient`] — the hosted
@@ -55,7 +55,7 @@ pub const INSTALLED_REGISTRY_SOURCE_FILE: &str = "marketplace_source.toml";
 
 // ── Visibility ────────────────────────────────────────────────────────────────
 
-/// Who can discover an plugin. Local-first default is [`Visibility::Private`]: an
+/// Who can discover a plugin. Local-first default is [`Visibility::Private`]: an
 /// plugin is not public until its author explicitly publishes it. Drives whether
 /// `plugin browse`/`plugin search` list it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -87,8 +87,8 @@ impl Visibility {
 
 // ── Price ─────────────────────────────────────────────────────────────────────
 
-/// What an plugin costs. Money is stored in integer minor units (cents) to avoid
-/// float rounding. [`Price::Free`] is the default — an plugin costs nothing unless
+/// What a plugin costs. Money is stored in integer minor units (cents) to avoid
+/// float rounding. [`Price::Free`] is the default — a plugin costs nothing unless
 /// it explicitly says otherwise.
 ///
 /// Serialized form in `manifest.toml`:

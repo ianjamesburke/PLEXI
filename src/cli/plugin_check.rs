@@ -52,7 +52,7 @@ pub(crate) fn python_launch_config_from_parts(
         )
         .to_theme_map(),
         // Headless one-shot renders never persist state; the default scope
-        // list and an plugin-dir anchor are inert here.
+        // list and a plugin-dir anchor are inert here.
         state_scopes: crate::host::state_scope::default_scopes(),
         state_format: crate::host::state_scope::StateFormat::Json,
         context_root: plugin_dir.to_path_buf(),
@@ -112,7 +112,7 @@ const DEFAULT_CHECK_SIZES: &[(u32, u32)] = &[(320, 240), (480, 320), (800, 600),
 const SEEDED_PROBE_SIZE: (u32, u32) = (480, 320);
 /// Upper bound on how many discovered handlers the action probe clicks in one
 /// sequence, keeping a button-heavy plugin's check fast. The probe prints how
-/// many it skipped when an plugin exceeds it.
+/// many it skipped when a plugin exceeds it.
 const MAX_ACTION_PROBE_HANDLERS: usize = 8;
 
 #[derive(Debug, Default)]
@@ -1498,7 +1498,7 @@ profile_dir = ".plexi-beta"
     /// The render loop at the bottom of `plugin_check_cli` maps
     /// `run_headless_frame`'s `Err(e)` to `errors.push(format!("render {label} — {e}"))`
     /// (never a silent log-and-continue), so a component tree that fails to
-    /// decode — e.g. an plugin emitting `Badge(color="blue")`, which the host
+    /// decode — e.g. a plugin emitting `Badge(color="blue")`, which the host
     /// decoder rejects (see `decode_badge_color`) — must surface as a named
     /// `plexi plugin check` error, not merely an ERROR-level log line while the
     /// check itself reports success.
@@ -1524,7 +1524,7 @@ profile_dir = ".plexi-beta"
 mod type_check_tests {
     use super::*;
 
-    /// Stint 0415, both halves of the contract: (1) an plugin reading a field
+    /// Stint 0415, both halves of the contract: (1) a plugin reading a field
     /// that doesn't exist on an SDK event (`UiValueChange.payload` — it only
     /// has `.value`) fails the type gate instead of crashing the guest at
     /// runtime; (2) a mixed-children `Column([Text, Button])` type-checks

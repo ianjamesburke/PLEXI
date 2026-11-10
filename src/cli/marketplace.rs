@@ -1,4 +1,4 @@
-//! Marketplace CLI surface — browse/search the hosted catalog, publish an plugin,
+//! Marketplace CLI surface — browse/search the hosted catalog, publish a plugin,
 //! and plan bare-id installs (stints `0018`-`0021`, `0340`).
 //!
 //! Every command here is a thin shell over `crate::app::marketplace`. The
@@ -199,7 +199,7 @@ pub fn plan_install(plugin_id: &str) -> InstallPlan {
     InstallPlan::Blocked
 }
 
-/// `plexi plugin publish [<path>]` — validate, package, and submit an plugin to the
+/// `plexi plugin publish [<path>]` — validate, package, and submit a plugin to the
 /// hosted marketplace. Replaces the old print-only stub.
 ///
 /// Always does the real local work: reads `[marketplace]`, validates the dir,

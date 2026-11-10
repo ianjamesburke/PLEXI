@@ -55,7 +55,7 @@ pub enum TargetType {
     Package,
     ModelPointer,
     UndoCheckpoint,
-    /// One typed one-shot CLI operation of an plugin package (stint 1175). The
+    /// One typed one-shot CLI operation of a plugin package (stint 1175). The
     /// grant binds package content, workspace, operation definition, mode,
     /// resolved executable and executable content through `package_id` and
     /// `resource_id`, never through pane or context ids.
@@ -237,7 +237,7 @@ pub struct GrantRecord {
 }
 
 impl GrantRecord {
-    /// Build the record an plugin capability decision produces — the migrated
+    /// Build the record a plugin capability decision produces — the migrated
     /// shape from the spec's migration table.
     pub fn plugin_capability(
         plugin_id: &str,
@@ -1165,7 +1165,7 @@ impl GrantStore {
         decision
     }
 
-    /// Capability sets for an plugin launch, equivalent to the legacy
+    /// Capability sets for a plugin launch, equivalent to the legacy
     /// `build_permission_sets` but read from generalized records:
     /// `(allowed, denied)` capabilities for this plugin+workspace.
     #[cfg(test)]
@@ -1523,7 +1523,7 @@ mod tests {
         assert_eq!(
             store.evaluate(&plugin_req, None),
             Decision::Ask,
-            "an agent grant must not satisfy an plugin request"
+            "an agent grant must not satisfy a plugin request"
         );
     }
 

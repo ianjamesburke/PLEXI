@@ -6,7 +6,9 @@
 //! `plexi:`) so the value space stays open-ended — new kinds (`mcp:`, `url:`,
 //! …) slot in without colliding with the plugin-id namespace:
 //!
-//!   `plugin:<id>`      — open in a Plexi plugin by its registry id
+//!   `app:<id>`      — stored spelling for opening a plugin's default view
+//! This persisted config grammar stays unchanged to preserve user associations.
+//! It is not a CLI alias; new CLI calls use `view open`.
 //!   `os`            — hand to the OS default opener (`open` / `xdg-open`)
 //!   `cmd:<command>` — reserved; parsed now, executed in a follow-up
 //!
@@ -27,7 +29,7 @@ pub enum FileHandler {
 
 impl FileHandler {
     /// Parse a `kind:value` handler spec. Returns `None` for an empty or
-    /// malformed spec (unknown kind, or `plugin:`/`cmd:` with no value) so the
+    /// malformed spec (unknown kind, or `app:`/`cmd:` with no value) so the
     /// caller can warn and fall through to the next resolution tier.
     pub fn parse(spec: &str) -> Option<Self> {
         let spec = spec.trim();
@@ -74,7 +76,7 @@ mod tests {
     #[test]
     fn trims_surrounding_whitespace() {
         assert_eq!(
-            FileHandler::parse("  plugin:text-editor  "),
+            FileHandler::parse("  app:text-editor  "),
             Some(FileHandler::View("text-editor".to_string()))
         );
     }
@@ -90,6 +92,6 @@ mod tests {
     fn rejects_empty_value() {
         assert_eq!(FileHandler::parse("app:"), None);
         assert_eq!(FileHandler::parse("cmd:"), None);
-        assert_eq!(FileHandler::parse("plugin:   "), None);
+        assert_eq!(FileHandler::parse("app:   "), None);
     }
 }

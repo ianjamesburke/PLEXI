@@ -2655,7 +2655,7 @@ impl PlexiApp {
                     Some("view") if *submit => {
                         log::warn!("pane_submit: pane_id={pane_id} refused — not a terminal pane");
                         Err(format!(
-                            "pane {pane_id} is an view pane; --submit only applies to terminal panes"
+                            "pane {pane_id} is a view pane; --submit only applies to terminal panes"
                         ))
                     }
                     Some("view") => {
@@ -3703,9 +3703,9 @@ impl PlexiApp {
                                 .send_plugin_action(action.clone(), args.clone())
                         } else {
                             log::warn!(
-                                "pane_ipc: send_pane_action: pane_id={pane_id} is not an view pane"
+                                "pane_ipc: send_pane_action: pane_id={pane_id} is not a view pane"
                             );
-                            Err(format!("pane {pane_id} is not an view pane"))
+                            Err(format!("pane {pane_id} is not a view pane"))
                         }
                     }
                 };
@@ -4083,7 +4083,7 @@ impl PlexiApp {
                     log::info!("pane_ipc: set_pip_status: pane_id={pane_id} stored on pane");
                 } else {
                     log::warn!(
-                        "pane_ipc: set_pip_status: pane_id={pane_id} not found or not an view pane"
+                        "pane_ipc: set_pip_status: pane_id={pane_id} not found or not a view pane"
                     );
                 }
             }

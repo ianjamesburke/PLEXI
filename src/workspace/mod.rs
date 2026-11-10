@@ -503,11 +503,24 @@ impl WorkspaceFile {
             }
         }
         let mut migrated = false;
+        if let Err(error) = crate::app::plugin_migration::migrate(profile_dir) {
+            log::error!("workspace plugin migration: {error}; preserving original");
+            return None;
+        }
         for window in &mut ws.windows {
             for pane in &mut window.panes {
-                if let Some(SavedViewLaunch::Python { plugin_dir, .. }) = &mut pane.launch {
-                    if let Some(path) = crate::app::plugin_migration::migrated_path(plugin_dir) {
-                        *plugin_dir = path;
+                if matches!(pane.plugin_id.as_deref(), Some("command" | "command-view")) {
+                    pane.plugin_id = Some("agents-dashboard".into());
+                    migrated = true;
+                }
+                let launch_path = match &mut pane.launch {
+                    Some(SavedViewLaunch::Python { plugin_dir, .. }) => Some(plugin_dir),
+                    Some(SavedViewLaunch::Wasm { wasm_path, .. }) => Some(wasm_path),
+                    None => None,
+                };
+                if let Some(launch_path) = launch_path {
+                    if let Some(path) = crate::app::plugin_migration::migrated_path(launch_path) {
+                        *launch_path = path;
                         migrated = true;
                     }
                 }

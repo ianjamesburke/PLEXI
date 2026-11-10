@@ -5,7 +5,7 @@ use crate::ui::style;
 use egui::RichText;
 
 /// Rendered as a `Pane::App(ViewRuntime::Builtin(...))` when the host detects
-/// that an plugin's declared capabilities cannot be satisfied by the current
+/// that a plugin's declared capabilities cannot be satisfied by the current
 /// config. No Python process is ever spawned for this pane.
 pub struct LaunchFailedView {
     pub plugin_id: String,

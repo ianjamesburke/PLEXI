@@ -866,7 +866,7 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::View { cmd } => match cmd {
- ViewCmd::List => cli::trace::exit(cli::view_list()),
+ ViewCmd::List => cli::trace::exit(cli::view_list(json)),
 ViewCmd::Open {
                                 type_id,
                                 mcp,
@@ -914,7 +914,7 @@ ViewCmd::Open {
                                     // Prefix routing: cli:, mcp:, view:, or bare name
                                     match cli::parse_prefix(&tid) {
                                         cli::OpenPrefix::Cli(name) => {
-                                            log::info!("app_open:cli: prefix-routed cli:{name}");
+                                            log::info!("view_open:cli: prefix-routed cli:{name}");
                                             cli::trace::exit(cli::open_cli_by_name(
                                                 &name,
                                                 layout.as_deref(),
@@ -926,7 +926,7 @@ ViewCmd::Open {
                                             exit_if_feature_disabled(
                                                 crate::release::ReleaseFeature::McpClient,
                                             );
-                                            log::info!("app_open:cli: prefix-routed mcp:{name}");
+                                            log::info!("view_open:cli: prefix-routed mcp:{name}");
                                             cli::trace::exit(cli::open_mcp_by_name(
                                                 &name,
                                                 layout.as_deref(),
@@ -935,7 +935,7 @@ ViewCmd::Open {
                                             ));
                                         }
                                         cli::OpenPrefix::View(name) => {
-                                            log::info!("app_open:cli: prefix-routed view:{name}");
+                                            log::info!("view_open:cli: prefix-routed view:{name}");
                                             cli::trace::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
@@ -945,7 +945,7 @@ ViewCmd::Open {
                                             ));
                                         }
                                         cli::OpenPrefix::Bare(name) => {
-                                            log::info!("app_open:cli: opening plugin type_id={name}");
+                                            log::info!("view_open:cli: opening plugin type_id={name}");
                                             cli::trace::exit(cli::open_cli(
                                                 &name,
                                                 &extra_args,
@@ -957,7 +957,7 @@ ViewCmd::Open {
                                     }
                                 } else if !mcp.is_empty() {
                                     let title = cli::mcp_pane_title(&mcp);
-                                    log::info!("app_open:cli: launching mcp-renderer with server id {:?}, auto-title={title:?}", mcp);
+                                    log::info!("view_open:cli: launching mcp-renderer with server id {:?}, auto-title={title:?}", mcp);
                                     cli::trace::exit(cli::pane_new_cli(cli::PaneNewCliArgs {
                                         name: Some(title.as_str()),
                                         layout: layout.as_deref(),
@@ -968,7 +968,7 @@ ViewCmd::Open {
                                     }));
                                 } else {
                                     let binary = cli_flag.unwrap();
-                                    log::info!("app_open:cli: --cli routing `{binary}` through unified resolver");
+                                    log::info!("view_open:cli: --cli routing `{binary}` through unified resolver");
                                     cli::trace::exit(cli::open_cli_by_name(
                                         &binary,
                                         layout.as_deref(),

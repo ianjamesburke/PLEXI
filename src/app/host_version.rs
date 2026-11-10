@@ -1,4 +1,4 @@
-//! Host version compatibility — does this Plexi build satisfy an plugin's declared
+//! Host version compatibility — does this Plexi build satisfy a plugin's declared
 //! version requirement?
 //!
 //! Plugins declare `[requires]` in their manifest:
@@ -9,9 +9,9 @@
 //! plexi_max = "0.1.0"     # soft ceiling — host above this warns (plugin may be superseded)
 //! ```
 //!
-//! The split is deliberate. `plexi_min` is an enforced gate: an plugin that needs a
+//! The split is deliberate. `plexi_min` is an enforced gate: a plugin that needs a
 //! capability added in 0.0.760 must not silently misbehave on 0.0.700. `plexi_max`
-//! is advisory: an plugin built for today's Plexi keeps running on a newer host, but
+//! is advisory: a plugin built for today's Plexi keeps running on a newer host, but
 //! the user is warned that it predates this build and may need an update. Blocking
 //! on the ceiling would brick every installed plugin on each release, so we never do.
 //!

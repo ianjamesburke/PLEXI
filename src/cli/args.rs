@@ -1153,7 +1153,7 @@ pub struct NotifyPostArgs {
 
 #[derive(Subcommand)]
 pub enum EventsCmd {
-    /// Subscribe to an plugin's event stream and print delivered events as NDJSON.
+    /// Subscribe to a plugin's event stream and print delivered events as NDJSON.
     ///
     /// Opens a long-lived connection to the running Plexi instance and streams
     /// one JSON object per line to stdout: first a `subscribed` acknowledgement,
@@ -1182,7 +1182,7 @@ pub enum EventsCmd {
     },
     /// Declare an event stream so it can be emitted on and subscribed to.
     ///
-    /// Registers a named stream under an plugin-id namespace with a JSON-Schema
+    /// Registers a named stream under a plugin-id namespace with a JSON-Schema
     /// object describing its payload. Declaring is a prerequisite for `emit`.
     /// Re-declaring a stream replaces its previous schema. The first declare
     /// under a namespace you do not own prompts for host consent.
@@ -1403,7 +1403,7 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum PluginCmd {
-    /// Install an plugin from a local path, a remote source, or a pack file.
+    /// Install a plugin from a local path, a remote source, or a pack file.
     ///
     /// Local path: `plexi plugin install ./my-plugin` — copies the plugin dir into Plexi's store.
     /// Remote source: `plexi plugin install github:owner/repo` — fetches and installs from GitHub.
@@ -1488,7 +1488,7 @@ pub enum PluginCmd {
         #[arg(long, value_hint = ValueHint::DirPath)]
         png_dir: Option<String>,
     },
-    /// Run an plugin's PluginHarness tests with `uv run --with pytest pytest tests/`.
+    /// Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/`.
     ///
     /// Runs the Python tests in the plugin's `tests/` directory (the
     /// `tests/test_plugin.py` scaffolded by `plexi plugin init`). PluginHarness spawns
@@ -1526,7 +1526,7 @@ pub enum PluginCmd {
     /// manifest.toml, main.py, tests/test_plugin.py, AGENTS.md, .gitignore, and
     /// plexi.scaffold.toml drift metadata.
     ///
-    /// Pass `--adopt <dir>` (or `--adopt` inside an plugin directory) to write or
+    /// Pass `--adopt <dir>` (or `--adopt` inside a plugin directory) to write or
     /// refresh `plexi.scaffold.toml` for a pre-existing plugin without creating or
     /// modifying any source files.
     ///
@@ -1583,7 +1583,7 @@ pub enum PluginCmd {
         #[arg(value_hint = ValueHint::AnyPath)]
         path: String,
     },
-    /// Build a distributable .plexipkg package from an plugin directory.
+    /// Build a distributable .plexipkg package from a plugin directory.
     ///
     /// Validates the directory first (fail-closed), then writes
     /// `<id>-<version>.plexipkg` containing the plugin files plus a generated
@@ -1604,7 +1604,7 @@ pub enum PluginCmd {
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
     },
-    /// Validate, package, and submit an plugin to the Plexi marketplace.
+    /// Validate, package, and submit a plugin to the Plexi marketplace.
     ///
     /// Reads the `[marketplace]` manifest section (publisher, visibility, price),
     /// validates the directory, builds a `.plexipkg`, and submits it. Without a
@@ -1630,7 +1630,7 @@ pub enum PluginCmd {
         /// App id to update (omit to update all installed plugins visible here)
         id: Option<String>,
     },
-    /// Call a tool an plugin exposes and print its JSON result.
+    /// Call a tool a plugin exposes and print its JSON result.
     ///
     /// Runs through the same tool dispatcher the Assistant uses, scoped to the
     /// calling pane's context (the active context when run outside a pane).
@@ -1683,9 +1683,9 @@ pub enum ViewCmd {
     /// List declared views of installed plugins.
     List,
 
-    /// Open an plugin or tool in a new pane.
+    /// Open a plugin or tool in a new pane.
     ///
-    /// Pass an plugin id (e.g. `plexi view open calc`) or a path to an plugin directory
+    /// Pass a plugin id (e.g. `plexi view open calc`) or a path to a plugin directory
     /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
     /// to open any CLI tool with a Plexi UI.
     ///
@@ -1694,7 +1694,7 @@ pub enum ViewCmd {
     /// --tab, or --window to override; the plugin's manifest `[launch] placement`
     /// applies when no flag is given.
     Open {
-        /// App id or path to open (mutually exclusive with --mcp and --cli)
+        /// View id, default plugin id, or local path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
         type_id: Option<String>,
         /// Explore a configured stdio MCP server in a Plexi pane.
@@ -1732,13 +1732,13 @@ pub enum ViewCmd {
         /// pane (PLEXI_PANE_ID env), falling back to the focused pane.
         #[arg(long, value_name = "PANE_ID")]
         from: Option<PaneTarget>,
-        /// Extra arguments passed through to the plugin (only valid with an plugin id)
+        /// Extra arguments passed through to the plugin (only valid with a plugin id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
     },
-    /// Render an plugin headlessly (JSON frame tree by default, or PNG with --png).
+    /// Render a plugin headlessly (JSON frame tree by default, or PNG with --png).
     Render {
-        /// App id or local path to render (e.g. "calc" or "./my-plugin")
+        /// View id, default plugin id, or local path to render (e.g. "calc" or "./my-plugin")
         plugin: String,
         /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]
@@ -2210,7 +2210,7 @@ pub enum PaneCmd {
         pane_id: PaneTarget,
         path_or_url: String,
     },
-    /// Inject a synthetic pointer click into an view pane, for driving canvas
+    /// Inject a synthetic pointer click into a view pane, for driving canvas
     /// interaction without OS-level automation.
     ///
     /// Two mutually exclusive targeting modes:
@@ -2248,7 +2248,7 @@ pub enum PaneCmd {
         #[arg(long, default_value = "left")]
         button: String,
     },
-    /// Drag the pointer across an view pane through the production input path:
+    /// Drag the pointer across a view pane through the production input path:
     /// press, N intermediate moves, release — delivered one frame at a time.
     ///
     /// Endpoints are pane-pixel coordinates ("x,y" from the pane's top-left)
@@ -2423,7 +2423,7 @@ pub enum PaneResultCmd {
 
 #[derive(Subcommand)]
 pub enum PluginStateCmd {
-    /// Print an plugin's current state document to stdout.
+    /// Print a plugin's current state document to stdout.
     Get {
         /// App id (from `plexi plugin list`)
         plugin: String,
@@ -2432,7 +2432,7 @@ pub enum PluginStateCmd {
         #[arg(long, value_parser = ["global", "context"])]
         scope: Option<String>,
     },
-    /// Replace an plugin's state document, reading from a file or stdin.
+    /// Replace a plugin's state document, reading from a file or stdin.
     Set {
         /// App id (from `plexi plugin list`)
         plugin: String,

@@ -69,7 +69,7 @@ pub enum PackageError {
         #[source]
         source: std::io::Error,
     },
-    #[error("not a directory: {0} — expected an plugin directory containing manifest.toml")]
+    #[error("not a directory: {0} — expected a plugin directory containing manifest.toml")]
     NotADirectory(PathBuf),
     #[error("manifest.toml not found in {0} — every package requires one at the plugin root")]
     ManifestMissing(PathBuf),
@@ -81,7 +81,7 @@ pub enum PackageError {
     },
     #[error("manifest schema_version {found} is newer than supported (max {max}) in {path}")]
     UnsupportedSchemaVersion { found: u32, max: u32, path: PathBuf },
-    #[error("manifest field [app].{field} is missing or empty in {path}")]
+    #[error("manifest field [plugin].{field} is missing or empty in {path}")]
     MissingField { field: &'static str, path: PathBuf },
     #[error("entry file '{entry}' declared in manifest.toml not found at {path}")]
     EntryMissing { entry: String, path: PathBuf },
@@ -137,7 +137,7 @@ pub enum PackageError {
     #[error("unsupported runtime '{0}' in PACKAGE.toml — expected \"python\" or \"wasm\"")]
     UnsupportedRuntime(String),
     #[error(
-        "manifest entry '{0}' is neither WASM (`[app] type = \"wasm\"`) nor a `.py` file — the host has no launch path for a native-executable entry (see docs/wasm-runtime.md § Security Model)"
+        "manifest entry '{0}' is neither WASM (`[runtime] kind = \"wasm\"`) nor a `.py` file — the host has no launch path for a native-executable entry (see docs/wasm-runtime.md § Security Model)"
     )]
     UnlaunchableEntry(String),
     #[error(
@@ -329,7 +329,7 @@ pub fn trust_label(
 
 // ── Directory validation ──────────────────────────────────────────────────────
 
-/// Validate an plugin directory as packageable. Fail-closed: any structural
+/// Validate a plugin directory as packageable. Fail-closed: any structural
 /// problem is a hard error. A root-level `PACKAGE.toml` (left over from a
 /// previous extraction) is ignored by the file walk — it is regenerated at
 /// build time and verified at package-validate time.
@@ -418,7 +418,7 @@ fn validate_dir_inner(
     })
 }
 
-/// Read + structurally validate `manifest.toml` from an plugin dir.
+/// Read + structurally validate `manifest.toml` from a plugin dir.
 fn read_manifest(plugin_dir: &Path) -> Result<PluginManifest, PackageError> {
     let manifest_path = plugin_dir.join("manifest.toml");
     if !manifest_path.exists() {
@@ -734,7 +734,7 @@ fn collect_files_rec(
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 
-/// Build a `.plexipkg` artifact from an plugin directory.
+/// Build a `.plexipkg` artifact from a plugin directory.
 ///
 /// Validates the directory first (fail-closed), then writes
 /// `<id>-<version>.plexipkg` into the current directory, or to `out` when

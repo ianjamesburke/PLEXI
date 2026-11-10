@@ -103,7 +103,7 @@ pub fn demo_cli() -> i32 {
     };
     done(4);
 
-    step(5, "Open an plugin from the palette");
+    step(5, "Open a plugin from the palette");
     explain(&[
         "Split to a fresh terminal, open the command palette, type Balls, and choose the Balls plugin.",
         "The plugin should take over that pane. This demo waits for the Balls plugin to spawn.",

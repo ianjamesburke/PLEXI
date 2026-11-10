@@ -295,7 +295,7 @@ impl Colors {
             format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
         }
         // `bg` is the color the host paints behind the view pane (terminal_bg),
-        // so an plugin that clears to theme.bg matches its container in any theme.
+        // so a plugin that clears to theme.bg matches its container in any theme.
         [
             ("bg", self.terminal_bg),
             ("bg_darkest", self.bg_darkest),

@@ -567,7 +567,7 @@ impl PlexiApp {
 
     /// Returns `(view_active, keyboard_capture_active)` for the pane focused in
     /// the active window. `view_active` is true whenever the focused pane is
-    /// running an plugin surface at all; `keyboard_capture_active` mirrors that
+    /// running a plugin surface at all; `keyboard_capture_active` mirrors that
     /// pane's own declared `App::keyboard_capture()` (e.g. file-browser
     /// rename/quick-look mode, a CLI-backed plugin's Form view) — an advisory
     /// policy flag `keys::poll_actions` reads to suppress global shortcuts
@@ -575,7 +575,7 @@ impl PlexiApp {
     /// `focus_stack`/`FocusKind`: overlay layers are exclusive (they block
     /// `dispatch_plugin_key_events` entirely), while plugin-declared capture must
     /// NOT block the plugin from still receiving its own keys — folding the two
-    /// into one stack would make an plugin go deaf on the frame it starts
+    /// into one stack would make a plugin go deaf on the frame it starts
     /// capturing. Deduplicates what was previously an inline block
     /// re-computed at the `poll_actions` call site.
     pub(crate) fn focused_view_capture_state(&self) -> (bool, bool) {
@@ -707,7 +707,7 @@ impl PlexiApp {
         self.config.confirm_close.unwrap_or(false)
     }
 
-    /// If the currently focused pane is an plugin with a non-empty nav stack,
+    /// If the currently focused pane is a plugin with a non-empty nav stack,
     /// emit `PlexiEvent::NavBack` to it and return `true`. Returns `false`
     /// when there is no nav-active focused pane (caller may fall back to
     /// default behaviour such as closing the pane or cycling tabs).

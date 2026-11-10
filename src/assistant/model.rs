@@ -194,7 +194,7 @@ pub struct StreamingState {
     /// this prefix from the broker's final text so only the tail commits.
     pub committed_answer: String,
     /// The model is currently generating a tool call (stint 0467) — the
-    /// longest otherwise-silent stretch of an plugin-build turn. Cleared when
+    /// longest otherwise-silent stretch of a plugin-build turn. Cleared when
     /// the finished call dispatches (`tool_call_started`) or the turn ends.
     pub tool_progress: Option<ToolArgProgress>,
 }
@@ -1290,7 +1290,7 @@ mod tests {
             "progress outside an in-flight turn must be ignored"
         );
 
-        submitted(&mut m, "build me an plugin");
+        submitted(&mut m, "build me a plugin");
         m.apply_tool_progress(None, 12);
         let p = m.streaming.tool_progress.as_ref().expect("progress set");
         assert_eq!((p.name.as_deref(), p.arg_chars), (None, 12));
@@ -1860,7 +1860,7 @@ mod tests {
     #[test]
     fn tool_calls_and_queued_message_stay_in_chronological_order() {
         let mut m = AssistantModel::fresh();
-        submitted(&mut m, "build me an plugin");
+        submitted(&mut m, "build me a plugin");
 
         tool_started(&mut m, "host.files.write");
         tool_finished(&mut m, "host.files.write", None, None);
@@ -1880,7 +1880,7 @@ mod tests {
         assert_eq!(
             roles,
             vec![
-                (TurnRole::User, "build me an plugin".to_string()),
+                (TurnRole::User, "build me a plugin".to_string()),
                 (TurnRole::Tool, "host.files.write".to_string()),
                 (TurnRole::Tool, "plexi.plugin_check".to_string()),
                 (TurnRole::Assistant, "Done — plugin scaffolded.".to_string()),

@@ -61,7 +61,7 @@ pub enum Capability {
     /// Primitives (`terminal.bindings`, #78). Covers all of:
     /// `RequestLinkedTerminal`, `RunInLinkedTerminal`, `InsertPathToken`,
     /// `RequestCommandPreview`, `OpenArtifact`. Single capability across
-    /// the surface so an plugin's manifest declares one intent ("I drive a
+    /// the surface so a plugin's manifest declares one intent ("I drive a
     /// terminal") rather than enumerating each verb.
     TerminalBindings,
     /// Show a native macOS file picker dialog (`fs.pick`, #514).
@@ -101,7 +101,7 @@ pub enum Capability {
     ///
     /// The plugin names a server by id only. Argv comes from user-owned config
     /// and never from the plugin, so this capability authorizes "talk to a server
-    /// the user configured", never "run this command" — an plugin holding it
+    /// the user configured", never "run this command" — a plugin holding it
     /// cannot reach a binary the user has not already listed.
     McpClient,
     /// Request the typed one-shot CLI operations the plugin package declares in
@@ -411,7 +411,7 @@ impl PluginPermissions {
     /// Create a permissions set from a list of v3 capability strings.
     /// Unknown capability strings are logged and dropped — manifest loaders
     /// should validate with `parse_capability_strings` first and refuse to
-    /// install an plugin that names an unknown capability.
+    /// install a plugin that names an unknown capability.
     #[cfg(test)]
     pub fn from_capability_strings(strings: &[String]) -> Self {
         let mut capabilities = HashSet::new();
@@ -435,7 +435,7 @@ impl PluginPermissions {
 }
 
 /// Parse a list of capability strings, returning an error on the first unknown
-/// entry. Manifest loaders should call this before installing an plugin.
+/// entry. Manifest loaders should call this before installing a plugin.
 pub fn parse_capability_strings(
     strings: &[String],
 ) -> Result<HashSet<Capability>, UnknownCapability> {
@@ -457,7 +457,7 @@ pub enum PermissionCheck {
 
 // ── v3 check API ──────────────────────────────────────────────────────────────
 
-/// Check whether a specific capability is granted for an plugin+workspace pair.
+/// Check whether a specific capability is granted for a plugin+workspace pair.
 #[cfg(test)]
 pub fn check(perms: &PluginPermissions, cap: Capability) -> PermissionCheck {
     if perms.is_builtin {

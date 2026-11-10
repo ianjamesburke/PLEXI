@@ -93,7 +93,7 @@ pub enum HostEvent {
         status: String,
         timestamp: String,
     },
-    /// A notification was raised by an plugin.
+    /// A notification was raised by a plugin.
     NotificationPosted {
         id: String,
         title: String,

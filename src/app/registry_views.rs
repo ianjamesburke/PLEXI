@@ -2,7 +2,7 @@
 //!
 //! Before this module, `PlexiApp` held exactly one `PluginRegistry`, rescanned
 //! only when the *active* context transitioned (`apply_context_transition_effects`
-//! in `pane_ops::workspace`). Any call site that resolved an plugin id against a
+//! in `pane_ops::workspace`). Any call site that resolved a plugin id against a
 //! context other than whichever one happened to be active last — a launch
 //! targeting an explicit `context_id`, the registry watcher for a background
 //! context, plugin-state routing for a parked pane — got whatever the active
@@ -113,7 +113,7 @@ impl RegistryViews {
 
     /// Force a fresh scan of `root` regardless of cache state — used for an
     /// explicit "rescan now" (a watched source changed, a root was just
-    /// (re)assigned to a context, or a caller couldn't find an plugin id and
+    /// (re)assigned to a context, or a caller couldn't find a plugin id and
     /// wants to check disk for a just-installed one).
     pub(crate) fn rescan_root(&mut self, root: &Path) -> &PluginRegistry {
         let key = crate::platform::path::canonical_or_self(root);

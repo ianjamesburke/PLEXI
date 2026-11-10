@@ -456,7 +456,7 @@ impl HostHarness {
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("assistant pane not found");
-        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not an view pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not a view pane").runtime
         else {
             panic!("pane {pane_id} is not a builtin plugin");
         };
@@ -477,7 +477,7 @@ impl HostHarness {
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("text editor pane not found");
-        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not an view pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_view_mut().expect("not a view pane").runtime
         else {
             panic!("pane {pane_id} is not a builtin plugin");
         };

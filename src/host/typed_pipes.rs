@@ -541,7 +541,7 @@ const PIPE_BUFFER_BYTES: u32 = 64 * 1024;
 /// created `FILE_FLAG_OVERLAPPED`, so `ConnectNamedPipe` returns immediately
 /// with `ERROR_IO_PENDING` and completion is observed by waiting on the
 /// OVERLAPPED's event in 50 ms slices — the same cadence, and the same reason:
-/// an plugin that never connects must not wedge `close()` -> `join()`.
+/// a plugin that never connects must not wedge `close()` -> `join()`.
 #[cfg(windows)]
 fn win32_await_client(
     handle: windows_sys::Win32::Foundation::HANDLE,

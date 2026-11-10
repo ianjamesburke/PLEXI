@@ -8,8 +8,8 @@
 //! The split is deliberate:
 //!
 //! - **The host owns the process.** SDK plugins run as CPython-in-Wasmtime with no
-//!   ambient process access, so an plugin physically cannot spawn a server. More
-//!   importantly it must not be able to: an plugin-supplied argv would be
+//!   ambient process access, so a plugin physically cannot spawn a server. More
+//!   importantly it must not be able to: a plugin-supplied argv would be
 //!   arbitrary native code execution wearing a capability's clothes.
 //! - **The plugin owns the protocol.** The native MCP visualizer and Python bridge
 //!   share this transport. This module never parses a JSON-RPC body,
@@ -19,7 +19,7 @@
 //!   call proxying — live in the bridge plugin.
 //!
 //! The containment property that makes the capability safe to grant:
-//! **an plugin names a server by id; the host resolves the id to an argv from
+//! **a plugin names a server by id; the host resolves the id to an argv from
 //! user-owned config.** `mcp.client` therefore authorizes "talk to a server
 //! the user configured", never "run this command". A compromised or malicious
 //! bridge plugin cannot reach a binary the user did not already list.

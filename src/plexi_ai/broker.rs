@@ -1,6 +1,6 @@
 //! `ai.query` capability broker — issue #284, #383.
 //!
-//! The broker is the host-side bridge between an plugin's `DrawCommand::AiQuery`
+//! The broker is the host-side bridge between a plugin's `DrawCommand::AiQuery`
 //! and the live Plexi AI backend. The capability gate, model-tier resolution,
 //! ledger append, and outbound `PlexiEvent::AiResponse` are all funnelled
 //! through this module so:
@@ -1807,7 +1807,7 @@ mod tests {
             system: "sys".to_string(),
             messages: vec![AiMessage {
                 role: "user".to_string(),
-                content: "build me an plugin".to_string(),
+                content: "build me a plugin".to_string(),
             }],
             tools: vec![tool],
             workspace_root: None,

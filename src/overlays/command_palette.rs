@@ -4673,7 +4673,7 @@ split = true
             "running a user command while focused on a busy terminal must fall back to a split pane"
         );
 
-        // 3. When the focused pane is an view pane, running `in_place` also falls back to splitting.
+        // 3. When the focused pane is a view pane, running `in_place` also falls back to splitting.
         h.focus_pane(view_pane);
         assert_eq!(h.app.focused_idle_shell_pane_id(), None);
         let count_before_plugin = h.pane_count();
@@ -4681,7 +4681,7 @@ split = true
         assert_eq!(
             h.pane_count(),
             count_before_plugin + 1,
-            "running a user command while focused on an view pane must fall back to a split pane"
+            "running a user command while focused on a view pane must fall back to a split pane"
         );
     }
 

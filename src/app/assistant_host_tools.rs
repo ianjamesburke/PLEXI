@@ -162,7 +162,7 @@ impl PlexiApp {
             .get(&origin_pane_id)
             .and_then(crate::host::pane::Pane::as_view)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
+            return Err(format!("origin pane {origin_pane_id} is not a view pane"));
         };
         if !app.permissions.is_builtin
             && !app.permissions.capabilities.contains(&Capability::NetHttp)
@@ -721,7 +721,7 @@ impl PlexiApp {
             .get_mut(&origin_pane_id)
             .and_then(crate::host::pane::Pane::as_view_mut)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
+            return Err(format!("origin pane {origin_pane_id} is not a view pane"));
         };
         if !app.permissions.is_builtin
             && !app
@@ -758,7 +758,7 @@ impl PlexiApp {
             .get(&origin_pane_id)
             .and_then(crate::host::pane::Pane::as_view)
         else {
-            return Err(format!("origin pane {origin_pane_id} is not an view pane"));
+            return Err(format!("origin pane {origin_pane_id} is not a view pane"));
         };
         if !app.permissions.is_builtin
             && !app
@@ -793,7 +793,7 @@ impl PlexiApp {
     /// Spawn `type_id` into a new pane, or — when `target_pane_id` is set —
     /// into the vicinity of that existing pane, which must be an idle
     /// terminal (an "empty" pane). Targeting an occupied pane (already
-    /// running an plugin, or a portal) returns a clear `pane_occupied` error
+    /// running a plugin, or a portal) returns a clear `pane_occupied` error
     /// instead of the opaque `open_..._failed` message a same-pane split
     /// collision used to produce (stint 0374).
     ///
@@ -1478,7 +1478,7 @@ fn truncate_line(line: &str) -> std::borrow::Cow<'_, str> {
 /// Walk `start` in sorted order via [`crate::search::ScopedWalker`], yielding
 /// files. Skips [`crate::search::DEFAULT_PRUNE_DIRS`], stops at the walk caps,
 /// and never follows symlinks (same rule as packaging): grep/list are read-only
-/// auto-allowed tools, so a symlink inside an plugins directory must not widen
+/// auto-allowed tools, so a symlink inside a plugins directory must not widen
 /// their reach beyond the scoped roots. Returns `(files, hit_file_cap)`.
 fn walk_scoped_files(start: &std::path::Path) -> (Vec<std::path::PathBuf>, bool) {
     if start.is_file() {
@@ -1815,7 +1815,7 @@ mod tests {
             .panes
             .get_mut(&origin)
             .and_then(crate::host::pane::Pane::as_view_mut)
-            .expect("test pane is an view pane");
+            .expect("test pane is a view pane");
         app.permissions.allowed_hosts = vec!["api.example.com".to_string()];
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -2001,7 +2001,7 @@ mod tests {
         assert!(diff.len() < super::MAX_DIFF_CHARS + 200, "{}", diff.len());
     }
 
-    /// Review fix (stint 0421): symlinks inside an plugins dir must not widen
+    /// Review fix (stint 0421): symlinks inside a plugins dir must not widen
     /// the auto-allowed grep/list walks beyond the scoped roots.
     #[cfg(unix)]
     #[test]

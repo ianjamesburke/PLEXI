@@ -5,8 +5,8 @@
     "src/ui/activity.rs": {
       "paint_attention_effect | painter.text(": 1
     },
-    "src/ui/app_chrome.rs": {
-      "paint_app_bar | let (rect, _) = ui.allocate_exact_size(": 1,
+    "src/ui/view_chrome.rs": {
+      "paint_view_bar | let (rect, _) = ui.allocate_exact_size(": 1,
       "paint_no_wrap_text | let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));": 1
     },
     "src/ui/badge.rs": {
@@ -100,18 +100,18 @@
       "action | ui.put(": 1,
       "show | let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 8.0), egui::Sense::hover());": 1
     },
-    "src/render/app_pane.rs": {
+    "src/render/view_pane.rs": {
       "render | let (bar_rect, _) = ui.allocate_exact_size(": 2,
       "render | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {": 1
     },
-    "src/render/cli_renderer_app.rs": {
+    "src/render/cli_renderer_view.rs": {
       "render_form | ui.horizontal(|ui| {": 5,
       "ui | ui.horizontal(|ui| {": 2
     },
     "src/render/descriptor_widgets.rs": {
       "render_field | ui.horizontal(|ui| {": 1
     },
-    "src/render/mcp_renderer_app.rs": {
+    "src/render/mcp_renderer_view.rs": {
       "ui | ui.horizontal(|ui| {": 2
     },
     "src/render/minimap.rs": {
@@ -157,7 +157,7 @@
       "draw_ui_gallery | ui.horizontal(|ui| {": 2,
       "token_strip | ui.horizontal_wrapped(|ui| {": 1
     },
-    "src/app/app_call.rs": {
+    "src/app/plugin_call.rs": {
       "draw_keychain_recovery_banner | ui.horizontal_wrapped(|ui| {": 1
     },
     "src/app/attention_queue.rs": {

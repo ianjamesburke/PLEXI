@@ -2423,7 +2423,7 @@ impl PlexiApp {
 
     /// Resolve the host-established `ScopeOrigin` for a live pane: the
     /// window's `context_id`, the router's canonical `Context.root` for that
-    /// context, the window's `window_id`, `pane_id` itself, and — for an plugin
+    /// context, the window's `window_id`, `pane_id` itself, and — for a plugin
     /// pane — its manifest id. Never reads `router.active()` or
     /// `active_window`; every field comes from the pane's owning window,
     /// found via `find_pane_in_any_window`, so a caller in one context can
@@ -2617,7 +2617,7 @@ impl PlexiApp {
             .get_mut(&pane_id)
             .and_then(crate::host::pane::Pane::as_view_mut)
         else {
-            log::warn!("wasm effect: source pane {pane_id} is no longer an plugin");
+            log::warn!("wasm effect: source pane {pane_id} is no longer a plugin");
             return;
         };
         if let crate::host::pane::ViewRuntime::Wasm(wasm) = &mut app.runtime {
@@ -2648,7 +2648,7 @@ impl PlexiApp {
             .get_mut(&pane_id)
             .and_then(crate::host::pane::Pane::as_view_mut)
         else {
-            log::warn!("plugin event: target pane {pane_id} is no longer an plugin");
+            log::warn!("plugin event: target pane {pane_id} is no longer a plugin");
             return;
         };
         app.runtime.queue_outbound_event(event);
@@ -3168,7 +3168,7 @@ impl PlexiApp {
         (tile_id, pane_id)
     }
 
-    /// Inject an view pane running `type_id` into window `win_idx` (test-only).
+    /// Inject a view pane running `type_id` into window `win_idx` (test-only).
     /// Backs the `[launch] on_launch` dedup tests (#0336), which need instances
     /// with a chosen `type_id` planted in specific windows/contexts.
     #[cfg(test)]
@@ -3815,7 +3815,7 @@ impl eframe::App for PlexiApp {
         // being painted. This drain lived in `ui` until stint 0688, so an
         // occluded host executed no plugin command at all (see
         // `service_view_commands`). It runs last in `logic` because the services
-        // above may queue work an plugin command then consumes on this same pass.
+        // above may queue work a plugin command then consumes on this same pass.
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::ViewCommands,
@@ -3987,7 +3987,7 @@ impl eframe::App for PlexiApp {
             crate::app::view_trait::KeyDisposition::Passthrough
         };
 
-        // Host bindings own their chords before an plugin can classify raw key
+        // Host bindings own their chords before a plugin can classify raw key
         // events. This is the structural guard against one physical Cmd+D
         // both splitting the pane and reaching a PGAP plugin as its bare `d`
         // shortcut. Overlay owners still run first because their local key

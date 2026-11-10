@@ -68,7 +68,7 @@ pub enum FleetFilter {
     Done,
 }
 
-/// App-reported "pip" status — a traffic-light health indicator an plugin sets for
+/// App-reported "pip" status — a traffic-light health indicator a plugin sets for
 /// itself via the SDK (`App.set_pip_status`). Optional: when unset the host
 /// falls back to derived activity. Distinct from `AgentState` (the hook-script
 /// vocabulary) so the SDK surface reads as red/yellow/green.
@@ -359,12 +359,12 @@ pub enum HostRequest {
         #[serde(skip)]
         peer_ancestry: Option<Vec<u32>>,
     },
-    /// Report an plugin's own pip status (red/yellow/green) for its activity dot.
+    /// Report a plugin's own pip status (red/yellow/green) for its activity dot.
     /// Fire-and-forget; set by the plugin process via `App.set_pip_status`. Takes
     /// priority over derived activity until the plugin reports a new status.
     ///
     /// `pane_id` is stamped by the host with the sending plugin's own pane (the plugin
-    /// does not know its pane id), so it defaults to 0 on the wire and an plugin
+    /// does not know its pane id), so it defaults to 0 on the wire and a plugin
     /// can only ever set its own pip — never another pane's.
     SetPipStatus {
         #[serde(default)]
@@ -885,7 +885,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Write text to a terminal PTY or an plugin's input path (`plexi pane send`).
+    /// Write text to a terminal PTY or a plugin's input path (`plexi pane send`).
     /// `\n` in text (literal backslash-n) is interpreted as Enter unless
     /// `paste` requests a literal plugin paste event.
     /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
@@ -906,7 +906,7 @@ pub enum HostRequest {
         generated_operation_id: bool,
         #[serde(default)]
         submit: bool,
-        /// Deliver literal text as one paste event to an view pane.
+        /// Deliver literal text as one paste event to a view pane.
         #[serde(default)]
         paste: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -952,7 +952,7 @@ pub enum HostRequest {
         response_file: String,
     },
 
-    /// Deliver a synthetic pointer click to an view pane, in pane-pixel
+    /// Deliver a synthetic pointer click to a view pane, in pane-pixel
     /// coordinates (origin at the pane's top-left). Sent by `plexi pane click`.
     /// The host injects a real `PointerMoved`+`PointerButton` press/release
     /// pair into the live production egui pass, so it exercises the exact
@@ -971,7 +971,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Deliver a synthetic click to an view pane by node id, activating the
+    /// Deliver a synthetic click to a view pane by node id, activating the
     /// Button/TextInput/ListView node the id names — the node-addressed
     /// sibling of `ClickPane` (stint 0414). Sent by
     /// `plexi pane click <pane_id> --node <node_id>`. `node_id` matches
@@ -994,7 +994,7 @@ pub enum HostRequest {
         response_file: Option<String>,
     },
 
-    /// Deliver a sanctioned pointer drag to an view pane: press at `from`,
+    /// Deliver a sanctioned pointer drag to a view pane: press at `from`,
     /// `steps` intermediate `PointerMoved` positions, release at `to` —
     /// spread across consecutive frames through the same production input
     /// paths `ClickPane` uses (raw-input merge for builtin egui panes, the
@@ -1092,7 +1092,7 @@ pub enum HostRequest {
         response_file: String,
     },
 
-    /// Dispatch a semantic action to an view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.
+    /// Dispatch a semantic action to a view pane. Sent by `plexi pane action <pane_id> <action> [args...]`.
     /// Host delivers `PlexiEvent::Action { action, args }` to the target view pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
     SendPaneAction {
@@ -1201,7 +1201,7 @@ pub enum HostRequest {
         payload: serde_json::Value,
         response_file: String,
     },
-    /// Call an plugin-exposed tool through the host tool dispatcher. Sent by
+    /// Call a plugin-exposed tool through the host tool dispatcher. Sent by
     /// `plexi plugin call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the
     /// caller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or
@@ -1834,7 +1834,7 @@ pub enum HostRequest {
     Shutdown,
 }
 
-/// Who caused an plugin state change (`HostRequest::EmitEvent`).
+/// Who caused a plugin state change (`HostRequest::EmitEvent`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginEventActor {

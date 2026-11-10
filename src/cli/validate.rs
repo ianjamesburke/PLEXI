@@ -336,6 +336,6 @@ mod validate_tests {
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
         let path = dir.path().to_string_lossy().to_string();
         let code = super::validate_cli(&path);
-        assert_eq!(code, 1, "missing [app].id must return 1");
+        assert_eq!(code, 1, "missing [plugin].id must return 1");
     }
 }

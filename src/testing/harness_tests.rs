@@ -334,7 +334,7 @@ fn assistant_panes(h: &HostHarness) -> Vec<u64> {
         .collect()
 }
 
-/// Stint 0724 Phase C regression: an view pane in context A exposes a
+/// Stint 0724 Phase C regression: a view pane in context A exposes a
 /// connector tool; an Assistant pane in a sibling context B must NOT see it,
 /// and an Assistant pane in context A must. Proves the migration off
 /// path-equality onto `evaluate_reach`/`context_id` end-to-end through the
@@ -1000,6 +1000,32 @@ fn write_restore_fixture_plugin(parent: &std::path::Path, plugin_id: &str) -> st
 /// the workspace through `restore_workspace` so the restored pane resolves the
 /// same state paths.
 #[test]
+fn plugin_rename_044_installed_layout_restores_live_python_view() {
+    let mut harness = HostHarness::new();
+    let profile = harness.profile_dir().to_path_buf();
+    let old = profile.join("apps");
+    std::fs::create_dir_all(&old).unwrap();
+    let plugin_dir = write_restore_fixture_plugin(&old, "legacy");
+    let pane_id = harness.app
+        .launch_view_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
+        .unwrap().unwrap();
+    let original_paths = harness.app.windows[harness.app.active_window].panes[&pane_id]
+        .as_view().unwrap().runtime.state_paths();
+    harness.app.save_workspace_now();
+    // Produce the exact old package and serialized launch shape. The disk
+    // layout keys intentionally retain their 0.4.4 spelling.
+    std::fs::write(plugin_dir.join("manifest.toml"),
+        "schema_version = 1\n[app]\nid = 'legacy'\nname = 'Legacy'\ntype = 'app'\nentry = 'main.py'\nversion = '0.4.4'\n[runtime]\npython_compat = true\n").unwrap();
+    let restored = HostHarness::from_profile_dir(&profile);
+    let pane = restored.app.windows[restored.app.active_window].panes[&pane_id].as_view().unwrap();
+    assert_eq!(pane.manifest_id, "legacy");
+    assert!(matches!(pane.runtime, ViewRuntime::Python(_)));
+    assert_eq!(pane.runtime.state_paths(), original_paths);
+    assert!(profile.join("plugins/legacy/manifest.toml").is_file());
+    assert!(profile.join("migration-plugin-v2/apps/legacy/manifest.toml").is_file());
+}
+
+#[test]
 fn saved_python_view_pane_restores_as_that_view() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugin_dir = write_restore_fixture_plugin(tmp.path(), "todo");
@@ -1078,7 +1104,7 @@ fn saved_python_view_pane_restores_as_that_view() {
     );
     let restored = restored_pane
         .as_view()
-        .expect("restored pane is an view pane");
+        .expect("restored pane is a view pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
     assert_eq!(restored.manifest_id, "todo");
     assert!(matches!(restored.runtime, ViewRuntime::Python(_)));
@@ -1318,7 +1344,7 @@ fn legacy_view_pane_without_launch_context_still_loads() {
     assert!(workspace_path.exists(), "migration keeps the active workspace path");
 }
 
-/// The other half of the migration path: a `launch` that names an plugin
+/// The other half of the migration path: a `launch` that names a plugin
 /// directory which no longer exists must fail visibly through
 /// `restore_view_pane`/`restore_launch_failed_pane`, never silently succeed.
 #[test]
@@ -1347,7 +1373,7 @@ fn restore_view_pane_fails_visibly_when_plugin_dir_is_gone() {
     };
 
     let pane = crate::pane_ops::restore_launch_failed_pane("missing-app", 99, missing_dir, error);
-    let restored = pane.as_view().expect("launch-failed pane is an view pane");
+    let restored = pane.as_view().expect("launch-failed pane is a view pane");
     assert_eq!(restored.runtime.type_id(), "launch_failed");
     assert!(
         restored.name.contains("missing-app"),
@@ -1415,7 +1441,7 @@ fn legacy_view_pane_restores_as_launch_failed_never_a_terminal() {
         pane.as_terminal().is_none(),
         "legacy restore must not produce a TerminalPane"
     );
-    let restored = pane.as_view().expect("legacy restore produces an view pane");
+    let restored = pane.as_view().expect("legacy restore produces a view pane");
     assert_eq!(
         restored.runtime.type_id(),
         "launch_failed",
@@ -1863,7 +1889,7 @@ fn raw_key_event_reaches_focused_view_via_router() {
     );
 }
 
-/// Host command chords are a higher input layer than plugin shortcuts. A single
+/// Host command chords are a higher input layer tha plugin shortcuts. A single
 /// Cmd+D may split the focused pane, but its `D` edge must already be gone when
 /// the focused plugin's raw-key handler runs. Before stint 0692 plugin dispatch ran
 /// before `poll_actions`, so the probe observed `d` as well as the host action.
@@ -1908,7 +1934,7 @@ fn host_command_chord_is_removed_before_focused_view_dispatch() {
     assert_eq!(
         state["received"],
         serde_json::json!([] as [&str; 0]),
-        "host command chords must never leak into an plugin's bare-key shortcuts"
+        "host command chords must never leak into a plugin's bare-key shortcuts"
     );
 }
 
@@ -3093,7 +3119,7 @@ fn palette_close_surrenders_focus_before_pane_close() {
 
 // -- Shell execution security (issue #1177) ───────────────────────────────
 
-/// Regression guard: an plugin without `terminal.bindings` must never reach
+/// Regression guard: a plugin without `terminal.bindings` must never reach
 /// the `sh -c` spawn in `StreamProcess`. The host must return
 /// `StreamEnd { exit_code: 1 }` immediately and never spawn a subprocess.
 ///
@@ -7486,7 +7512,7 @@ fn pane_ipc_serviced_while_window_hidden() {
     );
 }
 
-/// Stint 0688: an view pane's outbound commands are external-client servicing,
+/// Stint 0688: a view pane's outbound commands are external-client servicing,
 /// not rendering. `drain_all_view_commands` and the command execution it feeds
 /// lived in `App::ui`, so a minimized or fully occluded host executed no plugin
 /// command at all — every assistant tool call, notification, and host request
@@ -7532,7 +7558,7 @@ fn plugin_commands_execute_while_window_hidden() {
             .pending_notifications
             .iter()
             .any(|notification| notification.notify_id == "hidden-pass-notify"),
-        "an plugin command queued while the window is hidden must be drained and \
+        "a plugin command queued while the window is hidden must be drained and \
          executed on a logic-only pass — eframe never calls ui for a covered window"
     );
 }
@@ -9350,7 +9376,7 @@ mod agent_boot {
         );
     }
 
-    /// An agent is a terminal affordance. Asking for one on an view pane is a
+    /// An agent is a terminal affordance. Asking for one on a view pane is a
     /// caller mistake and must fail loudly rather than spawn a silent plugin.
     #[test]
     fn agent_spawn_rejected_for_non_terminal_target() {
@@ -10008,7 +10034,7 @@ mod pane_send_submit_tests {
         assert_eq!(
             read_json_response(&response)["error"].as_str(),
             Some(
-                format!("pane {pane} is an view pane; --submit only applies to terminal panes")
+                format!("pane {pane} is a view pane; --submit only applies to terminal panes")
                     .as_str()
             )
         );
@@ -13573,7 +13599,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
     );
     assert!(h.app.windows[0].zoomed_pane.is_none());
 
-    // 4. With an view pane zoomed (`text-editor`), bare Esc reaches the plugin (`handle_key`,
+    // 4. With a view pane zoomed (`text-editor`), bare Esc reaches the plugin (`handle_key`,
     //    setting `input_released = true`) and the pane stays zoomed.
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("sample.toml");

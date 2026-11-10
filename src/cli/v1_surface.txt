@@ -178,7 +178,6 @@ debug session show
 plugin call
 # app tools: same callers as `app call`
 plugin tools
-# app trust: the scene runner pre-approves raw WASM apps with it
 # agent done: worker contract injected into every spawned session, GUI and palette included
 agent done
 # agent ask: same worker contract as `agent done`

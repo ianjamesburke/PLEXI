@@ -986,7 +986,7 @@ pub fn pane_close_cli(pane_id: u64) -> i32 {
 
 /// `plexi pane send <pane_id> <text>`
 ///
-/// Writes text to a terminal pane's PTY stdin, or focuses an view pane and
+/// Writes text to a terminal pane's PTY stdin, or focuses a view pane and
 /// injects one egui text-input event through the production render path.
 /// Polls a response file to surface errors (e.g. pane not found) to the caller.
 /// Returns 0 on success, 1 on error.
@@ -1970,7 +1970,7 @@ mod submit_tests {
     #[test]
     fn refusal_reply_exits_one() {
         let outcome = submit_outcome(
-            r#"{"error":"pane 7 is an view pane; --submit only applies to terminal panes"}"#,
+            r#"{"error":"pane 7 is a view pane; --submit only applies to terminal panes"}"#,
         );
         assert_eq!(outcome.exit_code(), 1);
         assert!(matches!(outcome, SubmitOutcome::Unconfirmed { .. }));

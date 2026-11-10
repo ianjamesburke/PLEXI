@@ -9,7 +9,7 @@
 //! - `list` prints the plugins' declared streams once and exits.
 //!
 //! `declare` and `emit` are the publish side: they send one control line and
-//! read a single `ok`/`error` reply. A first-time publish under an plugin-id
+//! read a single `ok`/`error` reply. A first-time publish under a plugin-id
 //! namespace the caller does not own prompts for host consent (broker `Ask`).
 //!
 //! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag

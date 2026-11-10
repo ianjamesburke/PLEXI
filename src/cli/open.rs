@@ -629,7 +629,7 @@ pub fn open_cli(
         eprintln!("warning: 'plexi view open terminal' is deprecated, use 'plexi pane new' instead");
     }
 
-    // If type_id looks like a path to an plugin directory (contains manifest.toml), open by path.
+    // If type_id looks like a path to a plugin directory (contains manifest.toml), open by path.
     let path = std::path::Path::new(type_id);
     let resolved = if path.is_absolute() {
         path.to_path_buf()
@@ -668,7 +668,7 @@ pub fn open_cli(
     })
 }
 
-/// Open an plugin from a local directory path (replaces the old `plugin run` command).
+/// Open a plugin from a local directory path (replaces the old `plugin run` command).
 fn open_view_by_path(
     abs_path: &str,
     args: &[String],

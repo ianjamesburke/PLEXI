@@ -263,10 +263,10 @@ fn ps7501_plugin_inheritance() {
     feed(&mut t, &osc("state=working:id=us:app=mid"));
     feed(&mut t, &osc("state=working:id=eu:app="));
     let g = s.lock().unwrap();
-    assert_eq!(g.effective_plugin("us/east"), Some("mid"));
-    assert_eq!(g.effective_plugin("eu"), Some("deploy"));
-    assert_eq!(g.effective_plugin(""), Some("deploy"));
-    assert_eq!(g.effective_plugin("nope/deep"), Some("deploy"));
+    assert_eq!(g.effective_app("us/east"), Some("mid"));
+    assert_eq!(g.effective_app("eu"), Some("deploy"));
+    assert_eq!(g.effective_app(""), Some("deploy"));
+    assert_eq!(g.effective_app("nope/deep"), Some("deploy"));
 }
 
 #[test]

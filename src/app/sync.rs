@@ -7,7 +7,7 @@ use crate::plexi_ai::broker::PaneContext;
 impl PlexiApp {
     /// Synchronize view panes that join the `cwd` pane group with any terminal's
     /// working directory. Prefers the focused terminal; falls back to any terminal
-    /// in the active context, so the sync still happens when an view pane is
+    /// in the active context, so the sync still happens when a view pane is
     /// the egui-focused tile. Synchronization is a direct
     /// `workspace_root` reassignment plus `ViewRuntime::sync_cwd`; no event is
     /// emitted, and `sync_cwd` is a no-op for Python and WASM panes.
@@ -102,7 +102,7 @@ impl PlexiApp {
                         .and_then(underlying_terminal)?
                 } else {
                     // An overlay launched directly from a terminal owns that terminal.
-                    // An overlay launched from an plugin has no invoking terminal.
+                    // An overlay launched from a plugin has no invoking terminal.
                     app.overlay_replaced.as_deref()?.as_terminal()?
                 };
                 if terminal.exited || terminal.standby_session.is_some() {

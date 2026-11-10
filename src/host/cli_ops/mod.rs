@@ -23,7 +23,7 @@ pub(crate) fn plugin_id_is_path_safe(plugin_id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// Remove every sealed program copy an plugin left behind. An uninstalled plugin must
+/// Remove every sealed program copy a plugin left behind. An uninstalled plugin must
 /// not leave executable copies on disk.
 pub(crate) fn purge_plugin_copies(plugin_id: &str) {
     if !plugin_id_is_path_safe(plugin_id) {

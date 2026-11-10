@@ -75,7 +75,7 @@ pub fn plugin_init(
 
     if cwd == std::path::Path::new("/") {
         log::warn!("plugin_init: rejected at root dir");
-        eprintln!("error: cannot scaffold an plugin in the root directory.");
+        eprintln!("error: cannot scaffold a plugin in the root directory.");
         return 1;
     }
 
@@ -267,7 +267,7 @@ pub fn plugin_init(
 /// to sit above the plugin — which does not depend on pytest — and dies with
 /// `Failed to spawn: pytest`. `--with pytest` makes the command self-contained.
 /// `--no-project` keeps uv from adopting (and materializing a `.venv` for) an
-/// unrelated ancestor project when the plugin declares none of its own; an plugin that
+/// unrelated ancestor project when the plugin declares none of its own; a plugin that
 /// does ship a `pyproject.toml` stays in project mode so its declared
 /// dependencies are installed alongside pytest.
 ///
@@ -317,7 +317,7 @@ fn plugin_test_pythonpath(plugin_dir: &std::path::Path) -> String {
         .into_owned()
 }
 
-/// `plexi plugin test [<plugin-path>]` — run an plugin's PluginHarness tests via
+/// `plexi plugin test [<plugin-path>]` — run a plugin's PluginHarness tests via
 /// `uv run` + pytest inside the plugin directory, on the plugin's Python venv.
 /// Streams pytest output live and returns its exit code so CI and ship
 /// scripts can gate on it.
@@ -1686,9 +1686,9 @@ pub fn plugin_list() -> i32 {
 }
 
 /// Discover declared views without starting a runtime.
-pub fn view_list() -> i32 {
+pub fn view_list(json: bool) -> i32 {
     if super::host::plugin_mode_core_only() {
-        println!("No views available: core-only mode is on.");
+        println!("{}", if json { "[]" } else { "No views available: core-only mode is on." });
         return 0;
     }
     let cwd = match std::env::current_dir() {
@@ -1696,10 +1696,18 @@ pub fn view_list() -> i32 {
         Err(error) => { eprintln!("error: view list could not read cwd: {error}"); return 1; }
     };
     let registry = crate::app::registry::PluginRegistry::load(&cwd);
+    let mut rows = Vec::new();
     for plugin in registry.list() {
         for view in &plugin.contributes.views {
-            println!("{}\t{}{}", view.id, plugin.manifest.name, if view.default { " (default)" } else { "" });
+            if json {
+                rows.push(serde_json::json!({"id": view.id, "plugin_id": plugin.manifest.id, "name": plugin.manifest.name, "default": view.default || plugin.contributes.views.len() == 1}));
+            } else {
+                println!("{}\t{}{}", view.id, plugin.manifest.name, if view.default || plugin.contributes.views.len() == 1 { " (default)" } else { "" });
+            }
         }
+    }
+    if json {
+        println!("{}", serde_json::Value::Array(rows));
     }
     log::info!("view_list: enumerated declared views");
     0
@@ -1735,7 +1743,7 @@ pub fn plugin_prune_cli(dry_run: bool) -> i32 {
 }
 
 /// `plexi view render <plugin> --size WxH [--state state.json] [--output path] [--png]`
-/// Renders an plugin headlessly. `plugin` may be an installed plugin ID or a local directory path.
+/// Renders a plugin headlessly. `plugin` may be an installed plugin ID or a local directory path.
 /// Default output: JSON frame tree. With --png: PNG image.
 pub fn view_render(
     plugin: &str,
@@ -1800,7 +1808,7 @@ pub fn view_render(
             }
         };
         if !plugin_dir.is_dir() {
-            eprintln!("error: '{plugin}' is not a directory — expected an plugin directory containing manifest.toml");
+            eprintln!("error: '{plugin}' is not a directory — expected a plugin directory containing manifest.toml");
             return 1;
         }
         let manifest_path = plugin_dir.join("manifest.toml");
@@ -2115,7 +2123,7 @@ pub(crate) const APP_CALL_HOST_TIMEOUT: std::time::Duration = std::time::Duratio
 pub(crate) const APP_CALL_APPROVAL_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(120);
 
-/// `plexi plugin call <plugin_id> <tool> [--input JSON]` — invoke an plugin tool through
+/// `plexi plugin call <plugin_id> <tool> [--input JSON]` — invoke a plugin tool through
 /// the host's tool dispatcher and print its JSON output on stdout.
 pub fn plugin_call_cli(
     plugin_id: &str,
@@ -3081,7 +3089,7 @@ mod plugin_test_command_tests {
                 "pytest",
                 "tests/"
             ],
-            "an plugin declaring no pyproject.toml runs pytest in an isolated uv environment"
+            "a plugin declaring no pyproject.toml runs pytest in an isolated uv environment"
         );
     }
 
@@ -3107,7 +3115,7 @@ mod plugin_test_command_tests {
                 "pytest",
                 "tests/"
             ],
-            "an plugin with its own project must not be run with --no-project"
+            "a plugin with its own project must not be run with --no-project"
         );
     }
 }

@@ -474,7 +474,7 @@ pub struct Outcome {
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// One launched operation. Dropping it cancels the process group and joins the
-/// supervisor, so closing an plugin cannot leave its processes behind.
+/// supervisor, so closing a plugin cannot leave its processes behind.
 pub struct RunningOperation {
     cancel: Arc<AtomicBool>,
     rx: Receiver<Outcome>,

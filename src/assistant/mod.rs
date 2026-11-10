@@ -1068,7 +1068,7 @@ impl AssistantView {
         }
     }
 
-    /// Broker target id for an plugin-exposed tool.
+    /// Broker target id for a plugin-exposed tool.
     fn connector_target(tool: &str) -> String {
         format!("app.{tool}")
     }
@@ -1341,7 +1341,7 @@ impl AssistantView {
         vec![
             AiTool {
                 name: HOST_TOOL_SUBSCRIBE.to_string(),
-                description: "Subscribe to an plugin's event stream so its events \
+                description: "Subscribe to a plugin's event stream so its events \
                     appear in this conversation. May pause for the user's permission."
                     .to_string(),
                 input_schema: schema.clone(),
@@ -1351,7 +1351,7 @@ impl AssistantView {
             },
             AiTool {
                 name: HOST_TOOL_UNSUBSCRIBE.to_string(),
-                description: "Stop receiving an plugin's event stream.".to_string(),
+                description: "Stop receiving a plugin's event stream.".to_string(),
                 input_schema: schema,
                 output_schema: serde_json::json!({"type": "object"}),
                 timeout_ms: Some(30_000),
@@ -1424,7 +1424,7 @@ impl AssistantView {
             },
             AiTool {
                 name: HOST_TOOL_PANES_OPEN.into(),
-                description: "Open an plugin or terminal pane by native type id.".into(),
+                description: "Open a plugin or terminal pane by native type id.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"type_id":{"type":"string"},"layout":{"type":"string"},"cwd":{"type":"string"},"args":{"type":"array","items":{"type":"string"}},"pane_id":{"type":"integer","description":"Open into this existing empty terminal pane instead of spawning a new one. The pane must be an idle terminal; occupied panes return an error."}},"required":["type_id"]}),
                 output_schema: serde_json::json!({"type":"object"}),
                 timeout_ms: Some(30_000),
@@ -1548,7 +1548,7 @@ impl AssistantView {
             },
             AiTool {
                 name: HOST_TOOL_BUILD_RUN.into(),
-                description: "Run an plugin-authoring command (`plexi plugin init` \
+                description: "Run a plugin-authoring command (`plexi plugin init` \
                     or `plexi plugin check`) on the embedded build surface — no \
                     terminal pane, output returned directly as \
                     {exit_code, stdout, stderr}. Pass args after `plexi`, \

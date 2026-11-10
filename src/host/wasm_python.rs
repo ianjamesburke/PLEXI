@@ -1351,7 +1351,7 @@ type WakeSchedule = Arc<Mutex<WakeScheduleState>>;
 /// Whether a decoded frame needs its own immediate repaint wake, or can ride
 /// the repaint the paint thread already scheduled.
 ///
-/// Suppression only applies to an plugin driving a continuous cadence, where the
+/// Suppression only applies to a plugin driving a continuous cadence, where the
 /// pending wake is by construction at most one frame interval away — so the
 /// cost is a fraction of a frame of presentation latency, in exchange for not
 /// forcing a second full-host repaint per guest frame. An input-driven
@@ -2668,7 +2668,7 @@ impl LivePythonPane {
         // Stint 0426: the caller already removed `pending_click` from
         // `PlexiApp::pending_pane_clicks` before this call — it is not
         // re-queued there. A fresh click for this frame wins over a carried
-        // one from a prior frame that couldn't be delivered yet (an plugin is
+        // one from a prior frame that couldn't be delivered yet (a plugin is
         // never sent two independent clicks close enough together for both
         // to still be meaningful); the carried one is dropped in that case.
         let pending_click = pending_click.or_else(|| self.pending_click_carry.take());
@@ -3766,7 +3766,7 @@ impl LivePythonPane {
 
     /// Forward one already-serialized JSON-RPC message to a live server. A send
     /// to an unopened server reports closed rather than vanishing — a request
-    /// that never gets a reply is the worst possible failure mode for an plugin
+    /// that never gets a reply is the worst possible failure mode for a plugin
     /// waiting on a response id.
     fn handle_mcp_send(&mut self, message: &Value) {
         let server_id = message
@@ -6983,7 +6983,7 @@ mod tests {
     mod audit_0678 {
         use super::*;
 
-        /// Fails unless an plugin's persisted bytes are genuinely stranded:
+        /// Fails unless a plugin's persisted bytes are genuinely stranded:
         /// `live` must hold real bytes, and `reachable` — the address the
         /// system can still resolve after the operation under test — must be
         /// a different, empty location. Fixing the defect makes the two agree,
@@ -7042,7 +7042,7 @@ mod tests {
                 .panes
                 .get(&pane_id)
                 .and_then(crate::host::pane::Pane::as_view)
-                .expect("the launched pane is an view pane");
+                .expect("the launched pane is a view pane");
             match &pane.runtime {
                 crate::host::pane::ViewRuntime::Python(live) => python_state_path_for_config(&live.config),
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
@@ -7174,7 +7174,7 @@ mod tests {
                 .set_context_root(root_a.path().to_path_buf(), Some(context_id));
 
             // The launch root is the context root — what `resolve_new_pane_cwd`
-            // yields for an plugin the registry has no workspace root for.
+            // yields for a plugin the registry has no workspace root for.
             let plugin_dir = write_python_plugin(root_a.path(), "todo");
             let pane_id = harness
                 .app
@@ -7216,7 +7216,7 @@ mod tests {
         // bytes a later write would never touch. Stints 0651/0652 replaced
         // that implicit fallback with explicit `[state] scopes`: the state
         // module's design principle is "fail loud, no silent fallback" (see
-        // `state_scope::parse_scopes`) — an plugin that wants both a global and a
+        // `state_scope::parse_scopes`) — a plugin that wants both a global and a
         // context copy declares both scopes and the host never guesses which
         // one it meant. There is no implicit second candidate left to
         // reproduce this shape against.
@@ -8979,7 +8979,7 @@ mod tests {
             .contains("unsupported CPython-WASM UINode type: Accordion"));
     }
 
-    // Stint 0445: good-by-default inter-child spacing. When an plugin declares no
+    // Stint 0445: good-by-default inter-child spacing. When a plugin declares no
     // `gap`, the decoder fills in the design-token default; an explicit value
     // (including `0.0`, meaning "pack flush") always wins over the default.
     #[test]
@@ -9917,7 +9917,7 @@ mod tests {
         );
     }
 
-    /// Stint 0684: an assistant tool call to an view pane that is *not*
+    /// Stint 0684: an assistant tool call to a view pane that is *not*
     /// rendering must still be answered. `tool_dispatch` writes the `ToolCall`
     /// straight into the guest's stdin and blocks on the reply, so the guest
     /// runs and answers regardless of what the host is painting — but the host
@@ -10603,7 +10603,7 @@ default = true
     }
 
     /// Stint 0674: a field declares itself the pane's default text surface with
-    /// `autofocus`. Absent, it must decode false — an plugin that never asked for
+    /// `autofocus`. Absent, it must decode false — a plugin that never asked for
     /// focus must never steal it.
     #[test]
     fn ui_tree_decodes_text_input_autofocus() {

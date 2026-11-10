@@ -669,7 +669,7 @@ fn all_dispatchers_require_monitor() {
     assistant.add_host_tools(
         vec![AiTool {
             name: "host.views.open".to_string(),
-            description: "open an plugin".to_string(),
+            description: "open a plugin".to_string(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}),
             timeout_ms: Some(1_000),

@@ -2,8 +2,8 @@
   "contract": "Internal host surfaces only; external plugin and arbitrary canvas composition require explicit conformance. A gap is not a passing layout assertion.",
   "surfaces": [
     {
-      "id": "src/app/app_call.rs::draw_keychain_recovery_banner",
-      "gap": "Unresolved: app_call has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "id": "src/app/plugin_call.rs::draw_keychain_recovery_banner",
+      "gap": "Unresolved: plugin_call has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/app/attention_queue.rs::draw_attention_queue_and_decision_overlay",
@@ -123,16 +123,16 @@
       "gap": "Unresolved: ui_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/render/app_chrome.rs",
-      "gap": "Unresolved: app_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "id": "src/render/view_chrome.rs",
+      "gap": "Unresolved: view_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/render/app_pane.rs",
-      "gap": "Unresolved: app_pane has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "id": "src/render/view_pane.rs",
+      "gap": "Unresolved: view_pane has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/render/cli_renderer_app.rs",
-      "gap": "Unresolved: cli_renderer_app has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "id": "src/render/cli_renderer_view.rs",
+      "gap": "Unresolved: cli_renderer_view has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/render/descriptor_widgets.rs",
@@ -147,8 +147,8 @@
       "gap": "Unresolved: mcp_descriptor has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/render/mcp_renderer_app.rs",
-      "gap": "Unresolved: mcp_renderer_app has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "id": "src/render/mcp_renderer_view.rs",
+      "gap": "Unresolved: mcp_renderer_view has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/render/minimap.rs",
@@ -168,7 +168,7 @@
       "gap": "Unresolved: activity has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/ui/app_chrome.rs",
+      "id": "src/ui/view_chrome.rs",
       "fixture": {
         "file": "src/ui_tests.rs",
         "test": "screenshot_ui_kit_adoption"

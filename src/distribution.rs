@@ -163,7 +163,7 @@ fn seed_profile_from(resources: &std::path::Path, profile: &std::path::Path) -> 
         true,
     )?;
     copy_tree(
-        &resources.join("maintained-apps"),
+        &resources.join("maintained-plugins"),
         &profile.join("plugins"),
         true,
     )?;

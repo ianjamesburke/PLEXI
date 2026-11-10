@@ -901,7 +901,7 @@ pub enum BindingContext {
     Global,
     /// Active only when no overlay holds focus and no plugin has keyboard capture.
     Normal,
-    /// Active only when an plugin surface is focused AND no overlay/capture is active.
+    /// Active only when a plugin surface is focused AND no overlay/capture is active.
     ViewActive,
 }
 
@@ -1561,7 +1561,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 /// The host calls this after the focused overlay owner in two passes: Global
 /// and Normal bindings before focused-plugin key dispatch, then ViewActive
 /// bindings afterward. Thus host chords are structurally removed before a
-/// guest runtime can see them, while an plugin or focused text field still owns
+/// guest runtime can see them, while a plugin or focused text field still owns
 /// bare Escape before CloseView.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,

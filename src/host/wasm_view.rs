@@ -505,7 +505,7 @@ impl audio_rt_control::Host for HostCtx {
 //
 // Delegates every WIT call to the per-plugin `GpuDevice`. The device is present
 // only when the gpu capability was granted (link-time), so a missing device is
-// an internal invariant violation rather than an plugin error.
+// an internal invariant violation rather than a plugin error.
 
 impl HostCtx {
     fn gpu_mut(&mut self) -> Result<&mut crate::host::wasm_gpu::GpuDevice, String> {

@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-/// Cadence bounds an plugin can steer the host to. Matched to the CPython path's
+/// Cadence bounds a plugin can steer the host to. Matched to the CPython path's
 /// `fps.clamp(1, 240)` so neither runtime lets a guest declare a rate the host
 /// would pay an unbounded repaint cost to honour.
 pub const MIN_TARGET_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 240);
@@ -38,7 +38,7 @@ pub struct FrameClock {
 impl FrameClock {
     /// Build a clock targeting `target_hz` frames per second (clamped to ≥1).
     /// That rate is also the fallback [`retarget`](Self::retarget) restores when
-    /// an plugin declares no cadence of its own.
+    /// a plugin declares no cadence of its own.
     pub fn new(target_hz: u32) -> Self {
         let hz = target_hz.max(1);
         let interval = Duration::from_secs_f64(1.0 / hz as f64);
@@ -58,7 +58,7 @@ impl FrameClock {
     }
 
     /// Retarget the clock at the cadence the plugin declared for itself, clamped to
-    /// [`MIN_TARGET_INTERVAL`]..=[`MAX_TARGET_INTERVAL`] — an plugin steers the
+    /// [`MIN_TARGET_INTERVAL`]..=[`MAX_TARGET_INTERVAL`] — a plugin steers the
     /// host's repaint rate here, so it never gets to name an arbitrary one.
     /// `None` means the plugin declares nothing (or stopped declaring), which
     /// restores the construction-time default rather than stranding the pane on

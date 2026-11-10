@@ -315,7 +315,7 @@ pub struct PluginTimeline {
 impl PluginTimeline {
     // ── Stream declaration ──────────────────────────────────────────────────
 
-    /// Register an plugin's declared event streams, namespaced under the
+    /// Register a plugin's declared event streams, namespaced under the
     /// declaring instance's host-established `context_id` (stint 0724 Phase
     /// D) so the same `plugin_id` running in two different contexts never
     /// shares a stream namespace. Replaces any previous declaration for the
@@ -381,7 +381,7 @@ impl PluginTimeline {
         out
     }
 
-    /// Declared streams for an plugin in one context (empty when none declared).
+    /// Declared streams for a plugin in one context (empty when none declared).
     #[cfg(test)]
     pub fn declared_streams(&self, context_id: u64, plugin_id: &str) -> Vec<&EventStreamDecl> {
         self.streams

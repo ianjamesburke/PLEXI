@@ -3,7 +3,7 @@ use super::records::{Kind, Record, State};
 use super::{ProgramStatusStore, SharedProgramStatus};
 use crate::protocol::{AgentState, PaneAgentState};
 
-/// Fallback `PaneAgentState::agent` when no record or ancestor names an plugin.
+/// Fallback `PaneAgentState::agent` when no record or ancestor names a plugin.
 const DEFAULT_APP: &str = "program";
 
 fn rank(state: State) -> u8 {
@@ -61,7 +61,7 @@ pub fn root_or_best_agent_state(
         pane_id,
         state: agent_state(record.state),
         agent: store
-            .effective_plugin(id)
+            .effective_app(id)
             .unwrap_or(DEFAULT_APP)
             .to_owned(),
         detail: detail(record),
@@ -91,7 +91,7 @@ pub fn records_json(store: &ProgramStatusStore) -> serde_json::Value {
                 "progress": r.progress,
                 "msg": r.msg,
                 "title": r.title,
-                "app": store.effective_plugin(id),
+                "app": store.effective_app(id),
                 "seen": r.seen,
             })
         })

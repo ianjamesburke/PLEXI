@@ -410,7 +410,7 @@ pub enum Step {
     /// Toggle the host sidebar.
     Sidebar { sidebar: bool },
     /// Seed one message notification through the real host modal render path.
-    /// Headless-only: live scenes must create notifications through an plugin.
+    /// Headless-only: live scenes must create notifications through a plugin.
     SeedNotification {
         seed_notification: NotificationSeedSpec,
     },
@@ -481,7 +481,7 @@ pub struct NotificationSeedSpec {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpenSpec {
-    /// Launch a real PGAP process from an plugin directory.
+    /// Launch a real PGAP process from a plugin directory.
     Process {
         path: String,
         #[serde(rename = "as")]
@@ -2041,7 +2041,7 @@ impl LiveBackend {
             )),
             Step::SeedNotification { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
-                "seed_notification is headless-only; live scenes must notify through an plugin",
+                "seed_notification is headless-only; live scenes must notify through a plugin",
             )),
             Step::SeedFailedAgent { .. } => Err(SceneError::new(
                 "unsupported_live_verb", "seed_failed_agent is headless-only",
@@ -3358,7 +3358,7 @@ impl HeadlessBackend {
                         .iter_mut()
                         .find_map(|window| window.panes.get_mut(&assistant))
                         .expect("assistant pane");
-                    let view_pane = pane.as_view_mut().expect("assistant is an plugin");
+                    let view_pane = pane.as_view_mut().expect("assistant is a plugin");
                     let ViewRuntime::Builtin(builtin) = &mut view_pane.runtime else {
                         panic!("assistant is not a builtin");
                     };

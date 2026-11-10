@@ -291,7 +291,7 @@ pub fn parse_report(payload: &[u8]) -> Option<Report> {
     let mut id_v: Option<&[u8]> = None;
     let mut kind_v: Option<&[u8]> = None;
     let mut progress_v: Option<&[u8]> = None;
-    let mut plugin_v: Option<&[u8]> = None;
+    let mut app_v: Option<&[u8]> = None;
     let mut msg: Option<String> = None;
     let mut title: Option<String> = None;
 
@@ -316,7 +316,7 @@ pub fn parse_report(payload: &[u8]) -> Option<Report> {
             b"id" => id_v = Some(val),
             b"kind" => kind_v = Some(val),
             b"progress" => progress_v = Some(val),
-            b"app" => plugin_v = Some(val),
+            b"app" => app_v = Some(val),
             b"msg" => msg = Some(decode_text(val, MSG_ENCODED_MAX, MSG_DECODED_MAX)?),
             b"title" => title = Some(decode_text(val, TITLE_ENCODED_MAX, TITLE_DECODED_MAX)?),
             _ => {}
@@ -346,7 +346,7 @@ pub fn parse_report(payload: &[u8]) -> Option<Report> {
         State::Working | State::Blocked => progress_v.and_then(parse_progress),
         _ => None,
     };
-    let app = plugin_v
+    let app = app_v
         .filter(|a| segment_ok(a) && a.len() <= APP_MAX)
         .map(|a| String::from_utf8_lossy(a).into_owned());
     Some(Report::Set {

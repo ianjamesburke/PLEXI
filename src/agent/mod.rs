@@ -1390,7 +1390,7 @@ impl AgentHost {
         for d in deliveries {
             let agent = &mut self.agents[agent_idx];
             // Never trigger an agent from its own actions: events it emitted
-            // as the actor, or events an plugin emitted while servicing one of
+            // as the actor, or events a plugin emitted while servicing one of
             // its tool calls (`caused_by`). Without this, a move → move.played
             // → turn → move feedback loop plays the game against itself.
             let self_caused =
@@ -2170,7 +2170,7 @@ default_tier = "low"
         );
     }
 
-    /// Self-caused deliveries (the agent as actor, or events an plugin emitted
+    /// Self-caused deliveries (the agent as actor, or events a plugin emitted
     /// while servicing the agent's tool call) must never trigger a turn —
     /// otherwise an agent that moves causes `move.played`/`turn.ready` which
     /// trigger it again, and it plays the game against itself.

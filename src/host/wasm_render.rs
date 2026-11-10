@@ -517,10 +517,10 @@ enum TextInputReconcile {
 /// Anything else on a new tree is genuine plugin news (`SetState`, a post-submit
 /// reset) and is adopted.
 ///
-/// Accepted residual: an plugin that *transforms* the value (uppercasing,
+/// Accepted residual: a plugin that *transforms* the value (uppercasing,
 /// filtering characters) emits a tree value that was never in `pending`, so it
 /// is adopted and the caret can jump to the end. Transforming controlled inputs
-/// are not supported by this contract; an plugin that needs one must own its own
+/// are not supported by this contract; a plugin that needs one must own its own
 /// key handling.
 fn reconcile_text_input_buffer(
     stored: Option<TextInputEditState>,
@@ -924,7 +924,7 @@ fn render_node(
             // guest update → SetState → next tree), so painting `ti.value`
             // directly would clobber keystrokes typed while the echo is in
             // flight. The buffer lives in egui temp memory keyed by the
-            // widget id; an plugin-pushed value change (reset after submit,
+            // widget id; a plugin-pushed value change (reset after submit,
             // external SetState) still wins over any local draft.
             let widget_id = stable_node_id(ui, "l1_text_input", node);
             let state_id = widget_id.with("edit_state");
@@ -948,7 +948,7 @@ fn render_node(
             if let Some(key) = surface_key {
                 // `autofocus` declares this field the pane's default text
                 // surface: the reconciler focuses it when the pane owns input
-                // and holds no focused surface, so an plugin that reveals an
+                // and holds no focused surface, so a plugin that reveals an
                 // entry form gets a live cursor with no imperative focus
                 // command and no key-routing code of its own (stint 0674).
                 if ti.autofocus {
@@ -984,7 +984,7 @@ fn render_node(
                 out.value_changes.push((ti.on_change.clone(), buf.clone()));
                 // Remember what we sent so the guest's echo — however many
                 // keystrokes behind it arrives — is recognized as ours and
-                // never mistaken for an plugin-pushed reset.
+                // never mistaken for a plugin-pushed reset.
                 if state.pending.len() >= TEXT_INPUT_PENDING_LIMIT {
                     state.pending.pop_front();
                 }
@@ -1875,7 +1875,7 @@ mod tests {
 
         // Stint 0720 regression: the SAME committed tree repainted, carrying a
         // value that differs from the draft because the guest has not echoed
-        // yet. Value comparison alone called this an plugin reset and dropped the
+        // yet. Value comparison alone called this a plugin reset and dropped the
         // keystroke; the generation says there is no news.
         let (state, outcome) =
             reconcile_text_input_buffer(Some(edit_state("hi", "", 3, &["h", "hi"])), "", 3);

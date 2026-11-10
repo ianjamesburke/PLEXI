@@ -400,7 +400,7 @@ impl PendingEventConsent {
 }
 
 /// A CLI/agent request to *publish* to the event bus: declare stream schemas
-/// under an plugin-id namespace, or emit an event on a declared stream. Handed
+/// under a plugin-id namespace, or emit an event on a declared stream. Handed
 /// from a transport connection thread to the UI thread, which owns the grant
 /// store and broker gate. Identity is host-stamped from the pane, never taken
 /// from a CLI argument (anti-spoof, symmetrical to [`HostSubscribeRequest`]).

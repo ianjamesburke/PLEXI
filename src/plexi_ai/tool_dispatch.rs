@@ -1,7 +1,7 @@
 //! Global tool registry and dispatcher for the v3.7 tool protocol (#399).
 //!
 //! The tool registry is a singleton shared across all `WASM plugin runtime` instances.
-//! When an plugin sends `DrawCommand::ExposeTools`, its pane registers tool
+//! When a plugin sends `DrawCommand::ExposeTools`, its pane registers tool
 //! definitions + an `PluginEventSender` here. When the broker wants to call a
 //! tool, it creates a `ToolDispatcher` snapshot, then calls `dispatch_call`
 //! which:
@@ -1048,7 +1048,7 @@ impl ToolDispatcher {
         result
     }
 
-    /// Pick the exposed name for an plugin tool. One live instance keeps
+    /// Pick the exposed name for a plugin tool. One live instance keeps
     /// `<plugin>__<tool>`. Several instances require `<plugin>:<pane>__<tool>`.
     pub(crate) fn select_plugin_tool(
         &self,
