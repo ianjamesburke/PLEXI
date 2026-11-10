@@ -612,6 +612,11 @@ pub struct ListRowResponse {
 
 impl ListRowResponse {
     #[cfg(test)]
+    pub(crate) fn response(&self) -> egui::Response {
+        self.row.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn rect(&self) -> egui::Rect {
         self.row.rect
     }
