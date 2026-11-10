@@ -1475,8 +1475,7 @@ fn theme_preset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>
     Ok(value)
 }
 
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct ThemeConfig {
     /// Theme preset name. Applied first; individual color fields override the preset.
     #[serde(default, deserialize_with = "theme_preset")]
@@ -2287,6 +2286,79 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
             }
         }
     }
+    fn same_binding(name: &str, global: &crate::host::keys::KeyBindings, effective: &crate::host::keys::KeyBindings) -> bool {
+        match name {
+            "quit" => global.quit == effective.quit,
+            "close_pane" => global.close_pane == effective.close_pane,
+            "toggle_command_palette" => global.toggle_command_palette == effective.toggle_command_palette,
+            "split_horizontal" => global.split_horizontal == effective.split_horizontal,
+            "split_vertical" => global.split_vertical == effective.split_vertical,
+            "split_right" => global.split_right == effective.split_right,
+            "split_down" => global.split_down == effective.split_down,
+            "swap_pane_left" => global.swap_pane_left == effective.swap_pane_left,
+            "swap_pane_down" => global.swap_pane_down == effective.swap_pane_down,
+            "swap_pane_up" => global.swap_pane_up == effective.swap_pane_up,
+            "swap_pane_right" => global.swap_pane_right == effective.swap_pane_right,
+            "send_pane_left" => global.send_pane_left == effective.send_pane_left,
+            "send_pane_down" => global.send_pane_down == effective.send_pane_down,
+            "send_pane_up" => global.send_pane_up == effective.send_pane_up,
+            "send_pane_right" => global.send_pane_right == effective.send_pane_right,
+            "navigate_left" => global.navigate_left == effective.navigate_left,
+            "navigate_down" => global.navigate_down == effective.navigate_down,
+            "navigate_up" => global.navigate_up == effective.navigate_up,
+            "navigate_right" => global.navigate_right == effective.navigate_right,
+            "select_pane_left" => global.select_pane_left == effective.select_pane_left,
+            "select_pane_down" => global.select_pane_down == effective.select_pane_down,
+            "select_pane_up" => global.select_pane_up == effective.select_pane_up,
+            "select_pane_right" => global.select_pane_right == effective.select_pane_right,
+            "new_tab" => global.new_tab == effective.new_tab,
+            "next_tab" => global.next_tab == effective.next_tab,
+            "prev_tab" => global.prev_tab == effective.prev_tab,
+            "next_context" => global.next_context == effective.next_context,
+            "prev_context" => global.prev_context == effective.prev_context,
+            "move_context_up" => global.move_context_up == effective.move_context_up,
+            "move_context_down" => global.move_context_down == effective.move_context_down,
+            "nav_back" => global.nav_back == effective.nav_back,
+            "focus_history_forward" => global.focus_history_forward == effective.focus_history_forward,
+            "toggle_sidebar" => global.toggle_sidebar == effective.toggle_sidebar,
+            "toggle_zoom" => global.toggle_zoom == effective.toggle_zoom,
+            "toggle_shortcuts" => global.toggle_shortcuts == effective.toggle_shortcuts,
+            "rename_context" => global.rename_context == effective.rename_context,
+            "rename_pane" => global.rename_pane == effective.rename_pane,
+            "new_context" => global.new_context == effective.new_context,
+            "new_page_right" => global.new_page_right == effective.new_page_right,
+            "toggle_minimap" => global.toggle_minimap == effective.toggle_minimap,
+            "scroll_up" => global.scroll_up == effective.scroll_up,
+            "scroll_down" => global.scroll_down == effective.scroll_down,
+            "increase_font_size" => global.increase_font_size == effective.increase_font_size,
+            "decrease_font_size" => global.decrease_font_size == effective.decrease_font_size,
+            "reset_font_size" => global.reset_font_size == effective.reset_font_size,
+            "ui_scale_up" => global.ui_scale_up == effective.ui_scale_up,
+            "ui_scale_down" => global.ui_scale_down == effective.ui_scale_down,
+            "ui_scale_reset" => global.ui_scale_reset == effective.ui_scale_reset,
+            "open_agents" => global.open_agents == effective.open_agents,
+            "next_blocked_agent" => global.next_blocked_agent == effective.next_blocked_agent,
+            "focus_approval" => global.focus_approval == effective.focus_approval,
+            "open_file_browser" => global.open_file_browser == effective.open_file_browser,
+            "open_quick_note" => global.open_quick_note == effective.open_quick_note,
+            "open_config" => global.open_config == effective.open_config,
+            "reload_config" => global.reload_config == effective.reload_config,
+            "open_secrets_manager" => global.open_secrets_manager == effective.open_secrets_manager,
+            "open_assistant" => global.open_assistant == effective.open_assistant,
+            "force_reload_app" => global.force_reload_app == effective.force_reload_app,
+            "toggle_attention_queue" => global.toggle_attention_queue == effective.toggle_attention_queue,
+            "zoom_in" => global.zoom_in == effective.zoom_in,
+            "open_scratchpad" => global.open_scratchpad == effective.open_scratchpad,
+            "push_to_subcontext" => global.push_to_subcontext == effective.push_to_subcontext,
+            "new_child_context" => global.new_child_context == effective.new_child_context,
+            "set_context_root_from_cwd" => global.set_context_root_from_cwd == effective.set_context_root_from_cwd,
+            "hide_pane" => global.hide_pane == effective.hide_pane,
+            "park_context" => global.park_context == effective.park_context,
+            "open_notes_picker" => global.open_notes_picker == effective.open_notes_picker,
+            "close_context" => global.close_context == effective.close_context,
+            _ => false,
+        }
+    }
     fn visit(
         prefix: &str,
         workspace: &toml::Table,
@@ -2321,7 +2393,7 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
     let Some(mut workspace) = read(&workspace_path) else {
         return Vec::new();
     };
-    let ignored: Vec<String> = validate_from_path(&workspace_path).into_iter().filter_map(|diag| match diag {
+    let mut ignored: Vec<String> = validate_from_path(&workspace_path).into_iter().filter_map(|diag| match diag {
         ConfigDiagnostic::InvalidValue { key, .. } => Some(key),
         ConfigDiagnostic::UnknownKey { table, key, .. } => Some(if table.is_empty() { key } else { format!("{table}.{key}") }),
         ConfigDiagnostic::MisplacedTable { table, .. } => Some(table),
@@ -2337,6 +2409,20 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
         "marketplace",
     ] {
         workspace.remove(key);
+    }
+    let global_config = PlexiConfig::load_from_path(&config_path()).unwrap_or_default();
+    let workspace_config = PlexiConfig::load_from_path(&workspace_path).unwrap_or_default();
+    let global_bindings = crate::host::keys::build_key_bindings(global_config.keybindings.as_ref());
+    let resolved_global_theme = crate::ui::theme::resolve_theme_config(&global_config);
+    let mut merged_config = global_config;
+    merged_config.overlay(workspace_config);
+    let effective_bindings = crate::host::keys::build_key_bindings(merged_config.keybindings.as_ref());
+    if let Some(bindings) = workspace.get("keybindings").and_then(toml::Value::as_table) {
+        for key in bindings.keys() {
+            if same_binding(key, &global_bindings, &effective_bindings) {
+                ignored.push(format!("keybindings.{key}"));
+            }
+        }
     }
     let mut global = read(&config_path()).unwrap_or_default();
     global.entry("font_size").or_insert(toml::Value::Float(crate::ui::theme::FONT_SIZE as f64));
@@ -2365,6 +2451,13 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
     let theme = global.entry("theme").or_insert_with(|| toml::Value::Table(toml::Table::new()));
     if let Some(theme) = theme.as_table_mut() {
         theme.entry("preset").or_insert(toml::Value::String(legacy_preset));
+        match toml::Value::try_from(resolved_global_theme) {
+            Ok(toml::Value::Table(resolved)) => {
+                for (key, value) in resolved { theme.entry(key).or_insert(value); }
+            }
+            Ok(_) => log::error!("config: resolved theme did not serialize as a table"),
+            Err(error) => log::error!("config: could not serialize resolved theme: {error}"),
+        }
     }
     let mut result = Vec::new();
     visit("", &workspace, Some(&global), saved_key, &ignored, &mut result);
@@ -3419,6 +3512,35 @@ mod tests {
         std::fs::write(&path, "ui_scale = 1.5\n[terminal]\nminimum_contrast = 4.0\n[permissions]\nsoft_grant_days = 10\n[cloud]\nretain_local_history = true\n").unwrap();
         let keys: Vec<_> = workspace_config_shadows(workspace.path(), None).into_iter().map(|(key, _)| key).collect();
         for key in ["ui_scale", "terminal.minimum_contrast", "permissions.soft_grant_days", "cloud.retain_local_history"] { assert!(keys.contains(&key.to_owned()), "missing {key}: {keys:?}"); }
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_preset_theme_colors() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let accent = crate::ui::theme::preset_colors("plexi-dusk").unwrap().accent.unwrap();
+        std::fs::write(&path, format!("[theme]\naccent = \"{accent}\"\n")).unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[theme]\naccent = \"#010203\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "theme.accent"));
+    }
+
+    #[test]
+    fn workspace_shadow_detector_compares_resolved_default_keybindings() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = set_test_profile_dir(profile.path().to_path_buf());
+        std::fs::write(config_path(), "").unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).is_empty());
+        std::fs::write(&path, "[keybindings]\nquit = \"cmd+alt+q\"\n").unwrap();
+        assert!(workspace_config_shadows(workspace.path(), None).iter().any(|(key, _)| key == "keybindings.quit"));
     }
 
     #[test]
