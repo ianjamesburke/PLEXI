@@ -75,8 +75,36 @@ fn assistant_harness_factory(
     ))
 }
 
-const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] =
-    &[("assistant", assistant_harness_factory)];
+struct ButtonGalleryFixture;
+
+impl crate::app::app_trait::App for ButtonGalleryFixture {
+    fn type_id(&self) -> &'static str {
+        "button-gallery-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Kit button gallery".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        crate::overlays::ui_gallery::button_sizes(ui, ctx.colors);
+    }
+}
+
+fn button_gallery_factory(_: &Path, _: &[String], _: u64) -> Box<dyn crate::app::app_trait::App> {
+    Box::new(ButtonGalleryFixture)
+}
+
+const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] = &[
+    ("assistant", assistant_harness_factory),
+    ("button-gallery-fixture", button_gallery_factory),
+];
 
 fn harness_builtin_factory(
     id: &str,

@@ -6,6 +6,7 @@
 
 Host overlays should use these instead of raw egui layout wherever a primitive exists:
 
+- Buttons use `button::KitButton` (default Primary/Md), `ButtonKind` and `ButtonSize`. Use `menu_item` for context/overflow commands and the frameless variant for text/glyph controls. Toasts and plugins use the same kit paint and contrast path. `just check-ui-layout` rejects raw button calls throughout `src/`; `button_raw_sites.json` is the shrinking text-editor exception owned by stint 1209.
 - `overlay::ModalShell` for modal frame, scrim, title, body, scroll body, and dismissal.
 - `typography` for modal titles, section labels, body text, captions, and muted text.
 - `list::ListRow`, `row`, `text_field::TextField`, `button`, `hints::HintBar`, and `surface` for repeated chrome.

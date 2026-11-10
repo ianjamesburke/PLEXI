@@ -1,0 +1,10 @@
+{
+  "exception": "stint 1209 owns this file; remove entries as it adopts the kit",
+  "baseline": {
+    "src/app/text_editor_app.rs": {
+      "show_prompt | .button(": 1,
+      "paint_editor_header | egui::Button::new(": 1,
+      "ui | egui::Button::new(": 2
+    }
+  }
+}

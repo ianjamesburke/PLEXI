@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{ButtonKind, choice_button, chrome_button, icon_button, toolbar_button},
+    button::{choice_button, chrome_button, icon_button, toolbar_button, ButtonKind},
     code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::chrome_section,
@@ -8,11 +8,11 @@ use crate::ui::{
     overlay::ModalShell,
     shortcuts::key_chip,
     surface::{
-        TrustTone, color_swatch, compact_copyable_command, copyable_command, empty_state_panel,
-        status_chip, trust_decision_panel,
+        color_swatch, compact_copyable_command, copyable_command, empty_state_panel, status_chip,
+        trust_decision_panel, TrustTone,
     },
     text_field::{TextArea, TextField},
-    toast::{ProgressDots, toast_caption},
+    toast::{toast_caption, ProgressDots},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -162,6 +162,31 @@ pub(crate) fn gallery_rows(
             .chip("app")
             .trailing_action("Open")
             .show(ui, colors);
+    }
+}
+
+/// Shared gallery content, also rendered by the scene fixture through the host.
+pub(crate) fn button_sizes(ui: &mut egui::Ui, colors: &Colors) {
+    use crate::ui::button::{ButtonSize, KitButton};
+    for (size, caption) in [
+        (ButtonSize::Sm, "Sm · 28"),
+        (ButtonSize::Md, "Md · 32 (default)"),
+        (ButtonSize::Lg, "Lg · 52"),
+    ] {
+        crate::ui::typography::caption(ui, caption, colors);
+        ui.horizontal_wrapped(|ui| {
+            for (kind, label) in [
+                (ButtonKind::Primary, "Primary"),
+                (ButtonKind::Secondary, "Secondary"),
+                (ButtonKind::Accent, "Accent"),
+                (ButtonKind::Danger, "Danger"),
+                (ButtonKind::Ghost, "Ghost"),
+            ] {
+                ui.add(KitButton::new(label, colors).kind(kind).size(size));
+            }
+            ui.add(KitButton::new("Frameless", colors).size(size).frameless());
+            ui.add_enabled(false, KitButton::new("Disabled", colors).size(size));
+        });
     }
 }
 
@@ -378,6 +403,7 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
+                            button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
                                 chrome_button(
                                     ui,
