@@ -1,6 +1,6 @@
 # Headless scene: quick capture seeds the isolated notes tier. The test build
 # injects fake Trash, so no real system Trash is touched.
-size = [1280.0, 800.0]
+sizes = [[520.0, 600.0], [1280.0, 800.0]]
 
 [[steps]]
 key = { target = "host", value = "cmd+0" }

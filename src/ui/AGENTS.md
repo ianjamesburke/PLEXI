@@ -17,6 +17,16 @@ Host overlays should use these instead of raw egui layout wherever a primitive e
 
 Spacing scale (`SPACE_SM/MD/XL`), typography scale (`TEXT_HINT/CAPTION/BODY/TITLE_XL`), corner radii (one scale: `RADIUS_SMALL/MEDIUM/LARGE/PILL`; literal radii outside `style.rs` fail `radius_guard_tests`), modal widths, button heights, overlay chrome. Use these everywhere. Never hard-code magic numbers.
 
+## Bounded composition
+
+`bounded::allocate` owns finite row budgets. Measure complete required actions and their minimum hit targets before optional metadata and flexible text. Paint and hit-test from the allocated rectangles. Use `ToastShell::action`, `PaneHeader`, `ListRow`, `AppChrome`, and `ActionModal` for their respective surfaces. When required content cannot fit, reflow it, expose a named overflow action, or enforce the container minimum; never accept an empty action label as successful elision. Optional text may elide or deliberately hide; paths and identifiers keep the elision policies above.
+
+Resolve text with `foreground::Surface` against the composited painted fill, including hover, selection, disabled tint, and opacity. Small text uses `Role::SmallText`; meaningful non-text control marks use `Role::ControlMark`. A token alone does not establish contrast.
+
+Instrument migrated surfaces with `layout_report::Capture`, recording allocated text slots and required actions. Assertions inspect emitted paint as well as allocations. Only explicitly scrolling content may declare viewport clipping; a clip rectangle is not a fitting policy. Follow the matrix and screenshot contract in `src/testing/TESTING.md`.
+
+`layout_surfaces.json` is the surface census and fixture registry. An explicit unresolved gap records debt, not passing coverage. `layout_raw_sites.json` retains the legacy raw-call inventory; new raw layout or painter calls require a scoped rationale and a registered fixture in its `approved` entries. Custom canvas code remains usable under that explicit responsibility. Run `just check-ui-layout`; do not refresh the legacy baseline to bypass a new-site failure. This internal host contract does not certify arbitrary canvas or external plugin composition.
+
 ## Reusable Widgets (`src/ui/shortcuts.rs`)
 
 - `key_chip(ui, label, colors)` — single keyboard key as a styled rounded-rect chip.

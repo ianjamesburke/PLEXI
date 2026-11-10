@@ -856,6 +856,9 @@ impl SidebarRow {
                 galley.clone(),
                 with_alpha(colors.accent, row_alpha),
                 with_alpha(colors.text_on(colors.accent), row_alpha),
+                if self.is_active {
+                    colors.bg_sidebar.blend(if row_alpha < 1.0 { with_alpha(colors.bg_active, row_alpha) } else { colors.accent.gamma_multiply(0.14) })
+                } else if hovered && !self.is_dragging { colors.bg_hover } else { colors.bg_sidebar },
             );
         }
 

@@ -357,26 +357,6 @@ pub(crate) fn layout_card(
     }
 }
 
-// Resolve the foreground against the opaque card fill, preserving the supplied
-// color where possible and moving it toward the better contrasting extreme.
-fn readable_card_color(color: Color32, fill: Color32, minimum: f32) -> Color32 {
-    let color = fill.blend(color);
-    let fill_luminance = theme::luminance(fill);
-    let ratio = |fg| theme::contrast(theme::luminance(fg), fill_luminance);
-    if ratio(color) >= minimum {
-        return color;
-    }
-    let target = if ratio(Color32::WHITE) >= ratio(Color32::BLACK) {
-        Color32::WHITE
-    } else {
-        Color32::BLACK
-    };
-    (1..=32)
-        .map(|step| color.lerp_to_gamma(target, step as f32 / 32.0))
-        .find(|candidate| ratio(*candidate) >= minimum)
-        .unwrap_or(target)
-}
-
 fn card_text_colors(
     state: CardState,
     colors: &Colors,
@@ -393,11 +373,12 @@ fn card_text_colors(
     } else {
         colors.text_dim
     };
+    let surface = crate::ui::foreground::Surface::over(colors.terminal_bg, fill);
     (
-        readable_card_color(title, fill, 4.5),
-        readable_card_color(colors.text_dim, fill, 4.5),
-        readable_card_color(detail, fill, 4.5),
-        readable_card_color(badge, fill, 3.0),
+        surface.foreground(title, crate::ui::foreground::Role::SmallText),
+        surface.foreground(colors.text_dim, crate::ui::foreground::Role::SmallText),
+        surface.foreground(detail, crate::ui::foreground::Role::SmallText),
+        surface.foreground(badge, crate::ui::foreground::Role::SmallText),
     )
 }
 
@@ -412,10 +393,15 @@ pub(crate) fn paint_card(
     base_fill: Color32,
     selected: bool,
 ) -> Rect {
+    let capture = crate::ui::layout_report::Capture::begin(painter, "card");
     let form = layout.form;
     let m = form.metrics();
     let state_color = spec.state.color(colors);
-    let fill = spec.state.fill(colors, base_fill);
+    let fill = crate::ui::foreground::Surface::over(
+        colors.terminal_bg,
+        spec.state.fill(colors, base_fill),
+    )
+    .fill;
     let badge_color = spec.badge.as_ref().map(|(_, c)| *c).unwrap_or(state_color);
     let (title_color, subtitle_color, detail_color, badge_color) =
         card_text_colors(spec.state, colors, fill, badge_color);
@@ -450,7 +436,7 @@ pub(crate) fn paint_card(
         rect.min.x + m.pad_x + ICON_W * 0.5,
         rect.min.y + m.pad_y + title_h * 0.5,
     );
-    paint_state_icon(&p, icon_c, spec.state, colors, time);
+    paint_state_icon(&p, icon_c, spec.state, colors, fill, time);
     if spec.state.animated() {
         painter
             .ctx()
@@ -558,12 +544,23 @@ pub(crate) fn paint_card(
             ));
         }
     }
+    capture.finish(painter, rect, colors.terminal_bg, vec![], vec![]);
     badge_rect
 }
 
 /// Icons are drawn as shapes, not glyphs, so they never depend on font coverage.
-fn paint_state_icon(p: &Painter, c: Pos2, state: CardState, colors: &Colors, time: f64) {
-    let col = state.color(colors);
+fn paint_state_icon(
+    p: &Painter,
+    c: Pos2,
+    state: CardState,
+    colors: &Colors,
+    fill: Color32,
+    time: f64,
+) {
+    let col = crate::ui::foreground::Surface::over(colors.terminal_bg, fill).foreground(
+        state.color(colors),
+        crate::ui::foreground::Role::ControlMark,
+    );
     let pulse = ((time * std::f64::consts::TAU / 1.4).sin() as f32 * 0.5 + 0.5).clamp(0.0, 1.0);
     match state {
         CardState::Working => {
@@ -630,7 +627,7 @@ mod tests {
     #[test]
     fn attention_queue_card_text_contrast_on_plexi_themes() {
         let mut failures = Vec::new();
-        for name in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+        for name in theme::preset_names() {
             let colors = Colors::from_config(&theme::preset_colors(name).unwrap());
             for state in [
                 CardState::NeedsYou,
@@ -653,14 +650,16 @@ mod tests {
                         ("title", title, 4.5),
                         ("subtitle", subtitle, 4.5),
                         ("detail", detail, 4.5),
-                        ("badge", badge, 3.0),
+                        ("badge", badge, 4.5),
                     ] {
                         let ratio = theme::contrast(
                             theme::luminance(fill.blend(fg)),
                             theme::luminance(fill),
                         );
                         if ratio < target {
-                            failures.push(format!("{name} {state:?} selected={selected} {role}: {ratio:.2} < {target}"));
+                            failures.push(format!(
+                                "{name} {state:?} selected={selected} {role}: {ratio:.2} < {target}"
+                            ));
                         }
                     }
                 }

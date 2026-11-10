@@ -7,7 +7,8 @@ impl PlexiApp {
             ctx,
             &self.colors,
             |ui| {
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
                     crate::ui::toast::toast_caption(
                         ui,
                         format!(
@@ -17,7 +18,6 @@ impl PlexiApp {
                         ),
                         &self.colors,
                     );
-                    crate::ui::toast::ProgressDots::new(count, 3).show(ui, &self.colors);
                 });
             },
         );

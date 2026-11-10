@@ -111,11 +111,33 @@ pub(crate) fn update_metrics(ctx: &egui::Context, frame: &eframe::Frame) {
 }
 
 pub(crate) fn logical_safe_area(ctx: &egui::Context) -> egui::Vec2 {
+    // Native points, converted only by UI zoom (never by backing scale).
+    // AppKit can be unavailable on the first visible frame. Reserve the
+    // standard button band conservatively until measured frames arrive.
+    let fallback = if cfg!(target_os = "macos") {
+        egui::vec2(100.0, 32.0)
+    } else {
+        egui::Vec2::ZERO
+    };
     ctx.data(|d| d.get_temp::<egui::Vec2>(egui::Id::new("native_titlebar_metrics")))
-        .unwrap_or(egui::Vec2::ZERO)
+        .filter(|size| size.is_finite() && size.x > 0.0 && size.y > 0.0)
+        .unwrap_or(fallback)
         / ctx.zoom_factor()
 }
 
 pub(crate) fn toolbar_height(ctx: &egui::Context) -> f32 {
     crate::ui::style::TOOLBAR_H.max(logical_safe_area(ctx).y)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn missing_native_metrics_never_means_zero_exclusion() {
+        let ctx = egui::Context::default();
+        let area = super::logical_safe_area(&ctx);
+        assert!(
+            area.x >= 100.0 && area.y >= 32.0,
+            "unknown AppKit metrics must reserve conservative chrome: {area:?}"
+        );
+    }
 }

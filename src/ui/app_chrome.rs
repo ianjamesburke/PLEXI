@@ -35,12 +35,7 @@ impl<'a> AppChrome<'a> {
         self.colors.border
     }
 
-    pub(crate) fn text_label(
-        &self,
-        ui: &mut Ui,
-        text: &str,
-        style: TextLabelStyle,
-    ) -> Response {
+    pub(crate) fn text_label(&self, ui: &mut Ui, text: &str, style: TextLabelStyle) -> Response {
         let TextLabelStyle {
             size,
             color,
@@ -77,7 +72,9 @@ impl<'a> AppChrome<'a> {
             egui::pos2(clip.min.x, rect.min.y),
             egui::vec2(clip.width(), total_h),
         );
-        let painter = ui.painter();
+        let mut painter = ui.painter().clone();
+        painter.set_opacity(1.0);
+        let capture = super::layout_report::Capture::begin(&painter, "app_bar");
         painter.rect_filled(full_rect, 0.0, self.toolbar_fill());
 
         let text_x = full_rect.min.x + style::SPACE_MD;
@@ -91,7 +88,7 @@ impl<'a> AppChrome<'a> {
         if has_subtitle {
             let block_h = APP_BAR_TITLE_SIZE + style::SPACE_XS + style::TEXT_HINT;
             let title_y = full_rect.min.y + (band_h - block_h).max(0.0) / 2.0;
-            self.paint_no_wrap_text(
+            self.paint_fitted_text(
                 ui,
                 &text_painter,
                 egui::pos2(text_x, title_y),
@@ -99,7 +96,7 @@ impl<'a> AppChrome<'a> {
                 theme::font_medium(APP_BAR_TITLE_SIZE),
                 self.colors.text_primary,
             );
-            self.paint_no_wrap_text(
+            self.paint_fitted_text(
                 ui,
                 &text_painter,
                 egui::pos2(text_x, title_y + APP_BAR_TITLE_SIZE + style::SPACE_XS),
@@ -109,7 +106,7 @@ impl<'a> AppChrome<'a> {
             );
         } else {
             let title_y = full_rect.min.y + (band_h - APP_BAR_TITLE_SIZE).max(0.0) / 2.0;
-            self.paint_no_wrap_text(
+            self.paint_fitted_text(
                 ui,
                 &text_painter,
                 egui::pos2(text_x, title_y),
@@ -127,6 +124,7 @@ impl<'a> AppChrome<'a> {
             0.0,
             self.border(),
         );
+        capture.finish(&painter, full_rect, self.toolbar_fill(), vec![], vec![]);
         full_rect
     }
 
@@ -140,7 +138,7 @@ impl<'a> AppChrome<'a> {
             .show(ui, self.colors);
     }
 
-    fn paint_no_wrap_text(
+    fn paint_fitted_text(
         &self,
         ui: &Ui,
         painter: &egui::Painter,
@@ -149,7 +147,19 @@ impl<'a> AppChrome<'a> {
         font: FontId,
         color: Color32,
     ) {
-        let galley = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, color));
+        let Ok(lane) = super::bounded::allocate(painter.clip_rect(), 0.0, 0.0, &[]) else {
+            log::info!("ui: insufficient app-bar text space");
+            return;
+        };
+        let galley = super::text::elided_galley(
+            ui,
+            text,
+            font,
+            lane.text.width(),
+            super::text::Side::Trailing,
+        );
+        let color = super::foreground::Surface::over(self.toolbar_fill(), self.toolbar_fill())
+            .foreground(color, super::foreground::Role::SmallText);
         crate::ui::snap::galley_snapped(painter, pos, galley, color);
     }
 }
@@ -182,4 +192,37 @@ pub(crate) fn footer_keys_height(ui: &egui::Ui, entries: &[FooterKeyEntry], divi
         .map(|e| HintGroup::from_strings(&e.keys, &e.description))
         .collect();
     HintBar::new(&groups).band_height(ui, divider)
+}
+
+#[cfg(test)]
+mod adoption_tests {
+    use super::*;
+    #[test]
+    fn adoption_app_bar_elides_instead_of_clipping() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::setup_fonts(&ctx);
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+        );
+        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(160.0);
+            ui.set_clip_rect(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(180.0, 800.0),
+            ));
+            let capture =
+                crate::ui::layout_report::Capture::begin(ui.painter(), "adoption-fixture");
+            let rect = AppChrome::new(&colors).paint_app_bar(
+                ui,
+                "A deliberately long application title with an important suffix",
+                "/a/very/long/unbroken/subtitle/identifier/0123456789abcdef",
+            );
+            capture.finish(ui.painter(), rect, colors.bg_sidebar, vec![], vec![]);
+        });
+        let reports = crate::ui::layout_report::snapshot(&ctx);
+        assert!(!reports.is_empty());
+        let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
 }

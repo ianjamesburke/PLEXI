@@ -213,6 +213,14 @@ assert = { target = "balls", pane_count = 1, lifecycle = "running", tree_contain
 shot = "balls.png"                          # optional; written to the out dir
 ```
 
+### Host layout matrices
+
+The internal layout contract is owned by [`ui::layout_report`](../ui/layout_report.rs), with the surface census in [`layout_surfaces.json`](../ui/layout_surfaces.json). Every census entry needs a seeded fixture and minimum-size policy, or an explicit unresolved gap. The coverage guard rejects missing entries; a gap never counts as passing geometry evidence.
+
+Scenes may set `scales`, `themes`, and `reduced_motion` alongside `size` or `sizes`; the runner takes their Cartesian product on isolated harnesses. See [`ui-layout-matrix.toml`](../../tests/scenes/ui-layout-matrix.toml). Sizes describe physical window dimensions; UI zoom is separate from native backing density. `assert = { layout_valid = true, layout_surfaces = ["toast", "titlebar"] }` checks current-pass production paint reports and fails when required surfaces are absent. Existing outer-bound and input-routing checks remain required.
+
+Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to the failing matrix case and step prefix. Live backends reject these matrix/report fields as unsupported; they cannot substitute for installed native-control evidence. Test builds disable interpolation, so reduced-motion matrix cases verify layout endpoints, not real-time animation timing. Arbitrary canvas content and unresolved census entries remain outside the guarantee.
+
 ### Verbs
 
 | Verb | Effect |

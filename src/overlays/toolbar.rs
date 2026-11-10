@@ -3,13 +3,74 @@ use crate::ui::button;
 
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
+        let capture = crate::ui::layout_report::Capture::begin(ui.painter(), "titlebar");
         let row = ui.max_rect();
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("titlebar_row_rect"), row));
+        self.sync_attention_queue();
+        let (mail_icon, mail_count, _) = crate::app::attention_queue::format_attention_mailbox(
+            self.attention_queue.ask_count(),
+            self.attention_queue.failed_count(),
+            self.attention_queue.total_count(),
+        );
+        let measure = |text: String, size: f32| {
+            (ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    text,
+                    egui::FontId::proportional(size),
+                    egui::Color32::PLACEHOLDER,
+                )
+            })
+            .size()
+            .x + ui.spacing().button_padding.x * 2.0)
+                .max(style::BUTTON_H_MD - style::SPACE_SM)
+        };
+        let version_text = format!(
+            "{}v{}",
+            if self.update_available.is_some() {
+                "↑ "
+            } else {
+                ""
+            },
+            self.display_version
+        );
+        let full_width = measure(format!("{mail_icon} {mail_count}"), style::TEXT_CAPTION)
+            + measure(version_text, 10.0)
+            + measure("?".into(), style::TEXT_CAPTION)
+            + if host_ui_gallery_available() {
+                measure("UI".into(), style::TEXT_CAPTION) + ui.spacing().item_spacing.x
+            } else {
+                0.0
+            }
+            + ui.spacing().item_spacing.x * 2.0;
+        let compact = row.width() < full_width;
+        if compact {
+            ui.ctx().data_mut(|d| {
+                for name in ["gallery", "help", "version"] {
+                    d.remove::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)));
+                }
+            });
+        } else {
+            ui.ctx().data_mut(|d| {
+                d.remove::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", "overflow")))
+            });
+        }
         let mailbox_rect = ui.horizontal(|ui| {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if host_ui_gallery_available() {
+                if compact {
+                    let (overflow, _) = egui::containers::menu::MenuButton::from_button(
+                        egui::Button::new(RichText::new("…").size(style::TEXT_CAPTION))
+                            .frame(false).min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0))
+                    ).ui(ui, |ui| {
+                        if ui.button("Keyboard shortcuts").clicked() { self.show_shortcuts = !self.show_shortcuts; ui.close(); }
+                        if ui.button("Changelog").clicked() { self.show_changelog = !self.show_changelog; ui.close(); }
+                        if host_ui_gallery_available() && ui.button("Host UI gallery").clicked() { self.show_ui_gallery = !self.show_ui_gallery; ui.close(); }
+                    });
+                    overflow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toolbar actions"));
+                    record_toolbar_rect(ui, "overflow", overflow.rect);
+                }
+                if !compact && host_ui_gallery_available() {
                     let gallery = button::toolbar_button(
                         ui,
                         RichText::new("UI")
@@ -31,6 +92,7 @@ impl PlexiApp {
                     }
                 }
 
+                if !compact {
                 let help = button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors);
                 record_toolbar_rect(ui, "help", help.rect);
                 if help.clicked() {
@@ -55,6 +117,7 @@ impl PlexiApp {
                 record_toolbar_rect(ui, "version", version.rect);
                 if version.clicked() {
                     self.show_changelog = !self.show_changelog;
+                }
                 }
 
                 self.sync_attention_queue();
@@ -114,7 +177,8 @@ impl PlexiApp {
         }).inner;
 
         #[cfg(target_os = "macos")]
-        {
+        let capture = {
+            let mut capture = capture;
             let right = mailbox_rect.left() - ui.spacing().item_spacing.x;
             let available = (right - row.left()).max(0.0);
             let font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
@@ -123,7 +187,11 @@ impl PlexiApp {
                 ui,
                 title,
                 font.clone(),
-                available,
+                if available >= style::PANE_HEADER_TITLE_MIN {
+                    available
+                } else {
+                    0.0
+                },
                 crate::ui::text::Side::Trailing,
             );
             let galley = ui.fonts_mut(|fonts| {
@@ -135,6 +203,7 @@ impl PlexiApp {
                 right,
                 galley.size(),
             );
+            capture.text_slot("title", &galley, egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())));
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
             }
@@ -145,9 +214,13 @@ impl PlexiApp {
                 );
                 d.insert_temp(egui::Id::new("titlebar_visible_title"), visible);
             });
-        }
+            capture
+        };
         #[cfg(not(target_os = "macos"))]
         let _ = (row, mailbox_rect);
+        let safe = crate::platform::titlebar::logical_safe_area(ui.ctx());
+        let excluded = egui::Rect::from_min_size(ui.ctx().content_rect().min, safe);
+        capture.finish(ui.painter(), row, self.colors.bg_toolbar, vec![], vec![excluded]);
     }
 }
 
@@ -158,14 +231,15 @@ fn titlebar_title_rect(
     right: f32,
     size: egui::Vec2,
 ) -> Option<egui::Rect> {
-    if size.x <= 0.0 || right - row.left() < size.x {
-        return None;
-    }
-    let left = (center_x - size.x / 2.0).clamp(row.left(), right - size.x);
-    Some(egui::Rect::from_min_size(
-        egui::pos2(left, row.center().y - size.y / 2.0),
-        size,
-    ))
+    let controls_width = (row.right() - right).max(0.0);
+    let slots = [crate::ui::bounded::Slot {
+        id: "controls",
+        width: controls_width,
+        compact: None,
+        required: true,
+    }];
+    let layout = crate::ui::bounded::allocate(row, 0.0, 0.0, &slots).ok()?;
+    crate::ui::bounded::centered_text(layout.text, center_x, size)
 }
 
 #[cfg(all(test, target_os = "macos"))]

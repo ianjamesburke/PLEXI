@@ -435,11 +435,13 @@ impl PlexiApp {
             self.notes_picker_preview = None;
         }
         self.invalidate_notes_index();
-        if deleted.closed_editor {
-            let message = format!("Restored “{title}”; its editor was closed.");
-            self.notes_picker_status = Some(message.clone());
-            self.notes_picker_notice = Some((message, std::time::Instant::now()));
-        }
+        let message = if deleted.closed_editor {
+            format!("Restored: {title}; its editor was closed.")
+        } else {
+            format!("Restored: {title}")
+        };
+        self.notes_picker_status = None;
+        self.notes_picker_notice = Some((message, std::time::Instant::now()));
     }
 
     pub(crate) fn draw_notes_delete_toast(&mut self, ctx: &egui::Context) {
@@ -473,39 +475,12 @@ impl PlexiApp {
             .as_deref()
             .filter(|status| status.starts_with("Can't undo"));
         let colors = self.colors;
-        let clicked = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
+        let response = crate::ui::toast::ToastShell::bottom("notes_delete_toast")
             .offset(egui::vec2(0.0, -style::SPACE_SM))
-            .show(ctx, &colors, |ui| {
-                ui.vertical(|ui| {
-                    let clicked = ui
-                        .horizontal(|ui| {
-                            crate::ui::toast::toast_caption(ui, caption, &colors);
-                            let response = crate::ui::button::chrome_button(
-                                ui,
-                                "Undo",
-                                crate::ui::button::ButtonKind::Secondary,
-                                &colors,
-                                0.0,
-                            );
-                            #[cfg(test)]
-                            ctx.data_mut(|data| {
-                                data.insert_temp(
-                                    egui::Id::new("notes_delete_undo_rect"),
-                                    response.rect,
-                                )
-                            });
-                            response.clicked()
-                        })
-                        .inner;
-                    if let Some(error) = undo_error {
-                        crate::ui::toast::toast_caption(ui, error, &colors);
-                    }
-                    clicked
-                })
-                .inner
-            })
-            .inner;
-        if clicked {
+            .action(ctx, &colors, &caption, "Undo", undo_error);
+        #[cfg(test)]
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new("notes_delete_undo_rect"), response.rect));
+        if response.clicked() {
             self.notes_picker_undo_delete();
         }
         ctx.request_repaint_after(
