@@ -991,14 +991,8 @@ impl PlexiApp {
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors;
-            let dark_mode = !crate::ui::theme::is_light_preset(
-                fresh
-                    .theme
-                    .as_ref()
-                    .and_then(|t| t.preset.as_deref())
-                    .unwrap_or(""),
-            );
-            crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+            let dark_mode = new_colors.is_dark();
+            crate::ui::theme::setup_style(&self.ctx, &new_colors);
             let window_theme = if dark_mode {
                 egui::SystemTheme::Dark
             } else {

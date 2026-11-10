@@ -710,7 +710,7 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     ctx.enable_accesskit();
     ctx.set_visuals(egui::Visuals::dark());
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    theme::setup_style(ctx, colors, true);
+    theme::setup_style(ctx, colors);
 }
 
 pub(crate) fn configure_native_semantics(ctx: &egui::Context) {
@@ -1580,14 +1580,8 @@ impl PlexiApp {
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = theme::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
-        let dark_mode = !theme::is_light_preset(
-            config
-                .theme
-                .as_ref()
-                .and_then(|t| t.preset.as_deref())
-                .unwrap_or(""),
-        );
-        theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
+        let dark_mode = colors.is_dark();
+        theme::setup_style(&cc.egui_ctx, &colors);
         let window_theme = if dark_mode {
             egui::SystemTheme::Dark
         } else {

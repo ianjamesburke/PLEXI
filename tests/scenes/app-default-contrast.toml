@@ -1,0 +1,22 @@
+# Default app widgets through the production Python bridge, in both theme modes.
+size = [1000.0, 900.0]
+themes = ["plexi-dawn", "plexi-night"]
+suite = false
+
+[[steps]]
+open = { kind = "process", path = "apps/dev/component-gallery", as = "gallery" }
+
+[[steps]]
+wait_app_frame = { target = "gallery", timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { target = "gallery", lifecycle = "running", tree_contains = "Component Gallery" }
+
+[[steps]]
+assert = { target = "gallery", tree_contains = "Environment" }
+
+[[steps]]
+shot = "app-default-contrast.png"

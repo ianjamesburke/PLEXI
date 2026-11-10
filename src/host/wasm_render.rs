@@ -49,6 +49,7 @@ pub struct RenderResult {
     /// Canvas clicks, already inverted into the app's declared canvas space.
     pub canvas_clicks: Vec<CanvasClick>,
     pub canvas_time: std::time::Duration,
+    authored_paint: Vec<std::ops::Range<usize>>,
 }
 
 /// Render a view tree, compositing `surface` into the first surface-node
@@ -93,6 +94,7 @@ pub fn render_ui_tree_with_canvas_fits(
     tree_seq: u64,
 ) -> RenderResult {
     let mut out = RenderResult::default();
+    let paint_start = paint_len(ui);
     let env = TreeRenderEnv {
         nodes: &tree.nodes,
         colors,
@@ -130,7 +132,91 @@ pub fn render_ui_tree_with_canvas_fits(
     } else {
         render_root(ui, &mut out);
     }
+    resolve_default_text(ui, paint_start, colors.terminal_bg, &out.authored_paint);
+    out.authored_paint.clear();
     out
+}
+
+fn paint_len(ui: &egui::Ui) -> usize {
+    ui.ctx()
+        .graphics(|g| g.get(ui.layer_id()).map_or(0, |p| p.all_entries().len()))
+}
+
+/// Default declarative text follows the final painted surface, including
+/// nested cards, transparent ghost buttons, selection, press and disabled
+/// tints. Explicit Text colors and canvas commands remain author-owned.
+/// This runs after containers replace their background placeholders, so the
+/// text cannot accidentally resolve against a workspace or preset backdrop.
+fn resolve_default_text(
+    ui: &egui::Ui,
+    start: usize,
+    backdrop: Color32,
+    authored: &[std::ops::Range<usize>],
+) {
+    fn resolve(
+        shape: &mut egui::Shape,
+        clip: egui::Rect,
+        backdrop: Color32,
+        fills: &mut Vec<(egui::Rect, Color32)>,
+        authored: bool,
+    ) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    resolve(shape, clip, backdrop, fills, authored);
+                }
+            }
+            egui::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => {
+                fills.push((rect.rect.intersect(clip), rect.fill));
+            }
+            egui::Shape::Text(text) if !authored && !text.galley.job.text.is_empty() => {
+                let point = text.galley.rect.translate(text.pos.to_vec2()).center();
+                let mut layers = Vec::new();
+                for (rect, fill) in fills.iter().rev() {
+                    if rect.contains(point) {
+                        layers.push(*fill);
+                        if fill.a() == 255 {
+                            break;
+                        }
+                    }
+                }
+                let fill = layers.iter().rev().fold(backdrop, |bg, fg| bg.blend(*fg));
+                let preferred = text
+                    .override_text_color
+                    .or_else(|| {
+                        text.galley
+                            .job
+                            .sections
+                            .first()
+                            .map(|s| s.format.color)
+                            .filter(|c| *c != Color32::PLACEHOLDER)
+                    })
+                    .unwrap_or(text.fallback_color);
+                text.override_text_color = Some(
+                    crate::ui::foreground::Surface::over(backdrop, fill)
+                        .foreground(preferred, crate::ui::foreground::Role::SmallText),
+                );
+            }
+            _ => {}
+        }
+    }
+    ui.ctx().graphics_mut(|g| {
+        if let Some(list) = g.get_mut(ui.layer_id()) {
+            let end = list.all_entries().len();
+            let mut fills = Vec::new();
+            for index in start..end {
+                list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                    resolve(
+                        &mut entry.shape,
+                        entry.clip_rect,
+                        backdrop,
+                        &mut fills,
+                        authored.iter().any(|range| range.contains(&index)),
+                    );
+                });
+            }
+        }
+    });
 }
 
 /// Render a root `Column` whose leading `AppBar`s and trailing `FooterKeys`
@@ -265,13 +351,7 @@ pub fn render_ui_tree_to_png(
 ) -> Result<Vec<u8>, String> {
     let config = crate::config::PlexiConfig::load();
     let colors = crate::ui::theme::colors_from_config(&config);
-    let dark_mode = !crate::ui::theme::is_light_preset(
-        config
-            .theme
-            .as_ref()
-            .and_then(|t| t.preset.as_deref())
-            .unwrap_or(""),
-    );
+
     let tree = tree.clone();
     // `set_fonts` only takes effect on the *next* frame's `begin_frame`, so the
     // custom `ui-medium` family used by declarative Button/ListRow nodes is not
@@ -287,7 +367,7 @@ pub fn render_ui_tree_to_png(
         .build_ui(move |ui| {
             if !fonts_ready {
                 crate::ui::theme::setup_fonts(ui.ctx());
-                crate::ui::theme::setup_style(ui.ctx(), &colors, dark_mode);
+                crate::ui::theme::setup_style(ui.ctx(), &colors);
                 fonts_ready = true;
                 ui.ctx().request_repaint();
                 return;
@@ -770,6 +850,12 @@ fn render_node(
     }
     let Some(node) = find_node(nodes, id) else {
         return;
+    };
+
+    let authored_start = match &node.data {
+        UiNodeData::Canvas(_) => Some(paint_len(ui)),
+        UiNodeData::Text(text) if text.color.is_some() => Some(paint_len(ui)),
+        _ => None,
     };
 
     match &node.data {
@@ -1381,6 +1467,9 @@ fn render_node(
                 }
             });
         }
+    }
+    if let Some(start) = authored_start {
+        out.authored_paint.push(start..paint_len(ui));
     }
 }
 
@@ -2859,7 +2948,7 @@ mod tests {
         let colors = Colors::from_config(
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
-        crate::ui::theme::setup_style(&ctx, &colors, true);
+        crate::ui::theme::setup_style(&ctx, &colors);
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -3044,7 +3133,7 @@ mod tests {
         let colors = Colors::from_config(
             &crate::ui::theme::preset_colors("catppuccin-mocha").expect("preset"),
         );
-        crate::ui::theme::setup_style(&ctx, &colors, true);
+        crate::ui::theme::setup_style(&ctx, &colors);
 
         let output = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -3100,3 +3189,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "wasm_render/contrast_tests.rs"]
+mod contrast_tests;
