@@ -67,7 +67,9 @@ impl RegistryViews {
     }
 
     fn load_for(&self, root: &Path) -> AppRegistry {
-        if self.core_only { return AppRegistry::empty(); }
+        if self.core_only {
+            return AppRegistry::empty();
+        }
         AppRegistry::load_with_global(root, &self.global_dir)
     }
 
@@ -192,6 +194,10 @@ impl RegistryViews {
     /// Every canonical root currently cached — what the watcher (or any other
     /// caller enumerating "what's live") should be watching / aware of.
     pub(crate) fn roots(&self) -> Vec<PathBuf> {
+        // Disabled plugin views never need filesystem watchers.
+        if self.core_only {
+            return Vec::new();
+        }
         self.views.keys().cloned().collect()
     }
 

@@ -1285,7 +1285,11 @@ impl PlexiApp {
         }
 
         // ── Note entries ────────────────────────────────────────────────────
-        for note in self.palette_notes.iter().filter(|_| !self.config.core_only.unwrap_or(false)) {
+        for note in self
+            .palette_notes
+            .iter()
+            .filter(|_| !self.config.core_only.unwrap_or(false))
+        {
             let search_text = searchable_text(&[note.title.as_str(), note.search_text.as_str()]);
             let matches = query.is_empty() || search_text.contains(&query);
             if matches {
@@ -1358,7 +1362,9 @@ impl PlexiApp {
             .collect();
 
         for app in BUILTIN_APPS {
-            if self.config.core_only.unwrap_or(false) { continue; }
+            if self.config.core_only.unwrap_or(false) {
+                continue;
+            }
             if !crate::release::feature_enabled(app.gate) {
                 continue;
             }
@@ -1884,6 +1890,9 @@ impl PlexiApp {
 
     /// Launch a host-native builtin palette entry by its id.
     pub(crate) fn launch_builtin_by_id(&mut self, id: &str) {
+        if self.plugin_blocked(id) {
+            return;
+        }
         log::info!("palette: launching builtin app '{id}'");
         match id {
             "assistant" => {
@@ -1903,6 +1912,9 @@ impl PlexiApp {
     /// palette. The descriptor is the host binding `Action`, so labels/search
     /// metadata cannot drift onto a private palette-only command enum.
     fn run_palette_command(&mut self, command: PaletteCommand) {
+        if matches!(command, PaletteCommand::UiUpcycle(_)) && self.plugin_blocked("cli-renderer") {
+            return;
+        }
         match command {
             PaletteCommand::UiUpcycle(binary) => match crate::cli::registry::lookup(binary, None) {
                 Ok(descriptor) => {

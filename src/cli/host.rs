@@ -1321,7 +1321,11 @@ fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) 
 pub(crate) fn plugin_mode_core_only() -> bool {
     running_build_info()
         .and_then(|v| v.get("core_only").and_then(serde_json::Value::as_bool))
-        .unwrap_or_else(|| crate::config::PlexiConfig::load().core_only.unwrap_or(false))
+        .unwrap_or_else(|| {
+            crate::config::PlexiConfig::load()
+                .core_only
+                .unwrap_or(false)
+        })
 }
 
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.

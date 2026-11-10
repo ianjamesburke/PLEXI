@@ -133,7 +133,10 @@ fn main() -> eframe::Result {
     if let Some(profile_init_lock) = profile_init_lock {
         let is_first_launch = crate::config::ensure_profile_initialized();
 
-        if !crate::config::PlexiConfig::load().core_only.unwrap_or(false) {
+        if !crate::config::PlexiConfig::load()
+            .core_only
+            .unwrap_or(false)
+        {
             let apps_dir = crate::app::registry::apps_dir();
             let cloner = crate::cli::install_host::GitCloner;
 
@@ -190,10 +193,11 @@ fn main() -> eframe::Result {
                     );
                 }
             }
-        }
-        if let Err(error) = crate::distribution::seed_profile() {
-            eprintln!("package profile initialization: {error}");
-            cli::trace::exit(1);
+            // Packaged plugin definitions stay untouched in core-only mode too.
+            if let Err(error) = crate::distribution::seed_profile() {
+                eprintln!("package profile initialization: {error}");
+                cli::trace::exit(1);
+            }
         }
         drop(profile_init_lock);
     }

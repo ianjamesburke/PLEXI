@@ -1322,6 +1322,17 @@ impl PlexiApp {
             return;
         };
         let pane_id = *pane_id;
+        if self.config.core_only.unwrap_or(false) {
+            if let Some(plugin) = self.windows[active]
+                .panes
+                .get(&pane_id)
+                .and_then(|pane| pane.as_app())
+                .map(|pane| pane.manifest_id.clone())
+            {
+                self.plugin_blocked(&plugin);
+                return;
+            }
+        }
         self.reload_app_pane(pane_id, "manual");
     }
 
@@ -1355,7 +1366,9 @@ impl PlexiApp {
         workspace_root: PathBuf,
         group: Option<String>,
     ) {
-        if self.plugin_blocked(app.type_id()) { return; }
+        if self.plugin_blocked(app.type_id()) {
+            return;
+        }
         let BuiltinPlacement {
             window: target_win,
             hint,
@@ -2089,7 +2102,9 @@ impl PlexiApp {
     /// Toggle the file browser: if the focused pane has a file browser open,
     /// close it. Otherwise, open one.
     pub(crate) fn open_file_browser(&mut self) {
-        if self.plugin_blocked("file_browser") { return; }
+        if self.plugin_blocked("file_browser") {
+            return;
+        }
         // Check if the focused pane (or its linked app pane above) already has
         // a file browser open. If so, close it.
         let ctx = &self.windows[self.active_window];
@@ -2351,7 +2366,9 @@ impl PlexiApp {
         path: PathBuf,
         cwd_override: Option<PathBuf>,
     ) {
-        if self.plugin_blocked("text-editor") { return; }
+        if self.plugin_blocked("text-editor") {
+            return;
+        }
         if let Some(pane_id) = self.find_open_text_editor_pane_any_window(&path) {
             log::info!(
                 "open_config: {} already open in pane {pane_id}, focusing",
@@ -2463,7 +2480,9 @@ impl PlexiApp {
         args: &[String],
         cwd_override: Option<PathBuf>,
     ) -> Result<Option<PaneId>, String> {
-        if id != "terminal" { self.require_plugin(id)?; }
+        if id != "terminal" {
+            self.require_plugin(id)?;
+        }
         let IdAppLaunchOptions {
             target_win,
             bypass_on_launch,
@@ -2916,7 +2935,9 @@ impl PlexiApp {
 
     /// Open the secrets manager (read-only vault viewer, full pane, no terminal split).
     pub(crate) fn open_secrets_manager(&mut self) {
-        if self.plugin_blocked("secrets_manager") { return; }
+        if self.plugin_blocked("secrets_manager") {
+            return;
+        }
         // Toggle: if already open, close it.
         let ctx = &self.windows[self.active_window];
         if let Some(focused) = ctx.focused_pane {
@@ -2993,7 +3014,9 @@ impl PlexiApp {
         target_win: usize,
         hint: &str,
     ) -> Option<PaneId> {
-        if self.plugin_blocked("assistant") { return None; }
+        if self.plugin_blocked("assistant") {
+            return None;
+        }
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return None;
@@ -3052,7 +3075,9 @@ impl PlexiApp {
     /// Returns `None` when the Assistant feature is off or the context has no
     /// window.
     pub(crate) fn ensure_headless_assistant(&mut self, context_id: Option<u64>) -> Option<PaneId> {
-        if self.plugin_blocked("assistant") { return None; }
+        if self.plugin_blocked("assistant") {
+            return None;
+        }
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::Assistant) {
             crate::release::log_feature_blocked(crate::release::ReleaseFeature::Assistant);
             return None;
@@ -3136,7 +3161,9 @@ impl PlexiApp {
     ///
     /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
-        if self.plugin_blocked("notes") { return; }
+        if self.plugin_blocked("notes") {
+            return;
+        }
         log::info!("scratchpad: opening new scratch note");
         let active = self.active_window;
         let target_pane_id = self.windows[active].focused_pane.and_then(|tile_id| {
@@ -3203,7 +3230,9 @@ impl PlexiApp {
 
     /// Open the quick note modal: capture context and push FocusKind::QuickNote.
     pub(crate) fn open_quick_note_modal(&mut self) {
-        if self.plugin_blocked("notes") { return; }
+        if self.plugin_blocked("notes") {
+            return;
+        }
         let active = self.active_window;
         let cwd = self.windows[active]
             .focused_pane

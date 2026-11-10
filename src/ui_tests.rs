@@ -148,7 +148,12 @@ impl PlexiUiHarness {
         Self::new_sized_config(width, height, ppp, Default::default())
     }
 
-    fn new_sized_config(width: f32, height: f32, ppp: f32, config: crate::config::PlexiConfig) -> Self {
+    fn new_sized_config(
+        width: f32,
+        height: f32,
+        ppp: f32,
+        config: crate::config::PlexiConfig,
+    ) -> Self {
         let profile_dir = tempfile::tempdir().expect("create UI harness profile");
         let profile_guard = crate::config::test_profile_dir_override().is_none()
             .then(|| crate::config::set_test_profile_dir(profile_dir.path().to_path_buf()));
@@ -162,7 +167,8 @@ impl PlexiUiHarness {
             .with_size(egui::Vec2::new(width, height))
             .with_pixels_per_point(ppp)
             .build_eframe(move |cc| {
-                let (mut app, _ipc_tx) = PlexiApp::new_for_test_with_config(cc.egui_ctx.clone(), frame_tick, config);
+                let (mut app, _ipc_tx) =
+                    PlexiApp::new_for_test_with_config(cc.egui_ctx.clone(), frame_tick, config);
                 app.set_initial_context_id_for_test(context_id);
                 app.host.seed_next_pane_id(pane_block);
                 app
@@ -184,7 +190,12 @@ impl PlexiUiHarness {
         Self::new_sized_scaled_with_config(phys_w, phys_h, scale, Default::default())
     }
 
-    pub fn new_sized_scaled_with_config(phys_w: f32, phys_h: f32, scale: f32, config: crate::config::PlexiConfig) -> Self {
+    pub fn new_sized_scaled_with_config(
+        phys_w: f32,
+        phys_h: f32,
+        scale: f32,
+        config: crate::config::PlexiConfig,
+    ) -> Self {
         // Start at zoom 1.0 with the physical size; egui rescales the screen
         // rect to `phys / scale` on the pass that changes the zoom factor,
         // exactly as it does for a real window.

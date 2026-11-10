@@ -491,14 +491,21 @@ pub struct AppRegistry {
 
 impl AppRegistry {
     pub(crate) fn empty() -> Self {
-        Self { apps: HashMap::new(), extension_map: HashMap::new(), loaded_workspace: None }
+        Self {
+            apps: HashMap::new(),
+            extension_map: HashMap::new(),
+            loaded_workspace: None,
+        }
     }
 
     /// Scan global apps then walk up from `cwd` looking for a `.plexi/` directory;
     /// if found, also scan its `apps/` and `agents/` subdirs. Local entries shadow
     /// global ones with the same id (a single info-level log line per shadow).
     pub fn load(cwd: &Path) -> Self {
-        if crate::config::PlexiConfig::load().core_only.unwrap_or(false) {
+        if crate::config::PlexiConfig::load()
+            .core_only
+            .unwrap_or(false)
+        {
             return Self::empty();
         }
         let global_dir = apps_dir();

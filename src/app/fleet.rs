@@ -438,6 +438,9 @@ impl PlexiApp {
     }
 
     pub(crate) fn open_agents_pane(&mut self) {
+        if self.plugin_blocked("agents") {
+            return;
+        }
         log::info!("agents: open pane");
         if let Err(e) =
             self.launch_app_by_id_with_layout("agents", Some("split_h".into()), &[], None)

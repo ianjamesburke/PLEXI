@@ -4,7 +4,10 @@ pub fn list_cli() -> i32 {
         return 0;
     }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app::registry::AppRegistry::load_with_global(&cwd, &crate::app::registry::apps_dir());
+    let registry = crate::app::registry::AppRegistry::load_with_global(
+        &cwd,
+        &crate::app::registry::apps_dir(),
+    );
     let installed = registry.list();
     if installed.is_empty() {
         println!("no apps installed");

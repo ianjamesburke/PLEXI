@@ -34,6 +34,7 @@ A key with a wrong value type, a retired key, or an unknown key never discards t
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `core_only` | bool | — | Disable all plugins for this host session. Profile-only; restart required. |
 | `config_version` | integer | — | — |
 | `font_size` | float | — | — |
 | `ui_scale` | float | 1.0 | App-wide UI scale (browser-style zoom). Default 1.0; clamped on use. |
@@ -307,6 +308,9 @@ This is the built-in template Plexi writes when it creates or resets the active 
 # Edit: plexi config edit  |  Check: plexi config check  |  Reset: plexi config reset
 
 config_version = 1
+
+# Start with no plugins. Profile-only; restart the host after changing.
+core_only = false
 
 font_size = 14.0
 # ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0

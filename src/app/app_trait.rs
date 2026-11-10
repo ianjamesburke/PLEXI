@@ -333,7 +333,9 @@ pub trait App: Send {
     fn queue_outbound_event(&mut self, _event: crate::protocol::PlexiEvent) {}
 
     /// Host-owned disabled view retains the original plugin record without executing it.
-    fn disabled_plugin_record(&self) -> Option<&crate::workspace::SavedPane> { None }
+    fn disabled_plugin_record(&self) -> Option<&crate::workspace::SavedPane> {
+        None
+    }
 
     /// Serialise app state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {

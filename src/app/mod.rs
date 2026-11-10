@@ -13,6 +13,7 @@ mod cli_actions;
 pub mod cli_operation;
 pub mod command_view_app;
 mod conjoined;
+pub(crate) mod core_only;
 mod dispatch;
 mod event_stream;
 pub mod file_handlers;
@@ -28,7 +29,6 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod launch_notices;
-pub(crate) mod core_only;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -1598,7 +1598,10 @@ impl PlexiApp {
         let cwd = std::env::current_dir().unwrap_or_default();
         let mut registries = crate::app::registry_views::RegistryViews::new();
         registries.set_core_only(config.core_only.unwrap_or(false));
-        log::info!("plugins: core-only mode={}; restart required to change", config.core_only.unwrap_or(false));
+        log::info!(
+            "plugins: core-only mode={}; restart required to change",
+            config.core_only.unwrap_or(false)
+        );
         registries.view_for_root(&cwd);
         let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
@@ -1978,7 +1981,7 @@ impl PlexiApp {
             show_shortcuts: false,
             show_changelog: false,
             show_ui_gallery: false,
-                    plugin_notice: None,
+            plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
             ui_gallery_show_text_modal: false,
@@ -2950,7 +2953,7 @@ impl PlexiApp {
             show_shortcuts: false,
             show_changelog: false,
             show_ui_gallery: false,
-                    plugin_notice: None,
+            plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
             ui_gallery_show_text_modal: false,
@@ -4870,7 +4873,9 @@ impl PlexiApp {
     /// to find them. That walk never runs on this thread: a cache hit paints
     /// immediately, and a miss paints an empty list until the refresh lands.
     pub(crate) fn open_notes_picker(&mut self) {
-        if self.plugin_blocked("notes") { return; }
+        if self.plugin_blocked("notes") {
+            return;
+        }
         let started = std::time::Instant::now();
         log::info!("notes_picker: Cmd+O — opening picker");
         self.ensure_notes_index_loaded();
@@ -5534,7 +5539,10 @@ pub(crate) fn restore_workspace(
                     && (s.last_state == crate::protocol::AgentState::Completed
                         || saved_pane.slots.contains_key("completed"))
             });
-            if is_completed_ephemeral && matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Terminal) {
+            if is_completed_ephemeral
+                && (!config.core_only.unwrap_or(false)
+                    || matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Terminal))
+            {
                 crate::workspace::archive_saved_completion(
                     collaborators.profile_dir,
                     saved_pane,
@@ -5555,7 +5563,10 @@ pub(crate) fn restore_workspace(
             }
             non_skipped_pane_count += 1;
 
-            if let Some(heartbeat) = &saved_pane.heartbeat {
+            if let Some(heartbeat) = saved_pane.heartbeat.as_ref().filter(|_| {
+                !config.core_only.unwrap_or(false)
+                    || !matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App)
+            }) {
                 restored_heartbeats.insert(
                     saved_pane.id,
                     PaneHeartbeat {

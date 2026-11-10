@@ -1655,7 +1655,9 @@ pub fn app_info(id: &str) -> i32 {
         return 1;
     }
     let registry = crate::app::registry::AppRegistry::load_with_global(
-        &std::env::current_dir().unwrap_or_default(), &crate::app::registry::apps_dir());
+        &std::env::current_dir().unwrap_or_default(),
+        &crate::app::registry::apps_dir(),
+    );
     let Some(installed) = registry.get(id) else {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;

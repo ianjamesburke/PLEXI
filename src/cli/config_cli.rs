@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
-    ("core_only", "boolean", "Disable all plugins; global profile only, restart required (default false)"),
+    ("core_only", "bool", "Disable all plugins; global profile only, restart required (default false)"),
     (
         "config_version",
         "integer",
@@ -861,6 +861,18 @@ fn parse_value_for_type(raw: &str, type_name: Option<&str>) -> Result<toml_edit:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_only_config_cli_writes_boolean_and_rejects_invalid_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(config_set_at_path(&["core_only=true".into()], &path), 0);
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::PlexiConfig = toml::from_str(&raw).unwrap();
+        assert_eq!(config.core_only, Some(true));
+        assert_eq!(config_set_at_path(&["core_only=typo".into()], &path), 1);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+    }
 
     #[test]
     fn config_set_rejects_out_of_range_terminal_minimum_contrast() {

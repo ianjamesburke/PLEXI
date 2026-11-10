@@ -1135,7 +1135,15 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             .as_ref()
             .map(|suffix| format!("[{suffix}] "))
             .unwrap_or_default();
-        let mut h = PlexiUiHarness::new_sized_scaled_with_config(size[0], size[1], *scale, crate::config::PlexiConfig { core_only: Some(scene.core_only), ..Default::default() });
+        let mut h = PlexiUiHarness::new_sized_scaled_with_config(
+            size[0],
+            size[1],
+            *scale,
+            crate::config::PlexiConfig {
+                core_only: Some(scene.core_only),
+                ..Default::default()
+            },
+        );
         if styled {
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");

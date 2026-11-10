@@ -2438,6 +2438,7 @@ impl PlexiConfig {
     /// `other` replaces the corresponding field in `self`. Nested structs
     /// (theme, effects, log, notifications) are overlaid recursively.
     fn overlay(&mut self, other: Self) {
+        // core_only is host-wide startup policy from the profile, never a workspace override.
         if let Some(attention) = other.attention {
             self.attention
                 .get_or_insert_with(Default::default)
