@@ -123,6 +123,7 @@ pub struct TextEditorApp {
     font_size: f32,
     /// Active find/replace bar, or `None` when dismissed.
     find_bar: Option<FindBar>,
+    pending_match_reveal: Option<(usize, usize)>,
     editor_focused: bool,
     /// True after Escape released the body editor back to pane-level
     /// navigation: the pane stays open and focused, but the editor stops
@@ -286,6 +287,7 @@ impl TextEditorApp {
             load_error,
             font_size: FONT_SIZE_DEFAULT,
             find_bar: None,
+            pending_match_reveal: None,
             editor_focused: false,
             input_released: false,
             reclaim_editor_focus: false,
@@ -1180,6 +1182,7 @@ impl TextEditorApp {
         self.doc.apply(EditorCommand::SetCursor(start));
         self.doc.apply(EditorCommand::ExtendTo(end));
         self.view.pending_reveal = Some(end);
+        self.pending_match_reveal = Some(range);
     }
 
     /// Replaces the current match with the bar's replacement text through the
@@ -2196,7 +2199,13 @@ impl App for TextEditorApp {
         // One header for notes and files opened from the browser: file name
         // always, frontmatter title when a note has one, and the same save
         // indicator. The YAML block itself stays out of the buffer.
-        if paint_editor_header(ui, colors, &self.editor_chrome()) {
+        let compact_find = self.find_bar.is_some()
+            && ui.available_height()
+                < 2.0 * crate::ui::embedded_bar::BAR_TOTAL_H
+                    + crate::ui::style::BUTTON_H_MD
+                    + NOTE_HEADER_BAR_HEIGHT
+                    + 2.0 * ui.spacing().item_spacing.y;
+        if !compact_find && paint_editor_header(ui, colors, &self.editor_chrome()) {
             self.switch_commands_scope_in_place();
         }
 
@@ -2242,7 +2251,7 @@ impl App for TextEditorApp {
             crate::app::input_owner::published_frame_owner_is_pane(ui.ctx(), ctx.pane_id)
                 .unwrap_or(true);
         let editor_focused = egui_editor_focused && owns_input;
-        let find_input_id = egui::Id::new("text_editor_find_input").with(&self.path);
+        let find_input_id = egui::Id::new(("text_editor_find_input", &self.path));
         let replace_input_id = egui::Id::new("text_editor_replace_input").with(&self.path);
         let find_focused = owns_input
             && self.find_bar.is_some()
@@ -2343,7 +2352,9 @@ impl App for TextEditorApp {
         // When the find bar is open, reserve its height at the bottom before
         // laying out the editor so it doesn't overlap the bar.
         let find_bar_height = if self.find_bar.is_some() {
-            crate::ui::embedded_bar::BAR_TOTAL_H
+            2.0 * crate::ui::embedded_bar::BAR_TOTAL_H
+                + (crate::ui::style::BUTTON_H_MD - crate::ui::embedded_bar::BAR_CONTENT_H).max(0.0)
+                + 2.0 * ui.spacing().item_spacing.y
         } else {
             0.0
         };
@@ -2424,6 +2435,36 @@ impl App for TextEditorApp {
         }
         let output = widget.show(&mut editor_ui);
         let response = output.response;
+        if let Some((start, end)) = self.pending_match_reveal.take() {
+            if self.mode.is_code() {
+                let start = movement::char_to_cursor(self.doc.buffer(), start);
+                let end = movement::char_to_cursor(self.doc.buffer(), end);
+                if start.line == end.line {
+                    let line = movement::line_text(self.doc.buffer(), start.line);
+                    let font = egui::FontId::monospace(self.font_size);
+                    let measure = |ui: &egui::Ui, column: usize| {
+                        let text: String = line.chars().take(column).collect();
+                        ui.fonts_mut(|fonts| {
+                            fonts
+                                .layout_no_wrap(text, font.clone(), egui::Color32::WHITE)
+                                .size()
+                                .x
+                        })
+                    };
+                    let left = measure(ui, start.column);
+                    let right = measure(ui, end.column);
+                    let margin =
+                        8.0_f32.min((self.view.viewport_width - (right - left)).max(0.0) / 2.0);
+                    if right > self.view.scroll_x + self.view.viewport_width - margin {
+                        self.view.scroll_x = (right - self.view.viewport_width + margin).max(0.0);
+                    }
+                    if left < self.view.scroll_x + margin {
+                        self.view.scroll_x = (left - margin).max(0.0);
+                    }
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
         ui.advance_cursor_after_rect(editor_rect);
 
         if let Some(link) = output.link_activation {
@@ -2472,99 +2513,89 @@ impl App for TextEditorApp {
 
         self.maybe_autosave();
 
-        // Render the find/replace bar below the editor. The embedded-bar
-        // primitive owns the band geometry and safe insets so the controls
-        // never clip against the pane's bottom edge.
-        if self.find_bar.is_some() {
-            let find_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), crate::ui::embedded_bar::BAR_TOTAL_H),
-            );
-            ui.advance_cursor_after_rect(find_rect);
-
+        // Each row reserves a full embedded-bar band, including its safe insets.
+        if let Some(bar) = &mut self.find_bar {
             let mut replace_one = false;
             let mut replace_every = false;
+            let band_height = crate::ui::embedded_bar::BAR_TOTAL_H;
+            let find_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), band_height),
+            );
+            ui.advance_cursor_after_rect(find_rect);
             crate::ui::embedded_bar::embedded_bottom_bar(
                 ui,
                 find_rect,
                 colors.pane_header_bg(),
                 |ui| {
-                    let Some(bar) = &mut self.find_bar else {
-                        return;
-                    };
-
-                    let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
-                    let response = crate::ui::text_field::TextField::singleline(
-                        find_input_id,
+                    let mut search = crate::ui::search_bar::SearchBar::new(
+                        ("text_editor_find_input", &self.path),
                         "Find…",
                     )
-                    .desired_width(input_width)
-                    .log_name("text_editor_find")
-                    .show(ui, &mut bar.query, colors);
-
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                        find_input_id,
-                    );
-                    if bar.claim_focus {
-                        crate::ui::focus::claim_text_surface(
-                            ui.ctx(),
-                            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                            find_input_id,
-                        );
-                        bar.claim_focus = false;
+                    .surface(crate::ui::focus::SurfaceKey::Pane(ctx.pane_id))
+                    .claim_focus(std::mem::take(&mut bar.claim_focus))
+                    .font_size(FIND_BAR_FONT_SIZE);
+                    if !bar.query.is_empty() {
+                        search = search.status(bar.matches.len(), false);
                     }
-
-                    let query_changed = response.changed();
-
-                    ui.add_space(crate::ui::style::SPACE_SM);
-                    let count_text = if bar.matches.is_empty() {
-                        if bar.query.is_empty() {
-                            String::new()
-                        } else {
-                            "No results".to_string()
-                        }
-                    } else {
-                        format!("{} / {}", bar.current + 1, bar.matches.len())
-                    };
-                    ui.label(
-                        egui::RichText::new(count_text)
-                            .size(FIND_BAR_FONT_SIZE)
-                            .color(colors.text_dim),
-                    );
-
-                    ui.add_space(crate::ui::style::SPACE_SM);
+                    if search.show(ui, &mut bar.query, colors).changed {
+                        bar.recompute(&self.doc.text());
+                        log::info!(
+                            "notes_editor: find query changed — {} matches",
+                            bar.matches.len()
+                        );
+                    }
+                },
+            );
+            let replace_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(
+                    ui.available_width(),
+                    band_height
+                        + (crate::ui::style::BUTTON_H_MD - crate::ui::embedded_bar::BAR_CONTENT_H)
+                            .max(0.0),
+                ),
+            );
+            ui.advance_cursor_after_rect(replace_rect);
+            crate::ui::embedded_bar::embedded_bottom_bar(
+                ui,
+                replace_rect,
+                colors.pane_header_bg(),
+                |ui| {
+                    let button_width = 72.0;
+                    let all_width = 48.0;
+                    let input_width = (ui.available_width()
+                        - button_width
+                        - all_width
+                        - 2.0 * ui.spacing().item_spacing.x)
+                        .max(0.0);
                     crate::ui::text_field::TextField::singleline(replace_input_id, "Replace…")
                         .desired_width(input_width)
                         .log_name("text_editor_replace")
                         .show(ui, &mut bar.replace, colors);
-                    // Registered under the pane so the post-frame focus
-                    // reconciler keeps a clicked replace field focused instead
-                    // of snapping focus back to the editor.
                     crate::ui::focus::register_text_surface(
                         ui.ctx(),
                         crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
                         replace_input_id,
                     );
-                    let has_matches = !bar.matches.is_empty();
-                    replace_one = ui
-                        .add_enabled(has_matches, egui::Button::new("Replace"))
+                    ui.add_enabled_ui(!bar.matches.is_empty(), |ui| {
+                        replace_one = crate::ui::button::chrome_button(
+                            ui,
+                            "Replace",
+                            crate::ui::button::ButtonKind::Secondary,
+                            colors,
+                            button_width,
+                        )
                         .clicked();
-                    replace_every = ui
-                        .add_enabled(has_matches, egui::Button::new("All"))
+                        replace_every = crate::ui::button::chrome_button(
+                            ui,
+                            "All",
+                            crate::ui::button::ButtonKind::Secondary,
+                            colors,
+                            all_width,
+                        )
                         .clicked();
-
-                    if query_changed {
-                        let text = self.doc.text();
-                        if let Some(bar) = &mut self.find_bar {
-                            bar.recompute(&text);
-                            log::info!(
-                                "notes_editor: find query changed — {} matches",
-                                bar.matches.len()
-                            );
-                        }
-                    }
+                    });
                 },
             );
             if replace_one {
@@ -3534,6 +3565,79 @@ mod tests {
         let mut bar = FindBar::new();
         bar.recompute("anything");
         assert!(bar.matches.is_empty());
+    }
+
+    fn find_regression_harness(text: &str) -> egui_kittest::Harness<'static, TextEditorApp> {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let path = dir.join("find.rs");
+        std::fs::write(&path, text).unwrap();
+        let mut app = TextEditorApp::new(path);
+        let mut bar = FindBar::new();
+        bar.query = "abcdefgh".into();
+        bar.recompute(text);
+        app.find_bar = Some(bar);
+        egui_kittest::Harness::new_ui_state(
+            |ui, app: &mut TextEditorApp| {
+                let colors = crate::ui::theme::Colors::from_config(
+                    &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
+                );
+                app.ui(
+                    ui,
+                    &AppRenderContext {
+                        colors: &colors,
+                        pane_id: 1,
+                    },
+                    None,
+                );
+            },
+            app,
+        )
+    }
+
+    #[test]
+    fn find_bar_controls_stay_inside_narrow_pane() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = find_regression_harness("abcdefgh");
+        h.set_size(egui::vec2(250.0, 180.0));
+        h.run();
+        for label in ["Replace", "All"] {
+            let rect = h.get_by_label(label).rect();
+            assert!(
+                rect.right() <= 250.0 && rect.bottom() <= 180.0,
+                "{label} escapes pane: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_next_match_keeps_whole_match_visible_in_narrow_code_pane() {
+        let text = format!("{}abcdefgh\n", "x".repeat(80));
+        let mut h = find_regression_harness(&text);
+        h.set_size(egui::vec2(140.0, 120.0));
+        h.run();
+        let start_x = h.ctx.fonts_mut(|f| {
+            f.layout_no_wrap(
+                "x".repeat(80),
+                egui::FontId::monospace(h.state().font_size),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x
+        });
+        // Simulate returning to this match from a later one: its end remains
+        // visible, but its start is left of the viewport.
+        h.state_mut().view.scroll_x = start_x + 10.0;
+        h.state_mut().select_match((80, 88));
+        h.run();
+        let app = h.state();
+        assert!(
+            start_x >= app.view.scroll_x,
+            "match start is off-screen: {start_x} < {}",
+            app.view.scroll_x
+        );
+        assert!(app
+            .view
+            .cursor_visible(app.doc.cursor(), app.doc.buffer().line_count()));
     }
 
     #[test]

@@ -1,0 +1,26 @@
+# Find/replace bar at small window size.
+size = [400.0, 300.0]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "editor", args = ["{tmp}/note.rs"] }
+
+[[steps]]
+focus = "editor"
+
+[[steps]]
+text = { target = "editor", value = "alpha beta alpha" }
+
+[[steps]]
+key = { target = "editor", value = "cmd+f" }
+
+[[steps]]
+text = { target = "editor", value = "alpha" }
+
+[[steps]]
+key = { target = "editor", value = "enter" }
+
+[[steps]]
+expect = { target = "editor", selection = [11, 16] }
+
+[[steps]]
+shot = "editor-find-bar-small.png"
