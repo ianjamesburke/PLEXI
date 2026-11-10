@@ -185,9 +185,9 @@ impl egui::Widget for KitButton<'_> {
         } else {
             egui::vec2(
                 match self.size {
-                    ButtonSize::Sm => 10.0,
-                    ButtonSize::Md => 12.0,
-                    ButtonSize::Lg => 16.0,
+                    ButtonSize::Sm => style::BUTTON_PAD_X_SM,
+                    ButtonSize::Md => style::BUTTON_PAD_X_MD,
+                    ButtonSize::Lg => style::BUTTON_PAD_X_LG,
                 },
                 style::SPACE_XS,
             )
