@@ -10,7 +10,7 @@ from typing import Any, Callable
 from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import SetState, SetStatus, SetTitle, ToolResult
 from plexi_sdk.events import KeyEvent, ToolCall, UiAction
-from plexi_sdk.ui import AppBar, Button, Card, Column, FooterKeys, HStack, Spacer, Text
+from plexi_sdk.ui import SurfaceHeader, Button, Card, Column, FooterKeys, HStack, Spacer, Text
 
 BUTTON_ROWS = [
     ["C", "+/-", "%", "/"],
@@ -132,7 +132,7 @@ def view():
     )
     return Column(
         [
-            AppBar("Calculator", expr_line),
+            SurfaceHeader("Calculator", expr_line),
             Card(
                 [
                     readout,

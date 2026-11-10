@@ -3,7 +3,7 @@
 from plexi_sdk import state
 from plexi_sdk.effects import SetState, SetTitle
 from plexi_sdk.events import KeyEvent
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, Text
 
 
 def init(_size, _args):
@@ -19,7 +19,7 @@ def update(event):
 
 def view():
     return Column([
-        AppBar("KeyMap Probe"),
+        SurfaceHeader("KeyMap Probe"),
         Text(f"last_action={state.get('last_action', 'none')}", bold=True),
         FooterKeys([("z", "record printable key")]),
     ], grow=True)

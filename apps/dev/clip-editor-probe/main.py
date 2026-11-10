@@ -348,7 +348,7 @@ def view():
     return {
         "type": "column",
         "children": [
-            {"type": "app_bar", "title": "Clip Editor Probe"},
+            {"type": "surface_header", "title": "Clip Editor Probe"},
             *rows,
         ],
     }

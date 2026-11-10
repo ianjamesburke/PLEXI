@@ -11,7 +11,7 @@ from plexi_sdk import log, state, theme, tools
 from plexi_sdk.effects import HttpFetch, SetState, SetStatus, SetTitle
 from plexi_sdk.events import HttpResponse, KeyEvent, UiAction, UiValueChange
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Badge,
     Banner,
     Card,
@@ -251,7 +251,7 @@ def view():
     data = _state()
     if not data["repo"]:
         children: list[Component] = [
-            AppBar("GitHub Issues", "select repository"),
+            SurfaceHeader("GitHub Issues", "select repository"),
             Card(
                 [
                     Text("Open a GitHub repository", size=15.0, bold=True),
@@ -407,7 +407,7 @@ def _list_view(data: dict):
     )
     return Column(
         [
-            AppBar("GitHub Issues", _list_subtitle(data)),
+            SurfaceHeader("GitHub Issues", _list_subtitle(data)),
             TextInput(
                 "issues-filter",
                 value=data["filter"],
@@ -472,7 +472,7 @@ def _detail_view(data: dict):
         )
     return Column(
         [
-            AppBar(title, subtitle),
+            SurfaceHeader(title, subtitle),
             body,
             Spacer(grow=True),
             FooterKeys([("esc", "back")]),

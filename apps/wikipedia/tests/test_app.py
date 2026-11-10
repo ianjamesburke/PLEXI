@@ -9,10 +9,10 @@ from plexi_sdk import _v3_state
 from plexi_sdk._adapter import _encode_uitree
 from plexi_sdk.effects import ExposeTools, HttpFetch, SetState, ToolResult
 from plexi_sdk.events import HttpResponse, KeyEvent, ToolCall, UiAction, UiValueChange
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 
 # Alias for stint wording compatibility.
-AppTestHarness = AppHarness
+AppTestHarness = PluginHarness
 
 ROOT = Path(__file__).resolve().parents[3]
 APP = ROOT / "apps" / "wikipedia" / "wikipedia.py"
@@ -604,7 +604,7 @@ def test_tool_call_validation_and_http_errors():
     assert not app._pending_tools
 
 
-# ── End-to-end AppHarness integration test ───────────────────────────────────
+# ── End-to-end PluginHarness integration test ───────────────────────────────────
 
 
 def test_app_harness_search_snippets_open_article_and_navigate_back():

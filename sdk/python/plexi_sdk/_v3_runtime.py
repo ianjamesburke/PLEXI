@@ -193,23 +193,23 @@ class V3AppRuntime:
                 caller_id=ev.get("caller_id", ""),
                 authorization=ev.get("authorization"),
             ))
-        elif t == "app_events_subscribed":
+        elif t == "plugin_events_subscribed":
             self._dispatch(events.EventSubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 subscription_id=ev.get("subscription_id"),
                 error=ev.get("error"),
             ))
-        elif t == "app_events_unsubscribed":
+        elif t == "plugin_events_unsubscribed":
             self._dispatch(events.EventUnsubscriptionResult(
                 request_id=ev.get("request_id", ""),
                 removed=bool(ev.get("removed", False)),
                 error=ev.get("error"),
             ))
-        elif t == "app_event":
+        elif t == "plugin_event":
             payload = ev.get("payload")
-            self._dispatch(events.AppEvent(
+            self._dispatch(events.PluginEvent(
                 subscription_id=ev.get("subscription_id", ""),
-                app_id=ev.get("app_id", ""),
+                plugin_id=ev.get("plugin_id", ""),
                 event=ev.get("event", ""),
                 event_id=int(ev.get("event_id", 0)),
                 resource_id=ev.get("resource_id", ""),
@@ -357,7 +357,7 @@ class V3AppRuntime:
         ))
 
     def _handle_init(self, ev: dict) -> None:
-        self._app_id = ev.get("app_id", "")
+        self._app_id = ev.get("plugin_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
         self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])
@@ -967,7 +967,7 @@ class V3AppRuntime:
                 _emit({
                     "type": "subscribe_event_streams",
                     "request_id": effect.request_id,
-                    "app_id": effect.app_id,
+                    "plugin_id": effect.plugin_id,
                     "event_names": effect.event_names,
                     "payload_mode": effect.payload_mode,
                     "trigger_mode": effect.trigger_mode,

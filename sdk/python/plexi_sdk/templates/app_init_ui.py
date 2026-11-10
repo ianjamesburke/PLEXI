@@ -10,7 +10,7 @@ deliver UiValueChange. Use FooterKeys(), SPACE_MD, and padding=SPACE_MD.
 Logging levels: log.debug, log.info, log.warn, log.error.
 """
 
-from plexi_sdk.ui import SPACE_MD, AppBar, Button, Card, Column, Keyed, Text
+from plexi_sdk.ui import SPACE_MD, SurfaceHeader, Button, Card, Column, Keyed, Text
 
 
 def _counter(label: str, count: int, action_prefix: str) -> Card:
@@ -25,7 +25,7 @@ def _counter(label: str, count: int, action_prefix: str) -> Card:
 
 def build_view(left_count: int, right_count: int) -> Column:
     return Column([
-        AppBar("__DISPLAY_NAME__"),
+        SurfaceHeader("__DISPLAY_NAME__"),
         Keyed(_counter("Left counter", left_count, "left"), key="left-counter"),
         Keyed(_counter("Right counter", right_count, "right"), key="right-counter"),
     ], grow=True, padding=SPACE_MD)

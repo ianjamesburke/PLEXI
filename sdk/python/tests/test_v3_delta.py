@@ -73,7 +73,7 @@ def _collect_raw(proc, target_type="frame_done", timeout=3.0) -> list[dict]:
 def _init(proc, state=None):
     msg = {
         "type": "init",
-        "app_id": "delta-test",
+        "plugin_id": "delta-test",
         "workspace_root": "/tmp",
         "capabilities": [],
         "feature_flags": [],

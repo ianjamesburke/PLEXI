@@ -22,7 +22,7 @@ from plexi_sdk.events import (
     FileWriteResult,
     KeyEvent,
 )
-from plexi_sdk.ui import AppBar, Column, FooterKeys, Text
+from plexi_sdk.ui import SurfaceHeader, Column, FooterKeys, Text
 
 PAYLOAD = "hello from the picker round trip"
 
@@ -102,7 +102,7 @@ def update(event):
 def view():
     return Column(
         [
-            AppBar("File Picker POC"),
+            SurfaceHeader("File Picker POC"),
             Text("status: " + str(state.get("status", "idle"))),
             Text("picked: " + str(state.get("picked", ""))),
             Text("content: " + str(state.get("content", ""))),

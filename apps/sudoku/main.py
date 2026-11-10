@@ -9,7 +9,7 @@ from plexi_sdk import dim, log, state, theme
 from plexi_sdk.effects import SetState, SetStatus, SetTimer, SetTitle
 from plexi_sdk.events import KeyEvent, MouseEvent, Resize, TimerFired
 from plexi_sdk.ui import (
-    AppBar, Canvas, CanvasRect, CanvasText, Column,
+    SurfaceHeader, Canvas, CanvasRect, CanvasText, Column,
     FooterKeys,
 )
 
@@ -372,7 +372,7 @@ def _compute_layout():
     pane_w = _canvas_width or 800.0
     pane_h = _canvas_height or 600.0
     sidebar_w = max(SIDEBAR_W_MIN, min(SIDEBAR_W_MAX, int(pane_w * 0.18)))
-    body_h = pane_h - 76.0  # minus AppBar + footer
+    body_h = pane_h - 76.0  # minus SurfaceHeader + footer
     max_grid_w = pane_w - sidebar_w - 20.0
     cell = max(20.0, min((max_grid_w - 4.0) / 9.0, (body_h - 16.0) / 9.0))
     return sidebar_w, cell
@@ -400,7 +400,7 @@ def view():
         body = Canvas(_draw_menu(d), width=w, height=h, grow=True)
 
     return Column([
-        AppBar("Sudoku"),
+        SurfaceHeader("Sudoku"),
         body,
         footer,
     ], gap=0, grow=True)

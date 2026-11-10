@@ -294,9 +294,9 @@ class EventUnsubscriptionResult:
 
 
 @dataclass
-class AppEvent:
+class PluginEvent:
     subscription_id: str
-    app_id: str
+    plugin_id: str
     event: str
     event_id: int
     resource_id: str

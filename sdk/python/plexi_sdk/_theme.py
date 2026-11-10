@@ -98,7 +98,7 @@ class Theme:
         self.is_dark = _luminance(self.bg) < 0.5
 
 
-class AppPalette:
+class PluginPalette:
     """Light/dark palette for app-defined color tokens.
 
     Both dicts must have the same keys. ``resolve(theme)`` returns the
@@ -108,7 +108,7 @@ class AppPalette:
     def __init__(self, dark: "dict[str, str]", light: "dict[str, str]") -> None:
         if set(dark.keys()) != set(light.keys()):
             raise ValueError(
-                f"AppPalette: dark and light dicts must have the same keys. "
+                f"PluginPalette: dark and light dicts must have the same keys. "
                 f"dark-only: {set(dark) - set(light)!r}, "
                 f"light-only: {set(light) - set(dark)!r}"
             )

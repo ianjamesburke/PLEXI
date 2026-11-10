@@ -7,7 +7,7 @@ Usage::
 
     from plexi_sdk import theme
     from plexi_sdk.ui import (
-        AppBar, Badge, Button, Card, Column, DataTable, Divider,
+        SurfaceHeader, Badge, Button, Card, Column, DataTable, Divider,
         FooterKeys, HStack, Heading, Label, Pending, Scrollable,
         Section, SelectList, Skeleton, Spacer, Text, TextInput,
         SPACE_SM, SPACE_MD,
@@ -366,7 +366,7 @@ class Grid(Component):
 # ── Chrome & Typography ───────────────────────────────────────────────────────
 
 
-class AppBar(Component):
+class SurfaceHeader(Component):
     """Top application header bar with title and optional subtitle."""
 
     BAND_H: float = 34.0
@@ -386,7 +386,7 @@ class AppBar(Component):
 
     def to_node(self) -> dict:
         return {
-            "type": "app_bar",
+            "type": "surface_header",
             "title": self.title,
             "subtitle": self.subtitle,
         }
@@ -1785,7 +1785,7 @@ __all__ = [
     # Layout containers
     "Column", "HStack", "Row", "Card", "Scrollable", "Grid",
     # Chrome & typography
-    "AppBar", "Section", "Heading", "Label", "Text", "Spacer", "Divider",
+    "SurfaceHeader", "Section", "Heading", "Label", "Text", "Spacer", "Divider",
     "Badge", "FooterKeys",
     # Buttons & form controls
     "Button", "Actions", "ActionBar", "TextInput", "TextEdit", "FormField",

@@ -6,7 +6,7 @@ Declares one stream (``probe.tick``) and emits a deterministic event on the
 
   - CLI:    ``plexi events subscribe event-probe probe.tick`` (NDJSON stream)
   - Scenes: ``expect = { event_stream = "probe.tick", ... }``
-  - Rust:   ``HostHarness::wait_for_app_event``
+  - Rust:   ``HostHarness::wait_for_plugin_event``
 
 Each tick increments a counter and emits::
 
@@ -76,7 +76,7 @@ def view():
     return {
         "type": "column",
         "children": [
-            {"type": "app_bar", "title": "Event Probe"},
+            {"type": "surface_header", "title": "Event Probe"},
             {"type": "text", "text": f"ticks emitted: {count}", "bold": True},
             {"type": "text", "text": f"stream: {STREAM}  ·  resource: {RESOURCE}"},
             {"type": "button", "label": "Emit tick (e)", "on_click": "emit"},

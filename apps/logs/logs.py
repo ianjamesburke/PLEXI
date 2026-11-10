@@ -35,7 +35,7 @@ from plexi_sdk.ui import (
     SPACE_SM,
     SPACE_XS,
     TEXT_HINT,
-    AppBar,
+    SurfaceHeader,
     Badge,
     BadgeColor,
     Column,
@@ -208,7 +208,7 @@ def view():
     subtitle = "Search" if data["searching"] else _subtitle(data)
     # Search replaces the level TabBar row rather than stacking a third header
     # row — keeps Logs' header height in line with other Core apps (Snake),
-    # which never stack more than AppBar + one control row.
+    # which never stack more than SurfaceHeader + one control row.
     header_row: Component = (
         TextInput(
             SEARCH_INPUT,
@@ -221,7 +221,7 @@ def view():
         else TabBar(LEVEL_TAB, LEVELS, active=LEVELS.index(data["filter"]))
     )
     children: list[Component] = [
-        AppBar("Logs", subtitle),
+        SurfaceHeader("Logs", subtitle),
         header_row,
     ]
     children.extend(

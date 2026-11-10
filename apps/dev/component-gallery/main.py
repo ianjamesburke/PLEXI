@@ -16,7 +16,7 @@ from plexi_sdk.events import UiAction, UiValueChange
 from plexi_sdk.ui import (
     Accordion,
     ActionBar,
-    AppBar,
+    SurfaceHeader,
     Avatar,
     Badge,
     Banner,
@@ -223,7 +223,7 @@ def view():
     _SCROLL.child = Column(children=children)
     return Column(
         [
-            AppBar("Component Gallery", "Every host-rendered primitive"),
+            SurfaceHeader("Component Gallery", "Every host-rendered primitive"),
             _SCROLL,
             ActionBar([
                 Button("Open modal", "gallery-modal-open", style="secondary"),

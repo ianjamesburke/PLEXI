@@ -84,12 +84,12 @@ def test_tool_effects_encode_rust_wire_shape() -> None:
 def test_subscription_effects_encode_rust_wire_shape() -> None:
     assert _encode_effect(SubscribeEventStreams(
         request_id="subscribe-1",
-        app_id="notes",
+        plugin_id="notes",
         event_names=["note.saved"],
     )) == {
         "type": "SubscribeEventStreams",
         "request_id": "subscribe-1",
-        "app_id": "notes",
+        "plugin_id": "notes",
         "event_names": ["note.saved"],
         "payload_mode": "full",
         "trigger_mode": "conversation",

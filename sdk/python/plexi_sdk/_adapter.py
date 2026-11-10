@@ -205,9 +205,9 @@ def _normalize_node_data(data: dict[str, Any], key: str, flatten) -> dict[str, A
             "entries": data.get("entries", []),
             "divider": data.get("divider", True),
         }
-    if node_type == "app_bar":
+    if node_type == "surface_header":
         return {
-            "type": "AppBar",
+            "type": "SurfaceHeader",
             "title": data.get("title", ""),
             "subtitle": data.get("subtitle", ""),
         }

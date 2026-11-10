@@ -3,7 +3,7 @@
 Run with:  plexi app test          (from the app directory)
        or:  uv run --no-project --with pytest pytest tests/
 
-AppHarness spawns this app as a real subprocess and speaks the PGAP protocol
+PluginHarness spawns this app as a real subprocess and speaks the PGAP protocol
 over stdin/stdout — no running Plexi host or display required. See
 `plexi_sdk/testing.py` for the full API (key injection, pixel asserts, …).
 """
@@ -16,7 +16,7 @@ import pytest
 
 from plexi_sdk.effects import ExposeTools, ToolResult
 from plexi_sdk.events import ToolCall
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 
 APP_DIR = Path(__file__).resolve().parent.parent
 APP = APP_DIR / "main.py"
@@ -45,14 +45,14 @@ def test_renders_without_overlap(size):
     width, height = size
     # This exercises the same init -> update(RenderFrame) -> view lifecycle that
     # Plexi uses for a real app pane, then checks host-side layout geometry.
-    with AppHarness(str(APP), width=width, height=height) as h:
+    with PluginHarness(str(APP), width=width, height=height) as h:
         h.run(1)
         h.assert_no_overlap()
 
 
 def test_counter_template_has_two_independent_keyed_counters():
     """The scaffold demonstrates one local state namespace per counter key."""
-    with AppHarness(str(APP)) as h:
+    with PluginHarness(str(APP)) as h:
         h.run(1)
         h.ui_action("left:increment")
         h.run(1)
@@ -72,7 +72,7 @@ def test_snapshot(tmp_path):
     Skips when the plexi binary is unavailable — snapshotting needs the host
     renderer, which is not present in a bare `uv run pytest` environment.
     """
-    with AppHarness(str(APP), width=800, height=600) as h:
+    with PluginHarness(str(APP), width=800, height=600) as h:
         h.run(1)
         try:
             h.save_snapshot(tmp_path / "snapshot.png")

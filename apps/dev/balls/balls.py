@@ -10,7 +10,7 @@ from plexi_sdk import log
 from plexi_sdk.effects import SetSchedulerMode, SetStatus, SetTitle
 from plexi_sdk.events import KeyEvent, RenderFrame
 from plexi_sdk.ui import (
-    AppBar,
+    SurfaceHeader,
     Canvas,
     CanvasCircle,
     CanvasRect,
@@ -167,7 +167,7 @@ def view():
     count = len(data["balls"])
     return Column(
         [
-            AppBar("Balls", f"{count} balls"),
+            SurfaceHeader("Balls", f"{count} balls"),
             Canvas(_draw(data), width=CANVAS_W, height=CANVAS_H, grow=True),
             FooterKeys([("+", "add"), ("-", "remove")]),
         ],

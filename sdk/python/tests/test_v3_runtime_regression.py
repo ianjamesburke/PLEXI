@@ -45,7 +45,7 @@ def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",
-        "app_id": "regression-test",
+        "plugin_id": "regression-test",
         "workspace_root": "/tmp",
         "capabilities": capabilities or [],
         "feature_flags": [],
@@ -390,7 +390,7 @@ class TestEffects:
             assert subscriptions == [{
                 "type": "subscribe_event_streams",
                 "request_id": "subscribe-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event_names": ["count.changed"],
                 "payload_mode": "full",
                 "trigger_mode": "conversation",
@@ -478,9 +478,9 @@ class TestEventDispatch:
         try:
             _init_app(proc)
             _send_event(proc, {
-                "type": "app_event",
+                "type": "plugin_event",
                 "subscription_id": "sub-1",
-                "app_id": "wasm-counter",
+                "plugin_id": "wasm-counter",
                 "event": "count.changed",
                 "event_id": 7,
                 "resource_id": "counter-1",
@@ -491,7 +491,7 @@ class TestEventDispatch:
             })
             events = _render(proc)
             trees = _find_events(events, "component_tree")
-            assert any("events=AppEvent" in json.dumps(tree) for tree in trees)
+            assert any("events=PluginEvent" in json.dumps(tree) for tree in trees)
         finally:
             proc.kill()
 
@@ -975,9 +975,9 @@ class TestFrameTiming:
 
     def test_balls_physics_progresses(self, tmp_path):
         """The balls app physics must actually advance between frames."""
-        from plexi_sdk.testing import AppHarness
+        from plexi_sdk.testing import PluginHarness
         balls_path = REPO_ROOT / "apps" / "dev" / "balls" / "balls.py"
-        with AppHarness(balls_path, timeout=3.0) as h:
+        with PluginHarness(balls_path, timeout=3.0) as h:
             cmds1 = h.run(1)
             time.sleep(0.05)
             cmds2 = h.run(1)
@@ -1068,11 +1068,11 @@ class TestTimers:
 ])
 def test_core_app_boots_and_renders(relative_path: str) -> None:
     """Every Core app must satisfy Init -> Ready -> Render -> FrameDone."""
-    from plexi_sdk.testing import AppHarness
+    from plexi_sdk.testing import PluginHarness
     app_path = REPO_ROOT / relative_path
     if not app_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(app_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert cmds, f"{relative_path} should emit draw/control commands"
     trees = [c for c in cmds if c.get("type") == "component_tree"]
@@ -1089,11 +1089,11 @@ def test_core_app_boots_and_renders(relative_path: str) -> None:
 ])
 def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str) -> None:
     """Apps that need timers/schedulers must emit them during boot."""
-    from plexi_sdk.testing import AppHarness
+    from plexi_sdk.testing import PluginHarness
     app_path = REPO_ROOT / relative_path
     if not app_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(app_path, timeout=3.0) as h:
         cmds = h.run(1)
     assert any(c.get("type") == expected_effect for c in cmds), (
         f"{relative_path} should emit {expected_effect}"
@@ -1106,11 +1106,11 @@ def test_core_app_emits_expected_effect(relative_path: str, expected_effect: str
 ])
 def test_core_app_responds_to_key(relative_path: str, key: str) -> None:
     """Interactive apps must change their rendered output on key press."""
-    from plexi_sdk.testing import AppHarness
+    from plexi_sdk.testing import PluginHarness
     app_path = REPO_ROOT / relative_path
     if not app_path.exists():
         pytest.skip(f"{relative_path} not found")
-    with AppHarness(app_path, timeout=3.0) as h:
+    with PluginHarness(app_path, timeout=3.0) as h:
         cmds_before = h.run(1)
         h.key(key)
         cmds_after = h.run(1)

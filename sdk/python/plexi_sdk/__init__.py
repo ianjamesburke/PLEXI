@@ -35,7 +35,7 @@ from .ui import (
     ProgressBar as ProgressBar,
     TextEdit as TextEdit,
 )
-from ._theme import theme, Theme, AppPalette, rgba, dim
+from ._theme import theme, Theme, PluginPalette, rgba, dim
 from .state_format import (
     ChecklistItem as ChecklistItem,
     parse_checklist as parse_checklist,

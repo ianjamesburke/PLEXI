@@ -22,7 +22,7 @@ from test_v3_runtime_regression import (
 def _init_scoped(proc, *, scopes=None, states=None, state=None):
     msg = {
         "type": "init",
-        "app_id": "scope-test",
+        "plugin_id": "scope-test",
         "workspace_root": "/tmp",
         "capabilities": [],
         "feature_flags": [],

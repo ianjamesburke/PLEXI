@@ -44,7 +44,7 @@ def test_select_list_mouse_selection_and_refresh_subtitle():
 
     node = app.view().to_node()
     header = node["children"][0]
-    assert header["type"] == "app_bar"
+    assert header["type"] == "surface_header"
     assert header["subtitle"] == "market ticker · refreshing…"
     select_list = node["children"][1]
     assert select_list["on_select"] == "pair"

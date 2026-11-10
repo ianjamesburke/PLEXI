@@ -2,13 +2,13 @@
 
 The host sends `focus_gained` / `focus_lost` / `pane_shown` / `pane_hidden`
 (stint 1180). The runtime must decode each into its `plexi_sdk.events` class,
-in arrival order, and `AppHarness` must be able to inject them.
+in arrival order, and `PluginHarness` must be able to inject them.
 """
 
 import textwrap
 from pathlib import Path
 
-from plexi_sdk.testing import AppHarness
+from plexi_sdk.testing import PluginHarness
 from test_v3_runtime_regression import (
     _collect_until,
     _find_events,
@@ -66,7 +66,7 @@ def test_wire_events_dispatch_typed_events_in_order(tmp_path):
 
 
 def test_app_harness_injects_focus_and_visibility(tmp_path):
-    with AppHarness(_write_probe_app(tmp_path), timeout=3.0) as h:
+    with PluginHarness(_write_probe_app(tmp_path), timeout=3.0) as h:
         h.set_visible(True)
         h.set_focus(True)
         h.set_focus(False)

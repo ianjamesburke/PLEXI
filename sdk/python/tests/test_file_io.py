@@ -65,7 +65,7 @@ def _collect_until(proc, target_type: str, timeout: float = 5.0) -> list[dict]:
 def _init(proc, capabilities=None) -> list[dict]:
     _send(proc, {
         "type": "init",
-        "app_id": "file-io-test",
+        "plugin_id": "file-io-test",
         "workspace_root": "/tmp",
         "capabilities": capabilities or ["fs.read", "fs.write"],
         "feature_flags": [],
