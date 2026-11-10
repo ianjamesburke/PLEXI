@@ -19,7 +19,28 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+/// Process-local monotonic clock. Input reception is the app callback boundary,
+/// not physical input or compositor presentation. External observers measure
+/// those boundaries and actual process death using the logged PID.
+pub(crate) fn trace(phase: &str) {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    let origin = ORIGIN.get_or_init(Instant::now);
+    log::info!("quit_trace: pid={} elapsed_us={} phase={phase}", std::process::id(), origin.elapsed().as_micros());
+    #[cfg(test)]
+    eprintln!("quit_trace: pid={} elapsed_us={} phase={phase}", std::process::id(), origin.elapsed().as_micros());
+}
+
 impl super::PlexiApp {
+    pub(crate) fn persist_quit_state(&mut self) -> bool {
+        trace("save_begin");
+        let saved = self.save_workspace_now();
+        trace(if saved { "save_ok" } else { "save_failed" });
+        if saved {
+            self.workspace_dirty = false;
+        }
+        saved
+    }
+
     pub(crate) fn working_agent_count(&self) -> usize {
         self.windows.iter().flat_map(|window| window.panes.values())
             .filter(|pane| pane.agent().is_some_and(|agent| agent.state == crate::protocol::AgentState::Working))
@@ -27,15 +48,14 @@ impl super::PlexiApp {
     }
 
     pub(crate) fn resolve_quit_confirmation(&mut self, confirmed: bool) {
+        trace(if confirmed { "confirmation_accepted" } else { "confirmation_cancelled" });
         self.pending_close = false;
         self.pending_quit = false;
         self.quit_press_count = 0;
         self.quit_last_press = None;
         self.quitting = confirmed;
         if confirmed && self.prepare_user_quit() {
-            if self.save_workspace_now() {
-                self.workspace_dirty = false;
-            }
+            self.persist_quit_state();
             self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             log::info!("quit: working-agent confirmation accepted");
         } else {
@@ -64,6 +84,7 @@ impl super::PlexiApp {
         let working = self.working_agent_count();
         if !self.quitting && working > 0 {
             self.pending_quit = true;
+            trace("confirmation_required");
             self.pending_close = true;
             self.quit_press_count = 0;
             self.quit_last_press = None;
@@ -180,6 +201,7 @@ impl ExitReason {
 
 /// Tear the host down and end the process. Never returns.
 pub(crate) fn exit_host(reason: ExitReason) -> ! {
+    trace("cleanup_begin");
     let start = Instant::now();
     let reason_label = reason.label();
     let k = crate::host::process_cleanup::stop_pane_processes(reason.grace());
@@ -197,12 +219,16 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
     );
     // A kill skips this, so the next start can tell a clean quit from a death.
     crate::broker::integrity::mark_clean_shutdown(&crate::config::config_dir());
+    trace("integrity_written");
+    trace("socket_release_begin");
     let socket = release_notify_socket();
+    trace("socket_release_end");
     log::info!(
         "quit_phase: process exit — reason={reason_label} notify_socket={socket:?} total_ms={}",
         start.elapsed().as_millis()
     );
     // The log file is the only record of a quit; flush before the fd dies.
+    trace("exit_call");
     log::logger().flush();
     // Deliberately *before* eframe's own `painter.destroy()`, which runs after
     // `on_exit` returns and which this call therefore skips: the wgpu device
@@ -214,6 +240,71 @@ pub(crate) fn exit_host(reason: ExitReason) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_save_is_not_duplicated_by_a_second_quit_path() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        assert!(h.app.persist_quit_state());
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // Distinct filesystem timestamps even on coarse filesystems.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(h.app.persist_quit_state());
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), first,
+            "an unchanged quit must not write another workspace generation");
+    }
+
+    #[test]
+    fn quit_save_persists_a_later_dirty_mutation() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        assert!(h.app.persist_quit_state());
+        h.app.sidebar_visible = !h.app.sidebar_visible;
+        h.app.mark_workspace_dirty();
+        assert!(h.app.persist_quit_state());
+        let saved = crate::workspace::WorkspaceFile::load_from(h.profile_dir()).unwrap();
+        assert_eq!(saved.sidebar_visible, h.app.sidebar_visible);
+        assert!(!h.app.workspace_dirty);
+    }
+
+    #[test]
+    fn quit_save_failure_stays_dirty_and_retries() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"invalid workspace").unwrap();
+        assert!(!h.app.persist_quit_state());
+        assert!(h.app.workspace_dirty, "a failed final save must remain pending even if initially clean");
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+        std::fs::remove_file(&path).unwrap();
+        assert!(h.app.persist_quit_state());
+        assert!(crate::workspace::WorkspaceFile::load_from(h.profile_dir()).is_some());
+        assert!(!h.app.workspace_dirty);
+    }
+
+    #[test]
+    fn quit_confirmation_does_not_close_after_failed_save() {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"invalid workspace").unwrap();
+        let output = h.app.ctx.clone().run_ui(egui::RawInput::default(), |_| {
+            h.app.resolve_quit_confirmation(true);
+        });
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT].commands
+            .iter().any(|command| matches!(command, egui::ViewportCommand::Close)),
+            "failed durability must not allow eframe to destroy the window");
+    }
+
+    #[test]
+    fn quit_reasons_preserve_window_host_stop_and_update_grace() {
+        assert_eq!(ExitReason::WindowClosed.grace(), Duration::from_millis(500));
+        assert_eq!(ExitReason::HostStop.grace(), Duration::from_secs(2));
+        assert_eq!(ExitReason::UpdateRestart.grace(), Duration::from_secs(2));
+    }
 
     fn bind_fake_socket(dir: &Path, name: &str) -> BoundSocket {
         let path = dir.join(name);

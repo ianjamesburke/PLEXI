@@ -3523,6 +3523,12 @@ impl PlexiApp {
 
 impl eframe::App for PlexiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if raw_input.viewport().close_requested() {
+            quit::trace("close_input_delivered");
+        }
+        if raw_input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Q, pressed: true, modifiers, .. } if modifiers.command)) {
+            quit::trace("quit_key_input_delivered");
+        }
         self.synthetic_input_frame = false;
         self.fulfill_screenshot_events(ctx, raw_input);
         // A hidden window (minimized/occluded) gets logic-only passes with no
@@ -4381,6 +4387,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ToggleZoom => self.toggle_pane_zoom(),
                 Action::Quit => {
+                    quit::trace("quit_action");
                     if !self.prepare_user_quit() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                     } else if !self.confirm_quit() {
@@ -4389,7 +4396,7 @@ impl eframe::App for PlexiApp {
                         // will run — a debounced `mark_workspace_dirty()`
                         // never gets a later tick to flush, so quit paths
                         // save synchronously (stint 0548).
-                        if self.save_workspace_now() {
+                        if self.persist_quit_state() {
                             self.workspace_dirty = false;
                             log::info!("workspace: synchronous save (quit)");
                         }
@@ -4409,7 +4416,7 @@ impl eframe::App for PlexiApp {
                             self.quit_press_count = 0;
                             self.quit_last_press = None;
                             self.quitting = true;
-                            if self.save_workspace_now() {
+                            if self.persist_quit_state() {
                                 self.workspace_dirty = false;
                                 log::info!("workspace: synchronous save (quit)");
                             }
@@ -4684,7 +4691,7 @@ impl eframe::App for PlexiApp {
                 // Triple-tap already completed and the window is closing this
                 // frame — no later tick will run the debounce flush, so save
                 // synchronously (stint 0548).
-                if self.save_workspace_now() {
+                if self.persist_quit_state() {
                     self.workspace_dirty = false;
                     log::info!("workspace: synchronous save (quit)");
                 }
@@ -4693,7 +4700,7 @@ impl eframe::App for PlexiApp {
             } else {
                 // X button / system close with no triple-tap in progress —
                 // the window closes immediately, same reasoning as above.
-                if self.save_workspace_now() {
+                if self.persist_quit_state() {
                     self.workspace_dirty = false;
                     log::info!("workspace: synchronous save (quit)");
                 }
@@ -4745,6 +4752,7 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::Exit,
         );
+        quit::trace("on_exit_begin");
         log::info!("quit_phase: on_exit begin");
         self.flush_ui_scale_persist_now();
         self.bank_final_focus_segment();

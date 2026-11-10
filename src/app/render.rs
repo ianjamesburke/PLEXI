@@ -152,7 +152,7 @@ impl PlexiApp {
             // would never be seen. Save synchronously, then exit successfully
             // so launchd also treats this as a clean stop.
             log::info!("host: shutdown requested — saving workspace and exiting");
-            if self.save_workspace_now() {
+            if self.persist_quit_state() {
                 self.workspace_dirty = false;
                 log::info!("workspace: synchronous save (shutdown)");
             }
@@ -169,7 +169,7 @@ impl PlexiApp {
             }
         }
         if self.update_quit_pending {
-            if self.save_workspace_now() {
+            if self.persist_quit_state() {
                 self.workspace_dirty = false;
                 log::info!("workspace: synchronous save (update-quit)");
             }

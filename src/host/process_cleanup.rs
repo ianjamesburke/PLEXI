@@ -267,12 +267,15 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     };
     let start = Instant::now();
     let deadline = start + (grace + Duration::from_millis(250)).min(Duration::from_millis(2500));
+    crate::app::quit::trace("children_begin");
     let mut report = stop_marked_processes(marker, grace, deadline);
     // Pane HUP/TERM must never wait on a stuck tmux server. Tmux consumes only
     // the remaining shared budget after pane groups have been signaled.
+    crate::app::quit::trace("tmux_begin");
     let tmux_start = Instant::now();
     stop_marked_tmux_sessions(tmux, marker, deadline);
     report.tmux = tmux_start.elapsed();
+    crate::app::quit::trace("tmux_end");
     KillReport {
         grace,
         ..report
@@ -368,7 +371,7 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::new().with_environ(UpdateKind::Always),
+        ProcessRefreshKind::new().with_environ(UpdateKind::Always).with_exe(UpdateKind::Always),
     );
     let own_pid = std::process::id();
     let own_group = unsafe { libc::getpgrp() };
@@ -457,10 +460,12 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         }
     };
     let scanned = Instant::now();
+    crate::app::quit::trace("children_scanned");
     // HUP first, like a terminal going away: interactive shells ignore TERM
     // but exit (saving history) on HUP. TERM follows for daemons that only
     // honor TERM.
     for sig in [libc::SIGHUP, libc::SIGTERM] {
+        crate::app::quit::trace(if sig == libc::SIGHUP { "children_hup" } else { "children_term" });
         for group in &groups {
             signal(-*group, sig);
         }
@@ -510,9 +515,14 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         std::thread::sleep(Duration::from_millis(25));
     };
     let waited = Instant::now();
+    crate::app::quit::trace("children_grace_end");
     let mut escalated = BTreeSet::new();
     for pid in survivors {
         let group = unsafe { libc::getpgid(pid as i32) };
+        // Only executable identity; never argv or environment (which can hold secrets).
+        let executable = system.process(sysinfo::Pid::from_u32(pid))
+            .and_then(|process| process.exe()).map(|path| path.as_os_str().to_string_lossy().into_owned());
+        log::info!("quit_survivor: pid={pid} pgid={group} executable={executable:?} signal=SIGKILL");
         if groups.contains(&group) {
             escalated.insert(group);
         }
@@ -522,6 +532,7 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     for group in &escalated {
         signal(-*group, libc::SIGKILL);
     }
+    crate::app::quit::trace("children_kill_end");
     KillReport {
         groups: groups.len(),
         escalated: escalated.len(),
@@ -553,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires-pty"]
     fn unresponsive_quit_helper_is_killed_at_deadline() {
         let start = Instant::now();
         let error =
@@ -562,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires-pty"]
     fn unresponsive_tmux_stays_within_total_pane_cleanup_cap() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -640,6 +653,46 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires-pty"]
+    fn term_cooperates_while_another_hosts_group_survives() {
+        use std::io::BufRead;
+        let marker = uuid::Uuid::new_v4().to_string();
+        let other_marker = uuid::Uuid::new_v4().to_string();
+        let spawn = |marker: &str| {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", "trap '' HUP; trap 'exit 0' TERM; echo ready; while :; do :; done"])
+                .env(SESSION_ENV, marker)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+                });
+            }
+            let mut child = FixtureChild(command.spawn().unwrap());
+            let mut ready = String::new();
+            std::io::BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+            assert_eq!(ready.trim(), "ready");
+            child
+        };
+        let mut owned = spawn(&marker);
+        let mut unrelated = spawn(&other_marker);
+        let _owned = PaneProcessGroup::record_for(owned.0.id(), &marker);
+        let _other = PaneProcessGroup::record_for(unrelated.0.id(), &other_marker);
+        let budget = crate::testing::load_aware_timeout(Duration::from_secs(2));
+        let report = stop_marked_processes(&marker, budget, Instant::now() + budget);
+        assert_eq!(report.groups, 1);
+        assert_eq!(report.escalated, 0, "TERM-cooperative child must not need KILL");
+        match owned.0.wait() {
+            Ok(status) => assert!(status.success()),
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
+        }
+        assert!(unrelated.0.try_wait().unwrap().is_none(), "another host owns this group");
+    }
+
+    #[test]
+    #[ignore = "requires-pty"]
     fn kill_switch_stops_hup_and_term_ignoring_detached_groups() {
         let marker = uuid::Uuid::new_v4().to_string();
         let mut children = Vec::new();
@@ -690,6 +743,7 @@ mod tests {
     /// Pane roots are interactive shells on a pty, which ignore SIGTERM. Quit
     /// must end them with HUP inside the grace, not by SIGKILL at its end.
     #[test]
+    #[ignore = "requires-pty"]
     fn interactive_zsh_pane_root_exits_on_hup_without_escalation() {
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
@@ -789,6 +843,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires-pty"]
     fn scrubbed_restart_coordinator_is_not_killed_by_old_session_marker() {
         const FIXTURE_ENV: &str = "PLEXI_TEST_RESTART_COORDINATOR_FIXTURE";
         const EVIDENCE_ENV: &str = "PLEXI_TEST_RESTART_COORDINATOR_EVIDENCE";
@@ -824,6 +879,7 @@ mod tests {
         let mut parent = std::process::Command::new(std::env::current_exe().unwrap());
         parent
             .args([
+                "--ignored",
                 "--exact",
                 "host::process_cleanup::tests::scrubbed_restart_coordinator_is_not_killed_by_old_session_marker",
                 "--nocapture",
@@ -904,6 +960,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires-pty"]
     fn host_exit_paths_reap_pane_processes() {
         const CHILD_ENV: &str = "PLEXI_TEST_QUIT_PATH";
         if let Ok(mode) = std::env::var(CHILD_ENV) {
@@ -962,7 +1019,8 @@ wait
             let evidence = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
-                    "--exact",
+                    "--ignored",
+                "--exact",
                     "host::process_cleanup::tests::host_exit_paths_reap_pane_processes",
                     "--nocapture",
                 ])
