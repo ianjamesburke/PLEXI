@@ -420,6 +420,7 @@ pub(crate) fn render_name_bar_and_tabs(
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
     let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
+    let glyph_state = if is_error { Some(&AgentState::Failed) } else { agent_state };
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
         .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
     let escalation_col = escalation_col.map(|color| colors.status_badge_color(color));
@@ -579,7 +580,7 @@ pub(crate) fn render_name_bar_and_tabs(
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
         } else if layout.state == HeaderStateChip::Icon {
             if let Some(color) = escalation_col {
-                paint_right = paint_header_state_icon(ui, bar_rect, paint_right, agent_state, color);
+                paint_right = paint_header_state_icon(ui, bar_rect, paint_right, glyph_state, color);
             }
         }
         if let Some((lbl, col)) = waiting_badge_x {
@@ -663,7 +664,7 @@ pub(crate) fn render_name_bar_and_tabs(
             }
         } else if layout.state == HeaderStateChip::Icon {
             if let Some(color) = escalation_col {
-                right_edge = paint_header_state_icon(ui, bar_rect, right_edge, agent_state, color);
+                right_edge = paint_header_state_icon(ui, bar_rect, right_edge, glyph_state, color);
             }
         }
         if let Some(lbl) = waiting_results_badge {
