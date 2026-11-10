@@ -2145,13 +2145,14 @@ fn draw_find_bar(
             );
             let clicked = child
                 .add_enabled_ui(enabled, |ui| {
-                    crate::ui::button::chrome_button_sized(
-                        ui,
-                        label,
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        slot.rect.width(),
-                        crate::ui::embedded_bar::BAR_CONTENT_H,
+                    ui.add(
+                        crate::ui::button::KitButton::new(label, colors)
+                            .kind(crate::ui::button::ButtonKind::Secondary)
+                            .compact()
+                            .min_size(egui::vec2(
+                                slot.rect.width(),
+                                crate::ui::embedded_bar::BAR_CONTENT_H,
+                            )),
                     )
                     .clicked()
                 })
@@ -2417,7 +2418,6 @@ impl App for TextEditorApp {
         log::info!("notes_editor: font_size reset -> {}", self.font_size);
     }
 
-    #[expect(clippy::disallowed_methods, reason = "stint 1209 migrates the editor find bar to the kit")]
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
