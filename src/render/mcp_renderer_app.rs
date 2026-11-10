@@ -459,18 +459,23 @@ impl App for McpRendererApp {
         );
         ui.horizontal(|ui| {
             for (i, label) in ["Tools", "Resources", "Prompts"].into_iter().enumerate() {
-                if ui.selectable_label(self.tab == i, label).clicked() {
+                if crate::ui::button::selectable_button(ui, self.tab == i, label, ctx.colors)
+                    .clicked()
+                {
                     self.tab = i;
                     self.selected = 0;
                     self.form = false;
                 }
             }
             if ui
-                .button(if self.connection.is_some() {
-                    "Reconnect"
-                } else {
-                    "Connect / retry"
-                })
+                .add(crate::ui::button::KitButton::new(
+                    if self.connection.is_some() {
+                        "Reconnect"
+                    } else {
+                        "Connect / retry"
+                    },
+                    ctx.colors,
+                ))
                 .clicked()
             {
                 self.connect_requested = true;
@@ -481,7 +486,10 @@ impl App for McpRendererApp {
             .id_salt(("mcp", ctx.pane_id))
             .show(ui, |ui| {
                 if self.form {
-                    if ui.button("← Back").clicked() {
+                    if ui
+                        .add(crate::ui::button::KitButton::new("← Back", ctx.colors))
+                        .clicked()
+                    {
                         self.form = false;
                     }
                     if let Some(entry) = self.entries[self.tab].get(self.selected) {
@@ -495,7 +503,10 @@ impl App for McpRendererApp {
                             ctx.pane_id,
                         );
                         self.focus = false;
-                        if ui.button("Run / retry").clicked() {
+                        if ui
+                            .add(crate::ui::button::KitButton::new("Run / retry", ctx.colors))
+                            .clicked()
+                        {
                             if let Err(e) = self.submit() {
                                 self.fail(e);
                             }
@@ -521,7 +532,10 @@ impl App for McpRendererApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.strong("Result");
-                    if ui.button("Copy").clicked() {
+                    if ui
+                        .add(crate::ui::button::KitButton::new("Copy", ctx.colors))
+                        .clicked()
+                    {
                         ui.ctx().copy_text(self.result.clone());
                     }
                 });

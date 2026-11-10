@@ -623,11 +623,6 @@ fn grow_spacer_index(nodes: &[IndexedNode], children: &[u32]) -> Option<usize> {
 const KEYPAD_BUTTON_W: f32 = 64.0;
 const KEYPAD_BUTTON_H: f32 = 42.0;
 
-fn mix_rgb(a: Color32, b: Color32, t: f32) -> Color32 {
-    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
-}
-
 fn is_button_row(nodes: &[IndexedNode], row_id: u32) -> Option<(usize, f32)> {
     let Some(UiNodeData::Row(r)) = find_node(nodes, row_id).map(|n| &n.data) else {
         return None;
@@ -723,37 +718,20 @@ fn render_button_node(
     out: &mut RenderResult,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
 ) {
-    let fill = match b.style {
-        ButtonStyle::Primary => colors.accent,
-        ButtonStyle::Secondary => mix_rgb(colors.bg_active, colors.text_primary, 0.14),
-        ButtonStyle::Danger => colors.danger,
-        ButtonStyle::Ghost => Color32::TRANSPARENT,
+    use crate::ui::button::{ButtonKind, KitButton};
+    let kind = match b.style {
+        ButtonStyle::Primary => ButtonKind::Primary,
+        ButtonStyle::Secondary => ButtonKind::Secondary,
+        ButtonStyle::Danger => ButtonKind::Danger,
+        ButtonStyle::Ghost => ButtonKind::Ghost,
     };
-    let label = RichText::new(&b.label).color(colors.text_on(fill));
-    let mut btn = egui::Button::new(label)
-        .fill(fill)
-        .corner_radius(style::RADIUS_SM)
-        .min_size(min_size);
-    if matches!(b.style, ButtonStyle::Secondary) {
-        btn = btn.stroke(egui::Stroke::new(
-            1.0_f32,
-            mix_rgb(colors.border, colors.text_dim, 0.45),
-        ));
-    }
     let synthetic_click = !b.disabled && node_click_matches(pending_click, id);
-    let response = ui
-        .add_enabled_ui(!b.disabled, |ui| {
-            crate::ui::button::tactile_button(
-                ui,
-                btn,
-                if matches!(b.style, ButtonStyle::Ghost) {
-                    colors.bg_active
-                } else {
-                    fill.gamma_multiply(0.85)
-                },
-            )
-        })
-        .inner;
+    let response = ui.add_enabled(
+        !b.disabled,
+        KitButton::new(&b.label, colors)
+            .kind(kind)
+            .min_size(min_size),
+    );
     if response.clicked() || synthetic_click {
         out.actions.push(b.on_click.clone());
     }
@@ -3174,18 +3152,31 @@ mod tests {
             "nested Card must paint dark inset bg_darkest surface"
         );
 
-        // Secondary buttons must NOT use bg_active (which would blend into the outer Card).
-        let secondary_fill = mix_rgb(colors.bg_active, colors.text_primary, 0.14);
-        assert_ne!(secondary_fill, colors.bg_active);
-        let zero_btn = rects
-            .iter()
-            .find(|r| r.fill == secondary_fill && r.rect.width() > 100.0)
-            .expect("double-wide '0' button rect");
-        let primary_btns: Vec<_> = rects
-            .iter()
-            .filter(|r| r.fill == colors.accent && (r.rect.height() - KEYPAD_BUTTON_H).abs() < 1.0)
-            .collect();
-        assert_eq!(primary_btns.len(), 2, "expected '+' and '=' primary buttons");
+        // Plugin buttons use the same Primary/Secondary fills as host kit buttons.
+        let button_rect = |label: &str| {
+            let center = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(text.visual_bounding_rect().center())
+                    }
+                    _ => None,
+                })
+                .expect("button label");
+            rects
+                .iter()
+                .filter(|r| r.fill == colors.bg_active && r.rect.contains(center))
+                .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+                .expect("kit button rect")
+        };
+        let zero_btn = button_rect("0");
+        let primary_btns = [button_rect("+"), button_rect("=")];
+        assert_eq!(
+            primary_btns.len(),
+            2,
+            "expected '+' and '=' primary buttons"
+        );
         assert!(
             (primary_btns[0].rect.left() - primary_btns[1].rect.left()).abs() < 1.0,
             "'=' button in 3-button bottom row must align with '+' in column 4"

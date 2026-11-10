@@ -3,7 +3,7 @@ use egui::{Align2, RichText};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-pub(crate) const TOAST_CONTROL_H: f32 = 28.0;
+pub(crate) const TOAST_CONTROL_H: f32 = style::BUTTON_H_SM;
 
 pub(crate) struct ToastShell<'a> {
     id: &'a str,
@@ -46,13 +46,17 @@ impl<'a> ToastShell<'a> {
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.set_max_width(inner_width);
-                        ui.spacing_mut().interact_size.y = TOAST_CONTROL_H;
                         ui.spacing_mut().item_spacing.x = style::SPACE_MD;
-                        ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
                         add_contents(ui)
                     })
                     .inner
             })
+    }
+
+    /// Toast actions use the default kit kind and size. Explicit compact
+    /// controls may choose Sm on the returned widget without changing the shell.
+    pub(crate) fn button(label: &str, colors: &Colors) -> crate::ui::button::KitButton {
+        crate::ui::button::KitButton::new(label, colors)
     }
 
     /// Reserve the complete action before fitting the message. Reflow into
@@ -71,7 +75,7 @@ impl<'a> ToastShell<'a> {
             let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "toast");
             let font = egui::FontId::proportional(style::TEXT_CAPTION);
             let max_width = ui.available_width();
-            let padding = ui.spacing().button_padding;
+            let padding = egui::vec2(style::SPACE_MD, style::SPACE_XS);
             let action_text = ui.fonts_mut(|f| {
                 f.layout(
                     label.into(),
@@ -153,9 +157,7 @@ impl<'a> ToastShell<'a> {
                 .push_id(id, |ui| {
                     ui.put(
                         action_rect,
-                        egui::Button::new(action_text)
-                            .fill(colors.bg_active)
-                            .min_size(action_rect.size()),
+                        Self::button(label, colors).min_size(action_rect.size()),
                     )
                 })
                 .inner;
@@ -233,5 +235,96 @@ impl ProgressDots {
         }
 
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn toast_action_matches_default_kit_button() {
+        let host = crate::testing::HostHarness::new();
+        let ctx = &host.app.ctx;
+        let mut colors = host.app.colors;
+        // User themes may supply a low-contrast preferred foreground. Both
+        // surfaces must run the same correction against their painted fill.
+        colors.text_primary = colors.bg_active;
+        let mut rectangles = (egui::Rect::NOTHING, egui::Rect::NOTHING);
+        let mut output = None;
+        for frame in 0..3 {
+            output = Some(ctx.run_ui(
+                egui::RawInput {
+                    time: Some(frame as f64),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                        rectangles.0 = crate::ui::button::chrome_button(
+                            ui,
+                            "Undo",
+                            crate::ui::button::ButtonKind::Primary,
+                            &colors,
+                            0.0,
+                        )
+                        .rect;
+                    });
+                    rectangles.1 = super::ToastShell::bottom("parity")
+                        .action(ctx, &colors, "Moved note to Trash", "Undo", None)
+                        .rect;
+                },
+            ));
+        }
+        assert_eq!(
+            rectangles.0.height(),
+            rectangles.1.height(),
+            "default height class"
+        );
+        let output = output.unwrap();
+        let painted_fill = |bounds: egui::Rect| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(rect) if rect.rect.contains(bounds.center()) => Some(rect),
+                    _ => None,
+                })
+                .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
+                .expect("button fill")
+                .fill
+        };
+        assert_eq!(
+            painted_fill(rectangles.0),
+            colors.bg_active,
+            "default fill source"
+        );
+        assert_eq!(
+            painted_fill(rectangles.0),
+            painted_fill(rectangles.1),
+            "shared painted fill"
+        );
+        let labels: Vec<_> = output
+            .shapes
+            .into_iter()
+            .filter_map(|s| {
+                if let egui::Shape::Text(text) = s.shape {
+                    if text.galley.job.text == "Undo" {
+                        let section = &text.galley.job.sections[0];
+                        return Some((
+                            section.format.font_id.clone(),
+                            text.override_text_color.unwrap_or(section.format.color),
+                        ));
+                    }
+                }
+                None
+            })
+            .collect();
+        assert_eq!(
+            labels.len(),
+            2,
+            "both real rendering paths emitted their label"
+        );
+        assert_eq!(
+            labels[0], labels[1],
+            "font and contrast-corrected foreground must match"
+        );
     }
 }

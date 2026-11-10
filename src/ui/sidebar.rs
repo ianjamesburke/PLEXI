@@ -487,53 +487,74 @@ impl PlexiApp {
                         let num_ctxs = num_contexts;
                         let cwd_for_menu = focused_cwd.clone();
                         response.context_menu(|ui| {
-                            if ui.button("Rename").clicked() {
+                            if crate::ui::button::menu_item(ui, "Rename", &self.colors).clicked() {
                                 menu_action = Some((i, WindowMenuAction::Rename));
                                 ui.close();
                             }
-                            if ui.button("Edit Description").clicked() {
+                            if crate::ui::button::menu_item(ui, "Edit Description", &self.colors)
+                                .clicked()
+                            {
                                 menu_action = Some((i, WindowMenuAction::EditDescription));
                                 ui.close();
                             }
                             ui.separator();
                             if display_idx > 0 {
-                                if ui.button("Move to Top").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move to Top", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveToTop));
                                     ui.close();
                                 }
-                                if ui.button("Move Up").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move Up", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveUp));
                                     ui.close();
                                 }
                             }
                             if display_idx + 1 < active_count {
-                                if ui.button("Move Down").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move Down", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveDown));
                                     ui.close();
                                 }
-                                if ui.button("Move to Bottom").clicked() {
+                                if crate::ui::button::menu_item(ui, "Move to Bottom", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::MoveToBottom));
                                     ui.close();
                                 }
                             }
                             ui.separator();
                             if let Some(cwd) = &cwd_for_menu {
-                                if ui.button("Set root to current path").clicked() {
+                                if crate::ui::button::menu_item(
+                                    ui,
+                                    "Set root to current path",
+                                    &self.colors,
+                                )
+                                .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
                                     ui.close();
                                 }
                             }
-                            if ui.button("Edit root\u{2026}").clicked() {
+                            if crate::ui::button::menu_item(ui, "Edit root\u{2026}", &self.colors)
+                                .clicked()
+                            {
                                 menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
                                 ui.close();
                             }
                             if num_ctxs > 1 {
                                 ui.separator();
-                                if ui.button("Park").clicked() {
+                                if crate::ui::button::menu_item(ui, "Park", &self.colors).clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::Park));
                                     ui.close();
                                 }
-                                if ui.button("Delete").clicked() {
+                                if crate::ui::button::menu_item(ui, "Delete", &self.colors)
+                                    .clicked()
+                                {
                                     menu_action = Some((i, WindowMenuAction::Delete));
                                     ui.close();
                                 }
@@ -619,7 +640,9 @@ impl PlexiApp {
                             parked_rects.push(response.rect);
 
                             response.context_menu(|ui| {
-                                if ui.button("Unpark").clicked() {
+                                if crate::ui::button::menu_item(ui, "Unpark", &self.colors)
+                                    .clicked()
+                                {
                                     unpark_context = Some(i);
                                     ui.close();
                                 }

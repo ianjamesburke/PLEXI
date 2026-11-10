@@ -141,9 +141,10 @@ impl App for AgentsApp {
         // can arrive as text. Treat the pair as one shortcut, never two actions.
         let pressed = |key, text: &str| {
             input.key_pressed(key)
-                || input.events().iter().any(|event| {
-                    matches!(event, egui::Event::Text(value) if value == text)
-                })
+                || input
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Text(value) if value == text))
         };
         if pressed(egui::Key::J, "j") || pressed(egui::Key::K, "k") {
             let rows = self.rows();
@@ -184,7 +185,13 @@ impl App for AgentsApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("Agents");
-                    if ui.button(format!("{}  [f]", self.filter.label())).clicked() {
+                    if ui
+                        .add(crate::ui::button::KitButton::new(
+                            format!("{}  [f]", self.filter.label()),
+                            colors,
+                        ))
+                        .clicked()
+                    {
                         self.filter = self.filter.next();
                     }
                 });
@@ -222,23 +229,25 @@ impl App for AgentsApp {
                                         ui.colored_label(colors.text_dim, task.counts());
                                         for row in rows {
                                             let (shape, color) = Self::indicator(row, colors);
-                                            let spawner_suffix = crate::host::pane::format_spawned_by_badge(
-                                                row.spawned_by.as_deref(),
-                                            )
-                                            .map(|b| format!(" · {b}"))
-                                            .unwrap_or_default();
-                                            let waiting_suffix = if row.pending_child_results_count > 0 {
-                                                if row.pending_child_results_count == 1 {
-                                                    " · 1 result waiting".to_string()
+                                            let spawner_suffix =
+                                                crate::host::pane::format_spawned_by_badge(
+                                                    row.spawned_by.as_deref(),
+                                                )
+                                                .map(|b| format!(" · {b}"))
+                                                .unwrap_or_default();
+                                            let waiting_suffix =
+                                                if row.pending_child_results_count > 0 {
+                                                    if row.pending_child_results_count == 1 {
+                                                        " · 1 result waiting".to_string()
+                                                    } else {
+                                                        format!(
+                                                            " · {} results waiting",
+                                                            row.pending_child_results_count
+                                                        )
+                                                    }
                                                 } else {
-                                                    format!(
-                                                        " · {} results waiting",
-                                                        row.pending_child_results_count
-                                                    )
-                                                }
-                                            } else {
-                                                String::new()
-                                            };
+                                                    String::new()
+                                                };
                                             let label = format!(
                                                 "{shape} {}  {} · {}{}{}{}  #{}",
                                                 row.role,
@@ -249,12 +258,13 @@ impl App for AgentsApp {
                                                 waiting_suffix,
                                                 row.pane_id
                                             );
-                                            if ui
-                                                .selectable_label(
-                                                    self.selected == Some(row.pane_id),
-                                                    egui::RichText::new(label).color(color),
-                                                )
-                                                .clicked()
+                                            if crate::ui::button::selectable_button(
+                                                ui,
+                                                self.selected == Some(row.pane_id),
+                                                egui::RichText::new(label).color(color),
+                                                colors,
+                                            )
+                                            .clicked()
                                             {
                                                 self.selected = Some(row.pane_id);
                                                 self.replying = false;
@@ -308,12 +318,13 @@ impl App for AgentsApp {
                                                         row.age,
                                                         row.pane_id
                                                     );
-                                                    if ui
-                                                        .selectable_label(
-                                                            self.selected == Some(row.pane_id),
-                                                            egui::RichText::new(label).color(color),
-                                                        )
-                                                        .clicked()
+                                                    if crate::ui::button::selectable_button(
+                                                        ui,
+                                                        self.selected == Some(row.pane_id),
+                                                        egui::RichText::new(label).color(color),
+                                                        colors,
+                                                    )
+                                                    .clicked()
                                                     {
                                                         self.selected = Some(row.pane_id);
                                                         self.replying = false;
@@ -396,20 +407,33 @@ impl App for AgentsApp {
                                             if ui
                                                 .add_enabled(
                                                     row.live,
-                                                    egui::Button::new("Jump [Enter]"),
+                                                    crate::ui::button::KitButton::new(
+                                                        "Jump [Enter]",
+                                                        colors,
+                                                    ),
                                                 )
                                                 .clicked()
                                             {
                                                 self.jump();
                                             }
                                             if row.blocked_on.is_some()
-                                                && ui.button("Answer [a]").clicked()
+                                                && ui
+                                                    .add(crate::ui::button::KitButton::new(
+                                                        "Answer [a]",
+                                                        colors,
+                                                    ))
+                                                    .clicked()
                                             {
                                                 self.answer();
                                             }
                                             if (row.display_state == DisplayState::DoneUnseen
                                                 || row.display_state.is_failure_like())
-                                                && ui.button("Dismiss [x]").clicked()
+                                                && ui
+                                                    .add(crate::ui::button::KitButton::new(
+                                                        "Dismiss [x]",
+                                                        colors,
+                                                    ))
+                                                    .clicked()
                                             {
                                                 self.dismiss();
                                             }
@@ -420,16 +444,28 @@ impl App for AgentsApp {
                                                 egui::TextEdit::multiline(&mut self.reply)
                                                     .hint_text("Your answer"),
                                             );
-                                            let surface = crate::ui::focus::SurfaceKey::Pane(ctx.pane_id);
-                                            crate::ui::focus::register_text_surface(ui.ctx(), surface, response.id);
+                                            let surface =
+                                                crate::ui::focus::SurfaceKey::Pane(ctx.pane_id);
+                                            crate::ui::focus::register_text_surface(
+                                                ui.ctx(),
+                                                surface,
+                                                response.id,
+                                            );
                                             if self.focus_reply {
-                                                crate::ui::focus::claim_text_surface(ui.ctx(), surface, response.id);
+                                                crate::ui::focus::claim_text_surface(
+                                                    ui.ctx(),
+                                                    surface,
+                                                    response.id,
+                                                );
                                                 self.focus_reply = false;
                                             }
                                             if ui
                                                 .add_enabled(
                                                     !self.reply.trim().is_empty(),
-                                                    egui::Button::new("Send reply"),
+                                                    crate::ui::button::KitButton::new(
+                                                        "Send reply",
+                                                        colors,
+                                                    ),
                                                 )
                                                 .clicked()
                                             {

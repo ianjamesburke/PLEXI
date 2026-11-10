@@ -2648,13 +2648,7 @@ impl FileBrowserApp {
                     colors.text_primary
                 };
                 let btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(display_label)
-                            .size(font_size)
-                            .monospace()
-                            .color(text_color),
-                    )
-                    .frame(false),
+                    crate::ui::button::KitButton::new(egui::RichText::new(display_label).color(text_color), colors).size(crate::ui::button::ButtonSize::Sm).frameless(),
                 );
                 let synthetic_click =
                     pending_click.is_some_and(|click| click.targets_id(btn.id));
@@ -2672,13 +2666,7 @@ impl FileBrowserApp {
                 // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("View \u{2304}")
-                            .size(style::TEXT_HINT)
-                            .color(colors.text_secondary(colors.bg_elevated)),
-                    )
-                    .fill(colors.bg_elevated)
-                    .stroke(Stroke::new(1.0_f32, colors.border)),
+                    crate::ui::button::KitButton::new("View \u{2304}", colors).size(crate::ui::button::ButtonSize::Sm),
                 );
                 let synthetic_open =
                     pending_click.is_some_and(|click| click.targets_id(menu_button.id));
@@ -2894,12 +2882,7 @@ impl FileBrowserApp {
                     }
 
                     let close_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{00d7}")
-                                .size(self.font_size)
-                                .color(colors.text_dim),
-                        )
-                        .frame(false),
+                        crate::ui::button::KitButton::new("\u{00d7}", colors).size(crate::ui::button::ButtonSize::Sm).frameless(),
                     );
                     let synthetic_close =
                         pending_click.is_some_and(|c| c.targets_id(close_btn.id));

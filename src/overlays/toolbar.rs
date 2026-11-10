@@ -59,13 +59,10 @@ impl PlexiApp {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if compact {
-                    let (overflow, _) = egui::containers::menu::MenuButton::from_button(
-                        egui::Button::new(RichText::new("…").size(style::TEXT_CAPTION))
-                            .frame(false).min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0))
-                    ).ui(ui, |ui| {
-                        if ui.button("Keyboard shortcuts").clicked() { self.show_shortcuts = !self.show_shortcuts; ui.close(); }
-                        if ui.button("Changelog").clicked() { self.show_changelog = !self.show_changelog; ui.close(); }
-                        if host_ui_gallery_available() && ui.button("Host UI gallery").clicked() { self.show_ui_gallery = !self.show_ui_gallery; ui.close(); }
+                    let (overflow, _) = button::overflow_menu(ui, "…", &self.colors, |ui| {
+                        if crate::ui::button::menu_item(ui, "Keyboard shortcuts", &self.colors).clicked() { self.show_shortcuts = !self.show_shortcuts; ui.close(); }
+                        if crate::ui::button::menu_item(ui, "Changelog", &self.colors).clicked() { self.show_changelog = !self.show_changelog; ui.close(); }
+                        if host_ui_gallery_available() && crate::ui::button::menu_item(ui, "Host UI gallery", &self.colors).clicked() { self.show_ui_gallery = !self.show_ui_gallery; ui.close(); }
                     });
                     overflow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toolbar actions"));
                     record_toolbar_rect(ui, "overflow", overflow.rect);
@@ -203,7 +200,11 @@ impl PlexiApp {
                 right,
                 galley.size(),
             );
-            capture.text_slot("title", &galley, egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())));
+            capture.text_slot(
+                "title",
+                &galley,
+                egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())),
+            );
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
             }
@@ -220,7 +221,13 @@ impl PlexiApp {
         let _ = (row, mailbox_rect);
         let safe = crate::platform::titlebar::logical_safe_area(ui.ctx());
         let excluded = egui::Rect::from_min_size(ui.ctx().content_rect().min, safe);
-        capture.finish(ui.painter(), row, self.colors.bg_toolbar, vec![], vec![excluded]);
+        capture.finish(
+            ui.painter(),
+            row,
+            self.colors.bg_toolbar,
+            vec![],
+            vec![excluded],
+        );
     }
 }
 

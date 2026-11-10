@@ -191,12 +191,9 @@ impl<'a> SearchBar<'a> {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if has_clear {
                     let btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{00d7}")
-                                .size(self.font_size + 2.0)
-                                .color(colors.text_dim),
-                        )
-                        .frame(false),
+                        crate::ui::button::KitButton::new("\u{00d7}", colors)
+                            .size(crate::ui::button::ButtonSize::Sm)
+                            .frameless(),
                     );
                     let synthetic = self
                         .pending_click

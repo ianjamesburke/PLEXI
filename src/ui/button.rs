@@ -3,12 +3,14 @@ use egui::{Align2, Color32, RichText, Vec2};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ButtonKind {
+    #[default]
     Primary,
     Secondary,
     Accent,
     Danger,
+    Ghost,
 }
 
 #[derive(Clone, Copy)]
@@ -35,47 +37,191 @@ pub(crate) fn chrome_button_sized(
     min_width: f32,
     height: f32,
 ) -> egui::Response {
-    let visuals = chrome_button_visuals(
-        kind,
-        colors,
-        ChromeButtonState {
-            disabled: !ui.is_enabled(),
-            down: false,
-        },
-    );
-
     let display_label = crate::ui::text::elide(
         ui,
         label,
         egui::FontId::proportional(style::TEXT_CAPTION),
-        (ui.available_width() - ui.spacing().button_padding.x * 2.0).max(0.0),
+        (ui.available_width() - style::SPACE_MD * 2.0).max(0.0),
         crate::ui::text::Side::Trailing,
     );
-    let response = tactile_button(
-        ui,
-        egui::Button::new(
-            RichText::new(display_label)
-                .size(style::TEXT_CAPTION)
-                .color(visuals.text),
-        )
-        .fill(visuals.fill)
-        .min_size(egui::vec2(min_width.min(ui.available_width()), height))
-        .wrap_mode(egui::TextWrapMode::Extend),
-        chrome_button_visuals(
-            kind,
-            colors,
-            ChromeButtonState {
-                disabled: !ui.is_enabled(),
-                down: true,
-            },
-        )
-        .fill,
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let response = ui.add(
+        KitButton::new(display_label, colors)
+            .kind(kind)
+            .min_size(egui::vec2(min_width.min(ui.available_width()), height))
+            .wrap_mode(egui::TextWrapMode::Extend),
+    );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response
+}
+
+/// Standard buttons default to Primary; all surfaces share this paint path.
+/// Sm is for compact controls, Md for default actions, Lg for prominent actions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ButtonSize {
+    Sm,
+    #[default]
+    Md,
+    Lg,
+}
+
+impl ButtonSize {
+    pub(crate) fn height(self) -> f32 {
+        match self {
+            Self::Sm => style::BUTTON_H_SM,
+            Self::Md => style::BUTTON_H_MD,
+            Self::Lg => style::BUTTON_H_LG,
+        }
+    }
+}
+
+/// Use as an egui Widget so enabled scopes, synthetic IDs and popup handling
+/// retain egui's normal response semantics without duplicating button paint.
+pub(crate) struct KitButton {
+    label: egui::WidgetText,
+    colors: Colors,
+    kind: ButtonKind,
+    size: ButtonSize,
+    min_size: Vec2,
+    frameless: bool,
+    selected: bool,
+    wrap: egui::TextWrapMode,
+}
+
+impl KitButton {
+    pub(crate) fn new(label: impl Into<egui::WidgetText>, colors: &Colors) -> Self {
+        Self {
+            label: label.into(),
+            colors: *colors,
+            kind: ButtonKind::default(),
+            size: ButtonSize::default(),
+            min_size: Vec2::ZERO,
+            frameless: false,
+            selected: false,
+            wrap: egui::TextWrapMode::Wrap,
+        }
+    }
+
+    pub(crate) fn kind(mut self, kind: ButtonKind) -> Self {
+        self.kind = kind;
+        self
+    }
+    pub(crate) fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+    pub(crate) fn min_size(mut self, size: Vec2) -> Self {
+        self.min_size = size;
+        self
+    }
+    pub(crate) fn frameless(mut self) -> Self {
+        self.frameless = true;
+        self.kind = ButtonKind::Ghost;
+        self
+    }
+    pub(crate) fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+    pub(crate) fn wrap_mode(mut self, wrap: egui::TextWrapMode) -> Self {
+        self.wrap = wrap;
+        self
+    }
+}
+
+impl egui::Widget for KitButton {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        static FIRST_PAINT: std::sync::Once = std::sync::Once::new();
+        FIRST_PAINT
+            .call_once(|| log::info!("ui: shared kit button renderer active (default Primary/Md)"));
+        let kind = if self.selected {
+            ButtonKind::Accent
+        } else {
+            self.kind
+        };
+        let state = ChromeButtonState {
+            disabled: !ui.is_enabled(),
+            down: false,
+        };
+        let visuals = chrome_button_visuals(kind, &self.colors, state);
+        let active = chrome_button_visuals(
+            kind,
+            &self.colors,
+            ChromeButtonState {
+                down: true,
+                ..state
+            },
+        );
+        let label = self.label.text().to_owned();
+        let text = RichText::new(&label)
+            .size(style::TEXT_CAPTION)
+            .color(visuals.text);
+        let button = egui::Button::new(text)
+            .fill(visuals.fill)
+            .stroke(if matches!(kind, ButtonKind::Ghost) {
+                egui::Stroke::NONE
+            } else {
+                ui.visuals().widgets.inactive.bg_stroke
+            })
+            .corner_radius(style::RADIUS_SM)
+            .frame(!self.frameless)
+            .selected(self.selected)
+            .min_size(self.min_size.max(egui::vec2(0.0, self.size.height())))
+            .wrap_mode(self.wrap);
+        let response = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size.y = self.size.height();
+                ui.spacing_mut().button_padding = egui::vec2(style::SPACE_MD, style::SPACE_XS);
+                tactile_button(ui, button, active.fill)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+            })
+            .inner;
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &label)
+        });
+        response
+    }
+}
+
+/// Context and overflow menu commands use the same compact, frameless button.
+/// Callers keep their existing `ui.close()` and command dispatch behavior.
+pub(crate) fn menu_item(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui::Response {
+    ui.add(
+        KitButton::new(label, colors)
+            .size(ButtonSize::Sm)
+            .frameless(),
+    )
+}
+
+pub(crate) fn selectable_button(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: impl Into<egui::WidgetText>,
+    colors: &Colors,
+) -> egui::Response {
+    ui.add(
+        KitButton::new(label, colors)
+            .kind(ButtonKind::Ghost)
+            .size(ButtonSize::Sm)
+            .selected(selected),
+    )
+}
+
+/// Popup behavior stays with egui; the trigger is the kit's frameless glyph.
+pub(crate) fn overflow_menu<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    colors: &Colors,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> (egui::Response, Option<egui::InnerResponse<R>>) {
+    let response = ui.add(
+        KitButton::new(label, colors)
+            .size(ButtonSize::Sm)
+            .frameless(),
+    );
+    let inner = egui::Popup::menu(&response).show(contents);
+    (response, inner)
 }
 
 #[derive(Clone, Copy)]
@@ -93,13 +239,16 @@ fn chrome_button_visuals(
         ButtonKind::Primary | ButtonKind::Secondary => colors.bg_active,
         ButtonKind::Accent => colors.accent,
         ButtonKind::Danger => colors.danger,
+        ButtonKind::Ghost => Color32::TRANSPARENT,
     };
-    let fill = if state.disabled {
+    let fill = if state.disabled && matches!(kind, ButtonKind::Ghost) {
+        Color32::TRANSPARENT
+    } else if state.disabled {
         colors.bg_active.gamma_multiply(0.55)
     } else if state.down {
         match kind {
             ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.85),
-            ButtonKind::Primary | ButtonKind::Secondary => colors.bg_hover,
+            ButtonKind::Primary | ButtonKind::Secondary | ButtonKind::Ghost => colors.bg_hover,
         }
     } else {
         base_fill
@@ -110,12 +259,12 @@ fn chrome_button_visuals(
         match kind {
             ButtonKind::Accent | ButtonKind::Danger => colors.text_on(base_fill),
             ButtonKind::Secondary => colors.text_dim,
-            ButtonKind::Primary => colors.text_primary,
+            ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
         }
     };
     let surface = crate::ui::foreground::Surface::over(colors.bg_sidebar, fill);
     ChromeButtonVisuals {
-        fill: surface.fill,
+        fill,
         text: surface.foreground(text, crate::ui::foreground::Role::SmallText),
     }
 }
@@ -373,6 +522,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kit_button_size_classes_are_independent_of_parent_spacing() {
+        let host = crate::testing::HostHarness::new();
+        let mut heights = Vec::new();
+        for _ in 0..3 {
+            heights.clear();
+            let _ = host.app.ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ui.spacing_mut().interact_size.y = 80.0;
+                    for size in [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg] {
+                        let response =
+                            ui.add(KitButton::new("Action", &host.app.colors).size(size));
+                        heights.push(response.rect.height());
+                    }
+                });
+            });
+        }
+        assert_eq!(
+            heights,
+            vec![style::BUTTON_H_SM, style::BUTTON_H_MD, style::BUTTON_H_LG]
+        );
+    }
+
+    #[test]
     fn chrome_button_small_text_meets_contrast_in_every_state() {
         for name in crate::ui::theme::preset_names() {
             let colors = Colors::from_config(&crate::ui::theme::preset_colors(name).unwrap());
@@ -381,6 +553,7 @@ mod tests {
                 ButtonKind::Secondary,
                 ButtonKind::Accent,
                 ButtonKind::Danger,
+                ButtonKind::Ghost,
             ] {
                 for disabled in [false, true] {
                     for down in [false, true] {
