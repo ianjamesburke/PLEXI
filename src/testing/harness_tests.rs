@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn minimap_shortcut_without_experiments_toggles_bottom_right() {
+    let _experiments = crate::release::set_test_experiments(&[]);
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+    h.run_frames(2);
+    let modifiers = egui::Modifiers {
+        shift: true,
+        ..egui::Modifiers::COMMAND
+    };
+    let press = || egui::Event::Key {
+        key: egui::Key::M,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    frame_with_events(&mut h, vec![press()]);
+    assert!(h.app.minimap.visible, "shortcut must show minimap without experiments");
+    let rect = crate::render::minimap::minimap_panel_rect(
+        &h.ctx,
+        h.ctx.content_rect(),
+        &h.app.windows,
+        h.app.router.active().context_id,
+        &h.app.router.active().name.to_string(),
+    ).unwrap();
+    let screen = h.ctx.content_rect();
+    assert!(rect.right() <= screen.right() && rect.bottom() <= screen.bottom());
+    assert!(rect.center().x > screen.center().x && rect.center().y > screen.center().y, "minimap must be bottom-right: {rect:?}");
+    frame_with_events(&mut h, vec![egui::Event::Key {
+        key: egui::Key::M,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers,
+    }]);
+    frame_with_events(&mut h, vec![press()]);
+    assert!(!h.app.minimap.visible, "shortcut must hide minimap");
+}
+
+#[test]
 fn terminal_process_activity_is_not_agent_activity() {
     use crate::protocol::AgentState;
     let mut h = HostHarness::new();

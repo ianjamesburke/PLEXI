@@ -1287,18 +1287,7 @@ impl PlexiApp {
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
 
-        // Minimap overlay — auto-hidden when current workspace has <2 windows.
-        let ws_id = self.router.active().context_id;
-        let window_count = self
-            .windows
-            .iter()
-            .filter(|c| c.context_id == ws_id)
-            .count();
-        if window_count >= 2 {
-            self.draw_minimap_overlay(&ctx);
-        } else {
-            self.minimap.visible = false;
-        }
+        self.draw_minimap_overlay(&ctx);
 
         // Command palette, run palette, rename-pane overlay, notification
         // modal, and confirm-close are all drawn by the early input-capture

@@ -928,8 +928,7 @@ impl PlexiApp {
     /// Create a new terminal page immediately to the right of the active page
     /// on the same grid row, then switch to it.
     ///
-    /// This is the established Cmd+N contract. The PageGrid experiment owns
-    /// the optional minimap affordance, not this core pane-creation behavior.
+    /// This is the established Cmd+N contract.
     pub(crate) fn new_page_right(&mut self) {
         let ws_id = self.router.active().context_id;
         let active_y = self.windows[self.active_window].grid_y;

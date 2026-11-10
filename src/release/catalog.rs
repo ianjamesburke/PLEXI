@@ -95,7 +95,7 @@ impl ReleaseFeature {
             Self::CloudAccount => "Optional cloud account and history retention",
             Self::FolderSecrets => "Secrets injected per folder, with grants",
             Self::WasmApps => "Native Rust/WASM apps and the GPU canvas",
-            Self::PageGrid => "2D page-grid minimap",
+            Self::PageGrid => "Reserved page-grid experiment",
             Self::TreeAtlas => "Context tree overview at root with Cmd+Escape",
             Self::Marketplace => "App marketplace: browse, search, publish",
             Self::Daw => "DAW engine proof of concept",

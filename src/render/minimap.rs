@@ -1,6 +1,6 @@
 //! Spatial-grid minimap overlay.
 //!
-//! Renders a small top-right overlay showing the 2-D window grid for the
+//! Renders a small bottom-right overlay showing the 2-D window grid for the
 //! active workspace. Empty rows are collapsed so the grid is always compact.
 //! The active window is highlighted; clicking a cell switches to it.
 
@@ -30,8 +30,7 @@ impl MinimapState {
 const CELL_W: f32 = 34.0;
 const CELL_H: f32 = 26.0;
 const CELL_GAP: f32 = 4.0;
-const INSET_RIGHT: f32 = 18.0;
-const INSET_TOP: f32 = 54.0;
+const INSET: f32 = crate::ui::style::SPACE_MD;
 const NAME_FONT_SIZE: f32 = 12.0;
 
 /// Compute the panel rect for the minimap overlay without needing a `Ui`.
@@ -92,8 +91,8 @@ pub fn minimap_panel_rect(
     let panel_h = grid_pixel_h + padding * 2.0 + name_h + 4.0;
 
     let panel_min = egui::pos2(
-        content_rect.right() - panel_w - INSET_RIGHT,
-        content_rect.top() + INSET_TOP,
+        content_rect.right() - panel_w - INSET,
+        content_rect.bottom() - panel_h - INSET,
     );
 
     Some(egui::Rect::from_min_size(
@@ -136,8 +135,6 @@ pub fn render_minimap(
         return None;
     }
 
-    ui.set_opacity(0.75);
-
     // ── Collapse empty rows so the grid is always compact ─────────────────
     let mut raw_ys: Vec<u32> = visible.iter().map(|(_, c)| c.grid_y).collect();
     raw_ys.sort_unstable();
@@ -171,8 +168,8 @@ pub fn render_minimap(
     let panel_h = grid_pixel_h + padding * 2.0 + name_h + 4.0;
 
     let panel_min = egui::pos2(
-        content_rect.right() - panel_w - INSET_RIGHT,
-        content_rect.top() + INSET_TOP,
+        content_rect.right() - panel_w - INSET,
+        content_rect.bottom() - panel_h - INSET,
     );
     let panel_rect = egui::Rect::from_min_size(panel_min, egui::Vec2::new(panel_w, panel_h));
 
@@ -264,11 +261,7 @@ pub fn render_minimap(
             egui::Align2::LEFT_BOTTOM,
             format!("{}", page_num),
             egui::FontId::proportional(crate::ui::style::TEXT_META),
-            if is_active {
-                colors.bg_darkest
-            } else {
-                colors.text_dim
-            },
+            colors.text_on(fill),
         );
 
         let cell_response = ui.interact(
@@ -285,4 +278,23 @@ pub fn render_minimap(
     }
 
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn minimap_text_contrast_on_all_presets() {
+        use crate::ui::theme::{contrast, luminance, preset_colors, Colors};
+        for preset in ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"] {
+            let colors = Colors::from_config(&preset_colors(preset).unwrap());
+            for (foreground, background) in [
+                (colors.text_primary, colors.bg_sidebar),
+                (colors.text_on(colors.accent), colors.accent),
+                (colors.text_on(colors.bg_active), colors.bg_active),
+            ] {
+                let ratio = contrast(luminance(foreground), luminance(background));
+                assert!(ratio >= 3.0, "{preset}: contrast {ratio}");
+            }
+        }
+    }
 }
