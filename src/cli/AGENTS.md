@@ -148,6 +148,23 @@ exact host PID. A stale record never authorizes cleanup.
 - **`PLEXI_CONTEXT_ID` is a spawn-time stamp, never the answer to "which context am I in".** A pane moved by `context push` keeps its old value forever (a parent cannot mutate a live child's environment). Commands that *report* the caller's context ask the host by `PLEXI_PANE_ID` (`context current` → `get_pane_info`, which carries `context_id`/`context_name`/`context_description`), the same truth as `pane info`. The env id is only a request field the host validates (`resolve_parent_context`). `pane list --current` still reads the env id — same class, not yet migrated.
 - **Verbs that act on a caller-named id must round-trip.** `context zoom <id>` sends a `response_file` and the host replies `{"error"}` for an id naming no live context; fire-and-forget (`send_to_socket`) cannot report a bad id, so it exited 0 silently. Use `request` + `check_reply_error`.
 
+## Context and app-state targeting
+
+`context open [path]` is explicit navigation: canonicalize the folder, select its
+existing context or create one, and return the host's acknowledged context id.
+It does not move the invoking pane. `context set-root` and `context describe`
+validate the supplied caller context id and round-trip errors; only an absent id
+uses the active context. App ID-open threads its resolved owning window through
+registry lookup, default cwd and runtime placement without redirecting active state.
+Explorer retains its existing explicit cwd and caller-follow behavior.
+
+`app state` queries `get_pane_info` by `PLEXI_PANE_ID` for the current
+`context_root`, including after a root change or pane move. A failed query never
+falls back to a spawn-time environment root. Outside a pane, context-scoped state
+uses the nearest ancestor of cwd containing `.plexi` and errors when none exists;
+global state still uses the shared user-data tier. Context registry discovery in a
+pane starts from the host's current root.
+
 ## Style
 
 Document stable contracts, not history. Update in the same change that makes a rule obsolete.

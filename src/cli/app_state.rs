@@ -8,9 +8,9 @@
 //! through the same atomic path the app's own writes use, and every attempt is
 //! traced. Direct file writes stay possible and stay unsupported.
 //!
-//! The commands are **disk-direct and host-independent** — no socket, no
-//! `AppRequest`. A running app picks the write up through the state
-//! watcher within one debounce window; a not-running app sees it on next load.
+//! File access is disk-direct. Inside a pane the host supplies its current root;
+//! outside a pane the nearest `.plexi` ancestor of cwd supplies file scope.
+//! A running app picks writes up through its state watcher.
 //!
 //! Entitlement here is structural, not checked: there is no path argument and
 //! no `--context` flag, so the only reachable files are the calling context's
@@ -48,24 +48,49 @@ fn caller_label() -> String {
     }
 }
 
-/// The context root this invocation addresses. Mirrors `notes::cli_context_root`
-/// — `PLEXI_CONTEXT_ROOT` when a pane exports it, else the active workspace
-/// root. A root that does not exist is an error rather than something to
-/// create: creating it would silently manufacture a context the user never
-/// established.
+/// Resolve current scope from the host in a pane, or the filesystem outside one.
 fn cli_context_root() -> Result<PathBuf, String> {
-    let root = match std::env::var_os("PLEXI_CONTEXT_ROOT").filter(|v| !v.is_empty()) {
-        Some(root) => PathBuf::from(root),
-        None => crate::config::active_workspace_root()
-            .ok_or_else(|| "no context root — this shell is not inside a Plexi context and no active workspace root is set".to_string())?,
+    let root = match std::env::var_os("PLEXI_PANE_ID") {
+        Some(pane) => {
+            let pane_id = pane.to_str().and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| "PLEXI_PANE_ID is not a valid pane id".to_string())?;
+            let content = super::request(
+                serde_json::json!({"type":"get_pane_info", "pane_id":pane_id}),
+                "app-state-scope", "app state scope",
+            ).map_err(|code| format!("cannot query current scope for pane {pane_id} (exit {code})"))?;
+            let reply: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|error| format!("invalid app state scope reply: {error}"))?;
+            if let Some(error) = reply.get("error").and_then(|v| v.as_str()) { return Err(error.to_string()); }
+            let root = reply.get("context_root").and_then(|v| v.as_str()).filter(|v| !v.is_empty())
+                .ok_or_else(|| "host reply has no current context_root".to_string())?;
+            log::info!("app_state: scope pane={pane_id} current_root={root}");
+            PathBuf::from(root)
+        }
+        None => {
+            let cwd = std::env::current_dir().map_err(|error| format!("app state cwd: {error}"))?;
+            file_context_root(&cwd)?
+        }
     };
     if !root.is_dir() {
-        return Err(format!(
-            "context root {} does not exist — refusing to create it",
-            root.display()
-        ));
+        return Err(format!("context root {} does not exist — refusing to create it", root.display()));
     }
     Ok(root)
+}
+
+fn file_context_root(cwd: &Path) -> Result<PathBuf, String> {
+    let root = crate::notes::anchored_root_for(cwd)
+        .ok_or_else(|| "no context file scope: run beneath a directory containing .plexi".to_string())?;
+    log::info!("app_state: file scope cwd={} root={}", cwd.display(), root.display());
+    Ok(root)
+}
+
+fn cli_registry() -> Result<crate::app::registry::AppRegistry, String> {
+    let root = if std::env::var_os("PLEXI_PANE_ID").is_some() {
+        cli_context_root()?
+    } else {
+        std::env::current_dir().map_err(|error| format!("app state cwd: {error}"))?
+    };
+    Ok(crate::app::registry::AppRegistry::load(&root))
 }
 
 /// Resolve `app_id` + an optional `--scope` to a concrete state file.
@@ -141,8 +166,14 @@ fn empty_document(format: StateFormat) -> &'static str {
 
 /// `plexi app state get <app> [--scope ...]`
 pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
-    let registry =
-        crate::app::registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let registry = match cli_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            log::info!("app_state: registry rejected: {error}");
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
     let resolved = match resolve(app_id, scope, &registry) {
         Ok(resolved) => resolved,
         Err(error) => {
@@ -224,8 +255,14 @@ pub fn set(app_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
         },
         None => Box::new(std::io::stdin()),
     };
-    let registry =
-        crate::app::registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    let registry = match cli_registry() {
+        Ok(registry) => registry,
+        Err(error) => {
+            log::info!("app_state: registry rejected: {error}");
+            eprintln!("error: {error}");
+            return 1;
+        }
+    };
     set_from(app_id, input, scope, &registry)
 }
 
@@ -337,10 +374,8 @@ mod tests {
         (apps, registry)
     }
 
-    /// Point the resolver at this context root for the duration of one test.
-    /// The CLI has no path argument by design, so tests steer it exactly the way
-    /// a real caller does: through the context-root environment.
-    fn with_context_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
+    /// Retain a stale spawn-time environment value for negative controls.
+    fn with_stale_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
         let previous = std::env::var_os("PLEXI_CONTEXT_ROOT");
         // SAFETY: every reader of this variable in-process is serialized behind
         // `env_guard`, which each test in this module holds for its duration.
@@ -353,10 +388,136 @@ mod tests {
         out
     }
 
+    /// Exercise the production host-query resolver using a bounded mock endpoint.
+    fn with_context_root<T>(root: &Path, body: impl FnOnce() -> T) -> T {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let dir = tempdir().unwrap();
+        let socket = dir.path().join("state.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let root = root.to_path_buf();
+        let server = std::thread::spawn(move || {
+            while !stopped.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut line = String::new();
+                        std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(request["type"], "get_pane_info");
+                        stream.write_all(serde_json::json!({"context_root":root}).to_string().as_bytes()).unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(5)),
+                    Err(error) => panic!("state scope server: {error}"),
+                }
+            }
+        });
+        let keys = ["PLEXI_PANE_ID", "PLEXI_SOCKET"];
+        let previous = keys.map(std::env::var_os);
+        unsafe {
+            std::env::set_var(keys[0], "42");
+            std::env::set_var(keys[1], socket);
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        for (key, value) in keys.into_iter().zip(previous) {
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        match result { Ok(value) => value, Err(error) => std::panic::resume_unwind(error) }
+    }
+
+    #[test]
+    fn context_targets_external_state_uses_nearest_file_anchor() {
+        let root = tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir_all(nested.join(".plexi")).unwrap();
+        std::fs::create_dir_all(root.path().join(".plexi")).unwrap();
+        assert_eq!(file_context_root(&nested).unwrap(), nested);
+        assert_eq!(file_context_root(root.path()).unwrap(), root.path());
+    }
+
     /// Serializes the env-mutating tests in this module against each other.
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn context_targets_stale_root_never_substitutes_for_unreachable_host() {
+        let _guard = env_guard();
+        let root = tempdir().unwrap();
+        let previous = std::env::var_os("PLEXI_PANE_ID");
+        unsafe { std::env::set_var("PLEXI_PANE_ID", "18446744073709551615") };
+        let result = with_stale_root(root.path(), cli_context_root);
+        match previous {
+            Some(v) => unsafe { std::env::set_var("PLEXI_PANE_ID", v) },
+            None => unsafe { std::env::remove_var("PLEXI_PANE_ID") },
+        }
+        assert!(result.is_err(), "a pane must ask its host, never use a stale env root: {result:?}");
+    }
+
+    #[test]
+    fn context_targets_app_state_after_set_root_ignores_stale_environment() {
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::UnixListener;
+        let _guard = env_guard();
+        let mut h = crate::testing::HostHarness::new();
+        let pane = h.add_test_pane();
+        let stale = h.app.router.active().root.clone();
+        let current = tempdir().unwrap();
+        h.app.set_context_root(current.path().to_path_buf(), None);
+        let reply_path = h.profile_dir().join("pane-scope.json");
+        h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+            pane_id: pane, response_file: reply_path.to_string_lossy().into_owned(),
+        });
+        h.hidden_frame();
+        let reply = std::fs::read(&reply_path).unwrap();
+        let socket = h.profile_dir().join("scope.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + crate::testing::load_aware_timeout(std::time::Duration::from_secs(2));
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut line = String::new();
+                        std::io::BufReader::new(&stream).read_line(&mut line).unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(request["type"], "get_pane_info");
+                        assert_eq!(request["pane_id"], pane);
+                        stream.write_all(&reply).unwrap();
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline { break; }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("scope socket: {e}"),
+                }
+            }
+        });
+        let keys = ["PLEXI_PANE_ID", "PLEXI_SOCKET"];
+        let previous = keys.map(std::env::var_os);
+        unsafe {
+            std::env::set_var(keys[0], pane.to_string());
+            std::env::set_var(keys[1], socket);
+        }
+        let actual = with_stale_root(&stale, cli_context_root);
+        for (key, value) in keys.into_iter().zip(previous) {
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+        server.join().unwrap();
+        assert_eq!(actual.unwrap(), current.path());
     }
 
     const CONTEXT_ONLY: &str = "\n[state]\nscopes = [\"context\"]\n";

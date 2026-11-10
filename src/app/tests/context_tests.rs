@@ -4377,3 +4377,106 @@ fn breadcrumb_deleted_ancestor_rejects_without_focus_or_history_changes() {
     assert_eq!(h.app.router.active().context_id, child);
     assert_eq!(before, (h.app.active_window, h.app.router.depth_stack.clone()));
 }
+
+// Explicit CLI operations must acknowledge the context they actually targeted.
+fn context_target_request(h: &mut crate::testing::HostHarness, mut payload: serde_json::Value) -> Option<serde_json::Value> {
+    let file = h.profile_dir().join("context-target-reply.json");
+    let _ = std::fs::remove_file(&file);
+    payload["response_file"] = serde_json::json!(file);
+    let request = serde_json::from_value(payload.clone()).unwrap_or_else(|_| {
+        payload.as_object_mut().unwrap().remove("response_file");
+        serde_json::from_value(payload).unwrap()
+    });
+    h.inject_ipc(request);
+    h.app.drain_pane_cmd_channel();
+    std::fs::read_to_string(file).ok().map(|s| serde_json::from_str(&s).unwrap())
+}
+
+#[test]
+fn context_targets_open_existing_acknowledges_and_selects_requested_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    for (root, id) in [(b.path(), b_id), (a.as_path(), a_id)] {
+        let reply = context_target_request(&mut h, serde_json::json!({"type":"focus_context", "root":root}));
+        assert_eq!(h.app.router.active().context_id, id);
+        assert_eq!(reply.unwrap()["context_id"], id);
+        assert_eq!(h.app.router.len(), 2);
+    }
+}
+
+#[test]
+#[ignore = "requires-pty: context open seeds a terminal"]
+fn context_targets_open_new_acknowledges_created_root() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"focus_context", "root":root.path()}));
+    assert_eq!(h.app.router.active().root, root.path().canonicalize().unwrap());
+    assert_eq!(reply.unwrap()["context_id"], h.app.router.active().context_id);
+    assert_eq!(h.app.router.len(), 2);
+}
+
+#[test]
+fn context_targets_invalid_id_never_changes_active_context() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().root.clone();
+    let root = tempfile::tempdir().unwrap();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"set_context_root", "root":root.path(), "context_id":u64::MAX}));
+    assert_eq!(h.app.router.active().root, before);
+    assert!(reply.unwrap()["error"].as_str().unwrap().contains("not found"));
+    assert!(!root.path().join(".plexi").exists());
+}
+
+#[test]
+fn context_targets_background_id_open_uses_owning_root() {
+    let mut h = crate::testing::HostHarness::new();
+    let caller = h.add_test_pane();
+    let a = h.app.router.active().root.clone();
+    let a_id = h.app.router.active().context_id;
+    let b = tempfile::tempdir().unwrap();
+    let b_id = a_id + 100;
+    let mut other = test_context(b_id, a_id, "B");
+    other.root = b.path().to_path_buf();
+    h.app.router.push(other);
+    h.app.windows.push(Window {
+        name: "B".into(), path: b.path().to_path_buf(), tree: egui_tiles::Tree::empty("B"),
+        panes: Default::default(), focused_pane: None, zoomed_pane: None,
+        grid_x: 0, grid_y: 0, window_id: b_id + 1, context_id: b_id,
+    });
+    h.app.router.activate_last();
+    h.app.active_window = 1;
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "from_pane_id":caller, "no_focus":true, "args":[]})).unwrap();
+    assert!(reply.get("error").is_none(), "{reply}");
+    let id = reply["pane_id"].as_u64().unwrap();
+    let pane = h.app.windows[0].panes.get(&id).unwrap().as_app().unwrap();
+    assert_eq!(pane.workspace_root, a);
+    assert_ne!(pane.workspace_root, b.path());
+    assert_eq!(h.app.active_window, 1);
+    assert_eq!(h.app.router.active().context_id, b_id);
+}
+
+#[test]
+fn context_targets_invalid_description_id_is_acknowledged_without_fallback() {
+    let mut h = crate::testing::HostHarness::new();
+    let before = h.app.router.active().description.clone();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"set_context_description", "description":"wrong target", "context_id":u64::MAX}));
+    assert_eq!(h.app.router.active().description, before);
+    assert!(reply.unwrap()["error"].as_str().unwrap().contains("not found"));
+}
+
+#[test]
+fn context_targets_invalid_app_context_never_spawns_in_active() {
+    let mut h = crate::testing::HostHarness::new();
+    h.add_test_pane();
+    let count = h.app.windows[0].panes.len();
+    let reply = context_target_request(&mut h, serde_json::json!({"type":"spawn_pane", "type_id":"agents", "target_context":u64::MAX, "args":[]})).unwrap();
+    assert_eq!(h.app.windows[0].panes.len(), count);
+    assert!(reply["error"].as_str().unwrap().contains("not found"));
+}

@@ -803,7 +803,7 @@ impl PlexiApp {
                     if let Some(pane) = win.panes.get(pane_id) {
                         let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
                         let agent = pane.effective_agent();
-                        let info = match pane {
+                        let mut info = match pane {
                             crate::host::pane::Pane::Terminal(t) => {
                                 let cwd = t
                                     .standby_cwd
@@ -897,6 +897,7 @@ impl PlexiApp {
                                 })
                             }
                         };
+                        info["context_root"] = serde_json::json!(self.context_root_for(win.context_id));
                         let json_str =
                             serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string());
                         write_response(response_file, json_str.as_bytes());
@@ -2162,39 +2163,55 @@ impl PlexiApp {
                 } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
                     &spec.target
                 {
-                    let (target_win, orig_focused_in_target) =
-                        self.redirect_focus_to_spawn_origin(spec.from_pane_id, "app", active);
-                    // CLI/spawn-request app opens default to a sibling split, never
-                    // an overlay takeover of the caller's pane. Manifest `[launch]
-                    // placement` still overrides the default (stint 0330).
-                    //
-                    // `self.active_window` has already been redirected to the
-                    // target window above (when `from_pane_id` named one), so
-                    // its context_id is the launch's actual target context —
-                    // matching what `launch_app_by_id_with_layout` itself
-                    // resolves against (stint 0724 Phase B).
-                    let target_context_id = self.windows[self.active_window].context_id;
+                    let target = (|| -> Result<usize, String> {
+                        if let Some(id) = spec.target_context {
+                            let idx = self.resolve_context_idx(Some(id), "app_open")?;
+                            let context_id = self.router.get(idx).context_id;
+                            if let Some(pane) = spec.from_pane_id {
+                                let (win, _) = self.find_pane_in_any_window(pane).ok_or_else(|| format!("pane {pane} not found"))?;
+                                if self.windows[win].context_id != context_id {
+                                    return Err(format!("pane {pane} does not belong to context {id}"));
+                                }
+                                return Ok(win);
+                            }
+                            let remembered = self.context_active_window.get(&context_id);
+                            return self.windows.iter().position(|w| w.context_id == context_id && Some(&w.window_id) == remembered)
+                                .or_else(|| self.windows.iter().position(|w| w.context_id == context_id))
+                                .ok_or_else(|| format!("context {id} has no window"));
+                        }
+                        match spec.from_pane_id {
+                            Some(pane) => self.find_pane_in_any_window(pane).map(|(win, _)| win).ok_or_else(|| format!("pane {pane} not found")),
+                            None => Ok(active),
+                        }
+                    })();
+                    let target_win = match target {
+                        Ok(win) => win,
+                        Err(error) => {
+                            log::info!("app_open: rejected: {error}");
+                            if let Some(file) = response_file { write_json_response(file, serde_json::json!({"error":error})); }
+                            return;
+                        }
+                    };
+                    let orig_focused_in_target = self.windows[target_win].focused_pane;
+                    if let Some(pane) = spec.from_pane_id {
+                        if let Some((_, tile)) = self.find_pane_in_any_window(pane) {
+                            self.set_window_focused_pane(target_win, tile);
+                        }
+                    }
+                    let target_context_id = self.windows[target_win].context_id;
+                    log::info!("app_open: id={type_id} target_context={target_context_id} target_window={target_win}");
                     let placement = crate::pane_ops::cli_open_placement(
                         spec.layout.clone(),
                         self.registries
                             .view_for_context(target_context_id, &self.router)
                             .placement_for(type_id),
                     );
-                    let launched = if type_id == "file_browser" {
-                        self.launch_file_browser_with_layout(
-                            Some(placement),
-                            &spec.args,
-                            cwd_override,
-                            file_browser_follow_caller,
-                        )
-                    } else {
-                        self.launch_app_by_id_with_layout(
-                            type_id,
-                            Some(placement),
-                            &spec.args,
-                            cwd_override,
-                        )
-                    };
+                    let launched = self.launch_app_by_id_with_layout_at(
+                        crate::pane_ops::create::IdAppLaunchOptions {
+                            target_win, bypass_on_launch: false, follow_file_browser_cwd: file_browser_follow_caller,
+                        },
+                        type_id, Some(placement), &spec.args, cwd_override,
+                    );
                     launch_result = launched.map(|existing_id| {
                         // A dedup focused a live instance; the response must
                         // report that pane, not the predicted id (#0336).
@@ -4561,46 +4578,42 @@ impl PlexiApp {
                 }
                 self.mark_workspace_dirty();
             }
-            crate::protocol::AppRequest::FocusContext { root } => {
-                log::warn!(
-                    "pane_ipc: FocusContext ignored — CWD-based auto-switch removed (root={})",
-                    root.display()
-                );
-            }
-            crate::protocol::AppRequest::SetContextRoot { root, context_id } => {
-                log::info!(
-                    "pane_ipc: kind=set_context_root root={} context_id={context_id:?}",
-                    root.display()
-                );
-                // Standing ruling: every path that establishes a context root
-                // ensures app_states/ is gitignored there (personal local
-                // data, never committed). Non-fatal; guarded so a bad root
-                // never gains directories as a side effect.
-                if root.is_dir() {
-                    if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(root)
-                    {
-                        log::warn!(
-                            "could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-                            root.display()
-                        );
+            crate::protocol::AppRequest::FocusContext { root, response_file } => {
+                let reply = match self.open_context_root(root) {
+                    Ok(context_id) => serde_json::json!({"context_id":context_id, "root":self.router.active().root}),
+                    Err(error) => {
+                        log::info!("context_open: rejected: {error}");
+                        serde_json::json!({"error":error})
                     }
-                }
-                self.set_context_root(root.clone(), *context_id);
-                self.mark_workspace_dirty();
-            }
-            crate::protocol::AppRequest::SetContextDescription {
-                description,
-                context_id,
-            } => {
-                log::info!("pane_ipc: kind=set_context_description context_id={context_id:?}");
-                let idx = self.resolve_context_idx(*context_id, "set_context_description");
-                let trimmed = description.trim().to_string();
-                self.router.get_mut(idx).description = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed)
                 };
-                self.mark_workspace_dirty();
+                if let Some(file) = response_file { write_json_response(file, reply); }
+            }
+            crate::protocol::AppRequest::SetContextRoot { root, context_id, response_file } => {
+                let result = self.resolve_context_idx(*context_id, "set_context_root").and_then(|idx| {
+                    if !root.is_dir() { return Err(format!("context root {} is not a directory", root.display())); }
+                    let id = self.router.get(idx).context_id;
+                    self.set_context_root(root.clone(), Some(id));
+                    Ok(serde_json::json!({"context_id":id, "root":root}))
+                });
+                let reply = result.unwrap_or_else(|error| {
+                    log::info!("set_context_root: rejected: {error}");
+                    serde_json::json!({"error":error})
+                });
+                if let Some(file) = response_file { write_json_response(file, reply); }
+            }
+            crate::protocol::AppRequest::SetContextDescription { description, context_id, response_file } => {
+                let reply = match self.resolve_context_idx(*context_id, "set_context_description") {
+                    Ok(idx) => {
+                        let trimmed = description.trim().to_string();
+                        self.router.get_mut(idx).description = if trimmed.is_empty() { None } else { Some(trimmed) };
+                        self.mark_workspace_dirty();
+                        let id = self.router.get(idx).context_id;
+                        log::info!("set_context_description: context_id={id}");
+                        serde_json::json!({"context_id":id})
+                    }
+                    Err(error) => serde_json::json!({"error":error}),
+                };
+                if let Some(file) = response_file { write_json_response(file, reply); }
             }
             crate::protocol::AppRequest::ZoomIntoContext {
                 context_id,

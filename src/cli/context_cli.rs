@@ -259,6 +259,17 @@ pub fn context_zoom_out_cli() -> i32 {
     }))
 }
 
+/// Mutations report host rejection, never transport-only success.
+fn context_mutation(payload: serde_json::Value, label: &str) -> i32 {
+    match super::request(payload, "context-response", label) {
+        Ok(content) => match super::check_reply_error(&content) {
+            Ok(()) => { println!("{content}"); 0 }
+            Err(code) => code,
+        },
+        Err(code) => code,
+    }
+}
+
 /// `plexi context open [path]`
 ///
 /// Focuses the context with matching root, or creates one. Uses CWD if path omitted.
@@ -270,10 +281,7 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    send_to_socket(serde_json::json!({
-        "type": "focus_context",
-        "root": root,
-    }))
+    context_mutation(serde_json::json!({"type":"focus_context", "root":root}), "context open")
 }
 
 /// `plexi context set-root [path]`
@@ -300,14 +308,12 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     if let Some(cid) = context_id {
         payload["context_id"] = serde_json::Value::from(cid);
     }
-    let rc = send_to_socket(payload);
+    let rc = context_mutation(payload, "context set-root");
     if rc == 0 {
         print_tip(
             "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
         );
-        print_tip(
-            "PLEXI_CONTEXT_ROOT is set when a pane opens — open a new pane to pick up the change",
-        );
+
     }
     rc
 }
@@ -326,7 +332,7 @@ pub fn context_describe_cli(text: &str) -> i32 {
     if let Some(cid) = context_id {
         payload["context_id"] = serde_json::Value::from(cid);
     }
-    send_to_socket(payload)
+    context_mutation(payload, "context describe")
 }
 
 /// `plexi context push [name] [--pane-id <id>]`

@@ -65,11 +65,9 @@ copy. Anything that must be *current* therefore has exactly two options:
 - derive it from the working directory, which is always current — the nearest
   ancestor holding a `.plexi` directory (`notes::anchored_root_for`).
 
-The second is why notes and app state are host-independent from the CLI without
-being wrong: their addresses are predictable from outside the process. This is the
-answer to stint 0745's open question — that split is correct, not a missing
-migration. `ScopeOrigin`'s module doc bans env vars as authority inputs for the
-same reason.
+Notes use the filesystem resolver. App state uses the host in a pane and file
+scope outside one; the CLI contract lives in `src/cli/AGENTS.md`. `ScopeOrigin`'s
+module doc bans env vars as authority inputs for the same reason.
 
 ## Experiment data
 

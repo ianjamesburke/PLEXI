@@ -258,20 +258,32 @@ impl PlexiApp {
         new_pane_first: bool,
         keep_focus: bool,
     ) -> Option<egui_tiles::TileId> {
-        let old_window_id = self.windows[self.active_window].window_id;
-        let old_focus = self.windows[self.active_window].focused_pane;
-        let focused = self.windows[self.active_window]
-            .find_first_pane_in(self.windows[self.active_window].focused_pane?)?;
-        let Some(Tile::Pane(source_id)) = self.windows[self.active_window].tree.tiles.get(focused) else { return None };
-        if !self.windows[self.active_window].panes.contains_key(source_id) { return None; }
-        let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
+        self.split_with_new_pane_at(self.active_window, new_pane_id, vertical, share, new_pane_first, keep_focus)
+    }
+
+    pub(crate) fn split_with_new_pane_at(
+        &mut self,
+        target_win: usize,
+        new_pane_id: PaneId,
+        vertical: bool,
+        share: crate::host::command::ShareRatio,
+        new_pane_first: bool,
+        keep_focus: bool,
+    ) -> Option<egui_tiles::TileId> {
+        let old_window_id = self.windows[target_win].window_id;
+        let old_focus = self.windows[target_win].focused_pane;
+        let focused = self.windows[target_win]
+            .find_first_pane_in(self.windows[target_win].focused_pane?)?;
+        let Some(Tile::Pane(source_id)) = self.windows[target_win].tree.tiles.get(focused) else { return None };
+        if !self.windows[target_win].panes.contains_key(source_id) { return None; }
+        let split_target = match self.windows[target_win].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
             None => focused,
         };
         self.push_focus_history(old_window_id, old_focus);
 
-        let ctx_id = self.windows[self.active_window].context_id;
-        let ctx = &mut self.windows[self.active_window];
+        let ctx_id = self.windows[target_win].context_id;
+        let ctx = &mut self.windows[target_win];
         let new_tile = insert_split_tile(
             &mut ctx.tree,
             Some(split_target),
@@ -282,7 +294,7 @@ impl PlexiApp {
         );
 
         if !keep_focus {
-            self.windows[self.active_window].navigate_to(new_tile);
+            self.windows[target_win].navigate_to(new_tile);
             self.zoom.context_last_pane.insert(ctx_id, new_pane_id);
         }
 
