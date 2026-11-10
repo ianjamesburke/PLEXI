@@ -38,6 +38,7 @@ pub(crate) struct RegistryViews {
     /// tests substitute a tempdir so they never touch the user's real profile
     /// (mirrors `AppRegistry::load_with_global`'s existing test seam).
     global_dir: PathBuf,
+    core_only: bool,
 }
 
 impl RegistryViews {
@@ -45,6 +46,7 @@ impl RegistryViews {
         Self {
             views: HashMap::new(),
             global_dir: crate::app::registry::apps_dir(),
+            core_only: false,
         }
     }
 
@@ -55,10 +57,17 @@ impl RegistryViews {
         Self {
             views: HashMap::new(),
             global_dir: global_dir.to_path_buf(),
+            core_only: false,
         }
     }
 
+    pub(crate) fn set_core_only(&mut self, core_only: bool) {
+        self.core_only = core_only;
+        self.views.clear();
+    }
+
     fn load_for(&self, root: &Path) -> AppRegistry {
+        if self.core_only { return AppRegistry::empty(); }
         AppRegistry::load_with_global(root, &self.global_dir)
     }
 

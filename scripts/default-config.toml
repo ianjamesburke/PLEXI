@@ -3,6 +3,9 @@
 
 config_version = 1
 
+# Start with no plugins. Profile-only; restart the host after changing.
+core_only = false
+
 font_size = 14.0
 # ui_scale = 1.0               # app-wide UI scale (0.6-2.0); Cmd+= / Cmd+- / Cmd+Shift+0
 # pane_gap = 4                 # inter-pane gap in pixels (0-20)

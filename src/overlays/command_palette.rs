@@ -1285,7 +1285,7 @@ impl PlexiApp {
         }
 
         // ── Note entries ────────────────────────────────────────────────────
-        for note in &self.palette_notes {
+        for note in self.palette_notes.iter().filter(|_| !self.config.core_only.unwrap_or(false)) {
             let search_text = searchable_text(&[note.title.as_str(), note.search_text.as_str()]);
             let matches = query.is_empty() || search_text.contains(&query);
             if matches {
@@ -1358,6 +1358,7 @@ impl PlexiApp {
             .collect();
 
         for app in BUILTIN_APPS {
+            if self.config.core_only.unwrap_or(false) { continue; }
             if !crate::release::feature_enabled(app.gate) {
                 continue;
             }

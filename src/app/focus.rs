@@ -974,7 +974,9 @@ impl PlexiApp {
             self.last_config_error = None;
         }
 
-        let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
+        let mut fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace);
+        // Plugin mode is a startup policy, never a partial live transition.
+        fresh.core_only = self.config.core_only;
 
         // Log level — applies live; the fern filter reads it atomically per record.
         let new_level = fresh

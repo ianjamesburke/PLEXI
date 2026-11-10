@@ -1,6 +1,10 @@
 pub fn list_cli() -> i32 {
+    if super::host::plugin_mode_core_only() {
+        println!("No plugins available: core-only mode is on.");
+        return 0;
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app::registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::AppRegistry::load_with_global(&cwd, &crate::app::registry::apps_dir());
     let installed = registry.list();
     if installed.is_empty() {
         println!("no apps installed");

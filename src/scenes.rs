@@ -299,6 +299,9 @@ fn resolve_live_pane_target(
 #[derive(Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct Scene {
+    /// Headless startup policy; live scenes use the installed profile.
+    #[serde(default)]
+    pub core_only: bool,
     /// Harness surface size in points. Defaults to 1280x800. Mutually
     /// exclusive with `sizes`.
     #[serde(default)]
@@ -1132,7 +1135,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             .as_ref()
             .map(|suffix| format!("[{suffix}] "))
             .unwrap_or_default();
-        let mut h = PlexiUiHarness::new_sized_scaled(size[0], size[1], *scale);
+        let mut h = PlexiUiHarness::new_sized_scaled_with_config(size[0], size[1], *scale, crate::config::PlexiConfig { core_only: Some(scene.core_only), ..Default::default() });
         if styled {
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
@@ -2398,6 +2401,9 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     };
     if !scene.scales.is_empty() || !scene.themes.is_empty() || !scene.reduced_motion.is_empty() {
         return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "layout matrices require the headless backend; installed zoom/theme must be validated independently"));
+    }
+    if scene.core_only {
+        return live_failed_report(scene_name, std::env::var("PLEXI_SCENE_CHANNEL").ok(), SceneError::new("unsupported_live_verb", "core_only scene startup is headless-only; configure the installed profile explicitly"));
     }
     if scene.picker_script.is_some() {
         return live_failed_report(

@@ -367,6 +367,7 @@ impl PlexiApp {
     /// instead of the focused-pane cwd, since OpenArtifact specifies the
     /// directory it wants browsed.
     fn open_file_browser_at(&mut self, cwd: std::path::PathBuf) {
+        if self.plugin_blocked("file_browser") { return; }
         use crate::app::app_trait::App;
         let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
         let perms = crate::app::permissions::AppPermissions::builtin();
@@ -394,6 +395,7 @@ impl PlexiApp {
     /// open (the explorer, or the terminal behind it); the text-editor lands as
     /// a split to its right.
     fn open_file_in_app(&mut self, sender_pane_id: PaneId, path: &str) {
+        if self.plugin_blocked("file viewer / text-editor") { return; }
         use crate::app::file_handlers::FileHandler;
         // Resolve the registry view against the REQUESTING pane's own
         // context, not whichever context is currently active (stint 0724

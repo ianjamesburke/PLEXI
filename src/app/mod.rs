@@ -28,6 +28,7 @@ pub(crate) mod input_owner;
 pub(crate) mod input_router;
 pub(crate) mod launch_spec;
 mod launch_notices;
+pub(crate) mod core_only;
 mod lifecycle;
 pub mod marketplace;
 pub(crate) mod notification_image;
@@ -213,6 +214,7 @@ pub struct PlexiApp {
     pub(crate) show_shortcuts: bool,
     pub(crate) show_changelog: bool,
     pub(crate) show_ui_gallery: bool,
+    pub(crate) plugin_notice: Option<String>,
     pub(crate) ui_gallery_normal_buf: String,
     pub(crate) ui_gallery_focused_buf: String,
     pub(crate) ui_gallery_show_text_modal: bool,
@@ -1595,6 +1597,8 @@ impl PlexiApp {
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let mut registries = crate::app::registry_views::RegistryViews::new();
+        registries.set_core_only(config.core_only.unwrap_or(false));
+        log::info!("plugins: core-only mode={}; restart required to change", config.core_only.unwrap_or(false));
         registries.view_for_root(&cwd);
         let registry_watchers = start_registry_watchers_for(&registries, &ui_wake);
 
@@ -1695,6 +1699,7 @@ impl PlexiApp {
                     show_shortcuts: false,
                     show_changelog: false,
                     show_ui_gallery: false,
+                    plugin_notice: None,
                     ui_gallery_normal_buf: "workspace/search".to_string(),
                     ui_gallery_focused_buf: "Focused field".to_string(),
                     ui_gallery_show_text_modal: false,
@@ -1917,6 +1922,7 @@ impl PlexiApp {
 
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let mut default_registries = crate::app::registry_views::RegistryViews::new();
+        default_registries.set_core_only(config.core_only.unwrap_or(false));
         default_registries.view_for_root(&default_cwd);
         let default_registry_watchers = start_registry_watchers_for(&default_registries, &ui_wake);
 
@@ -1972,6 +1978,7 @@ impl PlexiApp {
             show_shortcuts: false,
             show_changelog: false,
             show_ui_gallery: false,
+                    plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
             ui_gallery_show_text_modal: false,
@@ -2851,6 +2858,7 @@ impl PlexiApp {
         frame_tick: crate::platform::logging::FrameTick,
         config: config::PlexiConfig,
     ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
+        let core_only = config.core_only.unwrap_or(false);
         let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
             config.keybindings.as_ref(),
             config.keys.as_ref(),
@@ -2942,6 +2950,7 @@ impl PlexiApp {
             show_shortcuts: false,
             show_changelog: false,
             show_ui_gallery: false,
+                    plugin_notice: None,
             ui_gallery_normal_buf: "workspace/search".to_string(),
             ui_gallery_focused_buf: "Focused field".to_string(),
             ui_gallery_show_text_modal: false,
@@ -3017,6 +3026,7 @@ impl PlexiApp {
                 let mut views = crate::app::registry_views::RegistryViews::new_with_global(
                     &path.join("nonexistent-apps-dir"),
                 );
+                views.set_core_only(core_only);
                 views.view_for_root(&path);
                 views
             },
@@ -4860,6 +4870,7 @@ impl PlexiApp {
     /// to find them. That walk never runs on this thread: a cache hit paints
     /// immediately, and a miss paints an empty list until the refresh lands.
     pub(crate) fn open_notes_picker(&mut self) {
+        if self.plugin_blocked("notes") { return; }
         let started = std::time::Instant::now();
         log::info!("notes_picker: Cmd+O — opening picker");
         self.ensure_notes_index_loaded();
@@ -5523,7 +5534,7 @@ pub(crate) fn restore_workspace(
                     && (s.last_state == crate::protocol::AgentState::Completed
                         || saved_pane.slots.contains_key("completed"))
             });
-            if is_completed_ephemeral {
+            if is_completed_ephemeral && matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Terminal) {
                 crate::workspace::archive_saved_completion(
                     collaborators.profile_dir,
                     saved_pane,
@@ -5569,7 +5580,9 @@ pub(crate) fn restore_workspace(
                     continue;
                 };
                 let app_cwd = saved_pane.cwd.clone();
-                if let Some(launch) = &saved_pane.launch {
+                if config.core_only.unwrap_or(false) {
+                    pane_entry = Some(core_only::disabled_plugin_pane(saved_pane));
+                } else if let Some(launch) = &saved_pane.launch {
                     // Real manifest identity + launch context (stint 0680):
                     // relaunch through the shared runtime construction path,
                     // keeping the saved pane id.

@@ -1317,6 +1317,13 @@ fn not_ready_host_message(pid: Option<u32>, socket_exists: bool, socket: &Path) 
     }
 }
 
+/// CLI discovery follows the running host, or the next startup config when stopped.
+pub(crate) fn plugin_mode_core_only() -> bool {
+    running_build_info()
+        .and_then(|v| v.get("core_only").and_then(serde_json::Value::as_bool))
+        .unwrap_or_else(|| crate::config::PlexiConfig::load().core_only.unwrap_or(false))
+}
+
 /// `plexi host status [--json]` — ready/not-ready, pane count, pid, socket path.
 pub fn host_status_cli(json: bool) -> i32 {
     let channel = crate::config::build_channel();
@@ -1333,6 +1340,7 @@ pub fn host_status_cli(json: bool) -> i32 {
         let payload = serde_json::json!({
             "ready": ready,
             "cli": crate::distribution::build_info(),
+            "core_only": running.as_ref().and_then(|v| v.get("core_only")).cloned(),
             "running": running,
             "installed": crate::distribution::installed().ok().flatten(),
             "pane_count": pane_count,

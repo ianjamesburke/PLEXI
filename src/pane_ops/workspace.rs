@@ -2437,6 +2437,16 @@ impl PlexiApp {
                         ),
                     });
                 } else if let Some(a) = pane.as_app() {
+                    if let crate::host::pane::AppRuntime::Builtin(view) = &a.runtime {
+                        if let Some(original) = view.disabled_plugin_record() {
+                            let mut saved = original.clone();
+                            saved.id = id;
+                            saved.hidden = pane_hidden;
+                            saved.slots = a.slots.clone();
+                            saved_panes.push(saved);
+                            continue;
+                        }
+                    }
                     // A headless Assistant is hidden and absent from the tile
                     // tree. Saving it would restore a layout-less pane on the
                     // next launch. Conversation state is already per context.

@@ -167,6 +167,9 @@ pub(crate) fn gallery_rows(
 
 impl PlexiApp {
     pub(crate) fn draw_ui_gallery(&mut self, ctx: &egui::Context) {
+        if self.show_ui_gallery && self.plugin_blocked("ui-gallery") {
+            self.show_ui_gallery = false;
+        }
         if !self.show_ui_gallery {
             return;
         }

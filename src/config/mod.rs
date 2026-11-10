@@ -105,6 +105,7 @@ impl std::fmt::Display for ConfigDiagnostic {
 }
 
 const KNOWN_TOP_LEVEL: &[&str] = &[
+    "core_only",
     "config_version",
     "font_size",
     "ui_scale",
@@ -935,6 +936,8 @@ impl KeybindingsConfig {
 
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
+    /// Disable all plugins for this host session. Profile-only; restart required.
+    pub core_only: Option<bool>,
     pub config_version: Option<u32>,
     pub font_size: Option<f32>,
     /// App-wide UI scale (browser-style zoom). Default 1.0; clamped on use.

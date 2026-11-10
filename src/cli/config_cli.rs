@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 /// Static registry of all known config keys: (dotted_key, type_name, description).
 pub const CONFIG_KEYS: &[(&str, &str, &str)] = &[
+    ("core_only", "boolean", "Disable all plugins; global profile only, restart required (default false)"),
     (
         "config_version",
         "integer",

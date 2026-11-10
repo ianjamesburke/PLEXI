@@ -1650,8 +1650,12 @@ pub(crate) fn format_app_info(
 
 /// `plexi app info <id>` — show manifest info and honest tool status for an installed app.
 pub fn app_info(id: &str) -> i32 {
-    let registry =
-        crate::app::registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+    if super::host::plugin_mode_core_only() {
+        eprintln!("{}", crate::app::core_only::unavailable(id));
+        return 1;
+    }
+    let registry = crate::app::registry::AppRegistry::load_with_global(
+        &std::env::current_dir().unwrap_or_default(), &crate::app::registry::apps_dir());
     let Some(installed) = registry.get(id) else {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;

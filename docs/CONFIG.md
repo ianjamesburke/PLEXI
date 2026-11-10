@@ -6,6 +6,30 @@ Changes take effect on the next launch unless a command says otherwise.
 
 See the [configuration reference](../website/src/content/docs/config.md#channel-discipline) for channel profiles and installation behavior.
 
+## Core-only startup
+
+Set `core_only = true` at the top level of the channel-global config to start
+with every plugin disabled. The default is false. Workspace overrides are
+ignored for this key. Changes require a host restart, including changes made
+with config reload.
+
+For a PR profile, use `plexi-pr-<N> config set -g core_only=true`, then restart
+that PR host. `plexi-pr-<N> host status --json` reports the running value in
+`core_only` and `running.core_only`; a stopped host reports null.
+Use `plexi-pr-<N> config set -g core_only=false` and restart to return to normal.
+The terminal remains available to edit config with `$EDITOR`.
+
+Core-only startup skips plugin seeding, registry discovery and every plugin
+launch, including native views and direct paths. Plugin commands and shortcuts
+report which plugin is unavailable. Notes capture/picker and UI gallery are
+also withheld; trusted attention and consent remain host services.
+
+Restored plugin panes show an inert “Core-only mode” view. Saving preserves the
+original plugin identity, launch arguments, working folder and serialized state.
+A later normal startup restores the original plugin. Closing a placeholder is
+an explicit layout edit and removes that pane, as closing a normal pane would.
+Plugin packages and user documents stay on disk.
+
 ## Experiments
 
 Features outside the stable v1 surface are experiments. Every experiment is off by default on every channel, including alpha. Channels decide update cadence and profile directory, never features.

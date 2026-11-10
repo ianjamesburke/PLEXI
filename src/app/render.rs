@@ -1288,6 +1288,7 @@ impl PlexiApp {
 
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
+        self.draw_plugin_notice(&ctx);
 
         self.draw_minimap_overlay(&ctx);
 
