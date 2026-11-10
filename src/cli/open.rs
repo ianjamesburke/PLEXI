@@ -225,6 +225,13 @@ pub fn pane_new_cli(args: PaneNewCliArgs<'_>) -> i32 {
 
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
 
+    let caller_cwd = if from_pane_id.is_none() && cwd.is_none() {
+        std::env::current_dir().ok()
+    } else {
+        None
+    };
+    let cwd = cwd.or_else(|| caller_cwd.as_deref().and_then(std::path::Path::to_str));
+
     // Socket path — inside a Plexi pane
     if super::command_socket_available() {
         let mut payload = serde_json::json!({
@@ -748,9 +755,13 @@ fn open_app_by_path(
     // the CLI forcing an overlay takeover of the caller's pane (stint 0330).
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
     let spec = match PaneLaunchSpec::path(abs_path, args.to_vec()) {
-        Ok(spec) => spec
-            .with_layout(layout.map(str::to_string))
-            .with_from_pane_id(from_pane_id),
+        Ok(mut spec) => {
+            if from_pane_id.is_none() {
+                spec.workspace_root = std::env::current_dir().ok();
+            }
+            spec.with_layout(layout.map(str::to_string))
+                .with_from_pane_id(from_pane_id)
+        }
         Err(e) => {
             eprintln!("error: {e}");
             return 1;

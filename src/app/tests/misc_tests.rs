@@ -1248,6 +1248,44 @@ fn file_browser_unavailable_terminal_directory_falls_back() {
 }
 
 #[test]
+fn external_spawn_uses_supplied_cwd_for_app_workspace() {
+    let mut h = crate::testing::HostHarness::new();
+    let expected = h.workspace_root().join("external-caller");
+    std::fs::create_dir(&expected).unwrap();
+    h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+        type_id: "file_browser".into(),
+        layout: Some("split_h".into()),
+        args: vec![],
+        from_pane_id: None,
+        request_id: None,
+        response_file: None,
+        ephemeral: false,
+        cwd: Some(expected.to_string_lossy().into_owned()),
+        no_focus: false,
+        path: None,
+        workspace_root: None,
+        target_context: None,
+        context_name: None,
+        name: None,
+        agent_cmd: None,
+        boot_timeout_secs: None,
+        worktree: None,
+        result_schema: None,
+        peer_ancestry: None,
+    });
+    h.hidden_frame();
+    let browser = h.app.windows[0]
+        .panes
+        .values()
+        .find_map(|pane| {
+            pane.as_app()
+                .filter(|app| app.manifest_id == "file_browser")
+        })
+        .expect("external app spawned");
+    assert_eq!(browser.workspace_root, expected);
+}
+
+#[test]
 #[ignore = "requires-pty"]
 fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     let _shell = crate::host::shell::set_test_shell_override("/bin/sh");

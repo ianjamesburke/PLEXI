@@ -970,6 +970,41 @@ fn resolve_command_socket_from(
     ambient_socket.map(std::path::PathBuf::from)
 }
 
+/// Remove self-identity stamped by another host before CLI defaults are read.
+/// An explicit socket is outside this rule: it chooses routing independently.
+pub(crate) fn drop_foreign_channel_identity(explicit_socket: bool) -> Vec<String> {
+    let Some(channel) = command_binary_channel() else {
+        return Vec::new();
+    };
+    let Some(ambient) = std::env::var_os("PLEXI_SOCKET") else {
+        return Vec::new();
+    };
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let target = resolve_command_socket_from(None, Some(&channel), None, &home);
+    if explicit_socket || target.as_deref() == Some(std::path::Path::new(&ambient)) {
+        return Vec::new();
+    }
+    const IDENTITY: &[&str] = &[
+        "PLEXI_PANE_ID",
+        "PLEXI_CONTEXT_ID",
+        "PLEXI_CONTEXT_ROOT",
+        "PLEXI_CONTEXT_NAME",
+        "PLEXI_CONTEXT_DESCRIPTION",
+        "PLEXI_CONTEXT_DEPTH",
+        "PLEXI_RUNNING",
+        "PLEXI_CALL_CREDENTIAL",
+        "PLEXI_HOST_SESSION",
+    ];
+    let mut dropped = Vec::new();
+    for key in IDENTITY {
+        if std::env::var_os(key).is_some() {
+            std::env::remove_var(key);
+            dropped.push((*key).to_string());
+        }
+    }
+    dropped
+}
+
 static COMMAND_SOCKET_OVERRIDE: std::sync::Mutex<Option<std::path::PathBuf>> =
     std::sync::Mutex::new(None);
 
