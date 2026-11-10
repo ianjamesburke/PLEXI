@@ -5048,8 +5048,8 @@ mod agent_tests {
                 ws.path()
             ),
             include_str!("testdata/agent_list_json_base_agents.json")
-                .replace("0.4.0", env!("CARGO_PKG_VERSION"))
-                .trim_end(),
+                .trim_end()
+                .replace("<VERSION>", env!("CARGO_PKG_VERSION")),
             "the agent array must be byte-identical to the base-commit output"
         );
     }

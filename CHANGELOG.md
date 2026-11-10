@@ -1,6 +1,38 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.4] — 2026-11-10
+
+### Changes
+- fix(release): verify self-signed Mac-only stable packages (#3027)
+- fix(context): honor explicit targets and current root (#3031)
+- fix(host): capture fresh UI without window presentation (#3029)
+- fix(ui): readable default app text on resolved surfaces (#3030)
+- fix(ui): toasts hug their content within the bound (#3028)
+- feat(ui): enforce bounded host composition and readable chrome (#3026)
+- perf(host): make shutdown durable, responsive and observable (#3023)
+- fix(cli): isolate cross-channel pane identity (#3022)
+- fix(panes): restore vertical boundary moves (#3020)
+- fix(ui): separate pane focus and state chrome (#3021)
+- fix(ui): fit the window title beside toolbar controls (#3019)
+- fix(notes): move deleted notes to Trash with undo (#3015)
+- fix(sdk): remap container child references (#3017)
+- feat(ui): restore core minimap (#3018)
+- fix(ui): restore attention queue card contrast (#3016)
+- fix(theme): derive attention chrome colors (#3014)
+- feat(terminal): minimum text contrast by default so app-chosen colors stay readable on every theme (#3012)
+- fix(cli): gate agent mesh and enforce v1 command allowlist (#3011)
+- feat(theme): ship Plexi Night, Dusk, Dawn and Day; Dusk becomes the default (#3010)
+- fix(terminal): honor bracketed paste mode (2004) so large pastes into agents keep their content (#3009)
+- feat(sdk): deliver pane focus and visibility events to Python apps (#3007)
+- feat(apps): approved typed one-shot CLI operations (#3006)
+- fix(descriptor): remove inert plexi_app and capabilities fields (#3005)
+- fix(permissions): reject synthetic input in broker decision overlay (#3001)
+- fix(attention): dismiss activated failed bars (#3002)
+- fix(host): report screenshot timeout observations (#3003)
+- fix(sdk): align shared style tokens (#3000)
+- fix(workflow): stabilize source before candidate build
+- fix(terminal): preserve overflowing clock glyphs (#2999)
 ## [0.4.3] — 2026-11-07
 
 ### Changes

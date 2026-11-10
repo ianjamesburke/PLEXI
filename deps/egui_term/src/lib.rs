@@ -29,4 +29,4 @@ pub use diag::{set_repaint_diag_hook, set_span_hook};
 pub use contrast::{MIN_CONTRAST_MAX, MIN_CONTRAST_OFF};
 pub use font::{FontSettings, TerminalFont};
 pub use theme::{ColorPalette, TerminalTheme};
-pub use view::{terminal_widget_id, TerminalView};
+pub use view::{terminal_widget_id, TerminalView, TerminalViewState};

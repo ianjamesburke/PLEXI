@@ -21,3 +21,6 @@ jobs = 6
 # command line still wins when a suite needs full width.
 [env]
 RUST_TEST_THREADS = "4"
+
+# Keep release binaries runnable on macOS 14 regardless of the build host.
+MACOSX_DEPLOYMENT_TARGET = "14.0"
