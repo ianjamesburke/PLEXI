@@ -101,6 +101,25 @@ pub(crate) fn allocate<'a>(
     })
 }
 
+/// Center within a free text lane, shifting towards its nearest safe edge.
+/// The same rectangle is suitable for painting and semantic diagnostics.
+pub(crate) fn centered_text(bounds: Rect, center_x: f32, size: egui::Vec2) -> Option<Rect> {
+    if !bounds.is_finite()
+        || !size.is_finite()
+        || size.x <= 0.0
+        || size.y <= 0.0
+        || bounds.width() < size.x
+        || bounds.height() < size.y
+    {
+        return None;
+    }
+    let left = (center_x - size.x / 2.0).clamp(bounds.left(), bounds.right() - size.x);
+    Some(Rect::from_min_size(
+        pos2(left, bounds.center().y - size.y / 2.0),
+        size,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,6 +13,7 @@ pub mod labels;
 pub mod list;
 pub mod markdown;
 pub mod overlay;
+pub(crate) mod pane_header;
 pub mod provenance;
 #[cfg(test)]
 mod radius_guard_tests;

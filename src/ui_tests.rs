@@ -2242,7 +2242,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let mut saw_elided = false;
         let mut saw_hidden = false;
         for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
-            for width in [400.0_f32, 500.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
+            for width in [400.0_f32, 425.0, 450.0, 475.0, 500.0, 525.0, 550.0, 575.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
                 h.with_app_mut(|app| app.router.get_mut(0).name = "attention demo — needs_you".to_string().into());
                 h.run_steps(3);
@@ -2260,37 +2260,65 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                         saw_shifted = true;
                     }
                     for name in ["help", "version", "attention_mailbox", "gallery"] {
-                        let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))).expect("toolbar item");
+                        let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name))))
+                            .or_else(|| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", "overflow"))))).expect("toolbar item or named overflow");
                         assert!(!title.intersects(item), "scale {scale}, width {width}: title {title:?} overlaps {name} {item:?}");
                     }
                 });
             }
         }
-        assert!(saw_centered && saw_shifted && saw_elided && saw_hidden, "must exercise center, shift, truncate, and hide");
+        assert!(saw_centered && saw_shifted && saw_elided && saw_hidden, "must exercise center, shift, truncate, and hide: centered={saw_centered} shifted={saw_shifted} elided={saw_elided} hidden={saw_hidden}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn titlebar_compact_controls_preserve_native_exclusion() {
+        for scale in [1.0, 1.3, 2.0] {
+            let mut h = PlexiUiHarness::new_sized_scaled(400.0, 600.0, scale);
+            h.with_app_mut(|app| app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(110.0, 32.0))));
+            h.run_steps(3);
+            let rects = h.with_app(|app| {
+                let row = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("titlebar_row_rect"))).unwrap();
+                let rects: Vec<_> = ["gallery", "help", "version", "attention_mailbox", "overflow"].into_iter().filter_map(|name| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))).map(|rect| (name, rect))).collect();
+                for (name, rect) in &rects { assert!(rect.left() >= row.left() && rect.right() <= row.right(), "{scale}: {name} {rect:?} outside {row:?}"); }
+                rects
+            });
+            if let Some((_, rect)) = rects.iter().find(|(name, _)| *name == "overflow") {
+                assert!(h.harness().query_by_label("Toolbar actions").is_some());
+                for pressed in [true, false] {
+                    h.harness().input_mut().events.extend([egui::Event::PointerMoved(rect.center()), egui::Event::PointerButton { pos: rect.center(), button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }]);
+                    h.step();
+                }
+                assert!(h.harness().query_by_label("Changelog").is_some());
+                assert!(h.harness().query_by_label("Keyboard shortcuts").is_some());
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn screenshot_titlebar_scales() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
         for scale in [0.8_f32, 1.0, 1.3, 2.0] {
-            for width in [700.0_f32, 1600.0] {
+            for width in [400.0_f32, 700.0, 1600.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
                 std::fs::write(h.workspace_root().join("review-notes.txt"), "Review the pending request\n").unwrap();
                 let id = add_focused_pane(&mut h);
                 h.with_app_mut(|app| {
                     app.ctx.data_mut(|d| d.insert_temp(egui::Id::new("native_titlebar_test_metrics"), egui::vec2(70.0, 28.0)));
-                    let cfg = crate::ui::theme::preset_colors("plexi-dusk").unwrap();
+                    let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                     app.colors = crate::ui::theme::Colors::from_config(&cfg);
                     app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
-                    crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors, !crate::ui::theme::is_light_preset(theme));
                     app.router.get_mut(0).name = "attention demo".to_string().into();
                     app.windows[app.active_window].panes.get_mut(&id).unwrap().as_app_mut().unwrap().name = "needs_you".into();
                     app.enqueue_ask("titlebar-fixture", id, "Review the pending request", 1_000, Vec::new());
                 });
                 h.run_steps(4);
-                h.save_screenshot(&evidence_png!(format!("_{scale}_{width}"))).unwrap();
+                h.save_screenshot(&evidence_png!(format!("_{theme}_{scale}_{width}"))).unwrap();
             }
         }
+    }
     }
 
     /// The attention chip in the path bar keeps its own slot: at every UI
@@ -6691,11 +6719,12 @@ open(out + ".done", "w").close()
             ("completed", AgentState::Completed),
         ];
         for theme in ["plexi-dusk", "plexi-dawn"] {
+            for scale in [1.0, 2.0] {
             for wide in [false, true] {
-                let mut h = PlexiUiHarness::new_sized(1400.0, 800.0);
+                let mut h = PlexiUiHarness::new_sized_scaled(1400.0, 800.0, scale);
                 h.step();
-                std::fs::write(crate::config::config_path(), format!("[theme]\npreset = \"{theme}\"\n")).unwrap();
-                h.with_app_mut(|app| { app.reload_config(); app.sidebar_visible = false; });
+                std::fs::write(crate::config::config_path(), format!("ui_scale = {scale}\n[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| { app.reload_config(); app.ui_scale = scale; app.sidebar_visible = false; });
                 h.run_steps(3);
                 h.with_app(|app| {
                     let expected = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
@@ -6726,12 +6755,14 @@ open(out + ".done", "w").close()
                 for (index, (name, _)) in states.iter().enumerate() {
                     h.focus_pane(ids[index]).unwrap();
                     h.run_steps(3);
-                    let path = evidence_png!(&format!("_{theme}_{}_{name}", if wide { "wide" } else { "narrow" }));
+                    h.with_app(|app| assert!((app.ctx.zoom_factor() - scale).abs() < 0.001));
+                    let path = evidence_png!(&format!("_{theme}_{scale}_{}_{name}", if wide { "wide" } else { "narrow" }));
                     h.save_screenshot(&path).unwrap();
                     println!("screenshot: {path}");
                 }
             }
         }
+    }
     }
 
     #[test]
