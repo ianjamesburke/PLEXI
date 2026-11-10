@@ -845,6 +845,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pane_chrome_header_degrades_without_overlap() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let state = AgentState::NeedsYou;
+        let mut names = HashMap::new();
+        names.insert(7, "A long agent pane title".to_owned());
+        let status_color = colors.status_badge_color(colors.state_needs_you);
+        let fill = egui::Color32::from_rgba_unmultiplied(status_color.r(), status_color.g(), status_color.b(), 36);
+        for width in [30.0, 50.0, 80.0, 120.0, 200.0, 400.0] {
+            let ctx = egui::Context::default();
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
+                    render_name_bar_and_tabs(ui, NameBarParams {
+                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
+                        pane_agent_state: Some(&state), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None,
+                    });
+                });
+            });
+            let badge = output.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None });
+            if let Some(rect) = badge {
+                assert!(rect.left() >= TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0 && rect.right() <= width, "status badge overlaps the state icon or escapes header at width {width}: {rect:?}");
+            }
+            if width == 400.0 { assert!(badge.is_some(), "wide header retains the full chip"); }
+            if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
+        }
+    }
+
+    #[test]
     fn narrow_wrapped_standby_banner_keeps_enter_hint_visible() {
         let content = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(320.0, 88.0));
         // A realistic long pane name + cwd wraps to four terminal lines at this width.
