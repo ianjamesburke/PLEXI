@@ -310,7 +310,7 @@ def test_v3_5_uinode_widgets_emit_decoder_supported_root_type(widget_factory) ->
         lambda: Select("se", options=["Red", "Green", "Blue"]),
         lambda: DateTimePicker("d", value="2026-01-01", mode="date"),
         lambda: TextEdit("te", value="hi"),
-        lambda: Breadcrumb(items=["Home", "Apps", "Gallery"]),
+        lambda: Breadcrumb(items=["Home", "Plugins", "Gallery"]),
         lambda: TabBar("tb", tabs=["Overview", "Details"], active=0),
         lambda: Pagination("p", page=0, total=5),
         lambda: Banner("Saved.", tone="success", title="Success"),

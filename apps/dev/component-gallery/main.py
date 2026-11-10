@@ -168,7 +168,7 @@ def view():
         ], selected_idx=state.get(LIST, 0)),
 
         Section("Navigation"),
-        Breadcrumb(items=["Home", "Apps", "Gallery"]),
+        Breadcrumb(items=["Home", "Plugins", "Gallery"]),
         TabBar("gallery-tabs", tabs=["Overview", "Details", "Logs"],
                active=state.get(TAB, 0)),
         Pagination("gallery-page", page=state.get(PAGE, 0), total=5),
