@@ -830,6 +830,31 @@ mod tests {
     }
 
     #[test]
+    fn disabled_accent_is_forty_percent_of_rest_paint() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        let (rest, rect) = render(3, None, |ui| {
+            ui.add(KitButton::new("Action", &colors).kind(ButtonKind::Accent))
+        });
+        let (disabled, disabled_rect) = render(3, None, |ui| {
+            ui.add_enabled(
+                false,
+                KitButton::new("Action", &colors).kind(ButtonKind::Accent),
+            )
+        });
+        assert_eq!(rect, disabled_rect);
+        assert_eq!(
+            fills_at(&disabled, rect.center()).last().copied(),
+            fills_at(&rest, rect.center())
+                .last()
+                .map(|color| color.gamma_multiply(0.4))
+        );
+        assert_eq!(
+            label_shape(&disabled, "Action").1,
+            label_shape(&rest, "Action").1.gamma_multiply(0.4)
+        );
+    }
+
+    #[test]
     fn filled_accent_changes_color_on_hover() {
         let colors = crate::testing::HostHarness::new().app.colors;
         let (rest, rect) = render(3, None, |ui| {
