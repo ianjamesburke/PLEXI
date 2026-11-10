@@ -2207,20 +2207,60 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         });
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn titlebar_title_never_overlaps_toolbar_at_any_scale_or_width() {
+        let mut saw_centered = false;
+        let mut saw_shifted = false;
+        let mut saw_elided = false;
+        let mut saw_hidden = false;
         for scale in [0.8_f32, 1.0, 1.3, 1.6, 2.0] {
-            for width in [400.0_f32, 700.0, 1000.0, 1600.0] {
+            for width in [400.0_f32, 500.0, 600.0, 700.0, 800.0, 1000.0, 1600.0] {
                 let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                h.with_app_mut(|app| app.router.get_mut(0).name = "attention demo — needs_you".to_string().into());
                 h.run_steps(3);
                 h.with_app(|app| {
                     let get = |name| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(name)));
                     let title = get("titlebar_title_rect").expect("title geometry must be published");
-                    for name in ["help", "version", "attention_mailbox"] {
+                    let visible = app.ctx.data(|d| d.get_temp::<String>(egui::Id::new("titlebar_visible_title"))).unwrap();
+                    if visible.is_empty() {
+                        saw_hidden = true;
+                    } else if visible.ends_with('…') {
+                        saw_elided = true;
+                    } else if (title.center().x - app.ctx.content_rect().center().x).abs() < 0.1 {
+                        saw_centered = true;
+                    } else {
+                        saw_shifted = true;
+                    }
+                    for name in ["help", "version", "attention_mailbox", "gallery"] {
                         let item = app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("toolbar_ctl_rect", name)))).expect("toolbar item");
                         assert!(!title.intersects(item), "scale {scale}, width {width}: title {title:?} overlaps {name} {item:?}");
                     }
                 });
+            }
+        }
+        assert!(saw_centered && saw_shifted && saw_elided && saw_hidden, "must exercise center, shift, truncate, and hide");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_titlebar_scales() {
+        for scale in [1.0_f32, 1.3, 2.0] {
+            for width in [700.0_f32, 1600.0] {
+                let mut h = PlexiUiHarness::new_sized_scaled(width, 600.0, scale);
+                std::fs::write(h.workspace_root().join("review-notes.txt"), "Review the pending request\n").unwrap();
+                let id = add_focused_pane(&mut h);
+                h.with_app_mut(|app| {
+                    let cfg = crate::ui::theme::preset_colors("plexi-dusk").unwrap();
+                    app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                    app.theme = crate::ui::theme::terminal_theme(&cfg, crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST);
+                    crate::ui::theme::setup_style(&app.ctx, &app.colors, false);
+                    app.router.get_mut(0).name = "attention demo".to_string().into();
+                    app.windows[app.active_window].panes.get_mut(&id).unwrap().as_app_mut().unwrap().name = "needs_you".into();
+                    app.enqueue_ask("titlebar-fixture", id, "Review the pending request", 1_000, Vec::new());
+                });
+                h.run_steps(4);
+                h.save_screenshot(&evidence_png!(format!("_{scale}_{width}"))).unwrap();
             }
         }
     }

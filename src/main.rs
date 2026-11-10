@@ -2116,7 +2116,10 @@ fn main() -> eframe::Result {
         .with_title(env!("PLEXI_APP_TITLE"))
         .with_icon(icon)
         .with_fullsize_content_view(true)
-        .with_titlebar_shown(false);
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
+    #[cfg(target_os = "macos")]
+    log::info!("titlebar: native title hidden; toolbar renders measured window title");
     #[cfg(target_os = "linux")]
     let viewport = viewport.with_app_id(crate::config::current_exe_basename());
     let native_options = eframe::NativeOptions {
