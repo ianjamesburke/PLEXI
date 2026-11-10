@@ -163,8 +163,9 @@ impl egui::Widget for KitButton<'_> {
             };
         log_first_paint(kind, self.size, self.compact);
         let parent = self.surface.unwrap_or(ui.visuals().panel_fill);
+        let disabled = !ui.is_enabled();
         let state = ChromeButtonState {
-            disabled: !ui.is_enabled(),
+            disabled: false,
             down: false,
         };
         let visuals =
@@ -257,8 +258,15 @@ impl egui::Widget for KitButton<'_> {
                     ui.spacing_mut().interact_size.y = self.size.height();
                 }
                 ui.spacing_mut().button_padding = padding;
-                tactile_button(ui, button, hover_fill, active.fill, parent)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                tactile_button(
+                    ui,
+                    button,
+                    hover_fill,
+                    active.fill,
+                    parent,
+                    disabled.then_some(visuals),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
             })
             .inner;
         response.widget_info(|| {
@@ -557,6 +565,7 @@ fn tactile_button(
     hover_fill: Color32,
     active_fill: Color32,
     parent: Color32,
+    disabled_paint: Option<ChromeButtonVisuals>,
 ) -> egui::Response {
     let layer = ui.layer_id();
     let start = ui
@@ -620,6 +629,26 @@ fn tactile_button(
     ui.ctx().graphics_mut(|graphics| {
         if let Some(list) = graphics.get_mut(layer) {
             let end = list.all_entries().len();
+            if let Some(rest) = disabled_paint {
+                let surface = crate::ui::foreground::Surface::over(parent, rest.fill);
+                let rest_text =
+                    surface.foreground(rest.text, crate::ui::foreground::Role::SmallText);
+                for index in start..end {
+                    list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                        match &mut entry.shape {
+                            egui::Shape::Rect(rect) => {
+                                rect.fill = rest.fill.gamma_multiply(0.4);
+                                rect.stroke.color = rest.stroke.color.gamma_multiply(0.4);
+                            }
+                            egui::Shape::Text(text) => {
+                                text.override_text_color = Some(rest_text.gamma_multiply(0.4));
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+                return;
+            }
             let mut fill = parent;
             for entry in list.all_entries().skip(start) {
                 if let egui::Shape::Rect(rect) = &entry.shape {

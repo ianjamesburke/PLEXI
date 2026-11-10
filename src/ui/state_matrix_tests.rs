@@ -214,6 +214,19 @@ fn button_state_matrix() {
 }
 
 #[test]
+fn popup_row_and_menu_item_state_matrix() {
+    let colors = crate::testing::HostHarness::new().app.colors;
+    assert_state_stable(|ui, state| {
+        crate::ui::list::ListRow::new("Workspace")
+            .dense()
+            .selected(matches!(state, MatrixState::Selected))
+            .show(ui, &colors)
+            .response()
+    });
+    assert_state_stable(|ui, _state| crate::ui::button::menu_item(ui, "Rename", &colors));
+}
+
+#[test]
 #[should_panic(expected = "state=Selected")]
 fn state_guard_rejects_size_changing_control() {
     assert_state_stable(|ui, state| {
