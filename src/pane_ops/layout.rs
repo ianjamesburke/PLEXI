@@ -1461,12 +1461,16 @@ impl PlexiApp {
         let src_idx = self.active_window;
 
         let Some(focused_tile) = self.windows[src_idx].focused_pane else {
+            log::info!("move_focused_pane_to_row_boundary(end={end}): no focused tile");
             return false;
         };
 
         let src_pane_id = match self.windows[src_idx].tree.tiles.get(focused_tile) {
             Some(Tile::Pane(id)) => *id,
-            _ => return false,
+            _ => {
+                log::info!("move_focused_pane_to_row_boundary(end={end}): focused tile is not a pane");
+                return false;
+            }
         };
 
         let src_grid_y = self.windows[src_idx].grid_y;
@@ -1489,6 +1493,11 @@ impl PlexiApp {
                 );
                 return false;
             }
+        }
+
+        if !self.windows[src_idx].panes.contains_key(&src_pane_id) {
+            log::info!("move_focused_pane_to_row_boundary(end={end}): pane {src_pane_id} has no runtime");
+            return false;
         }
 
         let cwd = self.windows[src_idx]
@@ -1516,6 +1525,7 @@ impl PlexiApp {
         };
 
         let Some(pane) = extracted_pane else {
+            log::info!("move_focused_pane_to_row_boundary(end={end}): pane {src_pane_id} disappeared during extraction");
             return false;
         };
 
@@ -1613,6 +1623,7 @@ impl PlexiApp {
             if dx != 0 {
                 let tx = cur_x as i32 + dx;
                 if tx < 0 {
+                    log::info!("move_focused_pane_to_adjacent_window({dir:?}): target x is negative");
                     return false;
                 }
                 let tx = tx as u32;
@@ -1622,6 +1633,7 @@ impl PlexiApp {
             } else {
                 let ty = cur_y as i32 + dy;
                 if ty < 0 {
+                    log::info!("move_focused_pane_to_adjacent_window({dir:?}): target y is negative");
                     return false;
                 }
                 let ty = ty as u32;
@@ -1635,18 +1647,29 @@ impl PlexiApp {
             }
         };
         let Some(adj_idx) = adj_idx else {
+            log::info!("move_focused_pane_to_adjacent_window({dir:?}): no adjacent window");
             return false;
         };
 
         // Resolve focused tile and pane ID.
         let src_focused_tile = match self.windows[src_idx].focused_pane {
             Some(t) => t,
-            None => return false,
+            None => {
+                log::info!("move_focused_pane_to_adjacent_window({dir:?}): no focused tile");
+                return false;
+            }
         };
         let src_pane_id = match self.windows[src_idx].tree.tiles.get(src_focused_tile) {
             Some(Tile::Pane(id)) => *id,
-            _ => return false,
+            _ => {
+                log::info!("move_focused_pane_to_adjacent_window({dir:?}): focused tile is not a pane");
+                return false;
+            }
         };
+        if !self.windows[src_idx].panes.contains_key(&src_pane_id) {
+            log::info!("move_focused_pane_to_adjacent_window({dir:?}): pane {src_pane_id} has no runtime");
+            return false;
+        }
 
         // Determine what focus moves to in the source window after removal.
         let next_src_focus = self.windows[src_idx].find_next_focus(src_focused_tile);
@@ -1670,6 +1693,7 @@ impl PlexiApp {
         };
 
         let Some(pane) = extracted_pane else {
+            log::info!("move_focused_pane_to_adjacent_window({dir:?}): pane {src_pane_id} disappeared during extraction");
             return false;
         };
 
