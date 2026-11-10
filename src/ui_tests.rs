@@ -5813,7 +5813,7 @@ open(out + ".done", "w").close()
                         assert_eq!(
                             bounds.height(),
                             if kind == 0 {
-                                style::BUTTON_H_LG
+                                style::BUTTON_H_CHOICE
                             } else {
                                 style::BUTTON_H_MD
                             }

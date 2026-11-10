@@ -5,8 +5,9 @@ use crate::ui::{labels, row, style};
 use crate::workspace::secrets::manager::{self, Mutation, SecretEntry, SecretTarget};
 use std::path::{Path, PathBuf};
 use std::sync::{
+    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 
 struct PendingImport {
@@ -288,20 +289,30 @@ impl SecretsApp {
                     SecretTarget::Folder(_) => "Folder",
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.target, SecretTarget::Global, "Global");
+                    let mut options = vec![(SecretTarget::Global, "Global")];
                     if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
-                        ui.selectable_value(&mut self.target, target, "Workspace");
+                        options.push((target, "Workspace"));
                     }
                     if crate::release::feature_enabled(
                         crate::release::ReleaseFeature::FolderSecrets,
                     ) {
-                        ui.selectable_value(
-                            &mut self.target,
+                        options.push((
                             SecretTarget::Folder(crate::platform::path::canonical_or_self(
                                 &self.cwd,
                             )),
                             "Folder (current directory)",
-                        );
+                        ));
+                    }
+                    for (target, label) in options {
+                        if crate::ui::list::ListRow::new(label)
+                            .dense()
+                            .selected(self.target == target)
+                            .show(ui, colors)
+                            .row_clicked()
+                        {
+                            self.target = target;
+                            ui.close();
+                        }
                     }
                 });
         });
@@ -362,11 +373,25 @@ impl SecretsApp {
         );
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
-            if ui.add(button::KitButton::new("Save", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() || save
+            if ui
+                .add(
+                    button::KitButton::new("Save", colors)
+                        .kind(ButtonKind::Accent)
+                        .min_width(64.0),
+                )
+                .clicked()
+                || save
             {
                 self.commit_add();
             }
-            if ui.add(button::KitButton::new("Cancel", colors).kind(ButtonKind::Secondary).min_width(64.0)).clicked() {
+            if ui
+                .add(
+                    button::KitButton::new("Cancel", colors)
+                        .kind(ButtonKind::Secondary)
+                        .min_width(64.0),
+                )
+                .clicked()
+            {
                 self.close_form();
             }
         });
@@ -384,7 +409,7 @@ impl SecretsApp {
             Ok(()) => {
                 self.refresh();
                 self.status_msg = format!(
-                    "{name}: human terminal environment {}. Agent panes remain excluded.",
+                    "{name}: export to my terminals {}. Agent panes do not receive injected env secrets.",
                     if enabled { "on" } else { "off" }
                 );
             }
@@ -589,13 +614,14 @@ impl App for SecretsApp {
                         labels::description_label(ui, &format!("Grants: {grant}"), colors);
                         if let SecretTarget::Workspace { root, .. } = &entry.target {
                             let enabled = self.terminal_inject.contains(&entry.name);
-                            let label = if enabled { "Human terminal env: on" } else { "Human terminal env: off" };
+                            let label = if enabled { "Export to my terminals: on" } else { "Export to my terminals: off" };
                             if ui
-                                .add(button::KitButton::new(label, colors).kind(ButtonKind::Secondary).min_width(180.0))
+                                .add(button::KitButton::new(label, colors).kind(if enabled { ButtonKind::Accent } else { ButtonKind::Secondary }).min_width(180.0))
                                 .clicked()
                             {
                                 toggle = Some((entry.name.clone(), root.clone()));
                             }
+                            labels::description_label(ui, "Terminals you open get this as an env var. Agent panes do not.", colors);
                         }
                     });
                     if index == self.selected && self.scroll_to_selected { response.scroll_to_me(Some(egui::Align::Center)); }
@@ -655,9 +681,11 @@ mod tests {
             "canary-app-second"
         );
         app.delete_selected();
-        assert!(crate::workspace::secrets::system_store()
-            .get(&account)
-            .is_none());
+        assert!(
+            crate::workspace::secrets::system_store()
+                .get(&account)
+                .is_none()
+        );
         let fixture = cwd.path().join("fixture.env");
         let bytes = b"IMPORTED_APP_TOKEN=canary-app-import\n";
         std::fs::write(&fixture, bytes).unwrap();
@@ -813,18 +841,24 @@ mod tests {
                     builtin.as_any_mut().downcast_mut::<SecretsApp>()
                 })
                 .expect("hotkey opens Secrets");
-            assert!(secrets
-                .entries
-                .iter()
-                .any(|entry| entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global));
-            assert!(secrets
-                .entries
-                .iter()
-                .any(|entry| entry.name == "GITHUB_TOKEN" && entry.target == workspace));
-            assert!(secrets
-                .entries
-                .iter()
-                .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder));
+            assert!(
+                secrets
+                    .entries
+                    .iter()
+                    .any(|entry| entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global)
+            );
+            assert!(
+                secrets
+                    .entries
+                    .iter()
+                    .any(|entry| entry.name == "GITHUB_TOKEN" && entry.target == workspace)
+            );
+            assert!(
+                secrets
+                    .entries
+                    .iter()
+                    .any(|entry| entry.name == "DEPLOY_TOKEN" && entry.target == folder)
+            );
             secrets.entries.retain(|entry| {
                 (entry.name == "OPENAI_0858_SHOT_KEY" && entry.target == global)
                     || (entry.name == "GITHUB_TOKEN" && entry.target == workspace)
@@ -840,7 +874,10 @@ mod tests {
         h.save_screenshot(&crate::ui_tests::evidence_png!("_narrow"))
             .unwrap();
         for _ in 0..2 {
-            h.harness().input_mut().events.push(egui::Event::Text("j".into()));
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::Text("j".into()));
             h.run_steps(2);
         }
         h.harness().key_press(egui::Key::Enter);

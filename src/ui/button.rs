@@ -42,18 +42,6 @@ impl ButtonSize {
     }
 }
 
-/// What `selected(true)` paints. A selected button is the active member of a
-/// group (tab, segment, toggle): `Primary`, `Secondary` and `Ghost` promote to
-/// `Accent`; `Accent` and `Danger` already carry their own emphasis and are
-/// unchanged. The result depends only on these two inputs, never on builder
-/// call order.
-pub(crate) fn effective_kind(kind: ButtonKind, selected: bool) -> ButtonKind {
-    match (kind, selected) {
-        (ButtonKind::Accent | ButtonKind::Danger, _) | (_, false) => kind,
-        (_, true) => ButtonKind::Accent,
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 struct LabelStyle {
     size: Option<f32>,
@@ -120,7 +108,7 @@ impl<'a> KitButton<'a> {
         self.min_size.x = self.min_size.x.max(width);
         self
     }
-    /// Mark this button as the active member of a group; see [`effective_kind`].
+    /// Mark this button as the active member of a group.
     pub(crate) fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
@@ -166,16 +154,23 @@ impl egui::Widget for KitButton<'_> {
         reason = "the kit button is the one place that constructs egui::Button"
     )]
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let kind = effective_kind(self.kind, self.selected);
+        let kind = self.kind;
+        let paint_kind =
+            if self.selected && !matches!(kind, ButtonKind::Accent | ButtonKind::Danger) {
+                ButtonKind::Accent
+            } else {
+                kind
+            };
         log_first_paint(kind, self.size, self.compact);
         let parent = self.surface.unwrap_or(ui.visuals().panel_fill);
         let state = ChromeButtonState {
             disabled: !ui.is_enabled(),
             down: false,
         };
-        let visuals = chrome_button_visuals(kind, &self.colors, state, parent, self.text.color);
+        let visuals =
+            chrome_button_visuals(paint_kind, &self.colors, state, parent, self.text.color);
         let active = chrome_button_visuals(
-            kind,
+            paint_kind,
             &self.colors,
             ChromeButtonState {
                 down: true,
@@ -187,12 +182,29 @@ impl egui::Widget for KitButton<'_> {
         let padding = if self.compact {
             Vec2::ZERO
         } else {
-            egui::vec2(style::SPACE_MD, style::SPACE_XS)
+            egui::vec2(
+                match self.size {
+                    ButtonSize::Sm => 10.0,
+                    ButtonSize::Md => 12.0,
+                    ButtonSize::Lg => 16.0,
+                },
+                style::SPACE_XS,
+            )
         };
+        let label_size = self.text.size.unwrap_or_else(|| {
+            let height = self.min_size.y.max(self.size.height());
+            if height >= style::BUTTON_H_LG {
+                style::TEXT_BODY
+            } else if height >= style::BUTTON_H_MD {
+                style::TEXT_CONTROL
+            } else {
+                style::TEXT_CAPTION
+            }
+        });
         let font = if self.text.monospace {
-            egui::FontId::monospace(self.text.size.unwrap_or(style::TEXT_CAPTION))
+            egui::FontId::monospace(label_size)
         } else {
-            egui::FontId::proportional(self.text.size.unwrap_or(style::TEXT_CAPTION))
+            crate::ui::theme::font_medium(label_size)
         };
         let shown = if matches!(self.wrap, egui::TextWrapMode::Extend) && !self.compact {
             crate::ui::text::elide(
@@ -205,11 +217,10 @@ impl egui::Widget for KitButton<'_> {
         } else {
             self.label.to_owned()
         };
-        let mut text = RichText::new(shown).size(font.size).color(visuals.text);
+        let mut text = RichText::new(shown).font(font).color(visuals.text);
         if self.text.monospace {
             text = text.monospace();
         }
-        let ghost = matches!(kind, ButtonKind::Ghost);
         let mut min_size = self.min_size;
         if matches!(self.wrap, egui::TextWrapMode::Extend) {
             min_size.x = min_size.x.min(ui.available_width());
@@ -217,25 +228,36 @@ impl egui::Widget for KitButton<'_> {
         if !self.compact {
             min_size.y = min_size.y.max(self.size.height());
         }
-        let mut button = egui::Button::new(text)
-            .stroke(visuals.stroke)
-            .corner_radius(style::RADIUS_SM)
-            .selected(self.selected)
+        // Keep the frame geometry identical for every paint state.
+        let stroke = if visuals.stroke.width == 0.0 {
+            egui::Stroke::new(1.0, Color32::TRANSPARENT)
+        } else {
+            visuals.stroke
+        };
+        let button = egui::Button::new(text)
+            .stroke(stroke)
+            .corner_radius(if self.size == ButtonSize::Lg {
+                style::RADIUS_MD
+            } else {
+                style::RADIUS_SM
+            })
+            .fill(visuals.fill)
             .min_size(min_size)
             .wrap_mode(self.wrap);
-        if ghost {
-            // No explicit fill: egui paints the theme's hover and press fills.
-            button = button.frame_when_inactive(false);
-        } else {
-            button = button.fill(visuals.fill);
-        }
+        let hover_fill = match paint_kind {
+            ButtonKind::Primary => visuals.fill.lerp_to_gamma(self.colors.text_primary, 0.06),
+            ButtonKind::Secondary | ButtonKind::Ghost => self.colors.bg_hover,
+            ButtonKind::Accent | ButtonKind::Danger => {
+                visuals.fill.lerp_to_gamma(Color32::WHITE, 0.08)
+            }
+        };
         let response = ui
             .scope(|ui| {
                 if !self.compact {
                     ui.spacing_mut().interact_size.y = self.size.height();
                 }
                 ui.spacing_mut().button_padding = padding;
-                tactile_button(ui, button, active.fill, parent)
+                tactile_button(ui, button, hover_fill, active.fill, parent)
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
             })
             .inner;
@@ -308,8 +330,7 @@ fn chrome_button_visuals(
     parent: Color32,
     preferred_text: Option<Color32>,
 ) -> ChromeButtonVisuals {
-    // Secondary must stay distinguishable from a bg_active Card it may sit on.
-    let secondary_fill = colors.bg_active.lerp_to_gamma(colors.text_primary, 0.14);
+    let secondary_fill = Color32::TRANSPARENT;
     let base_fill = match kind {
         ButtonKind::Primary => colors.bg_active,
         ButtonKind::Secondary => secondary_fill,
@@ -323,9 +344,9 @@ fn chrome_button_visuals(
         colors.bg_active.gamma_multiply(0.55)
     } else if state.down {
         match kind {
-            ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.85),
-            ButtonKind::Secondary => secondary_fill.gamma_multiply(0.85),
-            ButtonKind::Primary | ButtonKind::Ghost => colors.bg_hover,
+            ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.90),
+            ButtonKind::Secondary | ButtonKind::Ghost => colors.bg_active,
+            ButtonKind::Primary => base_fill.lerp_to_gamma(colors.text_primary, 0.12),
         }
     } else {
         base_fill
@@ -337,7 +358,7 @@ fn chrome_button_visuals(
     } else {
         match kind {
             ButtonKind::Accent | ButtonKind::Danger => colors.text_on(base_fill),
-            ButtonKind::Secondary => colors.text_dim,
+            ButtonKind::Secondary => colors.text_primary,
             ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
         }
     };
@@ -346,7 +367,7 @@ fn chrome_button_visuals(
         ButtonKind::Secondary => {
             egui::Stroke::new(1.0_f32, colors.border.lerp_to_gamma(colors.text_dim, 0.45))
         }
-        _ => style::hairline_border(colors.border),
+        _ => egui::Stroke::NONE,
     };
     let surface = crate::ui::foreground::Surface::over(parent, fill);
     ChromeButtonVisuals {
@@ -402,8 +423,10 @@ pub(crate) fn choice_button(
     colors: &Colors,
 ) -> egui::Response {
     let width = ui.available_width();
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(width, style::BUTTON_H_LG), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        Vec2::new(width, style::BUTTON_H_CHOICE),
+        egui::Sense::click(),
+    );
 
     let (bg, fg, hint_color) = if focused {
         (
@@ -531,6 +554,7 @@ pub(crate) fn copy_button(
 fn tactile_button(
     ui: &mut egui::Ui,
     button: egui::Button<'_>,
+    hover_fill: Color32,
     active_fill: Color32,
     parent: Color32,
 ) -> egui::Response {
@@ -541,6 +565,20 @@ fn tactile_button(
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let response = ui.add(button);
     let amount = style::press_amount(&response);
+    if response.hovered() && ui.is_enabled() && amount == 0.0 {
+        ui.ctx().graphics_mut(|g| {
+            if let Some(list) = g.get_mut(layer) {
+                let end = list.all_entries().len();
+                for index in start..end {
+                    list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                        if let egui::Shape::Rect(rect) = &mut entry.shape {
+                            rect.fill = hover_fill;
+                        }
+                    });
+                }
+            }
+        });
+    }
     if amount > 0.0 {
         let scale = 1.0 - (1.0 - style::PRESS_SCALE) * amount;
         let transform = egui::emath::TSTransform::from_translation(
@@ -741,18 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_promotion_is_documented_and_order_independent() {
-        for kind in [
-            ButtonKind::Primary,
-            ButtonKind::Secondary,
-            ButtonKind::Ghost,
-        ] {
-            assert_eq!(effective_kind(kind, true), ButtonKind::Accent);
-            assert_eq!(effective_kind(kind, false), kind);
-        }
-        for kind in [ButtonKind::Accent, ButtonKind::Danger] {
-            assert_eq!(effective_kind(kind, true), kind);
-        }
+    fn selected_paint_is_order_independent() {
         let colors = crate::testing::HostHarness::new().app.colors;
         let fill_of = |first_selected: bool| {
             let (output, rect) = render(2, None, |ui| {
@@ -792,7 +819,7 @@ mod tests {
         });
         let (plain_font, plain_color) = label_shape(&plain, "Label");
         let (font, color) = label_shape(&styled, "Label");
-        assert_eq!(plain_font.size, style::TEXT_CAPTION);
+        assert_eq!(plain_font.size, style::TEXT_CONTROL);
         assert_eq!(font.size, 17.0, "text_size is honoured");
         assert_eq!(
             font.family,
@@ -803,18 +830,25 @@ mod tests {
     }
 
     #[test]
+    fn filled_accent_changes_color_on_hover() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        let (rest, rect) = render(3, None, |ui| {
+            ui.add(KitButton::new("Action", &colors).kind(ButtonKind::Accent))
+        });
+        let (hover, hover_rect) = render(3, Some(rect.center()), |ui| {
+            ui.add(KitButton::new("Action", &colors).kind(ButtonKind::Accent))
+        });
+        assert_eq!(rect.size(), hover_rect.size());
+        assert_ne!(
+            fills_at(&rest, rect.center()),
+            fills_at(&hover, hover_rect.center())
+        );
+    }
+
+    #[test]
     fn ghost_menu_items_highlight_on_hover() {
         let colors = crate::testing::HostHarness::new().app.colors;
-        let hovered_fill = {
-            let host = crate::testing::HostHarness::new();
-            host.app
-                .ctx
-                .global_style()
-                .visuals
-                .widgets
-                .hovered
-                .weak_bg_fill
-        };
+        let hovered_fill = colors.bg_hover;
         let (rest, rect) = render(3, None, |ui| menu_item(ui, "Rename", &colors));
         assert!(
             !fills_at(&rest, rect.center()).contains(&hovered_fill),

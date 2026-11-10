@@ -611,6 +611,11 @@ pub struct ListRowResponse {
 }
 
 impl ListRowResponse {
+    #[cfg(test)]
+    pub(crate) fn rect(&self) -> egui::Rect {
+        self.row.rect
+    }
+
     pub fn row_clicked(&self) -> bool {
         self.row.clicked() || self.trailing_clicked
     }
