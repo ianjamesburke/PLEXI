@@ -3,7 +3,7 @@
 //! Implement [`App`], then call [`export_app!`] once with an app constructor.
 
 wit_bindgen::generate!({
-    world: "plexi-app",
+    world: "plexi-plugin",
     path: "wit",
 });
 
@@ -89,7 +89,7 @@ impl bindings::exports::plexi::platform::lifecycle::Guest for PlexiComponent {
 
 export!(PlexiComponent);
 
-/// Exports an [`App`] as the `plexi-app` WIT world.
+/// Exports an [`App`] as the `plexi-plugin` WIT world.
 #[macro_export]
 macro_rules! export_app {
     ($constructor:expr) => {
@@ -244,9 +244,9 @@ pub mod effects {
         })
     }
     #[must_use]
-    pub fn spawn(app_id: impl Into<String>) -> Effect {
+    pub fn spawn(plugin_id: impl Into<String>) -> Effect {
         Effect::Spawn(SpawnEffect {
-            app_id: app_id.into(),
+            plugin_id: plugin_id.into(),
             layout: None,
             args: vec![],
         })

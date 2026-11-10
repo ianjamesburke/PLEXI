@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-use crate::app::app_trait::{App, AppRenderContext};
+use crate::app::app_trait::{App, ViewRenderContext};
 use crate::ui::{
-    app_chrome::AppChrome,
+    app_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
 
-pub struct ImageViewerApp {
+pub struct ImageViewerView {
     path: PathBuf,
     texture: Option<egui::TextureHandle>,
     image_size: Option<[usize; 2]>,
@@ -16,10 +16,10 @@ pub struct ImageViewerApp {
     fit_to_view: bool,
 }
 
-impl ImageViewerApp {
+impl ImageViewerView {
     pub fn new(path: PathBuf) -> Self {
         log::info!(
-            "ImageViewerApp: launch app_id=image-viewer path={}",
+            "ImageViewerView: launch plugin_id=image-viewer path={}",
             path.display()
         );
         Self {
@@ -56,7 +56,7 @@ impl ImageViewerApp {
                 ));
                 self.image_size = Some(size);
                 log::info!(
-                    "ImageViewerApp: decoded path={} size={}x{}",
+                    "ImageViewerView: decoded path={} size={}x{}",
                     self.path.display(),
                     size[0],
                     size[1]
@@ -64,14 +64,14 @@ impl ImageViewerApp {
             }
             Err(err) => {
                 let msg = format!("Unable to load image: {err}");
-                log::warn!("ImageViewerApp: {} path={}", msg, self.path.display());
+                log::warn!("ImageViewerView: {} path={}", msg, self.path.display());
                 self.error = Some(msg);
             }
         }
     }
 }
 
-impl App for ImageViewerApp {
+impl App for ImageViewerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -88,7 +88,7 @@ impl App for ImageViewerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.load_texture(ui.ctx());
@@ -97,7 +97,7 @@ impl App for ImageViewerApp {
             .image_size
             .map(|[w, h]| format!("{w}×{h}"))
             .unwrap_or_default();
-        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
+        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
 
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {

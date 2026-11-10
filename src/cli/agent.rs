@@ -4405,7 +4405,7 @@ mod agent_tests {
         let fleet = h.app.agents_view(crate::protocol::FleetFilter::All);
         assert!(fleet.tasks.iter().flat_map(|task| &task.rows).any(|row| row.pane_id == pane_id && row.role == "worker"));
         let next_reply = reply_dir.path().join("next.json");
-        h.app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentNext { response_file: next_reply.to_string_lossy().into_owned() });
+        h.app.handle_pane_ipc_request(crate::protocol::HostRequest::AgentNext { response_file: next_reply.to_string_lossy().into_owned() });
         let next: serde_json::Value = serde_json::from_slice(&fs::read(next_reply).unwrap()).unwrap();
         assert_eq!(next["pane_id"], pane_id);
         let run = crate::agent::runs::handle_request("spawn_run", &serde_json::json!({"workspace": root, "agent": "worker"}));
@@ -5669,7 +5669,7 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
     // Build and stamp the protocol type before sending. Command-specific fields
     // must not leak into other deny_unknown_fields request variants.
     payload["response_file"] = "".into();
-    let mut request: crate::protocol::AppRequest = match serde_json::from_value(payload) {
+    let mut request: crate::protocol::HostRequest = match serde_json::from_value(payload) {
         Ok(request) => request,
         Err(error) => {
             eprintln!("error: invalid agent tool request: {error}");
@@ -5677,8 +5677,8 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
         }
     };
     match &mut request {
-        crate::protocol::AppRequest::AgentCall { parent_pane_id, call_credential, .. }
-        | crate::protocol::AppRequest::AgentMessage { parent_pane_id, call_credential, .. } => {
+        crate::protocol::HostRequest::AgentCall { parent_pane_id, call_credential, .. }
+        | crate::protocol::HostRequest::AgentMessage { parent_pane_id, call_credential, .. } => {
             *parent_pane_id = std::env::var("PLEXI_PANE_ID").ok().and_then(|s| s.parse().ok());
             *call_credential = std::env::var("PLEXI_CALL_CREDENTIAL").ok();
         }
@@ -5687,12 +5687,12 @@ pub fn agent_tool_cli(mut payload: serde_json::Value) -> i32 {
             return 1;
         }
     }
-    if let crate::protocol::AppRequest::AgentCall { cwd, .. } = &mut request {
+    if let crate::protocol::HostRequest::AgentCall { cwd, .. } = &mut request {
         *cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned());
     }
     let timeout = if matches!(request,
-        crate::protocol::AppRequest::AgentCall { asynchronous: false, handoff: false, .. }
-        | crate::protocol::AppRequest::AgentMessage { wait: true, .. }
+        crate::protocol::HostRequest::AgentCall { asynchronous: false, handoff: false, .. }
+        | crate::protocol::HostRequest::AgentMessage { wait: true, .. }
     ) {
         std::time::Duration::from_secs(86405)
     } else {

@@ -1,5 +1,5 @@
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::app::permissions::AppPermissions;
+use crate::app::app_trait::{App, ViewCommand, ViewRenderContext};
+use crate::app::permissions::PluginPermissions;
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::collections::HashMap;
@@ -221,10 +221,10 @@ impl SemanticPaneState {
                         Some(format!("{}x{}", canvas.width, canvas.height)),
                         Vec::new(),
                     ),
-                    UiNodeData::AppBar(app_bar) => (
-                        "app_bar",
-                        Some(app_bar.title.clone()),
-                        (!app_bar.subtitle.is_empty()).then(|| app_bar.subtitle.clone()),
+                    UiNodeData::SurfaceHeader(surface_header) => (
+                        "surface_header",
+                        Some(surface_header.title.clone()),
+                        (!surface_header.subtitle.is_empty()).then(|| surface_header.subtitle.clone()),
                         Vec::new(),
                     ),
                     UiNodeData::FooterKeys(footer_keys) => (
@@ -433,7 +433,7 @@ fn process_command_bounds(object: &serde_json::Map<String, serde_json::Value>) -
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
-    App(Box<AppPane>),
+    App(Box<ViewPane>),
     /// A tile that represents a child context nested inside this one.
     /// Renders a summary card with pane count, status, and per-pane summaries.
     /// Cmd+Enter zooms into the sub-context when this tile has focus.
@@ -526,14 +526,14 @@ impl Pane {
         }
     }
 
-    pub fn as_app(&self) -> Option<&AppPane> {
+    pub fn as_app(&self) -> Option<&ViewPane> {
         match self {
             Pane::App(a) => Some(a),
             _ => None,
         }
     }
 
-    pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
+    pub fn as_app_mut(&mut self) -> Option<&mut ViewPane> {
         match self {
             Pane::App(a) => Some(a),
             _ => None,
@@ -1605,7 +1605,7 @@ mod agent_source_tests {
 }
 
 // ---------------------------------------------------------------------------
-// AppPane — dedicated app runtime (process or in-process builtin)
+// ViewPane — dedicated app runtime (process or in-process builtin)
 // ---------------------------------------------------------------------------
 
 /// What a `PendingPaneClick` is aimed at: a raw screen position (the pixel
@@ -1619,7 +1619,7 @@ pub(crate) enum PaneClickTarget {
     Node(u64),
 }
 
-/// A pointer click injected by `AppRequest::ClickPane`/`ClickPaneNode`
+/// A pointer click injected by `HostRequest::ClickPane`/`ClickPaneNode`
 /// (`plexi pane click`, or `HostHarness::inject_click`/`inject_node_click`),
 /// queued on `PlexiApp` and consumed by the canvas render pass for the
 /// target pane on the next frame it renders.
@@ -1642,7 +1642,7 @@ pub(crate) struct PendingPaneClick {
     /// Which pointer transition this sample delivers. `Click` (the default,
     /// what `ClickPane`/`ClickPaneNode` queue) is a press+release pair;
     /// `Press`/`Move`/`Release` are the per-frame samples of an
-    /// `AppRequest::DragPane` schedule (stint 0510) — one sample per frame,
+    /// `HostRequest::DragPane` schedule (stint 0510) — one sample per frame,
     /// resolved against that frame's live canvas rect like any click.
     pub phase: PointerPhase,
 }
@@ -1668,7 +1668,7 @@ impl PendingPaneClick {
     }
 }
 
-pub enum AppRuntime {
+pub enum ViewRuntime {
     Builtin(Box<dyn App>),
     Python(Box<crate::host::wasm_python::LivePythonPane>),
     /// A sandboxed WASM component app driven by the synchronous effect loop.
@@ -1677,7 +1677,7 @@ pub enum AppRuntime {
     Wasm(Box<crate::host::wasm_pane::LiveWasmPane>),
 }
 
-impl AppRuntime {
+impl ViewRuntime {
     pub fn submit_external_turn(
         &mut self,
         text: String,
@@ -1686,10 +1686,10 @@ impl AppRuntime {
         opts: crate::app::app_trait::ExternalTurnOpts,
     ) -> Result<(), String> {
         match self {
-            AppRuntime::Builtin(app) => {
+            ViewRuntime::Builtin(app) => {
                 app.submit_external_turn(text, request_id, response_file, opts)
             }
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
                 Err("this app does not accept external turns".to_string())
             }
         }
@@ -1697,35 +1697,35 @@ impl AppRuntime {
 
     pub fn take_config_saved(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.take_config_saved(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.take_config_saved(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn switch_commands_scope(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.switch_commands_scope(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.switch_commands_scope(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn captures_editor_shortcuts(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.captures_editor_shortcuts(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.captures_editor_shortcuts(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         pending_click: Option<PendingPaneClick>,
     ) {
         match self {
-            AppRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
-            AppRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
-            AppRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+            ViewRuntime::Builtin(app) => app.ui(ui, ctx, pending_click),
+            ViewRuntime::Python(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
+            ViewRuntime::Wasm(app) => app.ui(ui, ctx.colors, pending_click, ctx.pane_id),
         }
     }
 
@@ -1734,15 +1734,15 @@ impl AppRuntime {
         input: &crate::app::input_router::PlexiInput,
     ) -> crate::app::app_trait::KeyDisposition {
         match self {
-            AppRuntime::Builtin(app) => app.handle_key(input),
-            AppRuntime::Python(app) => app.handle_key(input),
-            AppRuntime::Wasm(app) => app.handle_key(input),
+            ViewRuntime::Builtin(app) => app.handle_key(input),
+            ViewRuntime::Python(app) => app.handle_key(input),
+            ViewRuntime::Wasm(app) => app.handle_key(input),
         }
     }
 
     /// Deliver the one bare Escape that just surrendered a declarative
     /// `TextInput`'s egui focus. Ordinary key routing reserves Escape for the
-    /// host CloseApp binding; this narrowly-scoped path lets the field's app
+    /// host CloseView binding; this narrowly-scoped path lets the field's app
     /// react to its own focus-loss Escape before that binding is suppressed.
     pub fn handle_text_input_escape(
         &mut self,
@@ -1750,30 +1750,30 @@ impl AppRuntime {
     ) -> crate::app::app_trait::KeyDisposition {
         match self {
             // Preserve the existing builtin TextInput Escape behavior. The
-            // caller consumes this one focus-loss Escape before CloseApp runs.
-            AppRuntime::Builtin(app) => app.handle_key(input),
-            AppRuntime::Python(app) => app.handle_text_input_escape(input),
-            AppRuntime::Wasm(app) => app.handle_text_input_escape(input),
+            // caller consumes this one focus-loss Escape before CloseView runs.
+            ViewRuntime::Builtin(app) => app.handle_key(input),
+            ViewRuntime::Python(app) => app.handle_text_input_escape(input),
+            ViewRuntime::Wasm(app) => app.handle_text_input_escape(input),
         }
     }
 
-    pub fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    pub fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         match self {
-            AppRuntime::Builtin(app) => app.take_pending_commands(),
-            AppRuntime::Python(app) => app.take_pending_commands(),
-            AppRuntime::Wasm(app) => app
+            ViewRuntime::Builtin(app) => app.take_pending_commands(),
+            ViewRuntime::Python(app) => app.take_pending_commands(),
+            ViewRuntime::Wasm(app) => app
                 .take_host_effects()
                 .into_iter()
-                .map(|effect| AppCommand::WasmHostEffect { pane_id: 0, effect })
+                .map(|effect| ViewCommand::WasmHostEffect { pane_id: 0, effect })
                 .collect(),
         }
     }
 
     pub fn keyboard_capture(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.keyboard_capture(),
-            AppRuntime::Python(_) => false,
-            AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.keyboard_capture(),
+            ViewRuntime::Python(_) => false,
+            ViewRuntime::Wasm(_) => false,
         }
     }
 
@@ -1781,16 +1781,16 @@ impl AppRuntime {
     /// handler while a declarative text input has focus.
     pub fn submit_on_focused_text_input_enter(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.submit_on_focused_text_input_enter(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.submit_on_focused_text_input_enter(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub fn wants_close(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.wants_close(),
-            AppRuntime::Python(app) => app.wants_close(),
-            AppRuntime::Wasm(app) => app.wants_close(),
+            ViewRuntime::Builtin(app) => app.wants_close(),
+            ViewRuntime::Python(app) => app.wants_close(),
+            ViewRuntime::Wasm(app) => app.wants_close(),
         }
     }
 
@@ -1798,8 +1798,8 @@ impl AppRuntime {
     /// context root. Only file-backed runtimes (Python today) have any.
     pub fn state_paths(&self) -> Vec<(crate::host::state_scope::StateScope, std::path::PathBuf)> {
         match self {
-            AppRuntime::Python(app) => app.state_paths(),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => Vec::new(),
+            ViewRuntime::Python(app) => app.state_paths(),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => Vec::new(),
         }
     }
 
@@ -1808,16 +1808,16 @@ impl AppRuntime {
     /// file-backed state.
     pub fn apply_external_state(&mut self, scope: crate::host::state_scope::StateScope) {
         match self {
-            AppRuntime::Python(app) => app.apply_external_state(scope),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => {}
+            ViewRuntime::Python(app) => app.apply_external_state(scope),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => {}
         }
     }
 
     pub fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         match self {
-            AppRuntime::Builtin(app) => app.queue_outbound_event(event),
-            AppRuntime::Python(app) => app.queue_outbound_event(event),
-            AppRuntime::Wasm(app) => app.queue_outbound_event(event),
+            ViewRuntime::Builtin(app) => app.queue_outbound_event(event),
+            ViewRuntime::Python(app) => app.queue_outbound_event(event),
+            ViewRuntime::Wasm(app) => app.queue_outbound_event(event),
         }
     }
 
@@ -1827,63 +1827,63 @@ impl AppRuntime {
             return None;
         }
         match self {
-            AppRuntime::Python(app) => Some(app.try_queue_outbound_event(event)),
-            AppRuntime::Builtin(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Python(app) => Some(app.try_queue_outbound_event(event)),
+            ViewRuntime::Builtin(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     pub(crate) fn supports_notify_action(&self) -> bool {
-        matches!(self, AppRuntime::Python(_)) && matches!(self.lifecycle().0, "starting" | "running")
+        matches!(self, ViewRuntime::Python(_)) && matches!(self.lifecycle().0, "starting" | "running")
     }
 
     /// Register a directed pipe on this runtime's local pipe registry so
     /// `has_pipe_reader` reflects the connection on the target runtime.
     pub fn register_directed_pipe(&mut self, pipe_id: &str) -> bool {
         match self {
-            AppRuntime::Builtin(_) => false,
-            AppRuntime::Python(app) => app.register_directed_pipe(pipe_id),
-            AppRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Builtin(_) => false,
+            ViewRuntime::Python(app) => app.register_directed_pipe(pipe_id),
+            ViewRuntime::Wasm(app) => app.register_directed_pipe(pipe_id),
         }
     }
 
     /// True when `pipe_id` is open on this runtime's local pipe registry.
     pub fn has_pipe_reader(&self, pipe_id: &str) -> bool {
         match self {
-            AppRuntime::Builtin(_) => false,
-            AppRuntime::Python(app) => app.has_pipe_reader(pipe_id),
-            AppRuntime::Wasm(app) => app.has_pipe_reader(pipe_id),
+            ViewRuntime::Builtin(_) => false,
+            ViewRuntime::Python(app) => app.has_pipe_reader(pipe_id),
+            ViewRuntime::Wasm(app) => app.has_pipe_reader(pipe_id),
         }
     }
 
     pub fn runtime_kind(&self) -> &'static str {
         match self {
-            AppRuntime::Builtin(_) => "builtin",
-            AppRuntime::Python(_) => "python",
-            AppRuntime::Wasm(_) => "wasm",
+            ViewRuntime::Builtin(_) => "builtin",
+            ViewRuntime::Python(_) => "python",
+            ViewRuntime::Wasm(_) => "wasm",
         }
     }
 
     /// Deliver the CLI/host semantic action contract to every app runtime.
     pub fn approval_request_id(&self) -> Option<String> {
         match self {
-            AppRuntime::Builtin(app) => app.approval_request_id(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.approval_request_id(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     pub fn send_app_action(&mut self, action: String, args: Vec<String>) -> Result<(), String> {
         match self {
-            AppRuntime::Wasm(app) => {
+            ViewRuntime::Wasm(app) => {
                 if !args.is_empty() {
                     return Err("WASM UI actions do not accept positional arguments".to_string());
                 }
                 app.dispatch_ui_action(action)
             }
-            AppRuntime::Builtin(app) => {
+            ViewRuntime::Builtin(app) => {
                 app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
-            AppRuntime::Python(app) => {
+            ViewRuntime::Python(app) => {
                 app.queue_outbound_event(crate::protocol::PlexiEvent::Action { action, args });
                 Ok(())
             }
@@ -1893,37 +1893,37 @@ impl AppRuntime {
     pub(crate) fn tool_event_sender(
         &self,
         repaint: egui::Context,
-    ) -> Option<crate::plexi_ai::tool_dispatch::AppEventSender> {
+    ) -> Option<crate::plexi_ai::tool_dispatch::PluginEventSender> {
         match self {
-            AppRuntime::Python(app) => Some(
-                crate::plexi_ai::tool_dispatch::AppEventSender::Python(app.tool_event_sender()),
+            ViewRuntime::Python(app) => Some(
+                crate::plexi_ai::tool_dispatch::PluginEventSender::Python(app.tool_event_sender()),
             ),
-            AppRuntime::Wasm(app) => Some(crate::plexi_ai::tool_dispatch::AppEventSender::Wasm(
+            ViewRuntime::Wasm(app) => Some(crate::plexi_ai::tool_dispatch::PluginEventSender::Wasm(
                 app.input_sender(repaint),
             )),
-            AppRuntime::Builtin(_) => None,
+            ViewRuntime::Builtin(_) => None,
         }
     }
 
     pub fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         match self {
-            AppRuntime::Builtin(app) => app.sync_cwd(new_cwd),
-            AppRuntime::Python(_) => {}
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(app) => app.sync_cwd(new_cwd),
+            ViewRuntime::Python(_) => {}
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
     pub(crate) fn semantic_details(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(app) => app.semantic_state(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.semantic_state(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     pub(crate) fn request_close(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.request_close(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => true,
+            ViewRuntime::Builtin(app) => app.request_close(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => true,
         }
     }
 
@@ -1932,47 +1932,47 @@ impl AppRuntime {
         wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
     ) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.service_external(wake),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.service_external(wake),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub(crate) fn sync_change_set(&mut self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.sync_change_set(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => false,
+            ViewRuntime::Builtin(app) => app.sync_change_set(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => false,
         }
     }
 
     pub(crate) fn editor_buffer(&self) -> Option<crate::host::changes::OpenEditorBuffer> {
         match self {
-            AppRuntime::Builtin(app) => app.editor_buffer(),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.editor_buffer(),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => None,
         }
     }
 
     /// Lifecycle is an observation of the runtime, not a pane-existence flag.
     pub(crate) fn lifecycle(&self) -> (&'static str, Option<&str>) {
         match self {
-            AppRuntime::Builtin(_) => ("running", None),
-            AppRuntime::Python(app) => app.lifecycle(),
-            AppRuntime::Wasm(app) if app.is_running() => ("running", None),
-            AppRuntime::Wasm(_) => ("exited", None),
+            ViewRuntime::Builtin(_) => ("running", None),
+            ViewRuntime::Python(app) => app.lifecycle(),
+            ViewRuntime::Wasm(app) if app.is_running() => ("running", None),
+            ViewRuntime::Wasm(_) => ("exited", None),
         }
     }
 
     /// Poll state that must stay current even when eframe skips rendering an
     /// occluded host window.
     pub(crate) fn poll_runtime_state(&mut self) {
-        if let AppRuntime::Python(app) = self {
+        if let ViewRuntime::Python(app) = self {
             app.poll_runtime_state();
         }
     }
 
     pub(crate) fn drop_file(&mut self, path_or_url: &str) -> Result<serde_json::Value, String> {
         match self {
-            AppRuntime::Builtin(app) => app.drop_file(path_or_url),
-            AppRuntime::Python(_) | AppRuntime::Wasm(_) => {
+            ViewRuntime::Builtin(app) => app.drop_file(path_or_url),
+            ViewRuntime::Python(_) | ViewRuntime::Wasm(_) => {
                 Err("target app does not accept file drops".to_string())
             }
         }
@@ -1980,19 +1980,19 @@ impl AppRuntime {
 
     pub fn type_id(&self) -> &'static str {
         match self {
-            AppRuntime::Builtin(app) => app.type_id(),
-            AppRuntime::Python(_) => "python-wasm",
-            AppRuntime::Wasm(_) => "wasm",
+            ViewRuntime::Builtin(app) => app.type_id(),
+            ViewRuntime::Python(_) => "python-wasm",
+            ViewRuntime::Wasm(_) => "wasm",
         }
     }
 
     pub fn serialize_state(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(app) => app.serialize_state(),
-            AppRuntime::Python(_) => None,
-            // WASM app state is persisted host-side via the file-backed
+            ViewRuntime::Builtin(app) => app.serialize_state(),
+            ViewRuntime::Python(_) => None,
+            // WASM plugin state is persisted host-side via the file-backed
             // StateStore, not through workspace JSON.
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
@@ -2000,37 +2000,37 @@ impl AppRuntime {
     /// open path on a workspace restore (stint 0680). `None` for builtins —
     /// they restore through `restore_builtin_app_pane`'s `builtin_factory`
     /// lookup instead, which needs no relaunch context.
-    pub fn launch_spec(&self) -> Option<crate::workspace::SavedAppLaunch> {
+    pub fn launch_spec(&self) -> Option<crate::workspace::SavedViewLaunch> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(app) => Some(app.launch_spec()),
-            AppRuntime::Wasm(app) => Some(app.launch_spec()),
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(app) => Some(app.launch_spec()),
+            ViewRuntime::Wasm(app) => Some(app.launch_spec()),
         }
     }
 
     pub fn display_name(&self) -> String {
         match self {
-            AppRuntime::Builtin(app) => app.display_name(),
-            AppRuntime::Python(app) => app.display_name(),
-            AppRuntime::Wasm(app) => app.display_name(),
+            ViewRuntime::Builtin(app) => app.display_name(),
+            ViewRuntime::Python(app) => app.display_name(),
+            ViewRuntime::Wasm(app) => app.display_name(),
         }
     }
 
     /// Seed text for the rename-pane overlay. See [`App::rename_seed`].
     pub fn rename_seed(&self) -> Option<String> {
         match self {
-            AppRuntime::Builtin(app) => app.rename_seed(),
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(app) => app.rename_seed(),
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
     /// Notify the app that its pane was renamed. See [`App::on_pane_renamed`].
     pub fn on_pane_renamed(&mut self, name: &str) {
         match self {
-            AppRuntime::Builtin(app) => app.on_pane_renamed(name),
-            AppRuntime::Python(_) => {}
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(app) => app.on_pane_renamed(name),
+            ViewRuntime::Python(_) => {}
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
@@ -2039,18 +2039,18 @@ impl AppRuntime {
     /// their existing schemes and ignore it.
     pub fn refresh_context_root(&mut self, root: &std::path::Path) {
         match self {
-            AppRuntime::Builtin(_) => {}
-            AppRuntime::Python(app) => app.set_context_root(root),
-            AppRuntime::Wasm(_) => {}
+            ViewRuntime::Builtin(_) => {}
+            ViewRuntime::Python(app) => app.set_context_root(root),
+            ViewRuntime::Wasm(_) => {}
         }
     }
 
     /// Pump event I/O for a pane not in the active context.
     pub fn background_tick(&mut self) {
         match self {
-            AppRuntime::Builtin(app) => app.background_tick(),
-            AppRuntime::Python(app) => app.background_tick(),
-            AppRuntime::Wasm(app) => app.background_tick(),
+            ViewRuntime::Builtin(app) => app.background_tick(),
+            ViewRuntime::Python(app) => app.background_tick(),
+            ViewRuntime::Wasm(app) => app.background_tick(),
         }
     }
 
@@ -2058,9 +2058,9 @@ impl AppRuntime {
     /// would make progress on?
     pub fn needs_background_tick(&self) -> bool {
         match self {
-            AppRuntime::Builtin(app) => app.needs_background_tick(),
-            AppRuntime::Python(app) => app.needs_background_tick(),
-            AppRuntime::Wasm(app) => app.needs_background_tick(),
+            ViewRuntime::Builtin(app) => app.needs_background_tick(),
+            ViewRuntime::Python(app) => app.needs_background_tick(),
+            ViewRuntime::Wasm(app) => app.needs_background_tick(),
         }
     }
 
@@ -2068,9 +2068,9 @@ impl AppRuntime {
     /// Always 0 for builtin apps — they manage their own internal navigation.
     pub fn nav_stack_depth(&self) -> usize {
         match self {
-            AppRuntime::Builtin(_) => 0,
-            AppRuntime::Python(_) => 0,
-            AppRuntime::Wasm(_) => 0,
+            ViewRuntime::Builtin(_) => 0,
+            ViewRuntime::Python(_) => 0,
+            ViewRuntime::Wasm(_) => 0,
         }
     }
 
@@ -2078,9 +2078,9 @@ impl AppRuntime {
     /// `None` when the stack is empty (root view — no back arrow shown).
     pub fn nav_top_title(&self) -> Option<&str> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 
@@ -2088,9 +2088,9 @@ impl AppRuntime {
     /// top, or empty string for root). Used to populate `NavBack { view_id }`.
     pub fn nav_back_view_id(&self) -> String {
         match self {
-            AppRuntime::Builtin(_) => String::new(),
-            AppRuntime::Python(_) => String::new(),
-            AppRuntime::Wasm(_) => String::new(),
+            ViewRuntime::Builtin(_) => String::new(),
+            ViewRuntime::Python(_) => String::new(),
+            ViewRuntime::Wasm(_) => String::new(),
         }
     }
 
@@ -2102,18 +2102,18 @@ impl AppRuntime {
     /// Returns `None` for builtin apps (no accessible frame).
     pub(crate) fn frame_json(&self) -> Option<serde_json::Value> {
         match self {
-            AppRuntime::Builtin(_) => None,
-            AppRuntime::Python(_) => None,
-            AppRuntime::Wasm(_) => None,
+            ViewRuntime::Builtin(_) => None,
+            ViewRuntime::Python(_) => None,
+            ViewRuntime::Wasm(_) => None,
         }
     }
 }
 
-pub struct AppPane {
+pub struct ViewPane {
     pub id: PaneId,
-    pub runtime: AppRuntime,
+    pub runtime: ViewRuntime,
     pub workspace_root: PathBuf,
-    pub permissions: AppPermissions,
+    pub permissions: PluginPermissions,
     pub manifest_id: String,
     pub name: String,
     /// Pane group this app joined at spawn. Only `sync_app_cwd` reads it, and
@@ -2136,17 +2136,17 @@ pub struct AppPane {
     pub(crate) semantic_state: SemanticPaneState,
 }
 
-impl AppPane {
+impl ViewPane {
     pub(crate) fn semantic_state(&self) -> SemanticPaneState {
         match &self.runtime {
-            AppRuntime::Builtin(_) => self.semantic_state.clone(),
-            AppRuntime::Python(app) => app.semantic_state(),
-            AppRuntime::Wasm(app) => app.semantic_state().clone(),
+            ViewRuntime::Builtin(_) => self.semantic_state.clone(),
+            ViewRuntime::Python(app) => app.semantic_state(),
+            ViewRuntime::Wasm(app) => app.semantic_state().clone(),
         }
     }
 }
 
-impl Drop for AppPane {
+impl Drop for ViewPane {
     fn drop(&mut self) {
         // Overlay apps reuse the replaced pane's id. Restoring the boxed pane
         // must preserve that pane's connector and subscription registrations.

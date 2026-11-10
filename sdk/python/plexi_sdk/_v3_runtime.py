@@ -114,7 +114,7 @@ class V3AppRuntime:
         self._keyed_tree_delta = False
         self._next_tree_node_id = 0
         self._frame_id = 0
-        self._app_id = ""
+        self._plugin_id = ""
         self._workspace_root = ""
         self._capabilities: list[str] = []
         self._http_tags: dict[str, str] = {}
@@ -357,7 +357,7 @@ class V3AppRuntime:
         ))
 
     def _handle_init(self, ev: dict) -> None:
-        self._app_id = ev.get("plugin_id", "")
+        self._plugin_id = ev.get("plugin_id", "")
         self._workspace_root = ev.get("workspace_root", "")
         self._capabilities = ev.get("capabilities", [])
         self._keyed_tree_delta = "keyed_tree_delta" in ev.get("feature_flags", [])

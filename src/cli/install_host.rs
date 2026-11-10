@@ -15,8 +15,8 @@
 //! `include_str!`. Sources are `local:<app-name>` — the installer copies
 //! from the embedded `apps/` tree.
 
-use crate::app::packs::{parse_source_spec, Pack, PackApp, SourceSpec};
-use crate::app::registry::{AppManifest, MANIFEST_SCHEMA_VERSION};
+use crate::app::packs::{parse_source_spec, Pack, PackPlugin, SourceSpec};
+use crate::app::registry::{PluginManifest, MANIFEST_SCHEMA_VERSION};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,7 +44,7 @@ pub enum InstallStatus {
     /// Newly installed at the given path.
     Installed(PathBuf),
     /// Re-extracted a bundled `local:` app over an existing install (pack
-    /// apply with `refresh_local`) — how core-app updates reach existing
+    /// apply with `refresh_local`) — how core-plugin updates reach existing
     /// profiles on stable channels.
     Refreshed(PathBuf),
     /// Already present at the requested version — no-op (pack apply
@@ -250,7 +250,7 @@ fn install_one_git(
             return Err(e);
         }
     };
-    let id = manifest.app.id.clone();
+    let id = manifest.plugin.id.clone();
     let dest = target_root.join(&id);
 
     if dest.exists() {
@@ -271,7 +271,7 @@ fn install_one_git(
 
     chmod_python_entries(&dest);
     provision_venv(&id, &dest, &manifest);
-    write_installed_version_file(&dest, &manifest.app.version);
+    write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: id={} ref={}", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
         id,
@@ -292,7 +292,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .get_file(format!("{name}/manifest.toml"))
         .and_then(|f| f.contents_utf8())
         .ok_or_else(|| format!("local source '{name}' has no manifest.toml"))?;
-    let manifest: AppManifest = toml::from_str(manifest_text)
+    let manifest: PluginManifest = toml::from_str(manifest_text)
         .map_err(|e| format!("local source '{name}' manifest invalid: {e}"))?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
@@ -300,7 +300,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
             manifest.schema_version, MANIFEST_SCHEMA_VERSION
         ));
     }
-    let id = manifest.app.id.clone();
+    let id = manifest.plugin.id.clone();
     let dest = target_root.join(&id);
     if dest.exists() {
         return Err(format!(
@@ -319,7 +319,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
     chmod_python_entries(&dest);
     provision_venv(&id, &dest, &manifest);
-    write_installed_version_file(&dest, &manifest.app.version);
+    write_installed_version_file(&dest, &manifest.plugin.version);
     log::info!("install: {id} ← local:{name}");
     Ok(InstallOutcome {
         id,
@@ -327,18 +327,18 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     })
 }
 
-/// Write `<app_dir>/installed_version.txt`. Best-effort — never fails the install.
-fn write_installed_version_file(app_dir: &Path, version: &str) {
-    let path = app_dir.join("installed_version.txt");
+/// Write `<plugin_dir>/installed_version.txt`. Best-effort — never fails the install.
+fn write_installed_version_file(plugin_dir: &Path, version: &str) {
+    let path = plugin_dir.join("installed_version.txt");
     if let Err(e) = std::fs::write(&path, version) {
         log::warn!(
             "install: could not write installed_version.txt for {}: {e}",
-            app_dir.display()
+            plugin_dir.display()
         );
     } else {
         log::info!(
             "install: wrote installed_version.txt={version} for {}",
-            app_dir.display()
+            plugin_dir.display()
         );
     }
 }
@@ -346,7 +346,7 @@ fn write_installed_version_file(app_dir: &Path, version: &str) {
 /// Read + validate `manifest.toml` from a freshly-cloned repo. Returns a
 /// clear error for a missing file, a parse error, or an unsupported
 /// schema_version.
-fn read_manifest(repo_dir: &Path) -> Result<AppManifest, String> {
+fn read_manifest(repo_dir: &Path) -> Result<PluginManifest, String> {
     let manifest_path = repo_dir.join("manifest.toml");
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         format!(
@@ -354,7 +354,7 @@ fn read_manifest(repo_dir: &Path) -> Result<AppManifest, String> {
             manifest_path.display()
         )
     })?;
-    let manifest: AppManifest =
+    let manifest: PluginManifest =
         toml::from_str(&text).map_err(|e| format!("manifest.toml invalid: {e}"))?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
@@ -367,12 +367,12 @@ fn read_manifest(repo_dir: &Path) -> Result<AppManifest, String> {
 }
 
 #[cfg(unix)]
-fn chmod_python_entries(app_dir: &Path) {
+fn chmod_python_entries(plugin_dir: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let entries = match std::fs::read_dir(app_dir) {
+    let entries = match std::fs::read_dir(plugin_dir) {
         Ok(d) => d,
         Err(e) => {
-            log::warn!("install: could not chmod {}: {e}", app_dir.display());
+            log::warn!("install: could not chmod {}: {e}", plugin_dir.display());
             return;
         }
     };
@@ -389,23 +389,23 @@ fn chmod_python_entries(app_dir: &Path) {
 }
 
 #[cfg(not(unix))]
-fn chmod_python_entries(_app_dir: &Path) {}
+fn chmod_python_entries(_plugin_dir: &Path) {}
 
-fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
-    let entry = &manifest.app.entry;
+fn provision_venv(plugin_id: &str, plugin_dir: &Path, manifest: &PluginManifest) {
+    let entry = &manifest.plugin.entry;
     let is_python = entry.ends_with(".py");
     if !is_python {
         return;
     }
 
-    match crate::app::python_env::ensure_app_venv(app_id, app_dir, &manifest.app.dependencies) {
+    match crate::app::python_env::ensure_app_venv(plugin_id, plugin_dir, &manifest.plugin.dependencies) {
         Ok(python) => log::info!(
-            "install[{app_id}]: Python app environment ready at {}",
+            "install[{plugin_id}]: Python app environment ready at {}",
             python.display()
         ),
         Err(e) => log::warn!(
-            "install[{app_id}]: Python app environment setup failed: {e}; app may not launch until `plexi app check {}` succeeds",
-            app_dir.display()
+            "install[{plugin_id}]: Python app environment setup failed: {e}; app may not launch until `plexi plugin check {}` succeeds",
+            plugin_dir.display()
         ),
     }
 }
@@ -419,7 +419,7 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
 /// binary's embedded tree, replacing the installed directory wholesale. This
 /// is the update path for bundled core apps — `local:` versions are
 /// `"bundled"` on both sides, so content, not version, is the ground truth.
-/// Only the explicit installer path (`plexi app install --pack core
+/// Only the explicit installer path (`plexi plugin install --pack core
 /// --refresh`) sets this; launch-time reseeding never clobbers an existing
 /// install.
 pub fn apply_pack(
@@ -471,7 +471,7 @@ fn refresh_one_local(name: &str, id: &str, target_root: &Path) -> InstallOutcome
 
 fn apply_pack_entry(
     cloner: &dyn Cloner,
-    entry: &PackApp,
+    entry: &PackPlugin,
     target_root: &Path,
     installed: &HashMap<String, String>,
     refresh_local: bool,
@@ -527,7 +527,7 @@ fn apply_pack_entry(
 /// Walk `<target_root>/<id>/manifest.toml` for every dir entry and harvest
 /// the manifest version. Used to drive `plexi list` and pack-apply
 /// idempotency. Apps without a parseable manifest are skipped silently
-/// (already logged elsewhere by `AppRegistry`).
+/// (already logged elsewhere by `PluginRegistry`).
 pub fn installed_versions(target_root: &Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let entries = match std::fs::read_dir(target_root) {
@@ -537,8 +537,8 @@ pub fn installed_versions(target_root: &Path) -> HashMap<String, String> {
     for e in entries.flatten() {
         let manifest = e.path().join("manifest.toml");
         if let Ok(text) = std::fs::read_to_string(&manifest) {
-            if let Ok(parsed) = toml::from_str::<AppManifest>(&text) {
-                out.insert(parsed.app.id, parsed.app.version);
+            if let Ok(parsed) = toml::from_str::<PluginManifest>(&text) {
+                out.insert(parsed.plugin.id, parsed.plugin.version);
             }
         }
     }
@@ -559,7 +559,7 @@ pub fn uninstall_one(id: &str, target_root: &Path) -> Result<(), String> {
 
 /// `git fetch && git pull` a concrete installed app directory. Used by the
 /// workspace-aware CLI update path after registry resolution.
-pub fn update_app_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), String> {
+pub fn update_plugin_dir(cloner: &dyn Cloner, id: &str, dest: &Path) -> Result<(), String> {
     if !dest.exists() {
         return Err(format!("'{id}' is not installed at {}", dest.display()));
     }
@@ -594,36 +594,36 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
 
     let mut rows: Vec<(String, String, String)> = Vec::new();
     for e in entries.flatten() {
-        let app_dir = e.path();
+        let plugin_dir = e.path();
         // Skip non-dirs and the staging dirs install_one leaves behind on
         // crash (`.tmp-install-*`). Both would produce a noisy export.
-        if !app_dir.is_dir() {
+        if !plugin_dir.is_dir() {
             continue;
         }
-        if app_dir
+        if plugin_dir
             .file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n.starts_with(".tmp-install-"))
         {
             continue;
         }
-        let manifest_path = app_dir.join("manifest.toml");
+        let manifest_path = plugin_dir.join("manifest.toml");
         let text = match std::fs::read_to_string(&manifest_path) {
             Ok(t) => t,
             Err(_) => continue,
         };
-        let manifest: AppManifest = match toml::from_str(&text) {
+        let manifest: PluginManifest = match toml::from_str(&text) {
             Ok(m) => m,
             Err(err) => {
                 log::warn!(
                     "pack export: skipping {}: manifest invalid: {err}",
-                    app_dir.display()
+                    plugin_dir.display()
                 );
                 continue;
             }
         };
-        let id = manifest.app.id.clone();
-        let (source, version) = infer_source_and_version(&app_dir, &manifest);
+        let id = manifest.plugin.id.clone();
+        let (source, version) = infer_source_and_version(&plugin_dir, &manifest);
         rows.push((id, source, version));
     }
 
@@ -633,7 +633,7 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
     out.push_str("# Generated by `plexi pack export`. Edit freely.\n");
     out.push_str("schema_version = 1\n\n");
     for (id, source, version) in &rows {
-        out.push_str("[[app]]\n");
+        out.push_str("\n[[plugin]]\n");
         out.push_str(&format!("id      = \"{id}\"\n"));
         out.push_str(&format!("source  = \"{source}\"\n"));
         out.push_str(&format!("version = \"{version}\"\n\n"));
@@ -658,18 +658,18 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
 /// Best-effort inference of `(source_spec, version)` for one installed app
 /// dir. Pure-IO helper for `export_pack`. Public for the CLI test that
 /// wants to assert the local-vs-git split independently of file scanning.
-pub fn infer_source_and_version(app_dir: &Path, manifest: &AppManifest) -> (String, String) {
-    if app_dir.join(".git").exists() {
-        let url = git_remote_origin_url(app_dir).unwrap_or_else(|| String::from("git+unknown"));
+pub fn infer_source_and_version(plugin_dir: &Path, manifest: &PluginManifest) -> (String, String) {
+    if plugin_dir.join(".git").exists() {
+        let url = git_remote_origin_url(plugin_dir).unwrap_or_else(|| String::from("git+unknown"));
         let source = format_git_source_spec(&url);
-        let version = git_current_ref(app_dir).unwrap_or_else(|| manifest.app.version.clone());
+        let version = git_current_ref(plugin_dir).unwrap_or_else(|| manifest.plugin.version.clone());
         return (source, version);
     }
-    let id = &manifest.app.id;
-    let version = if manifest.app.version.is_empty() {
+    let id = &manifest.plugin.id;
+    let version = if manifest.plugin.version.is_empty() {
         "bundled".to_string()
     } else {
-        manifest.app.version.clone()
+        manifest.plugin.version.clone()
     };
     (format!("local:{id}"), version)
 }
@@ -877,7 +877,7 @@ const RETIRED_PRE_V3_FIRST_PARTY_APP_IDS: &[&str] = &[
 ];
 
 /// Return app directories identified as former first-party pre-v3 installs.
-/// This is side-effect free so `plexi app prune --dry-run` can report exactly
+/// This is side-effect free so `plexi plugin prune --dry-run` can report exactly
 /// what a launch-time reconciliation would remove.
 pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
     let core_ids = core_pack_ids();
@@ -886,18 +886,18 @@ pub fn orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<PathBuf> {
         return candidates;
     };
     for entry in entries.flatten() {
-        let app_dir = entry.path();
-        if !app_dir.is_dir() {
+        let plugin_dir = entry.path();
+        if !plugin_dir.is_dir() {
             continue;
         }
-        let Some(id) = app_dir.file_name().and_then(|name| name.to_str()) else {
+        let Some(id) = plugin_dir.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         if core_ids.contains(id) || !RETIRED_PRE_V3_FIRST_PARTY_APP_IDS.contains(&id) {
             continue;
         }
-        if has_pre_v3_app_imports(&app_dir) {
-            candidates.push(app_dir);
+        if has_pre_v3_app_imports(&plugin_dir) {
+            candidates.push(plugin_dir);
         }
     }
     candidates.sort();
@@ -927,8 +927,8 @@ pub fn reconcile_orphaned_pre_v3_first_party_apps(target_root: &Path) -> Vec<Pat
         .collect()
 }
 
-fn has_pre_v3_app_imports(app_dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(app_dir) else {
+fn has_pre_v3_app_imports(plugin_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(plugin_dir) else {
         return false;
     };
     entries.flatten().any(|entry| {
@@ -960,21 +960,21 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-/// Read `<workspace_root>/<channel_dir>/apps.toml` and install declared apps into the
-/// workspace-scoped apps dir (`<workspace_root>/<channel_dir>/apps/`).
+/// Read `<workspace_root>/<channel_dir>/plugins.toml` and install declared apps into the
+/// workspace-scoped apps dir (`<workspace_root>/<channel_dir>/plugins/`).
 pub fn apply_workspace_pack(
     workspace_root: &Path,
     cloner: &dyn Cloner,
 ) -> Result<Vec<InstallOutcome>, String> {
     let channel_dir = crate::config::workspace_channel_dir();
-    let apps_toml = workspace_root.join(&channel_dir).join("apps.toml");
-    if !apps_toml.exists() {
+    let plugins_toml = workspace_root.join(&channel_dir).join("plugins.toml");
+    if !plugins_toml.exists() {
         return Err(
-            format!("no {channel_dir}/apps.toml found — run 'plexi workspace init' to initialize a workspace with a stub apps.toml"),
+            format!("no {channel_dir}/plugins.toml found — run 'plexi workspace init' to initialize a workspace with a stub plugins.toml"),
         );
     }
-    let pack = Pack::from_path(&apps_toml)?;
-    let workspace_apps = crate::app::registry::workspace_apps_dir(workspace_root);
+    let pack = Pack::from_path(&plugins_toml)?;
+    let workspace_apps = crate::app::registry::workspace_plugins_dir(workspace_root);
     std::fs::create_dir_all(&workspace_apps).map_err(|e| {
         format!(
             "create workspace apps dir {}: {e}",
@@ -983,23 +983,23 @@ pub fn apply_workspace_pack(
     })?;
     log::info!(
         "install: workspace pack {} → {} ({} apps)",
-        apps_toml.display(),
+        plugins_toml.display(),
         workspace_apps.display(),
         pack.apps.len()
     );
     Ok(apply_pack(cloner, &pack, &workspace_apps, false))
 }
 
-/// Return the set of app IDs declared in `<workspace_root>/<channel_dir>/apps.toml`.
+/// Return the set of app IDs declared in `<workspace_root>/<channel_dir>/plugins.toml`.
 /// Returns an empty set if the file is absent or unparseable.
 pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSet<String> {
     let channel_dir = crate::config::workspace_channel_dir();
-    let path = workspace_root.join(&channel_dir).join("apps.toml");
+    let path = workspace_root.join(&channel_dir).join("plugins.toml");
     match Pack::from_path(&path) {
         Ok(p) => p.apps.into_iter().map(|a| a.id).collect(),
         Err(e) => {
             if path.exists() {
-                log::warn!("failed to parse workspace apps.toml: {e}");
+                log::warn!("failed to parse workspace plugins.toml: {e}");
             }
             std::collections::HashSet::new()
         }
@@ -1074,7 +1074,7 @@ pub(crate) mod test_support {
                 .cloned()
                 .unwrap_or_else(|| {
                     format!(
-                        "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n"
+                        "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
                     )
                 });
             std::fs::write(target_dir.join("manifest.toml"), manifest)
@@ -1136,7 +1136,7 @@ mod install_tests {
     }
 
     #[test]
-    fn install_clone_writes_app_dir_with_manifest_id() {
+    fn install_clone_writes_plugin_dir_with_manifest_id() {
         let target = tmp();
         let cloner = MockCloner::new();
         let outcome = install_one(
@@ -1181,7 +1181,7 @@ mod install_tests {
     fn install_with_future_schema_refuses() {
         let target = tmp();
         let manifest = format!(
-            "schema_version = {}\n\n[app]\nid = \"future\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n",
+            "schema_version = {}\n\n[plugin]\nid = \"future\"\nname = \"Future\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"future.main\"\ndefault = true\n",
             MANIFEST_SCHEMA_VERSION + 1
         );
         let cloner = MockCloner::new().with_manifest("https://example.com/future.git", &manifest);
@@ -1238,9 +1238,9 @@ mod install_tests {
     // D2: per-app Python venv path construction tests.
 
     #[test]
-    fn venv_path_is_inside_app_dir() {
-        let app_dir = std::path::Path::new("/tmp/apps/my-app");
-        let venv = app_dir.join(".venv");
+    fn venv_path_is_inside_plugin_dir() {
+        let plugin_dir = std::path::Path::new("/tmp/apps/my-app");
+        let venv = plugin_dir.join(".venv");
         assert_eq!(venv, std::path::PathBuf::from("/tmp/apps/my-app/.venv"));
         // Verify the expected python binary path within the venv.
         let py = venv.join("bin").join("python");
@@ -1291,7 +1291,7 @@ mod pack_tests {
         let mut text = String::from("schema_version = 1\n\n");
         for (id, source, version) in entries {
             text.push_str(&format!(
-                "[[app]]\nid = \"{id}\"\nsource = \"{source}\"\nversion = \"{version}\"\n\n"
+                "\n[[plugin]]\nid = \"{id}\"\nsource = \"{source}\"\nversion = \"{version}\"\n\n"
             ));
         }
         Pack::from_toml_str(&text).unwrap()
@@ -1313,7 +1313,7 @@ mod pack_tests {
 
     /// Regression guard (stint 0296 / PR #2359 validation): `refresh_local`
     /// must re-extract an installed `local:` app from the embedded tree —
-    /// this is the only path by which core-app updates reach existing
+    /// this is the only path by which core-plugin updates reach existing
     /// profiles on stable channels (launch reseed installs missing apps
     /// only).
     #[test]
@@ -1335,7 +1335,7 @@ mod pack_tests {
 
         // Without refresh: untouched (skipped or up-to-date — the installed
         // manifest's real version never equals the pack's "bundled", which is
-        // precisely why version comparison can't drive core-app updates).
+        // precisely why version comparison can't drive core-plugin updates).
         let plain = apply_pack(&cloner, &pack, target.path(), false);
         assert!(matches!(
             plain[0].status,
@@ -1440,7 +1440,7 @@ mod pack_export_tests {
         std::fs::write(
             dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"{version}\"\nentry = \"run.sh\"\n"
+                "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"{version}\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
             ),
         )
         .unwrap();
@@ -1508,8 +1508,8 @@ mod pack_export_tests {
         let target = tempfile::tempdir().unwrap();
         let dir = target.path().join("foo");
         std::fs::create_dir_all(&dir).unwrap();
-        let manifest_text = "schema_version = 1\n\n[app]\nid = \"foo\"\ntype = \"app\"\nname = \"Foo\"\nversion = \"0.3.0\"\nentry = \"run.sh\"\n";
-        let manifest: AppManifest = toml::from_str(manifest_text).unwrap();
+        let manifest_text = "schema_version = 2\n\n[plugin]\nid = \"foo\"\nname = \"Foo\"\nversion = \"0.3.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"foo.main\"\ndefault = true\n";
+        let manifest: PluginManifest = toml::from_str(manifest_text).unwrap();
         let (source, version) = infer_source_and_version(&dir, &manifest);
         assert_eq!(source, "local:foo");
         assert_eq!(version, "0.3.0");
@@ -1522,17 +1522,17 @@ mod core_pack_tests {
     use super::*;
 
     fn plant_python_app(root: &Path, id: &str, source: &str) -> PathBuf {
-        let app_dir = root.join(id);
-        std::fs::create_dir_all(&app_dir).unwrap();
+        let plugin_dir = root.join(id);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
-            app_dir.join("manifest.toml"),
+            plugin_dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\nversion = \"0.1.0\"\nentry = \"main.py\"\n"
+                "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
             ),
         )
         .unwrap();
-        std::fs::write(app_dir.join("main.py"), source).unwrap();
-        app_dir
+        std::fs::write(plugin_dir.join("main.py"), source).unwrap();
+        plugin_dir
     }
 
     #[test]
@@ -1680,7 +1680,7 @@ mod core_pack_tests {
     /// silently at install time otherwise (stint 0393: `packs/examples.toml`
     /// carried four such phantom entries for two weeks before anyone
     /// installed on a fresh profile and hit the failure).
-    fn assert_pack_entry_resolves_to_bundled_app(entry: &PackApp, pack_label: &str) {
+    fn assert_pack_entry_resolves_to_bundled_app(entry: &PackPlugin, pack_label: &str) {
         let spec = parse_source_spec(&entry.source).unwrap_or_else(|e| {
             panic!("{pack_label} entry '{}' has invalid source: {e}", entry.id)
         });
@@ -1693,19 +1693,19 @@ mod core_pack_tests {
             "{pack_label} entry id '{}' must match its local: source name '{name}'",
             entry.id
         );
-        let dir = find_embedded_app_dir(&name).unwrap_or_else(|| {
+        let dir = find_embedded_plugin_dir(&name).unwrap_or_else(|| {
             panic!("{pack_label} app '{name}' has no directory under apps/ (checked recursively)")
         });
         let manifest_text = dir
             .get_file(format!("{}/manifest.toml", dir.path().display()))
             .and_then(|f| f.contents_utf8())
             .unwrap_or_else(|| panic!("{pack_label} app '{name}' has no manifest.toml"));
-        let manifest: AppManifest = toml::from_str(manifest_text)
+        let manifest: PluginManifest = toml::from_str(manifest_text)
             .unwrap_or_else(|e| panic!("{pack_label} app '{name}' manifest invalid: {e}"));
         assert_eq!(
-            manifest.app.id, entry.id,
+            manifest.plugin.id, entry.id,
             "{pack_label} app '{name}' manifest id '{}' must match pack id '{}'",
-            manifest.app.id, entry.id
+            manifest.plugin.id, entry.id
         );
     }
 
@@ -1714,7 +1714,7 @@ mod core_pack_tests {
     /// an exact relative path, so a bare id like `"coding-agent"` would miss
     /// `apps/examples/coding-agent` — this walks every directory to find it
     /// by its final path component instead.
-    fn find_embedded_app_dir<'a>(name: &str) -> Option<&'a include_dir::Dir<'a>> {
+    fn find_embedded_plugin_dir<'a>(name: &str) -> Option<&'a include_dir::Dir<'a>> {
         fn walk<'a>(dir: &'a include_dir::Dir<'a>, name: &str) -> Option<&'a include_dir::Dir<'a>> {
             for sub in dir.dirs() {
                 if sub.path().file_name().and_then(|n| n.to_str()) == Some(name) {
@@ -1753,7 +1753,7 @@ mod core_pack_tests {
             let needle = format!("apps/{}/", entry.id);
             assert!(
                 !install_sh.contains(&needle),
-                "install.sh hardcodes '{needle}' — the maintained app list must come \
+                "install.sh hardcodes '{needle}' — the maintained plugin list must come \
                  only from packs/core.toml, not be enumerated in the installer"
             );
         }
@@ -1810,12 +1810,8 @@ mod workspace_pack_tests {
         let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         std::fs::write(
-            plexi_dir.join("apps.toml"),
-            "schema_version = 1\n\n\
-             [[app]]\n\
-             id = \"my-tool\"\n\
-             source = \"github:org/my-tool\"\n\
-             version = \"v1.0.0\"\n",
+            plexi_dir.join("plugins.toml"),
+            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"v1.0.0\"\n",
         )
         .unwrap();
 
@@ -1829,7 +1825,7 @@ mod workspace_pack_tests {
             outcomes[0].status
         );
 
-        let workspace_apps = crate::app::registry::workspace_apps_dir(ws.path());
+        let workspace_apps = crate::app::registry::workspace_plugins_dir(ws.path());
         assert!(
             workspace_apps
                 .join("my-tool")
@@ -1849,7 +1845,7 @@ mod workspace_pack_tests {
         let cloner = MockCloner::new();
         let err = apply_workspace_pack(ws.path(), &cloner).expect_err("should error");
         assert!(
-            err.contains(&format!("no {channel_dir}/apps.toml found")),
+            err.contains(&format!("no {channel_dir}/plugins.toml found")),
             "expected no-manifest error, got: {err}"
         );
     }
@@ -1861,10 +1857,8 @@ mod workspace_pack_tests {
         let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         std::fs::write(
-            plexi_dir.join("apps.toml"),
-            "schema_version = 1\n\n\
-             [[app]]\nid = \"foo\"\nsource = \"github:a/b\"\nversion = \"v1\"\n\n\
-             [[app]]\nid = \"bar\"\nsource = \"github:a/c\"\nversion = \"v2\"\n",
+            plexi_dir.join("plugins.toml"),
+            "schema_version = 2\n\n[[plugin]]\nid = \"foo\"\nsource = \"github:a/b\"\nversion = \"v1\"\n\n[[plugin]]\nid = \"bar\"\nsource = \"github:a/c\"\nversion = \"v2\"\n",
         )
         .unwrap();
 
@@ -1889,9 +1883,8 @@ mod workspace_pack_tests {
         std::fs::create_dir_all(&plexi_dir).unwrap();
         // MockCloner writes version "0.0.1" by default — pack must match for AlreadyAtVersion.
         std::fs::write(
-            plexi_dir.join("apps.toml"),
-            "schema_version = 1\n\n\
-             [[app]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"0.0.1\"\n",
+            plexi_dir.join("plugins.toml"),
+            "schema_version = 2\n\n[[plugin]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"0.0.1\"\n",
         )
         .unwrap();
 

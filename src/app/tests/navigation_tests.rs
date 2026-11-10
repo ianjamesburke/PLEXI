@@ -471,7 +471,7 @@ fn pane_info_and_list_include_agent_state() {
     let mut h = HostHarness::new();
     let pane_id = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id,
         state: crate::protocol::AgentState::Working,
@@ -484,7 +484,7 @@ fn pane_info_and_list_include_agent_state() {
     h.app.drain_pane_cmd_channel();
 
     let info_file = std::env::temp_dir().join("plexi_test_pane_info_agent_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
         pane_id,
         response_file: info_file.to_string_lossy().to_string(),
     });
@@ -500,7 +500,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(info["agent"]["session_id"], "session-33");
 
     let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
+    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
         response_file: list_file.to_string_lossy().to_string(),
         context_id: None,
     });
@@ -529,7 +529,7 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let terminal_pane = h.add_focused_terminal();
     let app_pane = h.add_test_pane();
 
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id: app_pane,
         state: crate::protocol::AgentState::Blocked,
@@ -539,7 +539,7 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
         event: None,
         blocked_reason: None,
     });
-    h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+    h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id: terminal_pane,
         state: crate::protocol::AgentState::Working,
@@ -563,7 +563,7 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     }
 
     let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetAgentStates {
+    h.inject_ipc(crate::protocol::HostRequest::GetAgentStates {
         response_file: states_file.to_string_lossy().to_string(),
     });
     h.app.drain_pane_cmd_channel();
@@ -572,14 +572,14 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
         std::fs::read_to_string(&states_file).expect("GetAgentStates must write response file");
     let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
     assert_eq!(states.len(), 2);
-    let app_state = states
+    let plugin_state = states
         .iter()
         .find(|state| state["pane_id"].as_u64() == Some(app_pane))
         .expect("non-terminal agent report must remain visible");
-    assert_eq!(app_state["state"], "blocked");
-    assert_eq!(app_state["agent"], "claude-code");
-    assert_eq!(app_state["detail"], "waiting for review");
-    assert!(app_state["session_id"].is_null());
+    assert_eq!(plugin_state["state"], "blocked");
+    assert_eq!(plugin_state["agent"], "claude-code");
+    assert_eq!(plugin_state["detail"], "waiting for review");
+    assert!(plugin_state["session_id"].is_null());
 
     let terminal_state = states
         .iter()
@@ -594,15 +594,15 @@ fn get_agent_states_preserves_non_terminal_reports_and_overrides_terminal_exit_f
     let info_file = responses.path().join("info.json");
     let list_file = responses.path().join("list.json");
     let fleet_file = responses.path().join("fleet.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
         pane_id: terminal_pane,
         response_file: info_file.to_string_lossy().into_owned(),
     });
-    h.inject_ipc(crate::protocol::AppRequest::ListPanes {
+    h.inject_ipc(crate::protocol::HostRequest::ListPanes {
         response_file: list_file.to_string_lossy().into_owned(),
         context_id: None,
     });
-    h.inject_ipc(crate::protocol::AppRequest::AgentFleet {
+    h.inject_ipc(crate::protocol::HostRequest::AgentFleet {
         filter: crate::protocol::FleetFilter::All,
         response_file: fleet_file.to_string_lossy().into_owned(),
     });
@@ -874,7 +874,7 @@ fn get_previous_pane_info_returns_previous_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_info.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -913,7 +913,7 @@ fn get_previous_pane_info_skips_stale_tile() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -946,7 +946,7 @@ fn get_previous_pane_info_empty_history_returns_error() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 1,
     });
@@ -990,7 +990,7 @@ fn get_previous_pane_info_steps_two_returns_second_pane() {
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_steps2.json");
     let _ = std::fs::remove_file(&resp_file);
 
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 2,
     });
@@ -1025,7 +1025,7 @@ fn get_previous_pane_info_steps_exceeds_history_returns_error() {
     let _ = std::fs::remove_file(&resp_file);
 
     // Only 1 valid entry in history; requesting step 5 should error.
-    h.inject_ipc(crate::protocol::AppRequest::GetPreviousPaneInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetPreviousPaneInfo {
         response_file: resp_file.to_string_lossy().to_string(),
         steps: 5,
     });
@@ -1071,27 +1071,26 @@ fn context_b(context_id: u64) -> crate::host::context::Context {
     }
 }
 
-/// Build an `AppRegistry` holding a single app `id` with the given `on_launch`
+/// Build an `PluginRegistry` holding a single app `id` with the given `on_launch`
 /// policy, staged from a real manifest so it exercises the same load path as
 /// production. The returned `TempDir` must be kept alive by the caller.
 fn registry_with_on_launch(
     id: &str,
     on_launch: &str,
-) -> (tempfile::TempDir, crate::app::registry::AppRegistry) {
+) -> (tempfile::TempDir, crate::app::registry::PluginRegistry) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let global = tmp.path().join("global-apps");
-    let app_dir = global.join(id);
-    std::fs::create_dir_all(&app_dir).expect("app dir");
+    let plugin_dir = global.join(id);
+    std::fs::create_dir_all(&plugin_dir).expect("app dir");
     std::fs::write(
-        app_dir.join("manifest.toml"),
+        plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\n\
-             version = \"0.0.1\"\nentry = \"main.py\"\n\n[launch]\non_launch = \"{on_launch}\"\n"
+            "schema_version = 2\n\n[launch]\non_launch = \"{on_launch}\"\n\n[plugin]\nid = \"{id}\"\nname = \"{id}\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
         ),
     )
     .expect("manifest");
-    std::fs::write(app_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("entry");
-    let registry = crate::app::registry::AppRegistry::load_with_global(tmp.path(), &global);
+    std::fs::write(plugin_dir.join("main.py"), "#!/usr/bin/env python3\n").expect("entry");
+    let registry = crate::app::registry::PluginRegistry::load_with_global(tmp.path(), &global);
     assert!(
         registry.get(id).is_some(),
         "staged app '{id}' must load into the registry"

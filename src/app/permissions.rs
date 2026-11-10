@@ -1,6 +1,6 @@
-//! App permission enforcement — PGAP v3 capability-based model.
+//! App permission enforcement — PGAP v4 capability-based model.
 //!
-//! Permissions are keyed by `(app_id, workspace_root, capability)` triple and
+//! Permissions are keyed by `(plugin_id, workspace_root, capability)` triple and
 //! persisted to `permissions.jsonl` (append-only, one decision per line).
 //!
 //! The v2 boolean-field model (`terminal_write`, `filesystem`, etc.) is replaced
@@ -33,7 +33,7 @@ pub enum Capability {
     /// Open typed pipes (JSON or binary mode).
     PipeOpen,
     /// Launch another app in a new pane.
-    SpawnApp,
+    SpawnView,
     /// Capture microphone audio via host broker.
     AudioRecord,
     /// Play audio via host `rodio` broker.
@@ -77,7 +77,7 @@ pub enum Capability {
     PanesRead,
     /// Act on other panes (stint 0013/0014). Gates the PGAP path for
     /// `FocusPane`, `ClosePane`, `SendToPane`, `KeyPane`, `SetPaneTitle`,
-    /// and `SendAppAction` — the same host handlers the `plexi pane` CLI
+    /// and `SendPaneAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
     PanesControl,
     /// Inspect and mutate other apps' permission state (stint 0017). Gates
@@ -104,7 +104,7 @@ pub enum Capability {
     /// the user configured", never "run this command" — an app holding it
     /// cannot reach a binary the user has not already listed.
     McpClient,
-    /// Request the typed one-shot CLI operations the app package declares in
+    /// Request the typed one-shot CLI operations the plugin package declares in
     /// `[[cli_operation]]` (stint 1175). Manifest membership only allows the app
     /// to *ask*: every invocation is separately admitted by the permission
     /// monitor against the exact operation, workspace, package and executable.
@@ -139,7 +139,7 @@ impl Capability {
             Self::NetHttp => "Make outbound HTTP requests",
             Self::SecretsGet => "Read secrets scoped to this workspace",
             Self::PipeOpen => "Open data pipes to other panes",
-            Self::SpawnApp => "Launch another app in a new pane",
+            Self::SpawnView => "Launch another app in a new pane",
             Self::AudioRecord => "Capture microphone audio",
             Self::AudioPlayback => "Play audio",
             Self::GpuRender => "Render through the WASM GPU surface",
@@ -168,7 +168,7 @@ impl Capability {
             Self::NetHttp => "net.http",
             Self::SecretsGet => "secrets.get",
             Self::PipeOpen => "pipe.open",
-            Self::SpawnApp => "spawn.app",
+            Self::SpawnView => "spawn.app",
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::GpuRender => "gpu.render",
@@ -200,7 +200,7 @@ impl Capability {
         Self::NetHttp,
         Self::SecretsGet,
         Self::PipeOpen,
-        Self::SpawnApp,
+        Self::SpawnView,
         Self::AudioRecord,
         Self::AudioPlayback,
         Self::GpuRender,
@@ -254,7 +254,7 @@ impl Capability {
             | Self::PanesRead
             | Self::PanesControl
             | Self::PermissionsManage
-            | Self::SpawnApp
+            | Self::SpawnView
             | Self::AiQuery
             | Self::Llm
             | Self::AudioRecord
@@ -340,7 +340,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "net.http" => Ok(Self::NetHttp),
             "secrets.get" => Ok(Self::SecretsGet),
             "pipe.open" => Ok(Self::PipeOpen),
-            "spawn.app" => Ok(Self::SpawnApp),
+            "spawn.app" => Ok(Self::SpawnView),
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
             "gpu.render" => Ok(Self::GpuRender),
@@ -364,11 +364,11 @@ impl<'a> TryFrom<&'a str> for Capability {
     }
 }
 
-// ── AppPermissions ────────────────────────────────────────────────────────────
+// ── PluginPermissions ────────────────────────────────────────────────────────────
 
 /// Per-app, per-workspace permission set (v3).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AppPermissions {
+pub struct PluginPermissions {
     /// Granted capabilities for this app in this workspace.
     pub capabilities: HashSet<Capability>,
     /// Permanently blocked capabilities — auto-denied without a modal.
@@ -382,7 +382,7 @@ pub struct AppPermissions {
     pub allowed_hosts: Vec<String>,
 }
 
-impl AppPermissions {
+impl PluginPermissions {
     /// Move every media-I/O capability out of the granted set and into
     /// `blocked`, so each protocol media operation (playback, capture, device
     /// listing, MIDI in/out, video decode) is auto-denied without a prompt.
@@ -459,7 +459,7 @@ pub enum PermissionCheck {
 
 /// Check whether a specific capability is granted for an app+workspace pair.
 #[cfg(test)]
-pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
+pub fn check(perms: &PluginPermissions, cap: Capability) -> PermissionCheck {
     if perms.is_builtin {
         return PermissionCheck::Allowed;
     }
@@ -477,7 +477,7 @@ pub fn check(perms: &AppPermissions, cap: Capability) -> PermissionCheck {
 /// Callers should check this before adding to pending_prompts — blocked
 /// caps should be auto-denied without showing a modal.
 #[cfg(test)]
-pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
+pub fn is_blocked(perms: &PluginPermissions, cap: Capability) -> bool {
     !perms.is_builtin && perms.blocked.contains(&cap)
 }
 
@@ -486,7 +486,7 @@ pub fn is_blocked(perms: &AppPermissions, cap: Capability) -> bool {
 /// Serializable data stored in `permissions.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct PermissionStoreData {
-    /// Flat map: key = "app_id::workspace_path::capability_str" → state.
+    /// Flat map: key = "plugin_id::workspace_path::capability_str" → state.
     pub entries: HashMap<String, PermissionState>,
     /// Raw WASM capability ids such as `fs:read:/tmp` or
     /// `net:fetch:api.github.com`. These cannot use [`Capability`] because
@@ -520,44 +520,44 @@ impl Default for PermissionStore {
 }
 
 impl PermissionStore {
-    fn entry_key(app_id: &str, workspace_root: &Path, cap: Capability) -> String {
+    fn entry_key(plugin_id: &str, workspace_root: &Path, cap: Capability) -> String {
         let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
+        format!("{}::{}::{}", plugin_id, canonical.display(), cap.as_str())
     }
 
-    fn wasm_entry_key(app_id: &str, workspace_root: &Path, capability_id: &str) -> String {
+    fn wasm_entry_key(plugin_id: &str, workspace_root: &Path, capability_id: &str) -> String {
         let canonical = crate::platform::path::canonical_or_self(workspace_root);
-        format!("{}::{}::{}", app_id, canonical.display(), capability_id)
+        format!("{}::{}::{}", plugin_id, canonical.display(), capability_id)
     }
 
-    /// Split a store key (`app_id::workspace_path::capability_str`) into its
+    /// Split a store key (`plugin_id::workspace_path::capability_str`) into its
     /// parts. Splits from the right so workspace paths containing `::` parse
     /// correctly.
     /// Returns `None` for malformed keys.
     fn parse_entry_key(key: &str) -> Option<(&str, &str, &str)> {
         let (left, cap_str) = key.rsplit_once("::")?;
-        let (app_id, workspace) = left.split_once("::")?;
-        Some((app_id, workspace, cap_str))
+        let (plugin_id, workspace) = left.split_once("::")?;
+        Some((plugin_id, workspace, cap_str))
     }
 
-    /// Raw WASM rows as `(app_id, workspace_path, capability_id, state)`.
+    /// Raw WASM rows as `(plugin_id, workspace_path, capability_id, state)`.
     pub fn iter_wasm_entries(
         &self,
     ) -> impl Iterator<Item = (&str, &str, &str, PermissionState)> + '_ {
         self.file.data.wasm_entries.iter().filter_map(|(key, &state)| {
-            let (app_id, workspace, capability_id) = Self::parse_entry_key(key)?;
-            Some((app_id, workspace, capability_id, state))
+            let (plugin_id, workspace, capability_id) = Self::parse_entry_key(key)?;
+            Some((plugin_id, workspace, capability_id, state))
         })
     }
 
-    /// Iterate all stored entries as `(app_id, workspace_path, capability, state)`.
+    /// Iterate all stored entries as `(plugin_id, workspace_path, capability, state)`.
     /// Entries with malformed keys or unknown capability strings are skipped
     /// (logged at warn). Used by the `ListPermissions` host handler.
     pub fn iter_entries(
         &self,
     ) -> impl Iterator<Item = (&str, &str, Capability, PermissionState)> + '_ {
         self.file.data.entries.iter().filter_map(|(key, &state)| {
-            let Some((app_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
+            let Some((plugin_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
                 log::warn!("permission_store: skipping malformed entry key '{key}'");
                 return None;
             };
@@ -565,7 +565,7 @@ impl PermissionStore {
                 log::warn!("permission_store: skipping entry with unknown capability '{cap_str}'");
                 return None;
             };
-            Some((app_id, workspace, cap, state))
+            Some((plugin_id, workspace, cap, state))
         })
     }
 
@@ -574,8 +574,8 @@ impl PermissionStore {
     fn migrate_raw_path_keys(data: &mut PermissionStoreData) -> usize {
         let mut to_rekey: Vec<(String, String, PermissionState)> = Vec::new();
         for (key, &state) in &data.entries {
-            // key format: "app_id::workspace_path::cap_str"
-            let Some((app_id, workspace_raw, cap_str)) = Self::parse_entry_key(key) else {
+            // key format: "plugin_id::workspace_path::cap_str"
+            let Some((plugin_id, workspace_raw, cap_str)) = Self::parse_entry_key(key) else {
                 continue;
             };
 
@@ -587,7 +587,7 @@ impl PermissionStore {
                 continue;
             }
 
-            let new_key = format!("{}::{}::{}", app_id, canonical.display(), cap_str);
+            let new_key = format!("{}::{}::{}", plugin_id, canonical.display(), cap_str);
             if new_key != *key {
                 to_rekey.push((key.clone(), new_key, state));
             }
@@ -680,21 +680,21 @@ impl PermissionStore {
     #[cfg(test)]
     pub fn get(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         cap: Capability,
     ) -> Option<PermissionState> {
         self.file
             .data
             .entries
-            .get(&Self::entry_key(app_id, workspace_root, cap))
+            .get(&Self::entry_key(plugin_id, workspace_root, cap))
             .copied()
     }
 
     /// Set the state for a (app, workspace, capability) triple.
     pub fn set(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         cap: Capability,
         state: PermissionState,
@@ -702,34 +702,34 @@ impl PermissionStore {
         self.file
             .data
             .entries
-            .insert(Self::entry_key(app_id, workspace_root, cap), state);
+            .insert(Self::entry_key(plugin_id, workspace_root, cap), state);
     }
 
     /// Get the stored state for a raw WASM capability id.
     #[cfg(test)]
     pub fn get_wasm(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
     ) -> Option<PermissionState> {
         self.file
             .data
             .wasm_entries
-            .get(&Self::wasm_entry_key(app_id, workspace_root, capability_id))
+            .get(&Self::wasm_entry_key(plugin_id, workspace_root, capability_id))
             .copied()
     }
 
     /// Set the stored state for a raw WASM capability id.
     pub fn set_wasm(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
         state: PermissionState,
     ) {
         self.file.data.wasm_entries.insert(
-            Self::wasm_entry_key(app_id, workspace_root, capability_id),
+            Self::wasm_entry_key(plugin_id, workspace_root, capability_id),
             state,
         );
     }
@@ -746,7 +746,7 @@ impl PermissionStore {
     }
 
     /// Apply stored state for a set of declared capabilities.
-    /// Returns `(capabilities, blocked)` sets for constructing AppPermissions.
+    /// Returns `(capabilities, blocked)` sets for constructing PluginPermissions.
     /// - Declared + Green → granted (capabilities set)
     /// - Declared + not stored + non-sensitive → granted (capabilities set)
     /// - Declared + not stored + sensitive → withheld (will prompt on CapabilityRequest)
@@ -756,7 +756,7 @@ impl PermissionStore {
     #[cfg(test)]
     pub fn build_permission_sets(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &HashSet<Capability>,
     ) -> (HashSet<Capability>, HashSet<Capability>) {
@@ -765,7 +765,7 @@ impl PermissionStore {
 
         // Apply stored state to declared capabilities
         for &cap in declared {
-            match self.get(app_id, workspace_root, cap) {
+            match self.get(plugin_id, workspace_root, cap) {
                 Some(PermissionState::Yellow) => {} // will prompt on use
                 Some(PermissionState::Red) => {
                     blocked.insert(cap);
@@ -779,7 +779,7 @@ impl PermissionStore {
                     log::info!(
                         "permission_store: '{}' withheld for '{}' — first-run consent required",
                         cap,
-                        app_id
+                        plugin_id
                     );
                 }
                 None => {
@@ -791,7 +791,7 @@ impl PermissionStore {
         // Also restore any runtime-granted capabilities from previous sessions.
         // Entries stored before this fix are migrated to canonical keys by load_or_default.
         let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
-        let prefix = format!("{}::{}::", app_id, canonical_root.display());
+        let prefix = format!("{}::{}::", plugin_id, canonical_root.display());
         for (key, &state) in &self.file.data.entries {
             if !key.starts_with(&prefix) {
                 continue;
@@ -825,7 +825,7 @@ impl PermissionStore {
     #[cfg(test)]
     pub fn build_wasm_permission_sets(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &HashSet<String>,
     ) -> (HashSet<String>, HashSet<String>) {
@@ -833,7 +833,7 @@ impl PermissionStore {
         let mut blocked = HashSet::new();
 
         for cap in declared {
-            match self.get_wasm(app_id, workspace_root, cap) {
+            match self.get_wasm(plugin_id, workspace_root, cap) {
                 Some(PermissionState::Yellow) => {}
                 Some(PermissionState::Red) => {
                     blocked.insert(cap.clone());
@@ -845,7 +845,7 @@ impl PermissionStore {
                     log::info!(
                         "permission_store: raw wasm capability '{}' withheld for '{}' — first-run consent required",
                         cap,
-                        app_id
+                        plugin_id
                     );
                 }
                 None => {
@@ -855,7 +855,7 @@ impl PermissionStore {
         }
 
         let canonical_root = crate::platform::path::canonical_or_self(workspace_root);
-        let prefix = format!("{}::{}::", app_id, canonical_root.display());
+        let prefix = format!("{}::{}::", plugin_id, canonical_root.display());
         for (key, &state) in &self.file.data.wasm_entries {
             if !key.starts_with(&prefix) {
                 continue;
@@ -887,7 +887,7 @@ impl PermissionStore {
     /// capabilities are not silently granted by the default unset behavior.
     pub fn apply_wasm_install_review(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         required: &[String],
         optional: &[String],
@@ -895,7 +895,7 @@ impl PermissionStore {
     ) -> WasmInstallGrantSummary {
         for capability_id in required {
             self.set_wasm(
-                app_id,
+                plugin_id,
                 workspace_root,
                 capability_id,
                 PermissionState::Green,
@@ -910,7 +910,7 @@ impl PermissionStore {
             } else {
                 PermissionState::Yellow
             };
-            self.set_wasm(app_id, workspace_root, capability_id, optional_state);
+            self.set_wasm(plugin_id, workspace_root, capability_id, optional_state);
         }
 
         WasmInstallGrantSummary {
@@ -974,7 +974,7 @@ pub fn wasm_capability_description(capability_id: &str) -> &'static str {
     if capability_id == "ai.query" {
         "Make AI calls through the Plexi broker"
     } else if capability_id == "state:read-write" {
-        "Read and write app state through the host store"
+        "Read and write plugin state through the host store"
     } else if capability_id == "pipe.open" {
         "Open data pipes to other panes"
     } else if capability_id == "gpu.render" {
@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(parsed.as_str(), "ai.query");
 
         // Permissions parser must populate the granted set.
-        let perms = AppPermissions::from_capability_strings(&["ai.query".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["ai.query".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::AiQuery),
             "ai.query must end up in granted capabilities"
@@ -1066,7 +1066,7 @@ mod tests {
             "logs.read must stay non-sensitive until the WASM Python path gains interactive consent"
         );
 
-        let perms = AppPermissions::from_capability_strings(&["logs.read".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["logs.read".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::LogsRead),
             "logs.read must end up in granted capabilities"
@@ -1085,7 +1085,7 @@ mod tests {
         assert_eq!(parsed, Capability::TerminalBindings);
         assert_eq!(parsed.as_str(), "terminal.bindings");
 
-        let perms = AppPermissions::from_capability_strings(&["terminal.bindings".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["terminal.bindings".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::TerminalBindings),
             "terminal.bindings must end up in granted capabilities"
@@ -1095,7 +1095,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
 
-        let empty = AppPermissions::from_capability_strings(&[]);
+        let empty = PluginPermissions::from_capability_strings(&[]);
         match check(&empty, Capability::TerminalBindings) {
             PermissionCheck::Denied(reason) => {
                 assert!(
@@ -1114,7 +1114,7 @@ mod tests {
         let parsed = Capability::try_from("panes.spawn").expect("panes.spawn must parse");
         assert_eq!(parsed, Capability::PanesSpawn);
         assert_eq!(parsed.as_str(), "panes.spawn");
-        let perms = AppPermissions::from_capability_strings(&["panes.spawn".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.spawn".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesSpawn),
             "panes.spawn must end up in granted capabilities"
@@ -1124,7 +1124,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesSpawn,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1143,7 +1143,7 @@ mod tests {
         assert_eq!(parsed, Capability::PanesRead);
         assert_eq!(parsed.as_str(), "panes.read");
         assert!(parsed.is_sensitive(), "panes.read must be sensitive");
-        let perms = AppPermissions::from_capability_strings(&["panes.read".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.read".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesRead),
             "panes.read must end up in granted capabilities"
@@ -1153,7 +1153,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesRead,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1172,7 +1172,7 @@ mod tests {
         assert_eq!(parsed, Capability::PanesControl);
         assert_eq!(parsed.as_str(), "panes.control");
         assert!(parsed.is_sensitive(), "panes.control must be sensitive");
-        let perms = AppPermissions::from_capability_strings(&["panes.control".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["panes.control".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::PanesControl),
             "panes.control must end up in granted capabilities"
@@ -1182,7 +1182,7 @@ mod tests {
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PanesControl,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1205,14 +1205,14 @@ mod tests {
             parsed.is_sensitive(),
             "permissions.manage must be sensitive"
         );
-        let perms = AppPermissions::from_capability_strings(&["permissions.manage".to_string()]);
+        let perms = PluginPermissions::from_capability_strings(&["permissions.manage".to_string()]);
         assert!(perms.capabilities.contains(&Capability::PermissionsManage));
         assert!(matches!(
             check(&perms, Capability::PermissionsManage),
             PermissionCheck::Allowed
         ));
         match check(
-            &AppPermissions::from_capability_strings(&[]),
+            &PluginPermissions::from_capability_strings(&[]),
             Capability::PermissionsManage,
         ) {
             PermissionCheck::Denied(reason) => {
@@ -1257,8 +1257,8 @@ mod tests {
 
         let entries: Vec<_> = store.iter_entries().collect();
         assert_eq!(entries.len(), 1);
-        let (app_id, ws, cap, state) = entries[0];
-        assert_eq!(app_id, "my-app");
+        let (plugin_id, ws, cap, state) = entries[0];
+        assert_eq!(plugin_id, "my-app");
         assert_eq!(ws, "/test/project");
         assert_eq!(cap, Capability::NetHttp);
         assert_eq!(state, PermissionState::Red);
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn ai_query_denied_when_not_declared() {
-        let perms = AppPermissions::from_capability_strings(&[]);
+        let perms = PluginPermissions::from_capability_strings(&[]);
         match check(&perms, Capability::AiQuery) {
             PermissionCheck::Denied(reason) => {
                 assert!(
@@ -1351,7 +1351,7 @@ mod tests {
 
         let sensitive: HashSet<Capability> = [
             Capability::PanesSpawn,
-            Capability::SpawnApp,
+            Capability::SpawnView,
             Capability::AiQuery,
             Capability::Llm,
             Capability::AudioRecord,
@@ -1433,7 +1433,7 @@ mod tests {
 
     #[test]
     fn is_blocked_returns_true_for_blocked_cap() {
-        let mut perms = AppPermissions::default();
+        let mut perms = PluginPermissions::default();
         perms.blocked.insert(Capability::NetHttp);
         assert!(is_blocked(&perms, Capability::NetHttp));
         assert!(!is_blocked(&perms, Capability::FsRead));
@@ -1441,7 +1441,7 @@ mod tests {
 
     #[test]
     fn is_blocked_always_false_for_builtin() {
-        let mut perms = AppPermissions::builtin();
+        let mut perms = PluginPermissions::builtin();
         perms.blocked.insert(Capability::NetHttp); // even if manually set
         assert!(!is_blocked(&perms, Capability::NetHttp));
     }

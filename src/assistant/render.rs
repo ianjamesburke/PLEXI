@@ -652,7 +652,7 @@ impl AssistantRenderer {
         // Braille spinner keyed to wall clock — the assistant already
         // repaints continuously while a turn is in flight, so this animates
         // without extra repaint requests. Elapsed seconds make a long tool
-        // call (a 60s+ `app check`) read as progress, not a hang.
+        // call (a 60s+ `plugin check`) read as progress, not a hang.
         let elapsed = active.started.elapsed();
         let frame = SPINNER_FRAMES[(elapsed.as_millis() / 100) as usize % SPINNER_FRAMES.len()];
         let elapsed_label = if elapsed.as_secs() >= 2 {

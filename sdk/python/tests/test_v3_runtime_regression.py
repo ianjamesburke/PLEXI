@@ -41,7 +41,7 @@ def _spawn_v3_app(app_file: Path):
     return proc
 
 
-def _init_app(proc, state=None, capabilities=None, protocol="pgap/3"):
+def _init_app(proc, state=None, capabilities=None, protocol="pgap/4"):
     """Send init message and wait for ready."""
     msg = {
         "type": "init",

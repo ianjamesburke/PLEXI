@@ -98,11 +98,11 @@ impl WorkspaceSecrets {
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Look up a route for `(app_id, canonical_name)`. Returns the friendly
-    /// Keychain name when an explicit `[apps.<app_id>]` route exists, or a
+    /// Look up a route for `(plugin_id, canonical_name)`. Returns the friendly
+    /// Keychain name when an explicit `[apps.<plugin_id>]` route exists, or a
     /// `[default]` route otherwise. `None` means no route is defined.
-    pub fn route_for(&self, app_id: &str, canonical_name: &str) -> Option<&str> {
-        if let Some(app_routes) = self.apps.get(app_id) {
+    pub fn route_for(&self, plugin_id: &str, canonical_name: &str) -> Option<&str> {
+        if let Some(app_routes) = self.apps.get(plugin_id) {
             if let Some(friendly) = app_routes.get(canonical_name) {
                 return Some(friendly.as_str());
             }
@@ -142,12 +142,12 @@ pub struct ResolvedSecret {
 /// trait calls. Tests use `InMemoryKeychain`; production uses `MacKeychain`.
 pub fn resolve(
     workspace_id: &str,
-    app_id: &str,
+    plugin_id: &str,
     canonical_name: &str,
     router: &WorkspaceSecrets,
     store: &dyn NonDestructiveStore,
 ) -> ResolveOutcome {
-    match resolve_with_source(workspace_id, app_id, canonical_name, router, store) {
+    match resolve_with_source(workspace_id, plugin_id, canonical_name, router, store) {
         ResolveWithSourceOutcome::Found(found) => ResolveOutcome::Found(found.value),
         ResolveWithSourceOutcome::HardMissing { reason } => ResolveOutcome::HardMissing { reason },
         ResolveWithSourceOutcome::PromptUser => ResolveOutcome::PromptUser,
@@ -166,7 +166,7 @@ pub enum ResolveWithSourceOutcome {
 /// route, the canonical env var name is the workspace Keychain suffix.
 pub fn resolve_with_source(
     workspace_id: &str,
-    app_id: &str,
+    plugin_id: &str,
     canonical_name: &str,
     router: &WorkspaceSecrets,
     store: &dyn NonDestructiveStore,
@@ -185,7 +185,7 @@ pub fn resolve_with_source(
         };
     }
     // Step 1+2: workspace route (apps.<id> first, then [default]).
-    if let Some(friendly) = router.route_for(app_id, canonical_name) {
+    if let Some(friendly) = router.route_for(plugin_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
         if let Some(value) = store.get(&account) {
             return ResolveWithSourceOutcome::Found(ResolvedSecret {
@@ -202,7 +202,7 @@ pub fn resolve_with_source(
             let renamed = keychain_workspace_name(workspace_id, canonical);
             if let Some(value) = store.get(&renamed) {
                 log::warn!(
-                    "workspace_secrets: route for '{canonical_name}' (app '{app_id}') points at \
+                    "workspace_secrets: route for '{canonical_name}' (app '{plugin_id}') points at \
                      legacy spelling '{friendly}' but the keychain account is now '{renamed}' — \
                      resolving anyway; update the route value in .plexi/secrets.toml to '{canonical}'"
                 );
@@ -241,7 +241,7 @@ pub fn resolve_with_source(
     // Step 4: no route + fallback disabled → hard error.
     ResolveWithSourceOutcome::HardMissing {
         reason: format!(
-            "no workspace or route value in .plexi/secrets.toml for app '{app_id}' / secret \
+            "no workspace or route value in .plexi/secrets.toml for app '{plugin_id}' / secret \
              '{canonical_name}', and fallback = false"
         ),
     }

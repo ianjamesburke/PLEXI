@@ -147,7 +147,7 @@ impl LedgerSummary {
 
 /// One ledger entry — matches the JSON shape written to disk.
 ///
-/// `app_id` and `model` are populated for `ai.query` broker calls (#284) so
+/// `plugin_id` and `model` are populated for `ai.query` broker calls (#284) so
 /// the cost ledger can attribute spend per-app and per-model.
 #[derive(serde::Serialize)]
 pub struct LedgerRow {
@@ -156,7 +156,7 @@ pub struct LedgerRow {
     pub billing: &'static str,
     /// Originating app id when the call came in via the `ai.query` broker.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_id: Option<String>,
+    pub plugin_id: Option<String>,
     /// Concrete model id resolved by the broker (e.g. "claude-haiku-4-5").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -198,7 +198,7 @@ pub struct LedgerRow {
 }
 
 impl LedgerRow {
-    /// Construct a ledger row carrying `app_id` and concrete `model` — the
+    /// Construct a ledger row carrying `plugin_id` and concrete `model` — the
     /// shape the `ai.query` broker writes (#284, #383).
     ///
     /// `cost_usd` is the provider's `usage.cost` when the response included
@@ -207,7 +207,7 @@ impl LedgerRow {
     pub fn with_attribution(
         backend_name: &str,
         billing: BillingModel,
-        app_id: Option<String>,
+        plugin_id: Option<String>,
         model: Option<String>,
         input_tokens: Option<u32>,
         output_tokens: Option<u32>,
@@ -229,7 +229,7 @@ impl LedgerRow {
                 BillingModel::Metered => "metered",
                 BillingModel::Subscription => "subscription",
             },
-            app_id,
+            plugin_id,
             model,
             input_tokens: known_tokens(input_tokens),
             output_tokens: known_tokens(output_tokens),
@@ -263,7 +263,7 @@ impl LedgerRow {
             ts: chrono::Utc::now().to_rfc3339(),
             backend: "agents".to_string(),
             billing: "metered",
-            app_id: Some(agent_id.to_string()),
+            plugin_id: Some(agent_id.to_string()),
             model: None,
             input_tokens: known_tokens(Some(input_tokens)),
             output_tokens: known_tokens(Some(output_tokens)),
@@ -734,7 +734,7 @@ fn add_u64(total: &mut Option<u64>, value: Option<u64>) {
 pub struct DailySpend {
     /// Total spend across all apps today, in USD.
     pub global_usd: f64,
-    /// Per-app spend today, keyed by app_id, in USD.
+    /// Per-app spend today, keyed by plugin_id, in USD.
     pub per_app: HashMap<String, f64>,
 }
 
@@ -788,8 +788,8 @@ pub fn today_spend() -> DailySpend {
         }
         let cost = v["cost_usd"].as_f64().unwrap_or(0.0);
         global_usd += cost;
-        if let Some(app_id) = v["app_id"].as_str() {
-            *per_app.entry(app_id.to_string()).or_insert(0.0) += cost;
+        if let Some(plugin_id) = v["plugin_id"].as_str() {
+            *per_app.entry(plugin_id.to_string()).or_insert(0.0) += cost;
         }
     }
 
@@ -799,16 +799,16 @@ pub fn today_spend() -> DailySpend {
     }
 }
 
-/// Check if an `ai.query` from `app_id` would exceed budget limits.
+/// Check if an `ai.query` from `plugin_id` would exceed budget limits.
 /// Returns `Ok(())` if under budget, `Err(reason)` if over.
 /// Fails open: if `today_spend` returns zero due to I/O errors, the query
 /// is allowed through.
-pub fn check_budget(app_id: &str, config: &crate::config::AiConfig) -> Result<(), String> {
+pub fn check_budget(plugin_id: &str, config: &crate::config::AiConfig) -> Result<(), String> {
     let spend = today_spend();
     let global_cap = config.effective_global_daily_usd();
     if spend.global_usd >= global_cap {
         log::warn!(
-            "ai_broker[{app_id}]: global daily budget exceeded (${:.4} / ${:.2})",
+            "ai_broker[{plugin_id}]: global daily budget exceeded (${:.4} / ${:.2})",
             spend.global_usd,
             global_cap,
         );
@@ -818,15 +818,15 @@ pub fn check_budget(app_id: &str, config: &crate::config::AiConfig) -> Result<()
         ));
     }
     let app_cap = config.effective_per_app_daily_usd();
-    let app_spend = spend.per_app.get(app_id).copied().unwrap_or(0.0);
+    let app_spend = spend.per_app.get(plugin_id).copied().unwrap_or(0.0);
     if app_spend >= app_cap {
         log::warn!(
-            "ai_broker[{app_id}]: per-app daily budget exceeded (${:.4} / ${:.2})",
+            "ai_broker[{plugin_id}]: per-app daily budget exceeded (${:.4} / ${:.2})",
             app_spend,
             app_cap,
         );
         return Err(format!(
-            "per-app daily AI budget exceeded for '{app_id}' (${:.2} / ${:.2})",
+            "per-app daily AI budget exceeded for '{plugin_id}' (${:.2} / ${:.2})",
             app_spend, app_cap
         ));
     }
@@ -851,7 +851,7 @@ mod ledger_tests {
             Some(0.05), // $0.05 → 5 cents
         );
 
-        assert_eq!(row.app_id.as_deref(), Some("test-app"));
+        assert_eq!(row.plugin_id.as_deref(), Some("test-app"));
         assert_eq!(row.model.as_deref(), Some("anthropic/claude-haiku-4-5"));
         assert_eq!(row.input_tokens, Some(1_000));
         assert_eq!(row.output_tokens, Some(2_000));
@@ -861,7 +861,7 @@ mod ledger_tests {
         let line = serde_json::to_string(&row).expect("serialise ledger row");
         for needle in [
             r#""backend":"openrouter""#,
-            r#""app_id":"test-app""#,
+            r#""plugin_id":"test-app""#,
             r#""model":"anthropic/claude-haiku-4-5""#,
             r#""input_tokens":1000"#,
             r#""output_tokens":2000"#,
@@ -895,7 +895,7 @@ mod ledger_tests {
     }
 
     #[test]
-    fn row_without_attribution_omits_app_id_and_model() {
+    fn row_without_attribution_omits_plugin_id_and_model() {
         let row = LedgerRow::with_attribution(
             "ollama",
             BillingModel::Subscription,
@@ -907,8 +907,8 @@ mod ledger_tests {
         );
         let line = serde_json::to_string(&row).expect("serialise");
         assert!(
-            !line.contains("\"app_id\""),
-            "row must not include app_id when None: {line}"
+            !line.contains("\"plugin_id\""),
+            "row must not include plugin_id when None: {line}"
         );
         assert!(
             !line.contains("\"model\""),
@@ -983,7 +983,7 @@ mod ledger_tests {
         let result = check_budget("app1", &config);
         assert!(result.is_err(), "should block when per-app spend >= cap");
         let msg = result.unwrap_err();
-        assert!(msg.contains("app1"), "error must mention the app_id: {msg}");
+        assert!(msg.contains("app1"), "error must mention the plugin_id: {msg}");
         assert!(
             msg.contains("per-app daily"),
             "error must mention 'per-app daily': {msg}"

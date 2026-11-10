@@ -413,7 +413,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NextTab), name: "Next tab", description: "Focus the next tab", search_text: "next tab forward" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::PrevTab), name: "Previous tab", description: "Focus the previous tab", search_text: "previous tab back" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackApp), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NavBackView), name: "Back", description: "Go back in pane navigation or focus history", search_text: "back previous history pane" },
 ];
 
 fn searchable_text(parts: &[&str]) -> String {
@@ -515,7 +515,7 @@ fn reconcile_palette_selection(
 enum PaletteAction {
     RunCommand(PaletteCommand),
     Focus(PaletteFocusTarget),
-    LaunchApp(String),
+    OpenView(String),
     LaunchBuiltin(&'static str),
     OpenNote(std::path::PathBuf),
     RunUserCommand {
@@ -542,7 +542,7 @@ fn action_for_palette_entry(entry: &PaletteEntry) -> Option<PaletteAction> {
             window_id: *window_id,
             pane_id: Some(*pane_id),
         })),
-        PaletteEntry::App { id, .. } => Some(PaletteAction::LaunchApp(id.clone())),
+        PaletteEntry::App { id, .. } => Some(PaletteAction::OpenView(id.clone())),
         PaletteEntry::Builtin { id, .. } => Some(PaletteAction::LaunchBuiltin(id)),
         PaletteEntry::Note { path, .. } => Some(PaletteAction::OpenNote(path.clone())),
         PaletteEntry::UserCommand { name, scope, .. } => Some(PaletteAction::RunUserCommand {
@@ -561,7 +561,7 @@ fn palette_command_matches(query: &str) -> Vec<PaletteCommand> {
         .collect()
 }
 
-struct BuiltinPaletteApp {
+struct BuiltinPaletteView {
     id: &'static str,
     name: &'static str,
     description: &'static str,
@@ -569,7 +569,7 @@ struct BuiltinPaletteApp {
 }
 
 /// Builtin host apps surfaced in the palette alongside registry apps.
-const BUILTIN_APPS: &[BuiltinPaletteApp] = &[BuiltinPaletteApp {
+const BUILTIN_APPS: &[BuiltinPaletteView] = &[BuiltinPaletteView {
     id: "assistant",
     name: "Assistant",
     description: "Host-native AI chat for this workspace",
@@ -975,7 +975,7 @@ fn palette_host_binding(
         PaletteCommand::Host(Action::ClosePane) => bindings.close_pane,
         PaletteCommand::Host(Action::HidePane) => bindings.hide_pane,
         PaletteCommand::Host(Action::ToggleZoom) => bindings.toggle_zoom,
-        PaletteCommand::Host(Action::NavBackApp) => return bindings.nav_back,
+        PaletteCommand::Host(Action::NavBackView) => return bindings.nav_back,
         PaletteCommand::Host(Action::ToggleShortcuts) => bindings.toggle_shortcuts,
         PaletteCommand::Host(Action::IncreasePaneFontSize) => bindings.increase_font_size,
         PaletteCommand::Host(Action::DecreasePaneFontSize) => bindings.decrease_font_size,
@@ -1311,7 +1311,7 @@ impl PlexiApp {
         // focused pane's own resolved workspace root via
         // `RegistryViews::view_for_root`, a synchronous per-root cache. No
         // staleness comparison is needed the way the old single shared
-        // `AppRegistry` required: a root already seen is a cache hit, and a
+        // `PluginRegistry` required: a root already seen is a cache hit, and a
         // never-seen root loads on this first access.
         let focused_workspace_root = self.palette_workspace_root.clone();
         let home = dirs::home_dir();
@@ -1330,7 +1330,7 @@ impl PlexiApp {
                 // Use the same explicit predicate here as in the badge below — no wildcard.
                 let workspace_visible = match app.source {
                     crate::app::registry::RegistrySource::Global => true,
-                    crate::app::registry::RegistrySource::LocalApp
+                    crate::app::registry::RegistrySource::LocalPlugin
                     | crate::app::registry::RegistrySource::LocalAgent => {
                         app.workspace_root.as_ref() == focused_workspace_root.as_ref()
                     }
@@ -1348,7 +1348,7 @@ impl PlexiApp {
                 }
                 let is_local = matches!(
                     app.source,
-                    crate::app::registry::RegistrySource::LocalApp
+                    crate::app::registry::RegistrySource::LocalPlugin
                         | crate::app::registry::RegistrySource::LocalAgent
                 );
                 Some((
@@ -1872,7 +1872,7 @@ impl PlexiApp {
             PaletteAction::RunCommand(command) => self.run_palette_command(command),
             PaletteAction::RunUserCommand { name, scope } => self.run_user_command(&name, scope),
             PaletteAction::Focus(target) => self.focus_palette_target(target),
-            PaletteAction::LaunchApp(id) => self.launch_app_by_id(&id),
+            PaletteAction::OpenView(id) => self.launch_app_by_id(&id),
             PaletteAction::LaunchBuiltin(id) => self.launch_builtin_by_id(id),
             PaletteAction::OpenNote(path) => {
                 let path_str = path.display().to_string();
@@ -1924,11 +1924,11 @@ impl PlexiApp {
                     log::info!("palette: UI upcycle opening curated CLI '{binary}'");
                     self.open_builtin_app_pane(
                         Box::new(
-                            crate::render::cli_renderer_app::CliRendererApp::from_descriptor(
+                            crate::render::cli_renderer_app::CliRendererView::from_descriptor(
                                 descriptor,
                             ),
                         ),
-                        crate::app::permissions::AppPermissions::builtin(),
+                        crate::app::permissions::PluginPermissions::builtin(),
                         root,
                         None,
                         None,
@@ -2079,7 +2079,7 @@ impl PlexiApp {
             crate::host::keys::Action::RenamePane => self.open_rename_for_focused(),
             crate::host::keys::Action::HidePane => self.toggle_palette_focused_pane_hidden(),
             crate::host::keys::Action::ToggleZoom => self.toggle_palette_zoom(),
-            crate::host::keys::Action::NavBackApp => {
+            crate::host::keys::Action::NavBackView => {
                 if !self.try_nav_back_focused() {
                     self.step_focus_history_back();
                 }
@@ -2319,7 +2319,7 @@ impl PlexiApp {
                     pane_id,
                     shell_cmd.chars().count()
                 );
-                self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
                     generated_operation_id: false,
                     pane_id,
                     text: shell_cmd.to_string(),
@@ -2429,7 +2429,7 @@ impl PlexiApp {
         ws_root: Option<&std::path::Path>,
         default_pane_id: Option<u64>,
     ) -> i32 {
-        use crate::cli::args::{AppCmd, Cli, Commands, PaneCmd};
+        use crate::cli::args::{ViewCmd, Cli, Commands, PaneCmd};
         use clap::Parser;
 
         let cli = match Cli::try_parse_from(argv) {
@@ -2511,10 +2511,10 @@ impl PlexiApp {
                         layout_from_dir(down, left, up, right, tab, window, overlay)
                             .unwrap_or_else(|| "split_h".to_string()),
                     );
-                    let app_id =
+                    let plugin_id =
                         (cmd.as_deref() == Some("agents") && agent.is_none()).then_some("agents");
-                    let is_app = app_id.is_some();
-                    let type_id = if let Some(a) = app_id {
+                    let is_app = plugin_id.is_some();
+                    let type_id = if let Some(a) = plugin_id {
                         a.to_string()
                     } else {
                         "terminal".to_string()
@@ -2546,7 +2546,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    let req = crate::protocol::AppRequest::SpawnPane {
+                    let req = crate::protocol::HostRequest::SpawnPane {
                         type_id,
                         layout,
                         args,
@@ -2612,7 +2612,7 @@ impl PlexiApp {
                     if !exists {
                         return 1;
                     }
-                    self.handle_pane_ipc_request(crate::protocol::AppRequest::SetPaneTitle {
+                    self.handle_pane_ipc_request(crate::protocol::HostRequest::SetPaneTitle {
                         pane_id: pid,
                         name,
                     });
@@ -2636,7 +2636,7 @@ impl PlexiApp {
                     if !exists {
                         return 1;
                     }
-                    self.handle_pane_ipc_request(crate::protocol::AppRequest::FocusPane {
+                    self.handle_pane_ipc_request(crate::protocol::HostRequest::FocusPane {
                         pane_id,
                     });
                     0
@@ -2657,7 +2657,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::AppRequest::ClosePane {
+                    self.handle_pane_ipc_request(crate::protocol::HostRequest::ClosePane {
                         pane_id: pid,
                         response_file: Some(resp_str),
                     });
@@ -2682,7 +2682,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+                    self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
                         generated_operation_id: false,
                         pane_id,
                         text,
@@ -2707,7 +2707,7 @@ impl PlexiApp {
                     };
                     let resp_path = next_resp_path();
                     let resp_str = resp_path.to_string_lossy().into_owned();
-                    self.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+                    self.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
                         pane_id,
                         key,
                         response_file: Some(resp_str),
@@ -2751,7 +2751,7 @@ impl PlexiApp {
                 let resp_path = next_resp_path();
                 payload["response_file"] =
                     serde_json::Value::String(resp_path.to_string_lossy().into_owned());
-                let Ok(req) = serde_json::from_value::<crate::protocol::AppRequest>(payload) else {
+                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload) else {
                     return 1;
                 };
                 self.handle_pane_ipc_request(req);
@@ -2793,15 +2793,15 @@ impl PlexiApp {
                 let resp_path = next_resp_path();
                 payload["response_file"] =
                     serde_json::Value::String(resp_path.to_string_lossy().into_owned());
-                let Ok(req) = serde_json::from_value::<crate::protocol::AppRequest>(payload) else {
+                let Ok(req) = serde_json::from_value::<crate::protocol::HostRequest>(payload) else {
                     return 1;
                 };
                 self.handle_pane_ipc_request(req);
                 0
             }
-            Some(Commands::App {
+            Some(Commands::View {
                 cmd:
-                    AppCmd::Open {
+                    ViewCmd::Open {
                         type_id,
                         mcp,
                         cli: cli_flag,
@@ -2844,7 +2844,7 @@ impl PlexiApp {
                 };
                 let resp_path = next_resp_path();
                 let resp_str = resp_path.to_string_lossy().into_owned();
-                let req = crate::protocol::AppRequest::SpawnPane {
+                let req = crate::protocol::HostRequest::SpawnPane {
                     type_id: target_type_id,
                     layout,
                     args: target_args,
@@ -3102,7 +3102,7 @@ mod tests {
     }
 
     /// Every host command the palette lists that has a key binding must show
-    /// that binding. The dogfood set (NewContext, ToggleZoom, NavBackApp, …)
+    /// that binding. The dogfood set (NewContext, ToggleZoom, NavBackView, …)
     /// used to miss this match and warn once per row per Cmd+P open.
     #[test]
     fn palette_lists_a_shortcut_for_every_bound_host_command() {
@@ -3127,7 +3127,7 @@ mod tests {
                         "workspace config / edit commands are palette-only handoffs with no host chord"
                     );
                 }
-                PaletteCommand::Host(Action::NavBackApp | Action::FocusHistoryForward | Action::NextContext | Action::PrevContext) => {
+                PaletteCommand::Host(Action::NavBackView | Action::FocusHistoryForward | Action::NextContext | Action::PrevContext) => {
                     assert!(palette_host_binding(&bindings, &entry.command).is_none());
                 }
                 PaletteCommand::Host(action) => {
@@ -3143,10 +3143,10 @@ mod tests {
         // Actions the palette does not list stay quiet: one debug line, not a
         // warn on every paint. Calling twice must not grow the seen-set twice
         // in a way that changes the result — both calls return None.
-        let unlisted = PaletteCommand::Host(Action::CloseApp);
+        let unlisted = PaletteCommand::Host(Action::CloseView);
         assert!(
             !PALETTE_COMMANDS.iter().any(|e| e.command == unlisted),
-            "CloseApp must stay unlisted for this coverage"
+            "CloseView must stay unlisted for this coverage"
         );
         assert!(palette_host_binding(&bindings, &unlisted).is_none());
         assert!(palette_host_binding(&bindings, &unlisted).is_none());
@@ -3569,17 +3569,17 @@ mod tests {
         state: crate::protocol::AgentState,
         detail: Option<&str>,
     ) -> Pane {
-        use crate::app::permissions::AppPermissions;
-        use crate::host::pane::{AppPane, AppRuntime};
+        use crate::app::permissions::PluginPermissions;
+        use crate::host::pane::{ViewPane, ViewRuntime};
 
-        Pane::App(Box::new(AppPane {
+        Pane::App(Box::new(ViewPane {
             pip_status: None,
             id,
-            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+            runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                 std::env::temp_dir(),
             ))),
             workspace_root: std::env::temp_dir(),
-            permissions: AppPermissions::builtin(),
+            permissions: PluginPermissions::builtin(),
             manifest_id: "terminal".to_string(),
             name: pane_name.to_string(),
             pane_group: None,
@@ -4125,18 +4125,18 @@ mod tests {
 
     #[test]
     fn pane_row_identity_chips_apps_and_text_editors() {
-        use crate::app::permissions::AppPermissions;
-        use crate::host::pane::{AppPane, AppRuntime};
+        use crate::app::permissions::PluginPermissions;
+        use crate::host::pane::{ViewPane, ViewRuntime};
 
         let make_app = |manifest_id: &str, name: &str| {
-            Pane::App(Box::new(AppPane {
+            Pane::App(Box::new(ViewPane {
                 pip_status: None,
                 id: 99,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     std::env::temp_dir(),
                 ))),
                 workspace_root: std::env::temp_dir(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: manifest_id.to_string(),
                 name: name.to_string(),
                 pane_group: None,
@@ -4340,7 +4340,7 @@ mod tests {
 description = "Open mixing terminal + editor"
 steps = [
   "pane new --right --name mixer -- echo mix",
-  "app open text-editor --split down",
+  "view open text-editor --split down",
 ]
 "#,
         )
@@ -4368,7 +4368,7 @@ steps = [
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
                     if let Ok(req) =
-                        serde_json::from_str::<crate::protocol::AppRequest>(line.trim())
+                        serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
                         h.app.handle_pane_ipc_request(req);
                     }
@@ -4388,7 +4388,7 @@ steps = [
         // Verify `plexi pane list --json` (`ListPanes`) shows both new panes.
         let list_file = sock_dir.path().join("pane-list.json");
         h.app
-            .handle_pane_ipc_request(crate::protocol::AppRequest::ListPanes {
+            .handle_pane_ipc_request(crate::protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -4479,7 +4479,7 @@ steps = [
         let list_dir = tempfile::tempdir().unwrap();
         let list_file = list_dir.path().join("pane-list-onload.json");
         h.app
-            .handle_pane_ipc_request(crate::protocol::AppRequest::ListPanes {
+            .handle_pane_ipc_request(crate::protocol::HostRequest::ListPanes {
                 response_file: list_file.to_string_lossy().into_owned(),
                 context_id: None,
             });
@@ -4886,9 +4886,9 @@ steps = [
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
                     if let Ok(req) =
-                        serde_json::from_str::<crate::protocol::AppRequest>(line.trim())
+                        serde_json::from_str::<crate::protocol::HostRequest>(line.trim())
                     {
-                        if let crate::protocol::AppRequest::SpawnPane { from_pane_id, .. } = &req {
+                        if let crate::protocol::HostRequest::SpawnPane { from_pane_id, .. } = &req {
                             seen_from_ids.push(*from_pane_id);
                         }
                         h.app.handle_pane_ipc_request(req);

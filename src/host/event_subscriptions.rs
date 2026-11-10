@@ -6,7 +6,7 @@
 //! module. They are transports only, never second event buses.
 //!
 //! CLI/agent *publish* (declare + emit) is gated symmetrically to subscribe:
-//! a foreign identity is broker-checked on `TargetType::AppEventStream` the
+//! a foreign identity is broker-checked on `TargetType::PluginEventStream` the
 //! first time and, on `AllowAlways`, its grant persists — see
 //! [`HostSubscriptionService::classify_publish_request`]. Read and write use
 //! distinct grant targets (publish targets carry a `publish:` prefix), so an
@@ -29,7 +29,7 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionPosture, PermissionRequest,
 };
-use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
+use crate::host::app_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
 use crate::host::event_log;
 
 pub fn app_subscriber_id(pane_id: u64) -> String {
@@ -37,8 +37,8 @@ pub fn app_subscriber_id(pane_id: u64) -> String {
 }
 
 /// Evaluate broker grants for a subscription and, on a unanimous `Allow`,
-/// record it in `timeline`. One `TargetType::AppEventStream` evaluation per
-/// event name (`"<app_id>::<event>"`, or `"<app_id>::*"` for all streams);
+/// record it in `timeline`. One `TargetType::PluginEventStream` evaluation per
+/// event name (`"<plugin_id>::<event>"`, or `"<plugin_id>::*"` for all streams);
 /// the strictest non-allow decision short-circuits and nothing is recorded.
 ///
 /// Retained as a focused policy test seam. Production callers use
@@ -50,8 +50,8 @@ pub fn evaluate_and_record_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
-    timeline: &Arc<Mutex<AppTimeline>>,
-    publisher_app_id: &str,
+    timeline: &Arc<Mutex<PluginTimeline>>,
+    publisher_plugin_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
     subscriber_context_id: u64,
@@ -65,7 +65,7 @@ pub fn evaluate_and_record_subscription(
         grant_store,
         posture,
         workspace_root,
-        publisher_app_id,
+        publisher_plugin_id,
         subscriber_type,
         subscriber_id,
         ActorScope::User,
@@ -74,7 +74,7 @@ pub fn evaluate_and_record_subscription(
     );
     if decision != Decision::Allow {
         log::info!(
-            "event_subscriptions: subscription to '{publisher_app_id}' events for \
+            "event_subscriptions: subscription to '{publisher_plugin_id}' events for \
              {subscriber_type:?} '{subscriber_id}' blocked by broker ({})",
             decision.as_str()
         );
@@ -82,7 +82,7 @@ pub fn evaluate_and_record_subscription(
     }
     Ok(record_subscription(
         timeline,
-        publisher_app_id,
+        publisher_plugin_id,
         subscriber_type,
         subscriber_id,
         subscriber_context_id,
@@ -103,13 +103,13 @@ pub fn evaluate_and_record_subscription(
 /// Subscribe targets are the bare `"<app>::<event>"` form; publish targets carry
 /// a `publish:` prefix ([`publish_targets`]) so a grant matches only the
 /// operation it was granted for.
-fn subscription_targets(publisher_app_id: &str, event_names: &[String]) -> Vec<String> {
+fn subscription_targets(publisher_plugin_id: &str, event_names: &[String]) -> Vec<String> {
     if event_names.is_empty() {
-        vec![format!("{publisher_app_id}::*")]
+        vec![format!("{publisher_plugin_id}::*")]
     } else {
         event_names
             .iter()
-            .map(|n| format!("{publisher_app_id}::{n}"))
+            .map(|n| format!("{publisher_plugin_id}::{n}"))
             .collect()
     }
 }
@@ -117,8 +117,8 @@ fn subscription_targets(publisher_app_id: &str, event_names: &[String]) -> Vec<S
 /// The broker target ids a publish (declare/emit) touches — the subscribe
 /// targets with a `publish:` prefix so publish grants and subscribe grants are
 /// distinct and can never match each other (see [`subscription_targets`]).
-fn publish_targets(app_id: &str, event_names: &[String]) -> Vec<String> {
-    subscription_targets(app_id, event_names)
+fn publish_targets(plugin_id: &str, event_names: &[String]) -> Vec<String> {
+    subscription_targets(plugin_id, event_names)
         .into_iter()
         .map(|t| format!("publish:{t}"))
         .collect()
@@ -132,7 +132,7 @@ pub fn evaluate_subscription(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
-    publisher_app_id: &str,
+    publisher_plugin_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
     actor_scope: ActorScope,
@@ -147,7 +147,7 @@ pub fn evaluate_subscription(
         subscriber_id,
         actor_scope,
         session_id,
-        &subscription_targets(publisher_app_id, event_names),
+        &subscription_targets(publisher_plugin_id, event_names),
     )
 }
 
@@ -158,7 +158,7 @@ fn evaluate_publish(
     grant_store: &GrantStore,
     posture: Option<&PermissionPosture>,
     workspace_root: Option<&Path>,
-    app_id: &str,
+    plugin_id: &str,
     actor_type: ActorType,
     actor_id: &str,
     actor_scope: ActorScope,
@@ -173,7 +173,7 @@ fn evaluate_publish(
         actor_id,
         actor_scope,
         session_id,
-        &publish_targets(app_id, event_names),
+        &publish_targets(plugin_id, event_names),
     )
 }
 
@@ -227,8 +227,8 @@ fn evaluate_targets(
 /// interactive user approval).
 #[allow(clippy::too_many_arguments)]
 pub fn record_subscription(
-    timeline: &Arc<Mutex<AppTimeline>>,
-    publisher_app_id: &str,
+    timeline: &Arc<Mutex<PluginTimeline>>,
+    publisher_plugin_id: &str,
     subscriber_type: ActorType,
     subscriber_id: &str,
     subscriber_context_id: u64,
@@ -243,7 +243,7 @@ pub fn record_subscription(
         subscription_id: subscription_id.clone(),
         subscriber_type,
         subscriber_id: subscriber_id.to_string(),
-        app_id: publisher_app_id.to_string(),
+        plugin_id: publisher_plugin_id.to_string(),
         event_names,
         payload_mode,
         trigger_mode,
@@ -254,7 +254,7 @@ pub fn record_subscription(
     };
     log::info!(
         "event_subscriptions: recorded subscription {subscription_id} for {subscriber_type:?} \
-         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_app_id}' \
+         '{subscriber_id}' (context={subscriber_context_id}) -> '{publisher_plugin_id}' \
          (payload={payload_mode:?}, trigger={trigger_mode:?})"
     );
     timeline.lock().unwrap().add_subscription(record);
@@ -268,7 +268,7 @@ pub fn record_subscription(
 /// and streams its queued deliveries. Not serialized — `reply` is a live
 /// channel.
 pub struct HostSubscribeRequest {
-    pub publisher_app_id: String,
+    pub publisher_plugin_id: String,
     /// Empty = subscribe to all of the app's declared streams.
     pub event_names: Vec<String>,
     pub payload_mode: PayloadMode,
@@ -338,7 +338,7 @@ pub struct PendingEventConsent {
     /// transport decoupled them (host MCP: `mcp:host`).
     pub broker_actor_id: String,
     /// App-id namespace the streams live under.
-    pub app_id: String,
+    pub plugin_id: String,
     /// Stream names touched (empty = all of the app's declared streams). Drives
     /// both the consent label and the `AllowAlways` grant targets.
     pub event_names: Vec<String>,
@@ -387,7 +387,7 @@ impl PendingEventConsent {
         } else {
             self.event_names.join(", ")
         };
-        format!("{} :: {streams}", self.app_id)
+        format!("{} :: {streams}", self.plugin_id)
     }
 
     /// Verb for the consent modal copy: readers subscribe, publishers emit.
@@ -400,13 +400,13 @@ impl PendingEventConsent {
 }
 
 /// A CLI/agent request to *publish* to the event bus: declare stream schemas
-/// under an app-id namespace, or emit an event on a declared stream. Handed
+/// under an plugin-id namespace, or emit an event on a declared stream. Handed
 /// from a transport connection thread to the UI thread, which owns the grant
 /// store and broker gate. Identity is host-stamped from the pane, never taken
 /// from a CLI argument (anti-spoof, symmetrical to [`HostSubscribeRequest`]).
 pub struct HostPublishRequest {
     /// App-id namespace to declare/emit under.
-    pub app_id: String,
+    pub plugin_id: String,
     pub action: PublishAction,
     /// Pane id stamped by the host PTY env (`PLEXI_PANE_ID`).
     pub from_pane_id: Option<u64>,
@@ -419,7 +419,7 @@ pub struct HostPublishRequest {
     pub workspace_root_override: Option<PathBuf>,
     /// Context id under which the declared/emitted stream is owned — see
     /// [`HostSubscribeRequest::context_id_override`]; same contract, publish
-    /// twin. Stamped onto every `AppEventRecord`/stream declaration this
+    /// twin. Stamped onto every `PluginEventRecord`/stream declaration this
     /// request produces.
     pub context_id_override: Option<u64>,
     /// See [`HostSubscribeRequest::peer_ancestry`]; same contract, publish
@@ -430,9 +430,9 @@ pub struct HostPublishRequest {
 
 /// What a [`HostPublishRequest`] does to the timeline once allowed.
 pub enum PublishAction {
-    /// Register stream schemas — routes to [`AppTimeline::declare_streams`].
+    /// Register stream schemas — routes to [`PluginTimeline::declare_streams`].
     Declare(Vec<EventStreamDecl>),
-    /// Record + fan out one event — routes to [`AppTimeline::record_event`].
+    /// Record + fan out one event — routes to [`PluginTimeline::record_event`].
     Emit(Box<EmittedEvent>),
 }
 
@@ -483,7 +483,7 @@ pub enum HostSubscribeReply {
 pub struct HostSubscriptionService {
     grant_store: GrantStore,
     posture: Option<PermissionPosture>,
-    timeline: Arc<Mutex<AppTimeline>>,
+    timeline: Arc<Mutex<PluginTimeline>>,
 }
 
 impl HostSubscriptionService {
@@ -499,7 +499,7 @@ impl HostSubscriptionService {
     /// socket path, is resolved per-request by the caller from
     /// `PlexiApp::origin_for_pane` before it reaches this service) — there is
     /// no ambient fallback.
-    pub fn new(config_dir: &Path, timeline: Arc<Mutex<AppTimeline>>) -> Self {
+    pub fn new(config_dir: &Path, timeline: Arc<Mutex<PluginTimeline>>) -> Self {
         let grant_store = GrantStore::load_or_default(config_dir);
         let posture = PermissionPosture::load_from_config(config_dir);
         log::info!(
@@ -517,7 +517,7 @@ impl HostSubscriptionService {
     /// Construct a service with an explicit grant store + timeline for tests,
     /// bypassing disk loading.
     #[cfg(test)]
-    pub fn new_for_test(grant_store: GrantStore, timeline: Arc<Mutex<AppTimeline>>) -> Self {
+    pub fn new_for_test(grant_store: GrantStore, timeline: Arc<Mutex<PluginTimeline>>) -> Self {
         Self {
             grant_store,
             posture: None,
@@ -614,14 +614,14 @@ impl HostSubscriptionService {
         let undeclared: Vec<String> = req
             .event_names
             .iter()
-            .filter(|n| !self.stream_is_declared(subscriber_context_id, &req.publisher_app_id, n))
+            .filter(|n| !self.stream_is_declared(subscriber_context_id, &req.publisher_plugin_id, n))
             .cloned()
             .collect();
         if !undeclared.is_empty() {
             let _ = req.reply.send(HostSubscribeReply::Err {
                 message: format!(
                     "app '{}' has not declared stream(s): {}",
-                    req.publisher_app_id,
+                    req.publisher_plugin_id,
                     undeclared.join(", ")
                 ),
             });
@@ -631,7 +631,7 @@ impl HostSubscriptionService {
             &self.grant_store,
             self.posture.as_ref(),
             req.workspace_root_override.as_deref(),
-            &req.publisher_app_id,
+            &req.publisher_plugin_id,
             subscriber_type,
             &broker_actor_id,
             ActorScope::User,
@@ -642,7 +642,7 @@ impl HostSubscriptionService {
             Decision::Allow => {
                 let subscription_id = record_subscription(
                     &self.timeline,
-                    &req.publisher_app_id,
+                    &req.publisher_plugin_id,
                     subscriber_type,
                     &subscriber_id,
                     subscriber_context_id,
@@ -672,13 +672,13 @@ impl HostSubscriptionService {
                 log::info!(
                     "event_subscriptions: subscription to '{}' for {subscriber_type:?} \
                      '{subscriber_id}' awaiting user consent",
-                    req.publisher_app_id
+                    req.publisher_plugin_id
                 );
                 Some(PendingEventConsent {
                     subscriber_type,
                     subscriber_id,
                     broker_actor_id,
-                    app_id: req.publisher_app_id,
+                    plugin_id: req.publisher_plugin_id,
                     event_names: req.event_names,
                     subscriber_context_id,
                     workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
@@ -711,7 +711,7 @@ impl HostSubscriptionService {
             subscriber_type,
             subscriber_id,
             broker_actor_id,
-            app_id,
+            plugin_id,
             event_names,
             subscriber_context_id,
             workspace_root,
@@ -725,13 +725,13 @@ impl HostSubscriptionService {
             // must never authorize a write, so the persisted target must match
             // the operation being consented to, not just the app + streams.
             let targets = match action {
-                ConsentAction::Subscribe { .. } => subscription_targets(&app_id, &event_names),
-                ConsentAction::Publish { .. } => publish_targets(&app_id, &event_names),
+                ConsentAction::Subscribe { .. } => subscription_targets(&plugin_id, &event_names),
+                ConsentAction::Publish { .. } => publish_targets(&plugin_id, &event_names),
             };
             if let Err(message) = self.persist_always_grants(
                 subscriber_type,
                 &broker_actor_id,
-                &app_id,
+                &plugin_id,
                 &targets,
                 &workspace_root,
                 config_dir,
@@ -764,7 +764,7 @@ impl HostSubscriptionService {
                 if choice == ConsentChoice::Deny {
                     log::info!(
                         "event_subscriptions: user denied subscription for {subscriber_type:?} \
-                         '{subscriber_id}' -> '{app_id}'"
+                         '{subscriber_id}' -> '{plugin_id}'"
                     );
                     let _ = reply.send(HostSubscribeReply::Err {
                         message: "subscription denied by user".to_string(),
@@ -773,7 +773,7 @@ impl HostSubscriptionService {
                 }
                 let subscription_id = record_subscription(
                     &self.timeline,
-                    &app_id,
+                    &plugin_id,
                     subscriber_type,
                     &subscriber_id,
                     subscriber_context_id,
@@ -804,7 +804,7 @@ impl HostSubscriptionService {
                 } else {
                     log::info!(
                         "event_subscriptions: user allowed ({scope}) subscription for \
-                         {subscriber_type:?} '{subscriber_id}' -> '{app_id}'"
+                         {subscriber_type:?} '{subscriber_id}' -> '{plugin_id}'"
                     );
                 }
             }
@@ -816,7 +816,7 @@ impl HostSubscriptionService {
                 if choice == ConsentChoice::Deny {
                     log::info!(
                         "event_subscriptions: user denied publish for {subscriber_type:?} \
-                         '{subscriber_id}' -> '{app_id}'"
+                         '{subscriber_id}' -> '{plugin_id}'"
                     );
                     let _ = reply.send(HostPublishReply::Err {
                         message: "publish denied by user".to_string(),
@@ -826,7 +826,7 @@ impl HostSubscriptionService {
                 let outcome = Self::perform_publish(
                     &self.timeline,
                     subscriber_context_id,
-                    &app_id,
+                    &plugin_id,
                     pane_id,
                     publish,
                 );
@@ -842,13 +842,13 @@ impl HostSubscriptionService {
                 if reply.send(outcome).is_err() {
                     log::warn!(
                         "event_subscriptions: consented publisher '{subscriber_id}' already \
-                         disconnected; the {scope} publish to '{app_id}' was still applied \
+                         disconnected; the {scope} publish to '{plugin_id}' was still applied \
                          ({summary})"
                     );
                 } else {
                     log::info!(
                         "event_subscriptions: user allowed ({scope}) publish for \
-                         {subscriber_type:?} '{subscriber_id}' -> '{app_id}' ({summary})"
+                         {subscriber_type:?} '{subscriber_id}' -> '{plugin_id}' ({summary})"
                     );
                 }
             }
@@ -863,7 +863,7 @@ impl HostSubscriptionService {
         &mut self,
         actor_type: ActorType,
         actor_id: &str,
-        app_id: &str,
+        plugin_id: &str,
         targets: &[String],
         workspace_root: &Path,
         config_dir: &Path,
@@ -897,13 +897,13 @@ impl HostSubscriptionService {
         // Keep the in-memory store consistent with disk for later evals.
         self.reload(config_dir);
         log::info!(
-            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{app_id}'"
+            "event_subscriptions: user granted ALWAYS to {actor_type:?} '{actor_id}' -> '{plugin_id}'"
         );
         Ok(())
     }
 
     /// Resolve host-stamped identity, (for emit) reject an undeclared stream,
-    /// broker-gate on `TargetType::AppEventStream`, and — on `Allow` — apply the
+    /// broker-gate on `TargetType::PluginEventStream`, and — on `Allow` — apply the
     /// publish to the timeline now. The publish twin of
     /// [`Self::classify_subscribe_request`].
     ///
@@ -921,7 +921,7 @@ impl HostSubscriptionService {
             None => Self::resolve_cli_subscriber(req.from_pane_id),
         };
         // Host-stamp the emitter identity so an event's provenance is the
-        // agent/pane, never the app-id namespace it publishes under.
+        // agent/pane, never the plugin-id namespace it publishes under.
         if let PublishAction::Emit(ev) = &mut req.action {
             ev.actor_id = Some(actor_id.clone());
         }
@@ -939,11 +939,11 @@ impl HostSubscriptionService {
         // (mirrors the subscribe undeclared-stream check). Scoped to this
         // request's own context, matching what `record_event` will enforce.
         if let PublishAction::Emit(ev) = &req.action {
-            if !self.stream_is_declared(context_id, &req.app_id, &ev.event) {
+            if !self.stream_is_declared(context_id, &req.plugin_id, &ev.event) {
                 let _ = req.reply.send(HostPublishReply::Err {
                     message: format!(
                         "app '{}' has not declared stream '{}' in this context — declare it first",
-                        req.app_id, ev.event
+                        req.plugin_id, ev.event
                     ),
                 });
                 return None;
@@ -953,7 +953,7 @@ impl HostSubscriptionService {
             &self.grant_store,
             self.posture.as_ref(),
             req.workspace_root_override.as_deref(),
-            &req.app_id,
+            &req.plugin_id,
             actor_type,
             &actor_id,
             ActorScope::User,
@@ -966,7 +966,7 @@ impl HostSubscriptionService {
                 let outcome = Self::perform_publish(
                     &self.timeline,
                     context_id,
-                    &req.app_id,
+                    &req.plugin_id,
                     pane_id,
                     req.action,
                 );
@@ -983,7 +983,7 @@ impl HostSubscriptionService {
                 log::info!(
                     "event_subscriptions: publish to '{}' for {actor_type:?} '{actor_id}' \
                      awaiting user consent",
-                    req.app_id
+                    req.plugin_id
                 );
                 Some(PendingEventConsent {
                     subscriber_type: actor_type,
@@ -991,7 +991,7 @@ impl HostSubscriptionService {
                     // authorization identity are the same emitter id.
                     broker_actor_id: actor_id.clone(),
                     subscriber_id: actor_id,
-                    app_id: req.app_id,
+                    plugin_id: req.plugin_id,
                     event_names,
                     subscriber_context_id: context_id,
                     workspace_root: req.workspace_root_override.clone().unwrap_or_default(),
@@ -1009,16 +1009,16 @@ impl HostSubscriptionService {
     /// `Result` into a [`HostPublishReply`]. Performs no broker check — the
     /// caller has already established consent.
     fn perform_publish(
-        timeline: &Arc<Mutex<AppTimeline>>,
+        timeline: &Arc<Mutex<PluginTimeline>>,
         context_id: u64,
-        app_id: &str,
+        plugin_id: &str,
         pane_id: u64,
         action: PublishAction,
     ) -> HostPublishReply {
         let mut timeline = timeline.lock().unwrap();
         match action {
             PublishAction::Declare(decls) => {
-                match timeline.declare_streams(context_id, app_id, decls) {
+                match timeline.declare_streams(context_id, plugin_id, decls) {
                     Ok(names) => HostPublishReply::Ok {
                         detail: format!("declared stream(s): {}", names.join(", ")),
                         event_id: None,
@@ -1027,7 +1027,7 @@ impl HostSubscriptionService {
                 }
             }
             PublishAction::Emit(ev) => {
-                match timeline.record_event(context_id, app_id, pane_id, *ev) {
+                match timeline.record_event(context_id, plugin_id, pane_id, *ev) {
                     Ok(outcome) => HostPublishReply::Ok {
                         detail: format!(
                             "recorded event {} ({} delivery(ies) queued)",
@@ -1041,20 +1041,20 @@ impl HostSubscriptionService {
         }
     }
 
-    /// Whether `app_id` has declared `stream_name`. Used to reject subscribe
+    /// Whether `plugin_id` has declared `stream_name`. Used to reject subscribe
     /// requests for undeclared streams before they reach the broker.
-    pub fn stream_is_declared(&self, context_id: u64, app_id: &str, stream_name: &str) -> bool {
+    pub fn stream_is_declared(&self, context_id: u64, plugin_id: &str, stream_name: &str) -> bool {
         self.timeline
             .lock()
             .unwrap()
-            .has_stream(context_id, app_id, stream_name)
+            .has_stream(context_id, plugin_id, stream_name)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{AppEventActor, EventStreamDecl};
+    use crate::protocol::{PluginEventActor, EventStreamDecl};
     use crate::broker::{ActorScope, Decision, GrantRecord, GrantSource};
     use crate::host::app_timeline::EmittedEvent;
 
@@ -1076,8 +1076,8 @@ mod tests {
         )
     }
 
-    fn timeline_with_stream() -> Arc<Mutex<AppTimeline>> {
-        let mut t = AppTimeline::default();
+    fn timeline_with_stream() -> Arc<Mutex<PluginTimeline>> {
+        let mut t = PluginTimeline::default();
         t.declare_streams(
             CTX,
             "event-probe",
@@ -1142,7 +1142,7 @@ mod tests {
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
     }
 
-    fn granted_service(timeline: Arc<Mutex<AppTimeline>>) -> HostSubscriptionService {
+    fn granted_service(timeline: Arc<Mutex<PluginTimeline>>) -> HostSubscriptionService {
         let mut store = GrantStore::default();
         // Grant both the pane-derived (CLI) and override (MCP) identities, for
         // both read (subscribe) and write (publish) targets — the two are
@@ -1165,7 +1165,7 @@ mod tests {
         let service = HostSubscriptionService::new_for_test(store, Arc::clone(&timeline));
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         let request = HostSubscribeRequest {
-            publisher_app_id: "event-probe".to_string(),
+            publisher_plugin_id: "event-probe".to_string(),
             event_names: vec!["probe.tick".to_string()],
             payload_mode: PayloadMode::Full,
             trigger_mode: TriggerMode::Conversation,
@@ -1208,7 +1208,7 @@ mod tests {
     ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req = HostSubscribeRequest {
-            publisher_app_id: "event-probe".to_string(),
+            publisher_plugin_id: "event-probe".to_string(),
             event_names,
             payload_mode,
             trigger_mode: TriggerMode::Conversation,
@@ -1238,7 +1238,7 @@ mod tests {
     ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req = HostSubscribeRequest {
-            publisher_app_id: "event-probe".to_string(),
+            publisher_plugin_id: "event-probe".to_string(),
             event_names: vec!["probe.tick".to_string()],
             payload_mode: PayloadMode::Full,
             trigger_mode: TriggerMode::Conversation,
@@ -1312,7 +1312,7 @@ mod tests {
     fn probe_event(count: u64) -> EmittedEvent {
         EmittedEvent {
             event: "probe.tick".to_string(),
-            actor: AppEventActor::User,
+            actor: PluginEventActor::User,
             actor_id: None,
             caused_by: None,
             summary: format!("Probe tick {count}"),
@@ -1515,7 +1515,7 @@ mod tests {
     // ── Publish (declare + emit) ────────────────────────────────────────────
 
     fn publish_request(
-        app_id: &str,
+        plugin_id: &str,
         action: PublishAction,
         override_id: Option<&str>,
     ) -> (
@@ -1524,7 +1524,7 @@ mod tests {
     ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let req = HostPublishRequest {
-            app_id: app_id.to_string(),
+            plugin_id: plugin_id.to_string(),
             action,
             from_pane_id: Some(7),
             subscriber_override: override_id.map(String::from),
@@ -1537,7 +1537,7 @@ mod tests {
     }
 
     /// A granted emit records the event and host-stamps the emitter identity
-    /// (`pane:7`) — never letting `actor_id` default to the app-id namespace.
+    /// (`pane:7`) — never letting `actor_id` default to the plugin-id namespace.
     #[test]
     fn publish_emit_records_and_host_stamps_actor() {
         let timeline = timeline_with_stream();
@@ -1593,7 +1593,7 @@ mod tests {
     /// declaring; `AllowOnce` then declares the stream.
     #[test]
     fn publish_declare_ask_then_allow_once_declares() {
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         let mut svc =
             HostSubscriptionService::new_for_test(GrantStore::default(), Arc::clone(&timeline));
         let decls = vec![EventStreamDecl {

@@ -1,6 +1,6 @@
 //! Startup-only plugin policy and inert restore views. No plugin factory runs here.
-use crate::app::app_trait::{App, AppRenderContext};
-use crate::host::pane::{AppPane, AppRuntime, Pane};
+use crate::app::app_trait::{App, ViewRenderContext};
+use crate::host::pane::{ViewPane, ViewRuntime, Pane};
 use crate::workspace::SavedPane;
 
 pub(crate) fn unavailable(plugin: &str) -> String {
@@ -65,7 +65,7 @@ impl App for DisabledPluginView {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         ui.vertical_centered(|ui| {
@@ -75,7 +75,7 @@ impl App for DisabledPluginView {
             ui.label(
                 egui::RichText::new(format!(
                     "Plugin '{}' is disabled.",
-                    self.original.app_id.as_deref().unwrap_or("unknown")
+                    self.original.plugin_id.as_deref().unwrap_or("unknown")
                 ))
                 .color(ctx.colors.text_primary),
             );
@@ -89,17 +89,17 @@ pub(crate) fn disabled_plugin_pane(saved: &SavedPane) -> Pane {
     log::info!(
         "plugins: preserving disabled view pane_id={} plugin={:?}",
         saved.id,
-        saved.app_id
+        saved.plugin_id
     );
-    Pane::App(Box::new(AppPane {
+    Pane::App(Box::new(ViewPane {
         pip_status: None,
         id: saved.id,
-        runtime: AppRuntime::Builtin(Box::new(DisabledPluginView {
+        runtime: ViewRuntime::Builtin(Box::new(DisabledPluginView {
             original: saved.clone(),
         })),
         workspace_root: saved.cwd.clone(),
-        permissions: super::permissions::AppPermissions::default(),
-        manifest_id: saved.app_id.clone().unwrap_or_default(),
+        permissions: super::permissions::PluginPermissions::default(),
+        manifest_id: saved.plugin_id.clone().unwrap_or_default(),
         name: saved
             .name
             .clone()

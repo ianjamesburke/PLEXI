@@ -36,7 +36,7 @@ pub enum Placement {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PaneRuntimeKind {
     Terminal,
-    App { app_id: String },
+    App { plugin_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

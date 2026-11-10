@@ -332,7 +332,7 @@ fn summary_of(row: &Value) -> String {
         ),
         "timeline_event" => format!(
             "{}/{} {}",
-            d["app_id"].as_str().unwrap_or("?"),
+            d["plugin_id"].as_str().unwrap_or("?"),
             d["event"].as_str().unwrap_or("?"),
             d["summary"].as_str().unwrap_or("")
         ),
@@ -567,7 +567,7 @@ mod tests {
         .unwrap();
         let host = vec![
             json!({"seq":1,"ts":"2026-01-01T00:00:01Z","kind":"timeline_event","pane_id":5,"call_id":null,
-                   "context_id":1,"data":{"event":"pane.lifecycle","app_id":"plexi.host.panes","summary":"x",
+                   "context_id":1,"data":{"event":"pane.lifecycle","plugin_id":"plexi.host.panes","summary":"x",
                    "payload":{"provenance":{"session_id":"sess-agent-1"}}}}),
             row(2, "2026-01-01T00:00:03Z", "permission_ask", Some(5), None),
         ];

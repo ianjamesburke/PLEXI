@@ -189,7 +189,7 @@ pub(crate) struct PendingAgentBoot {
 /// so a subsequent retry after approval still consumes the grant).
 pub(crate) const SEND_APPROVAL_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A parked `AppRequest::SendToPane` waiting on a permission broker approval.
+/// A parked `HostRequest::SendToPane` waiting on a permission broker approval.
 pub(crate) struct PendingSendApproval {
     pub pending_request_id: String,
     pub operation_id: String,
@@ -1409,7 +1409,7 @@ impl PlexiApp {
         })
     }
 
-    /// Handle `AppRequest::AgentWait`: consume any matching queued results from the parent pane
+    /// Handle `HostRequest::AgentWait`: consume any matching queued results from the parent pane
     /// so they are never re-delivered via idle batching, and either reply immediately if all
     /// children have finished or park until they finish or `timeout_secs` expires.
     pub(crate) fn handle_agent_wait(
@@ -1667,7 +1667,7 @@ impl PlexiApp {
         }
         self.pending_send_approvals = remaining_items;
         for item in approved_to_dispatch {
-            self.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+            self.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
                 generated_operation_id: false,
                 pane_id: item.pane_id,
                 text: item.text,

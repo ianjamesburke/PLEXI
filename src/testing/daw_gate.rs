@@ -33,7 +33,7 @@ use plexi_daw_model::{
 };
 
 use crate::host::wasm_app::{
-    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp,
+    InputEvent, KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView,
 };
 
 // ─── Tier 1: pure-model fuzz, wired under `cargo test --bin plexi` ────────────
@@ -182,7 +182,7 @@ fn named_key(k: &str) -> InputEvent {
 #[test]
 fn daw_gate_pane_drive() -> wasmtime::Result<()> {
     let mut app =
-        WasmApp::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
+        WasmView::load_ephemeral_run("daw-gate", &daw_fixture(), StateStore::ephemeral())?;
     app.init(&StateSnapshot { entries: vec![] }, (1280.0, 800.0), &[])?;
 
     // The seeded demo project renders both tracks, transport, and readout.

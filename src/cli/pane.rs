@@ -1552,7 +1552,7 @@ fn validate_status_reply(content: &str) -> Result<(), String> {
 /// For terminal panes, returns a simple status object. Every response also
 /// carries `claimed_state` (the pane's agent-authored `status` slot) and
 /// `observed_state` (host-derived liveness), always together — see
-/// `AppRequest::GetPaneState`. Returns 0 on success, 1 on error.
+/// `HostRequest::GetPaneState`. Returns 0 on success, 1 on error.
 pub fn pane_state_cli(pane_id: u64, stale_after_secs: Option<u64>) -> i32 {
     log::info!("pane_state:cli: pane_id={pane_id} stale_after_secs={stale_after_secs:?}");
 
@@ -1594,7 +1594,7 @@ pub(crate) fn pane_state_envelope_error(value: &serde_json::Value) -> Option<&st
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
-/// passing the user's workspace root so app state is scoped correctly.
+/// passing the user's workspace root so plugin state is scoped correctly.
 pub(super) fn open_github_ephemeral(
     source: &str,
     layout: Option<&str>,

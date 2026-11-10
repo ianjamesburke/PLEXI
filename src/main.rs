@@ -137,13 +137,13 @@ fn main() -> eframe::Result {
             .core_only
             .unwrap_or(false)
         {
-            let apps_dir = crate::app::registry::apps_dir();
+            let plugins_dir = crate::app::registry::plugins_dir();
             let cloner = crate::cli::install_host::GitCloner;
 
             // On first launch, also seed the example apps.
             if is_first_launch {
                 if let Some(outcomes) =
-                    crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &apps_dir)
+                    crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &plugins_dir)
                 {
                     let n_ok = outcomes
                         .iter()
@@ -156,13 +156,13 @@ fn main() -> eframe::Result {
                         .count();
                     log::info!(
                         "examples pack: seeded {n_ok} apps to {}",
-                        apps_dir.display()
+                        plugins_dir.display()
                     );
                 }
             }
 
             // Always re-seed any deleted core apps.
-            let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
+            let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &plugins_dir);
             let n_installed = core_outcomes
                 .iter()
                 .filter(|o| {
@@ -175,7 +175,7 @@ fn main() -> eframe::Result {
             if n_installed > 0 {
                 log::info!(
                     "core pack: re-seeded {n_installed} missing apps to {}",
-                    apps_dir.display()
+                    plugins_dir.display()
                 );
             }
             for o in &core_outcomes {
@@ -184,12 +184,12 @@ fn main() -> eframe::Result {
                 }
             }
             if !is_app_prune_command {
-                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&apps_dir);
+                let pruned = crate::cli::install_host::reconcile_orphaned_pre_v3_first_party_apps(&plugins_dir);
                 if !pruned.is_empty() {
                     log::info!(
                     "core pack: quarantined {} orphaned pre-v3 app(s) from {}",
                         pruned.len(),
-                        apps_dir.display()
+                        plugins_dir.display()
                     );
                 }
             }
@@ -217,7 +217,7 @@ fn main() -> eframe::Result {
     crate::config::set_adopted_workspace_root(adopted_root.clone());
 
     // When the user runs `plexi <path>`, treat that path as the new CWD so
-    // every downstream consumer (AppRegistry, event log, default pane cwd)
+    // every downstream consumer (PluginRegistry, event log, default pane cwd)
     // sees the adopted workspace as its starting point. Mirrors VS Code's
     // "open folder" semantics. Bare `plexi` leaves CWD untouched.
     if let Some(root) = adopted_root.as_ref() {
@@ -307,8 +307,12 @@ fn main() -> eframe::Result {
 
     // Handle CLI subcommands before launching the GUI.
     let args = strip_profile_args(&raw_args);
+    if let Some(message) = cli::args::retired_namespace_message(&args) {
+        eprintln!("error: {message}");
+        cli::trace::exit(2);
+    }
     use crate::cli::args::{
-        AccountCmd, AgentCmd, AiCmd, AppCmd, AppStateCmd, AssistantCmd, AssistantPermissionCmd,
+        AccountCmd, AgentCmd, AiCmd, PluginCmd, ViewCmd, PluginStateCmd, AssistantCmd, AssistantPermissionCmd,
         ChangesCmd, CliSetupCmd, CommandViewCmd, Commands, ConfigCmd, ContextCmd, DebugCmd,
         DebugSessionCmd, DescriptorCmd, EventsCmd, HookAction, HostCmd, LedgerCmd, NeedsYouCmd,
         NotifyCmd, PaneCmd, PaneMessageCmd, PaneResultCmd, PaneSlotCmd, PermissionsCmd,
@@ -861,9 +865,9 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::folder_secret_exec(&cwd, &command))
                         }
                     },
-                    Commands::App { cmd } => {
-                        match cmd {
-                            AppCmd::Open {
+                    Commands::View { cmd } => match cmd {
+ ViewCmd::List => cli::trace::exit(cli::view_list()),
+ViewCmd::Open {
                                 type_id,
                                 mcp,
                                 cli: cli_flag,
@@ -972,8 +976,24 @@ fn main() -> eframe::Result {
                                         None,
                                     ));
                                 }
-                            }
-                            AppCmd::Install {
+                            }ViewCmd::Render {
+                                app,
+                                size,
+                                state,
+                                output,
+                                png,
+                            } => cli::trace::exit(cli::view_render(
+                                &app,
+                                &size,
+                                state.as_deref(),
+                                output.as_deref(),
+                                png,
+                            )),
+},
+Commands::Plugin { cmd } => {
+                        match cmd {
+                            
+                            PluginCmd::Install {
                                 spec_or_path,
                                 pack,
                                 refresh,
@@ -990,7 +1010,7 @@ fn main() -> eframe::Result {
                                         cli::trace::exit(cli::install_workspace_pack_cli());
                                     }
                                     Some(s) => match cli::app::classify_app_install_spec(&s) {
-                                        cli::app::AppInstallSpecKind::Package => {
+                                        cli::app::PluginInstallSpecKind::Package => {
                                             log::info!(
                                                 "app_install:cli: package={s} version={version:?}"
                                             );
@@ -1001,13 +1021,13 @@ fn main() -> eframe::Result {
                                                 yes,
                                             ));
                                         }
-                                        cli::app::AppInstallSpecKind::Source => {
+                                        cli::app::PluginInstallSpecKind::Source => {
                                             log::info!(
                                                     "app_install:cli: source spec={s} version={version:?}"
                                                 );
                                             cli::trace::exit(cli::install_cli(&s, yes));
                                         }
-                                        cli::app::AppInstallSpecKind::LocalPath => {
+                                        cli::app::PluginInstallSpecKind::LocalPath => {
                                             log::info!("app_install:cli: local path={s} version={version:?}");
                                             cli::trace::exit(cli::app_install_with_pin(
                                                 &s,
@@ -1016,7 +1036,7 @@ fn main() -> eframe::Result {
                                                 yes,
                                             ));
                                         }
-                                        cli::app::AppInstallSpecKind::MarketplaceId => {
+                                        cli::app::PluginInstallSpecKind::MarketplaceId => {
                                             exit_if_feature_disabled(
                                                 crate::release::ReleaseFeature::Marketplace,
                                             );
@@ -1026,7 +1046,7 @@ fn main() -> eframe::Result {
                                     },
                                 }
                             }
-                            AppCmd::Init {
+                            PluginCmd::Init {
                                 name,
                                 adopt,
                                 wasm,
@@ -1050,31 +1070,16 @@ fn main() -> eframe::Result {
                                     from_pane_id,
                                 ));
                             }
-                            AppCmd::Uninstall { id, yes } => {
+                            PluginCmd::Uninstall { id, yes } => {
                                 cli::trace::exit(cli::app_uninstall(&id, yes))
                             }
-                            AppCmd::List => cli::trace::exit(cli::app_list()),
-                            AppCmd::Prune { dry_run } => {
+                            PluginCmd::List => cli::trace::exit(cli::app_list()),
+                            PluginCmd::Prune { dry_run } => {
                                 cli::trace::exit(cli::app_prune_cli(dry_run))
                             }
-                            AppCmd::Trust { path } => {
-                                log::info!("app_trust:cli: path={path}");
-                                cli::trace::exit(cli::app_trust_cli(&path));
-                            }
-                            AppCmd::Render {
-                                app,
-                                size,
-                                state,
-                                output,
-                                png,
-                            } => cli::trace::exit(cli::app_render(
-                                &app,
-                                &size,
-                                state.as_deref(),
-                                output.as_deref(),
-                                png,
-                            )),
-                            AppCmd::Check {
+                            
+                            
+                            PluginCmd::Check {
                                 path,
                                 sizes,
                                 png_dir,
@@ -1086,59 +1091,51 @@ fn main() -> eframe::Result {
                                     png_dir.as_deref(),
                                 ));
                             }
-                            AppCmd::Test { path, snapshot } => {
+                            PluginCmd::Test { path, snapshot } => {
                                 log::info!("app_test:cli: path={path} snapshot={snapshot}");
                                 cli::trace::exit(cli::app_test_cli(&path, snapshot));
                             }
-                            AppCmd::Info { id } => cli::trace::exit(cli::app_info(&id)),
-                            AppCmd::State { cmd } => match cmd {
-                                AppStateCmd::Get { app, scope } => cli::trace::exit(
-                                    cli::app_state::get(&app, scope.as_deref()),
+                            PluginCmd::Info { id } => cli::trace::exit(cli::app_info(&id)),
+                            PluginCmd::State { cmd } => match cmd {
+                                PluginStateCmd::Get { app, scope } => cli::trace::exit(
+                                    cli::plugin_state::get(&app, scope.as_deref()),
                                 ),
-                                AppStateCmd::Set { app, file, scope } => cli::trace::exit(
-                                    cli::app_state::set(&app, file.as_deref(), scope.as_deref()),
+                                PluginStateCmd::Set { app, file, scope } => cli::trace::exit(
+                                    cli::plugin_state::set(&app, file.as_deref(), scope.as_deref()),
                                 ),
                             },
-                            AppCmd::Validate { path } => {
+                            PluginCmd::Validate { path } => {
                                 log::info!("app_validate:cli: path={path}");
                                 cli::trace::exit(cli::validate_cli(&path));
                             }
-                            AppCmd::Inspect { path } => {
+                            PluginCmd::Inspect { path } => {
                                 log::info!("app_inspect:cli: path={path}");
                                 cli::trace::exit(cli::app_inspect_cli(&path));
                             }
-                            AppCmd::Package { path, out } => {
+                            PluginCmd::Package { path, out } => {
                                 log::info!("app_package:cli: path={path} out={out:?}");
                                 cli::trace::exit(cli::app_package_cli(&path, out.as_deref()));
                             }
-                            AppCmd::Freeze { path } => {
+                            PluginCmd::Freeze { path } => {
                                 log::info!("app_freeze:cli: path={path}");
                                 cli::trace::exit(cli::freeze_cli(&path));
                             }
-                            AppCmd::Publish { path } => {
+                            PluginCmd::Publish { path } => {
                                 cli::trace::exit(cli::app_publish_cli(&path));
                             }
-                            AppCmd::Browse => {
+                            PluginCmd::Browse => {
                                 cli::trace::exit(cli::app_browse_cli());
                             }
-                            AppCmd::Search { query } => {
+                            PluginCmd::Search { query } => {
                                 cli::trace::exit(cli::app_search_cli(&query));
                             }
-                            AppCmd::Update { id } => {
+                            PluginCmd::Update { id } => {
                                 log::info!("app_update:cli: id={id:?}");
                                 cli::trace::exit(cli::app_update_cli(id.as_deref()));
                             }
-                            AppCmd::Action {
-                                pane_id,
-                                action,
-                                args,
-                            } => {
-                                let pane_id = resolve_pane(&pane_id);
-                                log::info!("app_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
-                                cli::trace::exit(cli::app_action_cli(pane_id, &action, &args));
-                            }
-                            AppCmd::Call {
-                                app_id,
+                            
+                            PluginCmd::Call {
+                                plugin_id,
                                 tool,
                                 input,
                                 pane,
@@ -1146,10 +1143,10 @@ fn main() -> eframe::Result {
                             } => {
                                 let pane = resolve_opt_pane(pane.as_ref());
                                 cli::trace::exit(cli::app_call_cli(
-                                    &app_id, &tool, &input, json, pane, wait_approved,
+                                    &plugin_id, &tool, &input, json, pane, wait_approved,
                                 ))
                             }
-                            AppCmd::Tools { app, context } => {
+                            PluginCmd::Tools { app, context } => {
                                 let context = resolve_opt_ctx(context.as_ref());
                                 cli::trace::exit(cli::app_tools_cli(
                                     app.as_deref(),
@@ -1305,7 +1302,16 @@ fn main() -> eframe::Result {
                         }));
                     }
                     Commands::Pane { cmd } => match cmd {
-                        PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
+                        PaneCmd::Action {
+                                pane_id,
+                                action,
+                                args,
+                            } => {
+                                let pane_id = resolve_pane(&pane_id);
+                                log::info!("pane_action:cli: pane_id={pane_id} action={action:?} argc={}", args.len());
+                                cli::trace::exit(cli::pane_action_cli(pane_id, &action, &args));
+                            }
+PaneCmd::Layout => cli::trace::exit(cli::pane_layout_cli()),
                         PaneCmd::Name { first, second } => {
                             let (pane_id, name) = match second {
                                 Some(title) => {
@@ -1707,14 +1713,14 @@ fn main() -> eframe::Result {
                     },
                     Commands::Events { cmd } => match cmd {
                         EventsCmd::Subscribe {
-                            app_id,
+                            plugin_id,
                             stream,
                             all,
                             payload,
                             trigger,
                             resource,
                         } => cli::trace::exit(cli::events_subscribe_cli(
-                            &app_id,
+                            &plugin_id,
                             stream.as_deref(),
                             all,
                             &payload,
@@ -1722,18 +1728,18 @@ fn main() -> eframe::Result {
                             resource.as_deref(),
                         )),
                         EventsCmd::Declare {
-                            app_id,
+                            plugin_id,
                             stream,
                             schema,
                             description,
                         } => cli::trace::exit(cli::events_declare_cli(
-                            &app_id,
+                            &plugin_id,
                             &stream,
                             &schema,
                             description.as_deref(),
                         )),
                         EventsCmd::Emit {
-                            app_id,
+                            plugin_id,
                             event,
                             summary,
                             resource,
@@ -1746,7 +1752,7 @@ fn main() -> eframe::Result {
                             rollback_token,
                             changed_resources,
                         } => cli::trace::exit(cli::events_emit_cli(cli::EmitArgs {
-                            app_id: &app_id,
+                            plugin_id: &plugin_id,
                             event: &event,
                             summary: &summary,
                             resource: &resource,
@@ -2121,7 +2127,7 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
     log::info!("titlebar: native title hidden; toolbar renders measured window title");
     #[cfg(target_os = "linux")]
-    let viewport = viewport.with_app_id(crate::config::current_exe_basename());
+    let viewport = viewport.with_plugin_id(crate::config::current_exe_basename());
     let native_options = eframe::NativeOptions {
         // eframe 0.34 split root close into CloseRequested followed by Exit.
         // On macOS its run-on-demand loop can stall between those events after
@@ -2510,7 +2516,7 @@ mod cli_tests {
             &["-h"],
             &["--profile", "alpha", "--version"],
             &["--bogus-flag"],
-            &["app", "list"],
+            &["plugin", "list"],
             &["help"],
         ] {
             assert!(!is_host_startup(&argv(cli)), "{cli:?} must not start a host");

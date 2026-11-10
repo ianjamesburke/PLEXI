@@ -4,7 +4,7 @@ use serde::Serialize;
 struct DoctorReport {
     healthy: bool,
     installation: serde_json::Value,
-    apps: Vec<AppReport>,
+    apps: Vec<PluginReport>,
     llm_servers: Vec<LlmServerReport>,
     openrouter: OpenRouterReport,
 }
@@ -21,7 +21,7 @@ struct OpenRouterReport {
 }
 
 #[derive(Serialize)]
-struct AppReport {
+struct PluginReport {
     id: String,
     missing: Vec<String>,
 }
@@ -207,7 +207,7 @@ pub fn doctor_cli(json: bool) -> i32 {
     let (installation, installation_healthy) = installation_report();
     if !json { println!("Installation: {}", installation); }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app::registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::PluginRegistry::load(&cwd);
     let config = crate::config::PlexiConfig::load_with_workspace(
         crate::config::active_workspace_root().as_deref(),
     );
@@ -242,13 +242,13 @@ pub fn doctor_cli(json: bool) -> i32 {
         return if installation_healthy { 0 } else { 1 };
     }
 
-    let mut sick_apps: Vec<AppReport> = Vec::new();
+    let mut sick_apps: Vec<PluginReport> = Vec::new();
     let total = installed.len();
 
     for app in &installed {
         let missing = registry.check_config_capabilities(&app.manifest.id, &config);
         if !missing.is_empty() {
-            sick_apps.push(AppReport {
+            sick_apps.push(PluginReport {
                 id: app.manifest.id.clone(),
                 missing,
             });

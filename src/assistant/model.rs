@@ -2,7 +2,7 @@
 //!
 //! `AssistantModel` owns the active conversation, composer text, and
 //! streaming state. State transitions return `AssistantEffect`s; the pane
-//! shell (`AssistantApp`) executes them.
+//! shell (`AssistantView`) executes them.
 
 use std::collections::VecDeque;
 
@@ -98,7 +98,7 @@ pub struct ActiveToolCall {
     /// Compact summary of the call's input, shown on the running row.
     pub input_summary: String,
     /// When the call started, so the running row can show elapsed time — a
-    /// long `app check` reads as progress instead of a hang (stint 0460).
+    /// long `plugin check` reads as progress instead of a hang (stint 0460).
     pub started: std::time::Instant,
 }
 
@@ -119,7 +119,7 @@ pub struct FinishedToolCall {
 }
 
 /// A permission sheet awaiting the user's decision (renderable state only —
-/// the worker reply channel lives in `AssistantApp`).
+/// the worker reply channel lives in `AssistantView`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingPermission {
     pub tool: String,
@@ -246,7 +246,7 @@ pub enum AssistantEffect {
     /// `/tools`: list discovered app connector tools with broker decisions.
     ListTools,
     /// `/apps`: list running apps and their exposed connectors.
-    ListApps,
+    ListPlugins,
     ListSkills,
     ShowContext,
     ShowHooks,
@@ -844,7 +844,7 @@ impl AssistantModel {
             // Real Phase 2 views: the pane shell reads the broker/audit state
             // and answers with an info row.
             "tools" => vec![AssistantEffect::ListTools],
-            "apps" => vec![AssistantEffect::ListApps],
+            "plugins" => vec![AssistantEffect::ListPlugins],
             "skills" => vec![AssistantEffect::ListSkills],
             "context" => vec![AssistantEffect::ShowContext],
             "hooks" => vec![AssistantEffect::ShowHooks],

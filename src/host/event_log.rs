@@ -40,15 +40,15 @@ use std::sync::{mpsc, Arc, OnceLock};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostEvent {
     /// An app pane was successfully spawned.
-    AppSpawned {
-        app_id: String,
+    ViewOpened {
+        plugin_id: String,
         type_id: String,
         pane_id: u64,
         timestamp: String,
     },
     /// A WASM app runtime was closed.
-    AppClosed {
-        app_id: String,
+    ViewClosed {
+        plugin_id: String,
         type_id: String,
         pane_id: u64,
         timestamp: String,
@@ -56,21 +56,21 @@ pub enum HostEvent {
     },
     /// A capability request was decided by the user (granted or denied).
     PermissionDecision {
-        app_id: String,
+        plugin_id: String,
         capability: String,
         granted: bool,
         timestamp: String,
     },
     /// The user was prompted for a secret value (key not in Keychain).
     SecretPrompted {
-        app_id: String,
+        plugin_id: String,
         key: String,
         timestamp: String,
     },
     /// A secret request was denied — capability gate, scope mismatch, or
     /// user denial at the prompt.
     SecretDenied {
-        app_id: String,
+        plugin_id: String,
         key: String,
         reason: String,
         timestamp: String,
@@ -78,7 +78,7 @@ pub enum HostEvent {
     /// A Run was created.
     RunStarted {
         run_id: String,
-        app_id: String,
+        plugin_id: String,
         timestamp: String,
     },
     /// A Run's status changed (Running, BlockedOnUser, etc.).

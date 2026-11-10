@@ -645,7 +645,7 @@ impl PlexiApp {
                 if let Some(crate::host::pane::Pane::App(app_pane)) =
                     self.windows[active].panes.get_mut(&pane_id)
                 {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut app_pane.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut app_pane.runtime {
                         log::info!("notes_picker: opening {:?} in focused pane", path);
                         app.restore_state(&state);
                         emit_note_opened(&path, Some(&self.router.active().root));
@@ -960,8 +960,8 @@ fn emit_note_opened(path: &std::path::Path, context_root: Option<&std::path::Pat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::permissions::AppPermissions;
-    use crate::host::pane::{AppPane, AppRuntime, Pane};
+    use crate::app::permissions::PluginPermissions;
+    use crate::host::pane::{ViewPane, ViewRuntime, Pane};
     use crate::notes::NotePickerEntry;
 
     fn picker_entry(path: std::path::PathBuf, preview: &str) -> NotePickerEntry {
@@ -975,14 +975,14 @@ mod tests {
     }
 
     fn replace_with_text_editor(app: &mut PlexiApp, pane_id: u64, path: std::path::PathBuf) {
-        let app_pane = AppPane {
+        let app_pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorApp::new(path),
+            runtime: ViewRuntime::Builtin(Box::new(
+                crate::app::text_editor_app::TextEditorView::new(path),
             )),
             workspace_root: std::env::temp_dir(),
-            permissions: AppPermissions::builtin(),
+            permissions: PluginPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
             pane_group: None,
@@ -1445,12 +1445,12 @@ mod tests {
             .as_app_mut()
             .expect("editor app")
             .runtime;
-        let AppRuntime::Builtin(editor) = runtime else {
+        let ViewRuntime::Builtin(editor) = runtime else {
             panic!("expected builtin editor")
         };
         let editor = editor
             .as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
             .expect("text editor");
         assert_eq!(
             editor.test_view().pending_reveal,
@@ -1732,12 +1732,12 @@ mod tests {
             .as_app_mut()
             .expect("app pane")
             .runtime;
-        let AppRuntime::Builtin(editor) = runtime else {
+        let ViewRuntime::Builtin(editor) = runtime else {
             panic!("expected builtin editor");
         };
         editor
             .as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
             .expect("text editor")
             .test_set_unsaved(text);
     }

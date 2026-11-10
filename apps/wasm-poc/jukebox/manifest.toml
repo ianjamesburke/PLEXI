@@ -1,18 +1,24 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "com.plexi.jukebox"
-type = "wasm"
 name = "Jukebox"
-entry = "../../../target/wasm32-wasip1/release/jukebox.wasm"
 version = "0.1.0"
 description = "Agent-drivable audio library POC. Picks audio files, decodes WAV in-guest, plays through the host audio stream, and exposes jukebox.* transport tools to the assistant."
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["audio.playback", "fs.pick"]
 
-[app.capabilities.wasm]
+[plugin.capabilities.wasm]
 required = []
 optional = []
 
-[launch]
+[runtime]
+kind = "wasm"
+entry = "../../../target/wasm32-wasip1/release/jukebox.wasm"
+
+[[contributes.views]]
+id = "com.plexi.jukebox.main"
+default = true

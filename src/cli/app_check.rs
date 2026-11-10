@@ -1,40 +1,40 @@
-use crate::app::registry::AppManifest;
+use crate::app::registry::PluginManifest;
 use crate::host::wasm_app::UiTree;
 use crate::host::wasm_python::PythonLaunchConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 /// Build a headless launch config for the live CPython-WASM runtime from an
-/// already-loaded manifest, so `app check`/`app render` boot the app exactly
+/// already-loaded manifest, so `plugin check`/`view render` boot the app exactly
 /// the way the live host does (`wasm_python::WasmPythonRuntime`), not a
 /// separate native subprocess speaking a different wire protocol.
 fn python_launch_config(
-    manifest: &AppManifest,
+    manifest: &PluginManifest,
     entry_path: &Path,
-    app_dir: &Path,
+    plugin_dir: &Path,
 ) -> PythonLaunchConfig {
     python_launch_config_from_parts(
-        &manifest.app.id,
-        app_dir,
+        &manifest.plugin.id,
+        plugin_dir,
         entry_path,
-        &manifest.app.capabilities.capabilities,
-        &manifest.app.capabilities.allowed_hosts,
+        &manifest.plugin.capabilities.capabilities,
+        &manifest.plugin.capabilities.allowed_hosts,
     )
 }
 
 /// Same as [`python_launch_config`], for callers that only have the pieces
-/// (e.g. `plexi app render`'s registry-id lookup path, which resolves an
-/// `AppManifestApp` rather than a full `AppManifest`).
+/// (e.g. `plexi view render`'s registry-id lookup path, which resolves an
+/// `PluginManifestApp` rather than a full `PluginManifest`).
 pub(crate) fn python_launch_config_from_parts(
-    app_id: &str,
-    app_dir: &Path,
+    plugin_id: &str,
+    plugin_dir: &Path,
     entry_path: &Path,
     capabilities: &[String],
     allowed_hosts: &[String],
 ) -> PythonLaunchConfig {
     PythonLaunchConfig {
-        app_id: app_id.to_string(),
-        app_dir: app_dir.to_path_buf(),
+        plugin_id: plugin_id.to_string(),
+        plugin_dir: plugin_dir.to_path_buf(),
         entry: entry_path.to_path_buf(),
         module_name: entry_path
             .file_stem()
@@ -42,7 +42,7 @@ pub(crate) fn python_launch_config_from_parts(
             .unwrap_or("main")
             .to_string(),
         launch_args: Vec::new(),
-        workspace_root: app_dir.to_path_buf(),
+        workspace_root: plugin_dir.to_path_buf(),
         capabilities: capabilities.to_vec(),
         allowed_hosts: allowed_hosts.to_vec(),
         theme: crate::ui::theme::colors_from_config(
@@ -55,7 +55,7 @@ pub(crate) fn python_launch_config_from_parts(
         // list and an app-dir anchor are inert here.
         state_scopes: crate::host::state_scope::default_scopes(),
         state_format: crate::host::state_scope::StateFormat::Json,
-        context_root: app_dir.to_path_buf(),
+        context_root: plugin_dir.to_path_buf(),
     }
 }
 
@@ -93,8 +93,8 @@ fn indexed_node_to_json(node: &crate::host::wasm_app::IndexedNode) -> serde_json
             serde_json::json!({"type": "Space", "size": s.size, "grow": s.grow})
         }
         UiNodeData::Surface(_) => serde_json::json!({"type": "Surface"}),
-        UiNodeData::AppBar(a) => {
-            serde_json::json!({"type": "AppBar", "title": a.title, "subtitle": a.subtitle})
+        UiNodeData::SurfaceHeader(a) => {
+            serde_json::json!({"type": "SurfaceHeader", "title": a.title, "subtitle": a.subtitle})
         }
         UiNodeData::FooterKeys(f) => serde_json::json!({
             "type": "FooterKeys",
@@ -152,10 +152,10 @@ struct SeedFixture {
 }
 
 pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32 {
-    let app_dir = Path::new(path);
+    let plugin_dir = Path::new(path);
     log::info!(
         "app_check: path={} sizes={sizes:?} png_dir={png_dir:?}",
-        app_dir.display()
+        plugin_dir.display()
     );
 
     let render_sizes = match check_sizes(sizes) {
@@ -184,7 +184,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    let (manifest, entry_path) = match load_local_app(app_dir) {
+    let (manifest, entry_path) = match load_local_plugin(plugin_dir) {
         Ok(app) => app,
         Err(e) => {
             println!("✗ manifest — {e}");
@@ -192,10 +192,10 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         }
     };
 
-    println!("✓ manifest — {} ({})", manifest.app.id, manifest.app.name);
+    println!("✓ manifest — {} ({})", manifest.plugin.id, manifest.plugin.name);
     // #0336: reject an invalid `[launch] on_launch` here, the same way
-    // `AppRegistry::load_app` does at install time. Without this, an author gets
-    // a green `app check` and then a silent runtime skip (the launch resolver
+    // `PluginRegistry::load_plugin` does at install time. Without this, an author gets
+    // a green `plugin check` and then a silent runtime skip (the launch resolver
     // treats an unparseable policy as the `always_new` default).
     match on_launch_error(&manifest) {
         Some(err) => errors.push(err),
@@ -210,7 +210,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     // build cannot resolve this check on its own binary tier, so surface it
     // as a warning here rather than only discovering it at runtime.
     if manifest
-        .app
+        .plugin
         .capabilities
         .capabilities
         .iter()
@@ -222,11 +222,11 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             crate::release::feature_unavailable_message(crate::release::ReleaseFeature::McpClient)
         ));
     }
-    warnings.extend(scaffold_metadata_warnings(app_dir));
+    warnings.extend(scaffold_metadata_warnings(plugin_dir));
 
     let is_python_entry = entry_path.extension().and_then(|ext| ext.to_str()) == Some("py");
     if is_python_entry {
-        match analyze_python_entry(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
+        match analyze_python_entry(&manifest.plugin.id, &entry_path, &manifest.plugin.dependencies) {
             Ok(analysis) => {
                 if analysis.has_init && analysis.has_update && analysis.has_view {
                     println!("✓ SDK — module-level init/update/view");
@@ -251,7 +251,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         // template-version split that spared pre-gate scaffolds existed only
         // to land the gate without turning the maintained set red overnight;
         // that set is annotated now, so there is no warning tier left.
-        match run_python_type_check(&manifest.app.id, &entry_path, &manifest.app.dependencies) {
+        match run_python_type_check(&manifest.plugin.id, &entry_path, &manifest.plugin.dependencies) {
             Ok(TypeCheckOutcome::Clean) => println!("✓ types — mypy clean"),
             Ok(TypeCheckOutcome::Findings(findings)) => {
                 errors.push(format!("types — mypy found errors:\n{findings}"));
@@ -275,7 +275,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         ));
     }
     let launch_config =
-        is_python_entry.then(|| python_launch_config(&manifest, &entry_path, app_dir));
+        is_python_entry.then(|| python_launch_config(&manifest, &entry_path, plugin_dir));
 
     // A guest that fails to boot fails identically at every size; stop after
     // the first boot failure instead of paying the probe cost 4 more times
@@ -300,7 +300,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
                 }
                 println!("✓ render {label} — {node_count} node(s)");
                 if let Some(dir) = &png_dir {
-                    let png_path = dir.join(format!("{}-{label}.png", manifest.app.id));
+                    let png_path = dir.join(format!("{}-{label}.png", manifest.plugin.id));
                     match crate::host::wasm_render::render_ui_tree_to_png(
                         &tree,
                         width as f32,
@@ -332,13 +332,13 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
         }
     }
 
-    match load_seed_fixture(app_dir) {
+    match load_seed_fixture(plugin_dir) {
         Ok(Some(fixture)) => {
             println!(
                 "✓ state fixture — loaded {}",
                 fixture
                     .path
-                    .strip_prefix(app_dir)
+                    .strip_prefix(plugin_dir)
                     .unwrap_or(&fixture.path)
                     .display()
             );
@@ -360,7 +360,7 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
             println!("skip state fixture — no fixtures/state.json; seeded probes skipped");
             log::info!(
                 "app_check[{}]: no fixtures/state.json; seeded probes skipped",
-                manifest.app.id
+                manifest.plugin.id
             );
         }
         Err(e) => errors.push(format!("state fixture — {e}")),
@@ -374,22 +374,22 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     }
 
     if errors.is_empty() {
-        println!("✓ app check passed");
+        println!("✓ plugin check passed");
         log::info!(
             "app_check[{}]: passed with {} warning(s)",
-            manifest.app.id,
+            manifest.plugin.id,
             warnings.len()
         );
         0
     } else {
         println!(
-            "✗ app check failed — {} error(s), {} warning(s)",
+            "✗ plugin check failed — {} error(s), {} warning(s)",
             errors.len(),
             warnings.len()
         );
         log::warn!(
             "app_check[{}]: failed with {} error(s), {} warning(s)",
-            manifest.app.id,
+            manifest.plugin.id,
             errors.len(),
             warnings.len()
         );
@@ -397,8 +397,8 @@ pub fn app_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> i32
     }
 }
 
-fn load_seed_fixture(app_dir: &Path) -> Result<Option<SeedFixture>, String> {
-    let path = app_dir.join("fixtures").join("state.json");
+fn load_seed_fixture(plugin_dir: &Path) -> Result<Option<SeedFixture>, String> {
+    let path = plugin_dir.join("fixtures").join("state.json");
     if !path.exists() {
         return Ok(None);
     }
@@ -423,7 +423,7 @@ fn load_seed_fixture(app_dir: &Path) -> Result<Option<SeedFixture>, String> {
 }
 
 fn run_seeded_state_and_action_probe(
-    manifest: &AppManifest,
+    manifest: &PluginManifest,
     launch_config: &PythonLaunchConfig,
     fixture: &SeedFixture,
     errors: &mut Vec<String>,
@@ -464,7 +464,7 @@ fn run_seeded_state_and_action_probe(
     );
     log::info!(
         "app_check[{}]: seeded render {label} reflected {:?}",
-        manifest.app.id,
+        manifest.plugin.id,
         matched
     );
 
@@ -473,7 +473,7 @@ fn run_seeded_state_and_action_probe(
         println!("skip action probe — no clickable handler in seeded render");
         log::info!(
             "app_check[{}]: no clickable handler in seeded render",
-            manifest.app.id
+            manifest.plugin.id
         );
         return;
     }
@@ -523,7 +523,7 @@ fn run_seeded_state_and_action_probe(
                                 );
                                 log::info!(
                                     "app_check[{}]: {action_label} rendered expected value {expected}",
-                                    manifest.app.id
+                                    manifest.plugin.id
                                 );
                             } else {
                                 probe_failed = true;
@@ -536,7 +536,7 @@ fn run_seeded_state_and_action_probe(
                             println!("✓ {action_label} — rendered frame changed after action");
                             log::info!(
                                 "app_check[{}]: {action_label} changed rendered frame",
-                                manifest.app.id
+                                manifest.plugin.id
                             );
                         } else {
                             println!("• {action_label} — frame unchanged");
@@ -677,9 +677,9 @@ fn parse_size(raw: &str) -> Option<(u32, u32)> {
 /// of valid strings in the registry (#0336). Returns the error message when the
 /// value is unknown, `None` when it is valid or unset. Reuses
 /// [`OnLaunchPolicy::parse`](crate::app::registry::OnLaunchPolicy::parse) and
-/// [`VALID_ON_LAUNCH`](crate::app::registry::VALID_ON_LAUNCH) so `app check` and
+/// [`VALID_ON_LAUNCH`](crate::app::registry::VALID_ON_LAUNCH) so `plugin check` and
 /// install-time validation never diverge.
-fn on_launch_error(manifest: &AppManifest) -> Option<String> {
+fn on_launch_error(manifest: &PluginManifest) -> Option<String> {
     let mode = manifest.launch.on_launch.as_deref()?;
     if crate::app::registry::OnLaunchPolicy::parse(mode).is_err() {
         Some(format!(
@@ -691,18 +691,18 @@ fn on_launch_error(manifest: &AppManifest) -> Option<String> {
     }
 }
 
-pub(super) fn load_local_app(app_dir: &Path) -> Result<(AppManifest, PathBuf), String> {
-    if !app_dir.exists() {
-        return Err(format!("path does not exist: {}", app_dir.display()));
+pub(super) fn load_local_plugin(plugin_dir: &Path) -> Result<(PluginManifest, PathBuf), String> {
+    if !plugin_dir.exists() {
+        return Err(format!("path does not exist: {}", plugin_dir.display()));
     }
-    if !app_dir.is_dir() {
-        return Err(format!("path is not a directory: {}", app_dir.display()));
+    if !plugin_dir.is_dir() {
+        return Err(format!("path is not a directory: {}", plugin_dir.display()));
     }
 
-    let manifest_path = app_dir.join("manifest.toml");
+    let manifest_path = plugin_dir.join("manifest.toml");
     let manifest_raw = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
-    let manifest: AppManifest =
+    let manifest: PluginManifest =
         toml::from_str(&manifest_raw).map_err(|e| format!("invalid manifest.toml: {e}"))?;
 
     if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
@@ -713,27 +713,27 @@ pub(super) fn load_local_app(app_dir: &Path) -> Result<(AppManifest, PathBuf), S
         ));
     }
 
-    let entry_path = app_dir.join(&manifest.app.entry);
+    let entry_path = plugin_dir.join(&manifest.plugin.entry);
     if !entry_path.exists() {
         return Err(format!(
             "entry file '{}' not found in {}",
-            manifest.app.entry,
-            app_dir.display()
+            manifest.plugin.entry,
+            plugin_dir.display()
         ));
     }
 
     Ok((manifest, entry_path))
 }
 
-fn scaffold_metadata_warnings(app_dir: &Path) -> Vec<String> {
-    let metadata_path = app_dir.join(crate::cli::app::SCAFFOLD_METADATA_FILE);
+fn scaffold_metadata_warnings(plugin_dir: &Path) -> Vec<String> {
+    let metadata_path = plugin_dir.join(crate::cli::app::SCAFFOLD_METADATA_FILE);
     let mut warnings = Vec::new();
 
     let raw = match std::fs::read_to_string(&metadata_path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             warnings.push(format!(
-                "scaffold metadata — missing {}; old scaffolds are still supported, but run `plexi app init --adopt <dir>` (or regenerate with `plexi app init`) before relying on drift checks",
+                "scaffold metadata — missing {}; old scaffolds are still supported, but run `plexi plugin init --adopt <dir>` (or regenerate with `plexi plugin init`) before relying on drift checks",
                 crate::cli::app::SCAFFOLD_METADATA_FILE
             ));
             log::warn!(
@@ -779,7 +779,7 @@ fn scaffold_metadata_warnings(app_dir: &Path) -> Vec<String> {
 
     if metadata.schema_version != crate::cli::app::SCAFFOLD_METADATA_SCHEMA_VERSION {
         warnings.push(format!(
-            "scaffold metadata — schema_version {} differs from supported {}; run `plexi app init --adopt <dir>` or update {}",
+            "scaffold metadata — schema_version {} differs from supported {}; run `plexi plugin init --adopt <dir>` or update {}",
             metadata.schema_version,
             crate::cli::app::SCAFFOLD_METADATA_SCHEMA_VERSION,
             crate::cli::app::SCAFFOLD_METADATA_FILE
@@ -787,37 +787,37 @@ fn scaffold_metadata_warnings(app_dir: &Path) -> Vec<String> {
     }
     if metadata.plexi_cli_version != current_cli {
         warnings.push(format!(
-            "scaffold metadata — generated by Plexi CLI {}, checking with {}; run `plexi app check` on the intended build or refresh with `plexi app init --adopt <dir>`",
+            "scaffold metadata — generated by Plexi CLI {}, checking with {}; run `plexi plugin check` on the intended build or refresh with `plexi plugin init --adopt <dir>`",
             metadata.plexi_cli_version, current_cli
         ));
     }
     if metadata.sdk_version != current_sdk {
         warnings.push(format!(
-            "scaffold metadata — generated for Python SDK {}, current SDK is {}; rerun tests/checks with the intended channel or refresh with `plexi app init --adopt <dir>`",
+            "scaffold metadata — generated for Python SDK {}, current SDK is {}; rerun tests/checks with the intended channel or refresh with `plexi plugin init --adopt <dir>`",
             metadata.sdk_version, current_sdk
         ));
     }
     if metadata.manifest_schema_version != current_manifest_schema {
         warnings.push(format!(
-            "scaffold metadata — manifest schema {} differs from current {}; update manifest.toml or refresh with `plexi app init --adopt <dir>`",
+            "scaffold metadata — manifest schema {} differs from current {}; update manifest.toml or refresh with `plexi plugin init --adopt <dir>`",
             metadata.manifest_schema_version, current_manifest_schema
         ));
     }
     if metadata.python_runtime_version != current_runtime {
         warnings.push(format!(
-            "scaffold metadata — generated for Python {}, current app venv runtime is {}; recreate the venv or refresh with `plexi app init --adopt <dir>`",
+            "scaffold metadata — generated for Python {}, current app venv runtime is {}; recreate the venv or refresh with `plexi plugin init --adopt <dir>`",
             metadata.python_runtime_version, current_runtime
         ));
     }
     if metadata.template_version != current_template {
         warnings.push(format!(
-            "scaffold metadata — generated from template {}, current template is {}; refresh with `plexi app init --adopt <dir>` to pick up scaffold guidance",
+            "scaffold metadata — generated from template {}, current template is {}; refresh with `plexi plugin init --adopt <dir>` to pick up scaffold guidance",
             metadata.template_version, current_template
         ));
     }
     if metadata.channel != current_channel || metadata.profile_dir != current_profile_dir {
         warnings.push(format!(
-            "scaffold metadata — generated for channel/profile {}/{}, checking under {}/{}; use an explicit matching PLEXI_CHANNEL or refresh with `plexi app init --adopt <dir>`",
+            "scaffold metadata — generated for channel/profile {}/{}, checking under {}/{}; use an explicit matching PLEXI_CHANNEL or refresh with `plexi plugin init --adopt <dir>`",
             metadata.channel, metadata.profile_dir, current_channel, current_profile_dir
         ));
     }
@@ -853,12 +853,12 @@ enum TypeCheckOutcome {
 }
 
 fn run_python_type_check(
-    app_id: &str,
+    plugin_id: &str,
     entry_path: &Path,
     python_dependencies: &[String],
 ) -> Result<TypeCheckOutcome, String> {
     let runtime = crate::app::python_env::resolve_python_runtime(
-        app_id,
+        plugin_id,
         entry_path,
         true,
         python_dependencies,
@@ -913,8 +913,8 @@ fn run_python_type_check_with(
             python.display()
         );
     }
-    let app_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
-    let cache_dir = app_dir.join(".venv").join("mypy_cache");
+    let plugin_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+    let cache_dir = plugin_dir.join(".venv").join("mypy_cache");
     let output = std::process::Command::new(python)
         .args([
             "-m",
@@ -929,7 +929,7 @@ fn run_python_type_check_with(
         .arg(&cache_dir)
         .arg(entry_path)
         .env("MYPYPATH", pythonpath)
-        .current_dir(app_dir)
+        .current_dir(plugin_dir)
         .output()
         .map_err(|e| format!("failed to run mypy via {}: {e}", python.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -966,12 +966,12 @@ fn probe_mypy(python: &Path) -> Result<(), String> {
 }
 
 fn analyze_python_entry(
-    app_id: &str,
+    plugin_id: &str,
     entry_path: &Path,
     python_dependencies: &[String],
 ) -> Result<SdkAnalysis, String> {
     let runtime = crate::app::python_env::resolve_python_runtime(
-        app_id,
+        plugin_id,
         entry_path,
         true,
         python_dependencies,
@@ -1102,15 +1102,14 @@ mod app_check_tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn manifest_with_on_launch(on_launch: &str) -> crate::app::registry::AppManifest {
+    fn manifest_with_on_launch(on_launch: &str) -> crate::app::registry::PluginManifest {
         toml::from_str(&format!(
-            "schema_version = 1\n\n[app]\nid = \"x\"\ntype = \"app\"\nname = \"X\"\n\
-             version = \"0.0.1\"\nentry = \"main.py\"\n\n[launch]\non_launch = \"{on_launch}\"\n"
+            "schema_version = 2\n\n[launch]\non_launch = \"{on_launch}\"\n\n[plugin]\nid = \"x\"\nname = \"X\"\nversion = \"0.0.1\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"x.main\"\ndefault = true\n"
         ))
         .expect("manifest must parse")
     }
 
-    /// #0336: `app check` must reject an unknown on_launch policy with a message
+    /// #0336: `plugin check` must reject an unknown on_launch policy with a message
     /// naming the field and the valid values — matching install-time validation,
     /// so authors never get a green check followed by a silent runtime skip.
     #[test]
@@ -1320,7 +1319,7 @@ def view():
         fs::write(
             dir.path().join(crate::cli::app::SCAFFOLD_METADATA_FILE),
             r#"schema_version = 1
-generated_by = "plexi app init"
+generated_by = "plexi plugin init"
 plexi_cli_version = "0.0.0"
 sdk_version = "0.0.0"
 manifest_schema_version = 0
@@ -1364,7 +1363,7 @@ profile_dir = ".plexi-beta"
     fn app_adopt_writes_scaffold_metadata_without_touching_sources() {
         let _channel = crate::config::set_test_channel("alpha");
         let dir = TempDir::new().unwrap();
-        let manifest_content = "schema_version = 1\n\n[app]\nid = \"adopted\"\nname = \"Adopted\"\ntype = \"app\"\nentry = \"custom.py\"\nversion = \"0.1.0\"\n";
+        let manifest_content = "schema_version = 2\n\n[plugin]\nid = \"adopted\"\nname = \"Adopted\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"custom.py\"\n\n[[contributes.views]]\nid = \"adopted.main\"\ndefault = true\n";
         let entry_content = "# custom source preserved\ndef init(size, args): return []\ndef update(event): return []\ndef view(): return None\n";
         fs::write(dir.path().join("manifest.toml"), manifest_content).unwrap();
         fs::write(dir.path().join("custom.py"), entry_content).unwrap();
@@ -1375,7 +1374,7 @@ profile_dir = ".plexi-beta"
         let metadata_path = dir.path().join(crate::cli::app::SCAFFOLD_METADATA_FILE);
         assert!(metadata_path.exists());
         let metadata_raw = fs::read_to_string(&metadata_path).unwrap();
-        assert!(metadata_raw.contains("generated_by = \"plexi app init --adopt\""));
+        assert!(metadata_raw.contains("generated_by = \"plexi plugin init --adopt\""));
         assert_eq!(
             fs::read_to_string(dir.path().join("manifest.toml")).unwrap(),
             manifest_content
@@ -1501,7 +1500,7 @@ profile_dir = ".plexi-beta"
     /// (never a silent log-and-continue), so a component tree that fails to
     /// decode — e.g. an app emitting `Badge(color="blue")`, which the host
     /// decoder rejects (see `decode_badge_color`) — must surface as a named
-    /// `plexi app check` error, not merely an ERROR-level log line while the
+    /// `plexi plugin check` error, not merely an ERROR-level log line while the
     /// check itself reports success.
     #[test]
     fn render_decode_error_becomes_a_named_check_error() {

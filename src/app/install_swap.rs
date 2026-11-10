@@ -20,10 +20,10 @@ pub(crate) fn staging_root() -> PathBuf {
         .join("install-staging")
 }
 
-/// Remove staging directories an interrupted install of `app_id` left behind.
-pub(crate) fn clear_stale_staging(root: &Path, app_id: &str) {
+/// Remove staging directories an interrupted install of `plugin_id` left behind.
+pub(crate) fn clear_stale_staging(root: &Path, plugin_id: &str) {
     // App ids never contain '@', so one id cannot prefix another's staging.
-    let prefix = format!("{app_id}@");
+    let prefix = format!("{plugin_id}@");
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };
@@ -44,9 +44,9 @@ pub(crate) fn clear_stale_staging(root: &Path, app_id: &str) {
     }
 }
 
-/// A new, unique staging directory path for `app_id` under `root`.
-pub(crate) fn new_staging_dir(root: &Path, app_id: &str) -> PathBuf {
-    root.join(format!("{app_id}@{}", uuid::Uuid::new_v4().simple()))
+/// A new, unique staging directory path for `plugin_id` under `root`.
+pub(crate) fn new_staging_dir(root: &Path, plugin_id: &str) -> PathBuf {
+    root.join(format!("{plugin_id}@{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// Mark a fully copied staging tree complete. Written last, before the swap.

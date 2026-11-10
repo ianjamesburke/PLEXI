@@ -2865,7 +2865,7 @@ mod tests {
                     // host key IPC (enters after raw_input_hook, inside `logic`).
                     for key in [digit_str(option_idx), "enter".to_string()] {
                         let response = self.root.path().join(format!("host-key-{key}.json"));
-                        self.h.inject_ipc(crate::protocol::AppRequest::HostKey {
+                        self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
                             key: key.clone(),
                             response_file: response.to_string_lossy().into_owned(),
                         });
@@ -2886,7 +2886,7 @@ mod tests {
                 4 => {
                     // pane key IPC to the terminal pane writes PTY bytes; it must not reach the overlay.
                     let response = self.root.path().join("key-pane.json");
-                    self.h.inject_ipc(crate::protocol::AppRequest::KeyPane {
+                    self.h.inject_ipc(crate::protocol::HostRequest::KeyPane {
                         pane_id: self.pane_id,
                         key: digit_str(option_idx),
                         response_file: Some(response.to_string_lossy().into_owned()),
@@ -2897,7 +2897,7 @@ mod tests {
                 }
                 5 => {
                     // Mixed frame: a physical key beside injected input fails closed.
-                    self.h.inject_ipc(crate::protocol::AppRequest::HostKey {
+                    self.h.inject_ipc(crate::protocol::HostRequest::HostKey {
                         key: digit_str(option_idx),
                         response_file: self
                             .root
@@ -3094,7 +3094,7 @@ mod tests {
     }
 
     fn report_attention(h: &mut HostHarness, pane_id: u64) {
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::NeedsYou,
@@ -3109,7 +3109,7 @@ mod tests {
     }
 
     fn report_failure_state(h: &mut HostHarness, pane_id: u64, state: crate::protocol::AgentState) {
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
             detail: None, session_id: None, event: None, blocked_reason: None,
         });
@@ -3143,7 +3143,7 @@ mod tests {
         let id = format!("agent-failed-{pane_id}");
         assert!(h.app.dismiss_queue_bar(&id));
         for state in [crate::protocol::AgentState::Working, crate::protocol::AgentState::Failed] {
-            h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+            h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
                 peer_ancestry: None, pane_id, state, agent: "test-agent".into(),
                 detail: None, session_id: None, event: None, blocked_reason: None,
             });
@@ -3186,7 +3186,7 @@ mod tests {
     fn blocked_run_without_choices_opens_pane_without_resolving_record() {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::Blocked,
@@ -3213,7 +3213,7 @@ mod tests {
         let mut h = HostHarness::new();
         let pane_id = h.add_focused_terminal();
         report_attention(&mut h, pane_id);
-        h.inject_ipc(crate::protocol::AppRequest::SetAgentState {
+        h.inject_ipc(crate::protocol::HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id,
             state: crate::protocol::AgentState::NeedsYou,
@@ -3311,8 +3311,8 @@ mod tests {
         let path = dir.path().join("note.md");
         std::fs::write(&path, "note").unwrap();
         h.app.open_builtin_app_pane(
-            Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(path)),
-            crate::app::permissions::AppPermissions::builtin(), dir.path().to_path_buf(), None, Some("split_h"), None,
+            Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(path)),
+            crate::app::permissions::PluginPermissions::builtin(), dir.path().to_path_buf(), None, Some("split_h"), None,
         );
         let pane_id = h.state().open_panes[0];
         assert_eq!(h.app.deliver_notify_action(pane_id, "builtin".into(), "Continue".into(), None, None, None), crate::app::notifications::NotifyDelivery::Unavailable);

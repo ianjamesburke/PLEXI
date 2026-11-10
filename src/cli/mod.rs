@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-pub(super) const APP_ID: &str = "plexi-run";
+pub(super) const PLUGIN_ID: &str = "plexi-run";
 pub(super) fn commands_file() -> String {
     format!("{}/commands.toml", crate::config::workspace_channel_dir())
 }
@@ -628,7 +628,7 @@ pub mod ai;
 pub mod app;
 pub mod app_check;
 pub mod changes;
-pub mod app_state;
+pub mod plugin_state;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;
@@ -1783,7 +1783,7 @@ mod transport_deadline_tests {
 /// A fully idle Plexi produces zero frames and only drains the spawn-queue
 /// during a frame, so without this nudge an outside-shell `plexi pane new`
 /// hangs until the user touches the window. Connects to the channel
-/// profile's `notify.sock` and sends a no-op `AppRequest::Wake`; the socket
+/// profile's `notify.sock` and sends a no-op `HostRequest::Wake`; the socket
 /// listener requests a repaint, the resulting frame drains the queue.
 ///
 /// All errors are ignored silently and intentionally: no instance running
@@ -1795,7 +1795,7 @@ pub(super) fn nudge_running_instance() {
     let Ok(mut stream) = IpcStream::connect(&path) else {
         return;
     };
-    let Ok(payload) = serde_json::to_string(&crate::protocol::AppRequest::Wake) else {
+    let Ok(payload) = serde_json::to_string(&crate::protocol::HostRequest::Wake) else {
         return;
     };
     if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {
@@ -1933,10 +1933,11 @@ pub use agents_api::{
 };
 pub use ai::{ai_doctor_cli, ai_onboard_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_adopt, app_call_cli, app_tools_cli, assistant_permission_cli,
+    view_list,
+    pane_action_cli, app_adopt, app_call_cli, app_tools_cli, assistant_permission_cli,
     assistant_send_cli, assistant_tool_cli, needs_you_api_cli, needs_you_cli, app_info, app_init,
     app_inspect_cli, app_install_package, app_install_with_pin, app_list, app_package_cli,
-    app_prune_cli, app_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
+    app_prune_cli, view_render, app_test_cli, app_uninstall, app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
 pub use changes::{
@@ -1971,7 +1972,7 @@ pub use list::{freeze_cli, parse_notify_choice};
 pub use marketplace::{app_browse_cli, app_publish_cli, app_search_cli};
 pub use notify::{dismiss_notify_cli, notify_cli, parse_notify_scope, NotifyCliArgs};
 pub use open::{
-    app_trust_cli, mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
+    mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli,
     parse_prefix, AgentBootRequest, OpenPrefix, PaneNewCliArgs,
 };
 pub use permissions::permissions_cli;

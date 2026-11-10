@@ -358,8 +358,8 @@ mod tests {
 
     use crate::protocol::AgentState;
 
-    struct DummyApp;
-    impl crate::app::app_trait::App for DummyApp {
+    struct DummyView;
+    impl crate::app::app_trait::App for DummyView {
         fn type_id(&self) -> &'static str {
             "test.app"
         }
@@ -369,7 +369,7 @@ mod tests {
         fn ui(
             &mut self,
             _ui: &mut egui::Ui,
-            _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
             _pending_click: Option<crate::host::pane::PendingPaneClick>,
         ) {
         }
@@ -386,13 +386,13 @@ mod tests {
         ];
         let mut child_win = make_empty_window(2, 101);
         let make_app_pane = |id: u64, state: AgentState| {
-            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
                 id,
                 name: format!("app-{id}"),
                 manifest_id: "test.app".into(),
-                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(DummyApp)),
+                runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(DummyView)),
                 workspace_root: PathBuf::from("/tmp"),
-                permissions: crate::app::permissions::AppPermissions::default(),
+                permissions: crate::app::permissions::PluginPermissions::default(),
                 pane_group: None,
                 linked_pane_id: None,
                 agent: Some(crate::protocol::PaneAgentState {

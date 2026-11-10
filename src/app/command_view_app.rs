@@ -4,19 +4,19 @@
 
 use std::path::PathBuf;
 
-use crate::app::app_trait::{App, AppRenderContext};
+use crate::app::app_trait::{App, ViewRenderContext};
 
-pub struct CommandViewApp {
+pub struct AgentsDashboardView {
     workspace: PathBuf,
 }
 
-impl CommandViewApp {
+impl AgentsDashboardView {
     pub fn new(workspace: PathBuf) -> Self {
         Self { workspace }
     }
 }
 
-impl App for CommandViewApp {
+impl App for AgentsDashboardView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -33,7 +33,7 @@ impl App for CommandViewApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;

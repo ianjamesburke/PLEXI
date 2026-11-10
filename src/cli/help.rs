@@ -8,7 +8,7 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
         "Workspace",
         &["run", "workspace", "secret", "routine", "agent", "context"],
     ),
-    ("Apps", &["app", "account", "registry", "events"]),
+    ("Plugins", &["plugin", "view", "account", "registry", "events"]),
     ("Panes", &["pane", "notify"]),
     (
         "AI",
@@ -533,14 +533,14 @@ mod tests {
             ],
             "{agent:?}"
         );
-        let app = visible_subs(cmd.find_subcommand("app").unwrap());
+        let app = visible_subs(cmd.find_subcommand("plugin").unwrap());
         for gated in ["publish", "browse", "search"] {
             assert!(!app.contains(&gated.to_string()), "{app:?}");
         }
         for core in ["open", "install", "list", "render", "check"] {
             assert!(app.contains(&core.to_string()), "{app:?}");
         }
-        let open = sub_at(&cmd, &["app", "open"]);
+        let open = sub_at(&cmd, &["view", "open"]);
         let hidden = |id: &str| {
             open.get_arguments()
                 .find(|a| a.get_id() == id)
@@ -638,11 +638,11 @@ mod tests {
                 ReleaseFeature::FolderSecrets,
             ),
             (
-                &["plexi", "app", "open", "--mcp", "x"],
+                &["plexi", "view", "open", "--mcp", "x"],
                 ReleaseFeature::McpClient,
             ),
             (
-                &["plexi", "app", "search", "x"],
+                &["plexi", "plugin", "search", "x"],
                 ReleaseFeature::Marketplace,
             ),
             (&["plexi", "routine", "list"], ReleaseFeature::Routines),
@@ -677,7 +677,7 @@ mod tests {
             &["plexi", "agent", "ask", "q"],
             &["plexi", "agent", "hook", "install"],
             &["plexi", "ai", "doctor"],
-            &["plexi", "app", "open", "--cli", "htop"],
+            &["plexi", "view", "open", "--cli", "htop"],
             &["plexi", "secret", "set", "A"],
             &["plexi", "secret", "get", "A"],
             &["plexi", "needs-you", "list"],

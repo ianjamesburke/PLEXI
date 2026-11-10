@@ -251,7 +251,7 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
     let focused_before = h.app.windows[0].focused_pane;
     let missing = crate::config::config_dir().join("assistant-missing-pane.json");
     h.app
-        .handle_pane_ipc_request(AppRequest::SubmitAssistantTurn {
+        .handle_pane_ipc_request(HostRequest::SubmitAssistantTurn {
             text: "hello".to_string(),
             request_id: "missing".to_string(),
             response_file: missing.display().to_string(),
@@ -275,7 +275,7 @@ fn assistant_send_without_a_pane_creates_a_hidden_one() {
 
     let response = crate::config::config_dir().join("assistant-headless-send.json");
     h.app
-        .handle_pane_ipc_request(AppRequest::SubmitAssistantTurn {
+        .handle_pane_ipc_request(HostRequest::SubmitAssistantTurn {
             text: "hello".to_string(),
             request_id: "headless".to_string(),
             response_file: response.display().to_string(),
@@ -338,7 +338,7 @@ fn assistant_panes(h: &HostHarness) -> Vec<u64> {
 /// connector tool; an Assistant pane in a sibling context B must NOT see it,
 /// and an Assistant pane in context A must. Proves the migration off
 /// path-equality onto `evaluate_reach`/`context_id` end-to-end through the
-/// real `AssistantApp::gated_dispatcher` path (not a synthetic registry
+/// real `AssistantView::gated_dispatcher` path (not a synthetic registry
 /// check), covering `App::dispatch`'s `ExposeTools` registration and
 /// `ToolDispatcher::from_registry`'s context-scoped snapshot together.
 #[test]
@@ -372,7 +372,7 @@ fn connector_tool_visible_only_to_assistant_in_the_owning_context() {
             timeout_ms: Some(1_000),
             read_only: true,
         }],
-        crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
+        crate::plexi_ai::tool_dispatch::PluginEventSender::Channel(tx),
         origin,
     );
 
@@ -422,7 +422,7 @@ fn two_harnesses_do_not_share_a_chess_tool_namespace() {
                 timeout_ms: Some(1_000),
                 read_only: false,
             }],
-            crate::plexi_ai::tool_dispatch::AppEventSender::Channel(tx),
+            crate::plexi_ai::tool_dispatch::PluginEventSender::Channel(tx),
             origin,
         );
         pane_id
@@ -542,7 +542,7 @@ fn pane_status_request_routes_through_host_and_returns_composite_evidence() {
         }));
 
     let response_file = temp_response(tmp.path(), "pane-status");
-    h.inject_ipc(AppRequest::PaneStatus {
+    h.inject_ipc(HostRequest::PaneStatus {
         pane_id,
         response_file: response_file.clone(),
     });
@@ -563,7 +563,7 @@ fn pane_status_request_fails_loudly_for_unknown_pane() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let response_file = temp_response(tmp.path(), "pane-status-missing");
-    h.inject_ipc(AppRequest::PaneStatus {
+    h.inject_ipc(HostRequest::PaneStatus {
         pane_id: u64::MAX,
         response_file: response_file.clone(),
     });
@@ -580,7 +580,7 @@ fn pane_heartbeat_off_removes_configured_state() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let response = temp_response(tmp.path(), "heartbeat-off");
-    h.inject_ipc(AppRequest::PaneHeartbeat {
+    h.inject_ipc(HostRequest::PaneHeartbeat {
         pane_id: pane,
         every_ms: Some(60_000),
         text: Some("cycle".into()),
@@ -590,7 +590,7 @@ fn pane_heartbeat_off_removes_configured_state() {
     });
     h.run_frames(1);
     assert!(h.app.pane_heartbeats.contains_key(&pane));
-    h.inject_ipc(AppRequest::PaneHeartbeat {
+    h.inject_ipc(HostRequest::PaneHeartbeat {
         pane_id: pane,
         every_ms: None,
         text: None,
@@ -664,7 +664,7 @@ fn pane_heartbeat_persists_with_pane_state() {
     let mut h = HostHarness::new();
     let pane = h.add_focused_terminal();
     let response = temp_response(tmp.path(), "heartbeat-persistence");
-    h.inject_ipc(AppRequest::PaneHeartbeat {
+    h.inject_ipc(HostRequest::PaneHeartbeat {
         pane_id: pane,
         every_ms: Some(300_000),
         text: Some("cycle".into()),
@@ -701,7 +701,7 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
     h.run_frames(2);
 
     let response_file = temp_response(tmp.path(), "pane-state-builtin");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
         stale_after_secs: None,
@@ -727,37 +727,42 @@ fn pane_state_ipc_returns_non_empty_semantic_tree_for_live_builtin_app() {
 #[test]
 fn pane_state_reports_failed_for_python_guest_that_dies_at_import() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let app_dir = tmp.path().join("import-failure");
-    std::fs::create_dir(&app_dir).expect("create fixture app directory");
+    let plugin_dir = tmp.path().join("import-failure");
+    std::fs::create_dir(&plugin_dir).expect("create fixture app directory");
     std::fs::write(
-        app_dir.join("manifest.toml"),
-        r#"schema_version = 1
-
-[app]
-id = "import-failure"
-type = "app"
-name = "Import Failure"
-entry = "main.py"
-version = "0.1.0"
-description = "HostHarness import-failure fixture"
-
-[app.capabilities]
-capabilities = []
+        plugin_dir.join("manifest.toml"),
+        r#"schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "main.py"
+
+
+[plugin]
+id = "import-failure"
+name = "Import Failure"
+version = "0.1.0"
+description = "HostHarness import-failure fixture"
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "import-failure.main"
+default = true
 "#,
     )
     .expect("write fixture manifest");
     std::fs::write(
-        app_dir.join("main.py"),
+        plugin_dir.join("main.py"),
         "raise ImportError('fixture import failure')\n",
     )
     .expect("write fixture entry");
 
     let mut h = HostHarness::new();
     h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch fixture app");
     let pane_id = *h
         .state()
@@ -769,7 +774,7 @@ python_compat = true
         .get_mut(&pane_id)
         .and_then(Pane::as_app_mut)
         .expect("fixture app pane");
-    let AppRuntime::Python(runtime) = &mut pane.runtime else {
+    let ViewRuntime::Python(runtime) = &mut pane.runtime else {
         panic!("fixture must launch through the Python runtime");
     };
     runtime.record_runtime_stderr_for_test(
@@ -778,7 +783,7 @@ python_compat = true
     assert_eq!(runtime.lifecycle().0, "failed");
 
     let response_file = temp_response(tmp.path(), "pane-state-import-failure");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
         stale_after_secs: None,
@@ -818,7 +823,7 @@ fn pane_state_response_always_carries_claimed_and_observed_state_together() {
     h.run_frames(2);
 
     let response_file = temp_response(tmp.path(), "pane-state-liveness-shape");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
         stale_after_secs: None,
@@ -858,7 +863,7 @@ fn pane_state_reports_dead_process_truthfully_even_while_claimed_state_says_runn
     let pane_id = h.add_focused_terminal();
 
     let slot_response = temp_response(tmp.path(), "pane-liveness-slot-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id,
         slot_name: "status".to_string(),
         content: b"running:step-3".to_vec(),
@@ -887,7 +892,7 @@ fn pane_state_reports_dead_process_truthfully_even_while_claimed_state_says_runn
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     let response_file = temp_response(tmp.path(), "pane-liveness-dead-process");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: response_file.clone(),
         stale_after_secs: None,
@@ -916,7 +921,7 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
     let pane_id = h.add_focused_terminal();
 
     let slot_response = temp_response(tmp.path(), "pane-liveness-stale-slot-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id,
         slot_name: "status".to_string(),
         content: b"running".to_vec(),
@@ -937,7 +942,7 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
         .last_pty_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
 
     let no_window_response = temp_response(tmp.path(), "pane-liveness-stale-no-window");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: no_window_response.clone(),
         stale_after_secs: None,
@@ -949,7 +954,7 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
     );
 
     let stale_response = temp_response(tmp.path(), "pane-liveness-stale-window-exceeded");
-    h.inject_ipc(AppRequest::GetPaneState {
+    h.inject_ipc(HostRequest::GetPaneState {
         pane_id,
         response_file: stale_response.clone(),
         stale_after_secs: Some(60),
@@ -969,30 +974,26 @@ fn pane_state_raises_stale_claim_only_when_a_window_is_given_and_exceeded() {
 /// Write a minimal but real Python app fixture: a manifest the launch path
 /// accepts and a `.py` entry, global-scoped state (root-independent) so the
 /// test doesn't have to fuss with context roots.
-fn write_restore_fixture_app(parent: &std::path::Path, app_id: &str) -> std::path::PathBuf {
-    let app_dir = parent.join(app_id);
-    std::fs::create_dir_all(&app_dir).expect("create fixture app directory");
+fn write_restore_fixture_app(parent: &std::path::Path, plugin_id: &str) -> std::path::PathBuf {
+    let plugin_dir = parent.join(plugin_id);
+    std::fs::create_dir_all(&plugin_dir).expect("create fixture app directory");
     std::fs::write(
-        app_dir.join("manifest.toml"),
+        plugin_dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
-             name = \"{app_id}\"\nversion = \"0.1.0\"\nentry = \"main.py\"\n\
-             description = \"HostHarness restore fixture\"\n\n\
-             [app.capabilities]\ncapabilities = []\n\n\
-             [runtime]\npython_compat = true\n"
+            "schema_version = 2\n\n[runtime]\npython_compat = true\nkind = \"python\"\nentry = \"main.py\"\n\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"{plugin_id}\"\nversion = \"0.1.0\"\ndescription = \"HostHarness restore fixture\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
         ),
     )
     .expect("write fixture manifest");
     std::fs::write(
-        app_dir.join("main.py"),
+        plugin_dir.join("main.py"),
         "def init(size, args): return []\ndef update(event): return []\n\
          def view(): return None\n",
     )
     .expect("write fixture entry");
-    app_dir
+    plugin_dir
 }
 
-/// stint 0680 + stint 0686 — a saved Python app pane's `app_id` must be the
+/// stint 0680 + stint 0686 — a saved Python app pane's `plugin_id` must be the
 /// real manifest id (never the runtime kind), it must carry enough launch
 /// context to relaunch, `hidden` must round-trip, and booting a fresh
 /// `HostHarness::from_profile_dir` against the saved profile must reconstruct
@@ -1001,13 +1002,13 @@ fn write_restore_fixture_app(parent: &std::path::Path, app_id: &str) -> std::pat
 #[test]
 fn saved_python_app_pane_restores_as_that_app() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let app_dir = write_restore_fixture_app(tmp.path(), "todo");
+    let plugin_dir = write_restore_fixture_app(tmp.path(), "todo");
 
     let mut h = HostHarness::new();
     let saved_profile = h.profile_dir().to_path_buf();
     let pane_id = h
         .app
-        .launch_app_by_path_with_layout_no_review_modal(&app_dir.to_string_lossy(), None, None, &[])
+        .launch_app_by_path_with_layout_no_review_modal(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch fixture app")
         .expect("a Python launch returns a pane id");
     let context_id = h.app.windows[h.app.active_window].context_id;
@@ -1039,21 +1040,21 @@ fn saved_python_app_pane_restores_as_that_app() {
         .clone();
 
     assert_eq!(
-        record.app_id.as_deref(),
+        record.plugin_id.as_deref(),
         Some("todo"),
-        "app_id must be the manifest id, not the runtime kind"
+        "plugin_id must be the manifest id, not the runtime kind"
     );
     assert_eq!(record.runtime_kind.as_deref(), Some("python-wasm"));
     assert!(record.hidden, "hidden must round-trip with the pane");
     let launch = record.launch.clone().expect("launch context recorded");
-    let crate::workspace::SavedAppLaunch::Python {
-        app_dir: recorded_dir,
+    let crate::workspace::SavedViewLaunch::Python {
+        plugin_dir: recorded_dir,
         args,
     } = &launch
     else {
         panic!("expected a Python launch spec, got {launch:?}");
     };
-    assert_eq!(recorded_dir, &app_dir);
+    assert_eq!(recorded_dir, &plugin_dir);
     assert!(args.is_empty());
 
     let restored_harness = HostHarness::from_profile_dir(&saved_profile);
@@ -1080,7 +1081,7 @@ fn saved_python_app_pane_restores_as_that_app() {
         .expect("restored pane is an app pane");
     assert_eq!(restored.id, pane_id, "restore must keep the saved pane id");
     assert_eq!(restored.manifest_id, "todo");
-    assert!(matches!(restored.runtime, AppRuntime::Python(_)));
+    assert!(matches!(restored.runtime, ViewRuntime::Python(_)));
     assert_eq!(
         restored.runtime.state_paths(),
         live_state_paths,
@@ -1149,10 +1150,10 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                     kind: crate::workspace::SavedPaneKind::Portal { context_id: 20, reveal_after_close: false },
                     cwd: root_a.path().to_path_buf(),
                     name: None,
-                    app_id: None,
+                    plugin_id: None,
                     runtime_kind: None,
                     launch: None,
-                    app_state: None,
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: Some(crate::workspace::SavedPaneHeartbeat {
                         every_ms: 15_000,
@@ -1177,10 +1178,10 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
                     kind: crate::workspace::SavedPaneKind::App,
                     cwd: root_b.path().to_path_buf(),
                     name: Some("Browser".to_string()),
-                    app_id: Some("file_browser".to_string()),
+                    plugin_id: Some("file_browser".to_string()),
                     runtime_kind: Some("builtin".to_string()),
                     launch: None,
-                    app_state: None,
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     slots: std::collections::HashMap::new(),
@@ -1242,7 +1243,7 @@ fn restore_workspace_reconstructs_windows_contexts_heartbeats_and_focus() {
 }
 
 /// stint 0680 migration path: a pre-fix workspace file (`version = 2`, an App
-/// pane whose `app_id` is the runtime kind because `runtime_kind`/`launch`
+/// pane whose `plugin_id` is the runtime kind because `runtime_kind`/`launch`
 /// didn't exist yet) must still load — never get treated as corrupt and
 /// backed up/wiped like a version mismatch does.
 #[test]
@@ -1283,7 +1284,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
                             "kind": "app",
                             "cwd": "/tmp",
                             "name": "Todo",
-                            "app_id": "python-wasm",
+                            "plugin_id": "python-wasm",
                             "app_state": null
                         }}
                     ],
@@ -1304,7 +1305,7 @@ fn legacy_app_pane_without_launch_context_still_loads() {
     let record = &loaded.expect("loaded above").windows[0].panes[0];
     assert!(
         record.is_legacy_runtime_kind_id(),
-        "a pre-0680 record with no runtime_kind and a runtime-kind app_id must be flagged legacy"
+        "a pre-0680 record with no runtime_kind and a runtime-kind plugin_id must be flagged legacy"
     );
     assert!(record.runtime_kind.is_none());
     assert!(record.launch.is_none());
@@ -1321,10 +1322,10 @@ fn legacy_app_pane_without_launch_context_still_loads() {
 /// directory which no longer exists must fail visibly through
 /// `restore_app_pane`/`restore_launch_failed_pane`, never silently succeed.
 #[test]
-fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
+fn restore_app_pane_fails_visibly_when_plugin_dir_is_gone() {
     let missing_dir = std::path::PathBuf::from("/nonexistent/stint-0680/missing-app");
-    let launch = crate::workspace::SavedAppLaunch::Python {
-        app_dir: missing_dir.clone(),
+    let launch = crate::workspace::SavedViewLaunch::Python {
+        plugin_dir: missing_dir.clone(),
         args: vec![],
     };
     let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
@@ -1341,7 +1342,7 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
         &colors,
     );
     let error = match result {
-        Ok(_) => panic!("restore of a gone app_dir must fail"),
+        Ok(_) => panic!("restore of a gone plugin_dir must fail"),
         Err(reason) => reason,
     };
 
@@ -1356,9 +1357,9 @@ fn restore_app_pane_fails_visibly_when_app_dir_is_gone() {
 }
 
 /// Review follow-up on stint 0680: a legacy record (`is_legacy_runtime_kind_id()`
-/// true — pre-0680 save whose `app_id` is the runtime kind, not a manifest
+/// true — pre-0680 save whose `plugin_id` is the runtime kind, not a manifest
 /// id) must restore as a `launch_failed` pane naming the runtime kind and the
-/// recovery command, exactly like `restore_app_pane_fails_visibly_when_app_dir_is_gone`'s
+/// recovery command, exactly like `restore_app_pane_fails_visibly_when_plugin_dir_is_gone`'s
 /// unresolvable-manifest case — never fall back to a terminal. This mirrors
 /// the restore loop's own logic in `PlexiApp::new` (which is not reachable
 /// through `HostHarness::new`/`new_for_test`, since those skip the
@@ -1372,8 +1373,8 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
         kind: crate::workspace::SavedPaneKind::App,
         cwd: std::path::PathBuf::from("/tmp"),
         name: Some("Todo".to_string()),
-        app_id: Some("python-wasm".to_string()),
-        app_state: None,
+        plugin_id: Some("python-wasm".to_string()),
+        plugin_state: None,
         hidden: false,
         heartbeat: None,
         runtime_kind: None,
@@ -1383,23 +1384,23 @@ fn legacy_app_pane_restores_as_launch_failed_never_a_terminal() {
     };
     assert!(
         record.is_legacy_runtime_kind_id(),
-        "record with no runtime_kind and a runtime-kind app_id must be flagged legacy"
+        "record with no runtime_kind and a runtime-kind plugin_id must be flagged legacy"
     );
 
-    let app_type = record.app_id.clone().expect("legacy record carries app_id");
+    let app_type = record.plugin_id.clone().expect("legacy record carries plugin_id");
     // Exact reason format the restore loop in `PlexiApp::new` builds for this
     // branch (src/app/mod.rs) — asserted here so a drift in either place
     // shows up as a test failure.
     let reason = format!(
         "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); \
-         reopen the app with `plexi app open <id>`"
+         reopen the app with `plexi view open <id>`"
     );
     assert!(
         reason.contains("python-wasm"),
         "reason must name the legacy runtime kind"
     );
     assert!(
-        reason.contains("plexi app open"),
+        reason.contains("plexi view open"),
         "reason must point at the recovery command"
     );
 
@@ -1436,8 +1437,8 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     std::fs::write(&image, b"png fixture").expect("seed image");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone())),
-        crate::app::permissions::AppPermissions::builtin(),
+        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note.clone())),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1446,7 +1447,7 @@ fn notes_drop_uses_production_dispatch_and_exposes_semantic_rejection() {
     let pane_id = h.state().open_panes[0];
     h.run_frames(2);
     let response = temp_response(tmp.path(), "notes-drop");
-    h.inject_ipc(AppRequest::DropFile {
+    h.inject_ipc(HostRequest::DropFile {
         pane_id,
         path_or_url: image.to_string_lossy().into_owned(),
         response_file: response.clone(),
@@ -1484,8 +1485,8 @@ fn click_pane_moves_notes_caret_through_real_pointer_events() {
     std::fs::write(&note, &body).expect("seed note");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
-        crate::app::permissions::AppPermissions::builtin(),
+        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1528,7 +1529,7 @@ fn drop_rejects_apps_without_a_production_handler_observably() {
     let pane_id = h.add_test_pane();
     h.run_frames(2);
     let response = temp_response(tmp.path(), "drop-rejected");
-    h.inject_ipc(AppRequest::DropFile {
+    h.inject_ipc(HostRequest::DropFile {
         pane_id,
         path_or_url: "https://example.com/image.png".to_string(),
         response_file: response.clone(),
@@ -1575,7 +1576,7 @@ impl crate::app::app_trait::App for KeyBurstProbe {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
@@ -1632,7 +1633,7 @@ impl crate::app::app_trait::App for TextInputProbe {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
@@ -1676,7 +1677,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<TextInputProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1686,7 +1687,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     h.run_frames(2);
     let response_file = temp_response(tmp.path(), "send-text");
 
-    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
 
         generated_operation_id: false,
         paste: false,
@@ -1719,7 +1720,7 @@ fn send_to_app_pane_injects_text_through_focused_render_input() {
     assert_eq!(state["text"], "/settings");
 
     let key_response = temp_response(tmp.path(), "key-enter");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "enter".to_string(),
         response_file: Some(key_response.clone()),
@@ -1748,7 +1749,7 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
             consume_enter: true,
             ..Default::default()
         }),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1758,7 +1759,7 @@ fn consumed_native_key_is_not_replayed_into_render_input() {
     h.run_frames(2);
     let response_file = temp_response(tmp.path(), "consumed-enter");
 
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "enter".to_string(),
         response_file: Some(response_file.clone()),
@@ -1783,7 +1784,7 @@ fn rapid_pane_key_burst_delivers_every_press_in_order() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<KeyBurstProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1796,7 +1797,7 @@ fn rapid_pane_key_burst_delivers_every_press_in_order() {
         "right", "down", "left", "up", "right", "right", "down", "left",
     ];
     for (index, key) in intended.iter().enumerate() {
-        h.inject_ipc(AppRequest::KeyPane {
+        h.inject_ipc(HostRequest::KeyPane {
             pane_id,
             key: (*key).to_string(),
             response_file: Some(temp_response(tmp.path(), &format!("rapid-key-{index}"))),
@@ -1824,7 +1825,7 @@ fn raw_key_event_reaches_focused_app_via_router() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<TextInputProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1872,7 +1873,7 @@ fn host_command_chord_is_removed_before_focused_app_dispatch() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<KeyBurstProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1919,7 +1920,7 @@ fn host_command_chord_owns_its_release_after_command_is_released_first() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<KeyBurstProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -1983,7 +1984,7 @@ fn pane_slots_write_read_list_delete() {
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"hello".to_vec(),
@@ -1996,7 +1997,7 @@ fn pane_slots_write_read_list_delete() {
     assert_eq!(write["ok"].as_bool(), Some(true));
 
     let append_file = temp_response(tmp.path(), "slot-append");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b" world".to_vec(),
@@ -2008,7 +2009,7 @@ fn pane_slots_write_read_list_delete() {
     assert_eq!(read_json_response(&append_file)["ok"].as_bool(), Some(true));
 
     let read_file = temp_response(tmp.path(), "slot-read");
-    h.inject_ipc(AppRequest::SlotRead {
+    h.inject_ipc(HostRequest::SlotRead {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         response_file: read_file.clone(),
@@ -2020,7 +2021,7 @@ fn pane_slots_write_read_list_delete() {
     );
 
     let list_file = temp_response(tmp.path(), "slot-list");
-    h.inject_ipc(AppRequest::SlotList {
+    h.inject_ipc(HostRequest::SlotList {
         pane_id: pane,
         response_file: list_file.clone(),
     });
@@ -2032,7 +2033,7 @@ fn pane_slots_write_read_list_delete() {
     assert_eq!(entries[0]["size"], 11);
 
     let delete_file = temp_response(tmp.path(), "slot-delete");
-    h.inject_ipc(AppRequest::SlotDelete {
+    h.inject_ipc(HostRequest::SlotDelete {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         response_file: delete_file.clone(),
@@ -2052,7 +2053,7 @@ fn pane_slot_read_preserves_error_like_json_content() {
     let raw_json = br#"{"ok":false,"error":"stored artifact"}"#;
 
     let write_file = temp_response(tmp.path(), "slot-json-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: raw_json.to_vec(),
@@ -2064,7 +2065,7 @@ fn pane_slot_read_preserves_error_like_json_content() {
     assert_eq!(read_json_response(&write_file)["ok"].as_bool(), Some(true));
 
     let read_file = temp_response(tmp.path(), "slot-json-read");
-    h.inject_ipc(AppRequest::SlotRead {
+    h.inject_ipc(HostRequest::SlotRead {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         response_file: read_file.clone(),
@@ -2087,7 +2088,7 @@ fn seed_slot(
     replace: bool,
 ) {
     let write_file = temp_response(tmp, "slot-seed");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: slot_name.to_string(),
         content: content.to_vec(),
@@ -2112,7 +2113,7 @@ fn slot_wait_returns_immediately_when_value_already_matches() {
     seed_slot(&mut h, tmp.path(), pane, "status", b"done: ok", false);
 
     let wait_file = temp_response(tmp.path(), "slot-wait-level");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: "^done".to_string(),
@@ -2138,7 +2139,7 @@ fn slot_wait_ignores_non_matching_write_then_completes_on_match() {
     seed_slot(&mut h, tmp.path(), pane, "status", b"running", false);
 
     let wait_file = temp_response(tmp.path(), "slot-wait-edge");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: r"^done:\s*(ok|fail)$".to_string(),
@@ -2175,7 +2176,7 @@ fn slot_wait_completes_while_window_hidden() {
     let pane = h.add_test_pane();
 
     let wait_file = temp_response(tmp.path(), "slot-wait-hidden");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: "ready".to_string(),
@@ -2185,7 +2186,7 @@ fn slot_wait_completes_while_window_hidden() {
     h.run_hidden_frames(1);
 
     let write_file = temp_response(tmp.path(), "slot-wait-hidden-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "status".to_string(),
         content: b"ready".to_vec(),
@@ -2212,7 +2213,7 @@ fn slot_wait_times_out_with_typed_timeout_reply() {
     let pane = h.add_test_pane();
 
     let wait_file = temp_response(tmp.path(), "slot-wait-timeout");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: "never".to_string(),
@@ -2249,7 +2250,7 @@ fn slot_wait_invalid_regex_writes_typed_error() {
     let pane = h.add_test_pane();
 
     let wait_file = temp_response(tmp.path(), "slot-wait-bad-regex");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: "([unclosed".to_string(),
@@ -2280,7 +2281,7 @@ fn slot_wait_oversized_timeout_writes_typed_error() {
     let pane = h.add_test_pane();
 
     let wait_file = temp_response(tmp.path(), "slot-wait-huge-timeout");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: pane,
         slot_name: "status".to_string(),
         pattern: "ready".to_string(),
@@ -2307,7 +2308,7 @@ fn slot_wait_unknown_pane_writes_typed_error() {
     h.app.set_context_root(tmp.path().to_path_buf(), None);
 
     let wait_file = temp_response(tmp.path(), "slot-wait-no-pane");
-    h.inject_ipc(AppRequest::SlotWait {
+    h.inject_ipc(HostRequest::SlotWait {
         pane_id: 999_999,
         slot_name: "status".to_string(),
         pattern: "ready".to_string(),
@@ -2335,7 +2336,7 @@ fn pane_message_fifo_ordering_and_drain_without_clobbering() {
 
     for (idx, body) in ["first", "second", "third"].into_iter().enumerate() {
         let send_file = temp_response(tmp.path(), &format!("msg-send-{idx}"));
-        h.inject_ipc(AppRequest::PaneMessageSend {
+        h.inject_ipc(HostRequest::PaneMessageSend {
             pane_id: pane,
             payload: body.to_string(),
             submit: false,
@@ -2352,7 +2353,7 @@ fn pane_message_fifo_ordering_and_drain_without_clobbering() {
     }
 
     let recv_file = temp_response(tmp.path(), "msg-recv-all");
-    h.inject_ipc(AppRequest::PaneMessageRecv {
+    h.inject_ipc(HostRequest::PaneMessageRecv {
         pane_id: pane,
         wait: false,
         timeout_secs: 0.0,
@@ -2371,7 +2372,7 @@ fn pane_message_fifo_ordering_and_drain_without_clobbering() {
 
     // Subsequent recv without new messages returns an empty array.
     let empty_file = temp_response(tmp.path(), "msg-recv-empty");
-    h.inject_ipc(AppRequest::PaneMessageRecv {
+    h.inject_ipc(HostRequest::PaneMessageRecv {
         pane_id: pane,
         wait: false,
         timeout_secs: 0.0,
@@ -2396,7 +2397,7 @@ fn pane_message_stamps_sender_pane_id_from_peer_ancestry() {
     let sender_pid = h.terminal_backend(sender_pane).child_pid();
 
     let send_file = temp_response(tmp.path(), "msg-sender-stamp");
-    h.inject_ipc(AppRequest::PaneMessageSend {
+    h.inject_ipc(HostRequest::PaneMessageSend {
         pane_id: receiver_pane,
         payload: "from worker".to_string(),
         submit: false,
@@ -2411,7 +2412,7 @@ fn pane_message_stamps_sender_pane_id_from_peer_ancestry() {
     assert_eq!(ack["sender_pane_id"].as_u64(), Some(sender_pane));
 
     let recv_file = temp_response(tmp.path(), "msg-sender-recv");
-    h.inject_ipc(AppRequest::PaneMessageRecv {
+    h.inject_ipc(HostRequest::PaneMessageRecv {
         pane_id: receiver_pane,
         wait: false,
         timeout_secs: 0.0,
@@ -2446,7 +2447,7 @@ fn pane_message_submit_does_not_interrupt_busy_agent() {
     h.terminal_backend(pane).enable_input_tap();
 
     let send_file = temp_response(tmp.path(), "msg-busy-submit");
-    h.inject_ipc(AppRequest::PaneMessageSend {
+    h.inject_ipc(HostRequest::PaneMessageSend {
         pane_id: pane,
         payload: "hold until idle".to_string(),
         submit: true,
@@ -2493,7 +2494,7 @@ fn pane_message_submit_wakes_idle_agent() {
     h.terminal_backend(pane).enable_input_tap();
 
     let send_file = temp_response(tmp.path(), "msg-idle-submit");
-    h.inject_ipc(AppRequest::PaneMessageSend {
+    h.inject_ipc(HostRequest::PaneMessageSend {
         pane_id: pane,
         payload: "wake up".to_string(),
         submit: true,
@@ -2525,7 +2526,7 @@ fn pane_message_recv_wait_completes_when_message_arrives_while_hidden() {
     let pane = h.add_test_pane();
 
     let recv_file = temp_response(tmp.path(), "msg-recv-wait-hidden");
-    h.inject_ipc(AppRequest::PaneMessageRecv {
+    h.inject_ipc(HostRequest::PaneMessageRecv {
         pane_id: pane,
         wait: true,
         timeout_secs: 60.0,
@@ -2538,7 +2539,7 @@ fn pane_message_recv_wait_completes_when_message_arrives_while_hidden() {
     );
 
     let send_file = temp_response(tmp.path(), "msg-send-to-waiter");
-    h.inject_ipc(AppRequest::PaneMessageSend {
+    h.inject_ipc(HostRequest::PaneMessageSend {
         pane_id: pane,
         payload: "unblock waiter".to_string(),
         submit: false,
@@ -2569,7 +2570,7 @@ fn pane_message_recv_wait_times_out_with_typed_timeout_reply() {
     let pane = h.add_test_pane();
 
     let recv_file = temp_response(tmp.path(), "msg-recv-timeout");
-    h.inject_ipc(AppRequest::PaneMessageRecv {
+    h.inject_ipc(HostRequest::PaneMessageRecv {
         pane_id: pane,
         wait: true,
         timeout_secs: 0.05,
@@ -2603,7 +2604,7 @@ fn pane_slot_read_errors_use_sidecar_file() {
     let pane = h.add_test_pane();
 
     let read_file = temp_response(tmp.path(), "slot-missing-read");
-    h.inject_ipc(AppRequest::SlotRead {
+    h.inject_ipc(HostRequest::SlotRead {
         pane_id: pane,
         slot_name: "missing".to_string(),
         response_file: read_file.clone(),
@@ -2631,7 +2632,7 @@ fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
     let pane = h.add_test_pane();
 
     let first_file = temp_response(tmp.path(), "slot-first");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"first".to_vec(),
@@ -2643,7 +2644,7 @@ fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
     assert_eq!(read_json_response(&first_file)["ok"].as_bool(), Some(true));
 
     let second_file = temp_response(tmp.path(), "slot-second");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"second".to_vec(),
@@ -2663,7 +2664,7 @@ fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
     );
 
     let read_file = temp_response(tmp.path(), "slot-read-after-reject");
-    h.inject_ipc(AppRequest::SlotRead {
+    h.inject_ipc(HostRequest::SlotRead {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         response_file: read_file.clone(),
@@ -2681,7 +2682,7 @@ fn pane_slot_write_rejects_content_over_10_mib() {
 
     let response_file = temp_response(tmp.path(), "slot-too-large");
     let too_large = vec![b'x'; 10 * 1024 * 1024 + 1];
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "big".to_string(),
         content: too_large,
@@ -2705,7 +2706,7 @@ fn pane_slot_append_rejects_final_file_over_10_mib() {
     let pane = h.add_test_pane();
 
     let first_file = temp_response(tmp.path(), "slot-first");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: vec![b'a'; 10 * 1024 * 1024],
@@ -2717,7 +2718,7 @@ fn pane_slot_append_rejects_final_file_over_10_mib() {
     assert_eq!(read_json_response(&first_file)["ok"].as_bool(), Some(true));
 
     let append_file = temp_response(tmp.path(), "slot-too-large-append");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"!".to_vec(),
@@ -2746,7 +2747,7 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
     let pane = h.add_test_pane();
 
     let write_file = temp_response(first_root.path(), "slot-root-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"hello".to_vec(),
@@ -2763,7 +2764,7 @@ fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
     h.app
         .set_context_root(second_root.path().to_path_buf(), None);
     let append_file = temp_response(second_root.path(), "slot-root-append");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b" world".to_vec(),
@@ -2789,7 +2790,7 @@ fn pane_info_and_list_include_slots_object() {
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-info-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"{} ".to_vec(),
@@ -2804,7 +2805,7 @@ fn pane_info_and_list_include_slots_object() {
         .to_string();
 
     let info_file = temp_response(tmp.path(), "slot-info");
-    h.inject_ipc(AppRequest::GetPaneInfo {
+    h.inject_ipc(HostRequest::GetPaneInfo {
         pane_id: pane,
         response_file: info_file.clone(),
     });
@@ -2813,7 +2814,7 @@ fn pane_info_and_list_include_slots_object() {
     assert_eq!(info["slots"]["artifact"].as_str(), Some(slot_path.as_str()));
 
     let list_file = temp_response(tmp.path(), "slot-pane-list");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         response_file: list_file.clone(),
         context_id: None,
     });
@@ -2839,7 +2840,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
     let pane = h.add_test_pane();
 
     let write_file = temp_response(tmp.path(), "slot-clean-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"done".to_vec(),
@@ -2860,7 +2861,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
     h.app.windows[0].panes.remove(&pane);
 
     let dry_run_file = temp_response(tmp.path(), "slot-clean-dry-run");
-    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+    h.inject_ipc(HostRequest::WorkspaceCleanSlots {
         dry_run: true,
         response_file: dry_run_file.clone(),
     });
@@ -2875,7 +2876,7 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
     assert!(slot_dir.exists(), "dry-run must not remove slot dir");
 
     let clean_file = temp_response(tmp.path(), "slot-clean");
-    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+    h.inject_ipc(HostRequest::WorkspaceCleanSlots {
         dry_run: false,
         response_file: clean_file.clone(),
     });
@@ -2901,7 +2902,7 @@ fn workspace_clean_slots_removes_unregistered_files_for_reused_pane_ids() {
     std::fs::write(&stale_slot, b"stale").expect("write stale slot");
 
     let clean_file = temp_response(tmp.path(), "slot-clean-reused-pane");
-    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+    h.inject_ipc(HostRequest::WorkspaceCleanSlots {
         dry_run: false,
         response_file: clean_file.clone(),
     });
@@ -2913,7 +2914,7 @@ fn workspace_clean_slots_removes_unregistered_files_for_reused_pane_ids() {
     );
 
     let write_file = temp_response(tmp.path(), "slot-reused-pane-write");
-    h.inject_ipc(AppRequest::SlotWrite {
+    h.inject_ipc(HostRequest::SlotWrite {
         pane_id: pane,
         slot_name: "artifact".to_string(),
         content: b"fresh".to_vec(),
@@ -2936,7 +2937,7 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
     // Must run without panicking and log a warn — verifies the drain path is wired.
     let mut h = HostHarness::new();
     h.ipc_tx
-        .send(AppRequest::SetPaneTitle {
+        .send(HostRequest::SetPaneTitle {
             pane_id: 9999,
             name: "ghost".into(),
         })
@@ -3041,7 +3042,7 @@ fn osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name() {
         .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
         .expect("split should create a terminal pane");
 
-    h.inject_ipc(AppRequest::SetPaneTitle {
+    h.inject_ipc(HostRequest::SetPaneTitle {
         pane_id: terminal_pane_id,
         name: "Pinned".to_string(),
     });
@@ -3623,7 +3624,7 @@ fn portal_context_state_refreshes_when_child_context_changes() {
 
 #[test]
 fn set_pip_status_drives_activity_dot_and_overrides_agent() {
-    use crate::protocol::{AgentState, AppRequest, PaneAgentState, PipStatus};
+    use crate::protocol::{AgentState, HostRequest, PaneAgentState, PipStatus};
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -3636,7 +3637,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
     );
 
     // App reports red. pane_id is 0 on the wire; the host stamps the real pane.
-    h.inject_ipc(AppRequest::SetPipStatus {
+    h.inject_ipc(HostRequest::SetPipStatus {
         pane_id: pane,
         status: PipStatus::Red,
     });
@@ -3667,7 +3668,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
             detail: None,
             session_id: None,
         }));
-    h.inject_ipc(AppRequest::SetPipStatus {
+    h.inject_ipc(HostRequest::SetPipStatus {
         pane_id: pane,
         status: PipStatus::Green,
     });
@@ -3678,7 +3679,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
         Some(&AgentState::Idle),
         "green pip -> Idle (green dot), overriding the Working agent state"
     );
-    h.inject_ipc(AppRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
+    h.inject_ipc(HostRequest::SetPipStatus { pane_id: pane, status: PipStatus::Yellow });
     h.run_frames(3);
     let p = h.app.windows[0].panes.get_mut(&pane).unwrap();
     assert_eq!(p.effective_activity(), Some(&AgentState::Working));
@@ -3690,7 +3691,7 @@ fn set_pip_status_drives_activity_dot_and_overrides_agent() {
 /// Stint 0398: end-to-end counterpart of stint 0397's `canvas_transform`
 /// unit test (`src/host/wasm_render.rs::canvas_click_inverts_fit_transform_to_canvas_space`).
 /// That test drives a raw `UiTree` through the renderer directly; this test
-/// drives a REAL process-app pane through the production `AppRequest::ClickPane`
+/// drives a REAL process-app pane through the production `HostRequest::ClickPane`
 /// dispatch — the exact path `plexi pane click` uses — and confirms the app on
 /// the other side of the IPC bridge receives the correctly inverted
 /// canvas-space coordinate for a `fit="contain"` (scaled + letterboxed) canvas.
@@ -3798,7 +3799,7 @@ fn click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform() {
 
 /// Stint 0510: drag counterpart of stint 0398's click e2e above. Drives a
 /// REAL process-app pane (`apps/dev/canvas-click-probe`) through the
-/// production `AppRequest::DragPane` dispatch — the exact path
+/// production `HostRequest::DragPane` dispatch — the exact path
 /// `plexi pane drag` and `HostHarness::inject_drag` use. The schedule is
 /// delivered one frame at a time (press → moves → release), each sample
 /// resolved against that frame's live canvas rect, and the guest's
@@ -3942,10 +3943,10 @@ fn drag_pane_node_endpoints_fail_loudly_without_bounds() {
 }
 
 /// Stint 0511: an emitted app event must land in the recorded event bus and
-/// be assertable through `HostHarness::wait_for_app_event`. Drives the REAL
+/// be assertable through `HostHarness::wait_for_plugin_event`. Drives the REAL
 /// `apps/dev/event-probe` process app: `KeyPane('e')` makes the guest emit
-/// `probe.tick`, which flows guest → bridge → `AppRequest::EmitEvent` →
-/// `AppTimeline::record_event` — the exact path the scene `expect`
+/// `probe.tick`, which flows guest → bridge → `HostRequest::EmitEvent` →
+/// `PluginTimeline::record_event` — the exact path the scene `expect`
 /// `event_stream` predicate reads.
 #[test]
 fn emitted_app_event_is_recorded_and_awaitable() {
@@ -3955,7 +3956,7 @@ fn emitted_app_event_is_recorded_and_awaitable() {
     let pane_id = h.launch_dev_app("event-probe");
 
     let response_file = temp_response(tmp.path(), "key-pane");
-    h.inject_ipc(crate::protocol::AppRequest::KeyPane {
+    h.inject_ipc(crate::protocol::HostRequest::KeyPane {
         pane_id,
         key: "e".to_string(),
         response_file: Some(response_file.clone()),
@@ -4017,8 +4018,8 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
 // ── Directed pipes: context-scoped keys + reachability (stint 0724 Phase D 2/2) ──
 
 /// Minimal `App` stub for directed-pipe tests: `queue_pipe_command` pushes an
-/// `AppCommand` a real app would have emitted onto `outgoing`, drained by the
-/// next `service_app_commands` pass exactly like a live app's own queue;
+/// `ViewCommand` a real app would have emitted onto `outgoing`, drained by the
+/// next `service_view_commands` pass exactly like a live app's own queue;
 /// `queue_outbound_event` records every `PlexiEvent` the host delivers back
 /// into `received` so a test can assert on what actually arrived. Mirrors
 /// `focus_tests::ThemeEventRecorder`. Commands are constructed directly here
@@ -4027,12 +4028,12 @@ fn resolve_event_bus_caller_falls_back_to_claimed_pane_id_without_ancestry() {
 /// bridge table is the only current producer, and nothing in `sdk/python`
 /// calls it) — the host-side contract under test is the same regardless of
 /// which SDK eventually reaches it.
-struct PipeTestApp {
-    outgoing: Vec<crate::app::app_trait::AppCommand>,
+struct PipeTestView {
+    outgoing: Vec<crate::app::app_trait::ViewCommand>,
     received: std::sync::Arc<std::sync::Mutex<Vec<crate::protocol::PlexiEvent>>>,
 }
 
-impl crate::app::app_trait::App for PipeTestApp {
+impl crate::app::app_trait::App for PipeTestView {
     fn type_id(&self) -> &'static str {
         "pipe-test-app"
     }
@@ -4048,12 +4049,12 @@ impl crate::app::app_trait::App for PipeTestApp {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
 
-    fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::ViewCommand> {
         std::mem::take(&mut self.outgoing)
     }
 
@@ -4065,7 +4066,7 @@ impl crate::app::app_trait::App for PipeTestApp {
     }
 }
 
-/// Place a `PipeTestApp` pane in `windows[win_idx]`, returning its pane id and
+/// Place a `PipeTestView` pane in `windows[win_idx]`, returning its pane id and
 /// the shared inbox for asserting on delivered `PipeMessage` events.
 fn add_pipe_test_pane(
     h: &mut HostHarness,
@@ -4076,15 +4077,15 @@ fn add_pipe_test_pane(
 ) {
     let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let pane_id = h.app.host.alloc_pane_id();
-    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(PipeTestApp {
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(PipeTestView {
             outgoing: Vec::new(),
             received: received.clone(),
         })),
         workspace_root: "/tmp".into(),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "pipe-test-app".to_string(),
         name: "pipe-test-app".to_string(),
         pane_group: None,
@@ -4104,11 +4105,11 @@ fn add_pipe_test_pane(
 }
 
 /// Queue `cmd` onto `pane_id`'s own outgoing queue, exactly as if the app
-/// itself had emitted it — the next `service_app_commands` pass (driven by
+/// itself had emitted it — the next `service_view_commands` pass (driven by
 /// `run_hidden_frames`) drains and dispatches it through the real production
-/// path, including the `sender_pane_id` rewrite `drain_all_app_commands`
+/// path, including the `sender_pane_id` rewrite `drain_all_view_commands`
 /// performs.
-fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::app_trait::AppCommand) {
+fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::app_trait::ViewCommand) {
     let app = h
         .app
         .windows
@@ -4116,13 +4117,13 @@ fn queue_pipe_command(h: &mut HostHarness, pane_id: u64, cmd: crate::app::app_tr
         .find_map(|w| w.panes.get_mut(&pane_id))
         .and_then(crate::host::pane::Pane::as_app_mut)
         .expect("pipe test pane must exist");
-    let crate::host::pane::AppRuntime::Builtin(runtime) = &mut app.runtime else {
+    let crate::host::pane::ViewRuntime::Builtin(runtime) = &mut app.runtime else {
         panic!("pipe test pane must be a Builtin runtime");
     };
     runtime
         .as_any_mut()
-        .downcast_mut::<PipeTestApp>()
-        .expect("pipe test pane must be a PipeTestApp")
+        .downcast_mut::<PipeTestView>()
+        .expect("pipe test pane must be a PipeTestView")
         .outgoing
         .push(cmd);
 }
@@ -4150,7 +4151,7 @@ fn open_directed_pipe_rejects_cross_context_target() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a,
             pipe_id: "cross-ctx".to_string(),
             target_pane_id: target_b,
@@ -4182,7 +4183,7 @@ fn open_directed_pipe_rejects_cross_context_target() {
     queue_pipe_command(
         &mut h,
         sender_a2,
-        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a2,
             pipe_id: "same-ctx".to_string(),
             target_pane_id: target_a2,
@@ -4226,7 +4227,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_a,
             pipe_id: "my-pipe".to_string(),
             target_pane_id: target_a,
@@ -4235,7 +4236,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_b,
-        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id: sender_b,
             pipe_id: "my-pipe".to_string(),
             target_pane_id: target_b,
@@ -4262,7 +4263,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_a,
-        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id: sender_a,
             pipe_id: "my-pipe".to_string(),
             payload: serde_json::json!({"from": "a"}),
@@ -4295,7 +4296,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
     queue_pipe_command(
         &mut h,
         sender_b,
-        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id: sender_b,
             pipe_id: "my-pipe".to_string(),
             payload: serde_json::json!({"from": "b"}),
@@ -4329,7 +4330,7 @@ fn directed_pipe_id_does_not_collide_across_contexts() {
 /// `click_pane_delivers_canvas_space_coordinate_through_fit_contain_transform`.
 /// Drives a REAL process-app pane (`apps/dev/node-click-probe`, a single
 /// `Button` with no other input) through the production
-/// `AppRequest::ClickPaneNode` dispatch — the exact path
+/// `HostRequest::ClickPaneNode` dispatch — the exact path
 /// `plexi pane click <pane_id> --node <node_id>` uses — resolving the
 /// button's `node_id` from the pane's own semantic tree (`plexi pane state`)
 /// exactly as a tester would, never a hardcoded arena id. Proves the
@@ -4445,7 +4446,7 @@ fn click_pane_node_activates_button_and_mutates_guest_view() {
 /// only toggles open from a real click resolved inside `Context::begin_pass`, so
 /// the menu never opened and the checkbox never entered the tree). Step 2 clicks
 /// the now-exposed "Show hidden files" checkbox. Proves: `pending_click` reaches
-/// `AppRuntime::Builtin`; a synthetic click force-opens the menu popup so its
+/// `ViewRuntime::Builtin`; a synthetic click force-opens the menu popup so its
 /// items enter the semantic tree; and `resolve_interactive_node`/
 /// `INTERACTIVE_ROLES` accept a real `checkbox` node whose id is a full `u64`
 /// egui hash (why `PaneClickTarget::Node` was widened from `u32`). Every node id
@@ -4455,10 +4456,10 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -4473,12 +4474,12 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
             .panes
             .get_mut(&pane_id)
             .expect("file explorer pane exists");
-        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("app pane").runtime else {
+        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("app pane").runtime else {
             panic!("pane {pane_id} is not a builtin app");
         };
         app.as_any_mut()
-            .downcast_mut::<crate::file_browser::FileBrowserApp>()
-            .expect("pane is a FileBrowserApp")
+            .downcast_mut::<crate::file_browser::FileBrowserView>()
+            .expect("pane is a FileBrowserView")
             .show_hidden()
     };
     let find_node = |h: &mut HostHarness, role: &str, label: &str| -> Option<String> {
@@ -4537,10 +4538,10 @@ fn click_pane_node_toggles_file_explorer_hidden_files_checkbox() {
     );
 }
 
-/// Stint 0426: `plexi pane key` / `AppRequest::KeyPane` targeting a real
+/// Stint 0426: `plexi pane key` / `HostRequest::KeyPane` targeting a real
 /// WASM Python pane (`apps/dev/key-event-probe`, a keyboard-only counter —
 /// no click/pointer input). Drives a real subprocess through the exact
-/// dispatch `KeyPane` uses (`drive_native_pane_key` → `AppRuntime::handle_key`
+/// dispatch `KeyPane` uses (`drive_native_pane_key` → `ViewRuntime::handle_key`
 /// → `LivePythonPane::handle_key`) and asserts the guest's re-rendered state
 /// actually changed — not just that the command returned `{"ok": true}`.
 /// Written first per TESTING.md/TDD to confirm this path was broken before
@@ -4567,7 +4568,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
     assert_eq!(initial_count.as_deref(), Some("0"), "count starts at 0");
 
     let key_response = temp_response(tmp.path(), "key-pane-plus");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "plus".to_string(),
         response_file: Some(key_response.clone()),
@@ -4605,7 +4606,7 @@ fn key_pane_delivers_key_event_and_mutates_guest_view() {
 }
 
 /// Stint 0430: bare Escape on a focused WASM/Python pane must close it. The
-/// Escape→CloseApp binding (keys.rs, `BindingContext::AppActive`) fires in
+/// Escape→CloseView binding (keys.rs, `BindingContext::ViewActive`) fires in
 /// `poll_actions` only when the focused app's `handle_key` did NOT consume the
 /// key. `LivePythonPane::handle_key` used to report `Consumed` for bare Escape
 /// (`python_key_events` forwarded it), which claimed Escape out of the frame's
@@ -4626,7 +4627,7 @@ fn bare_escape_closes_focused_python_wasm_pane() {
 
     // Drive a genuine bare Escape through a real frame's RawInput. The focused
     // Python pane's handle_key returns Passthrough for it, so poll_actions fires
-    // CloseApp within this same frame.
+    // CloseView within this same frame.
     h.frame(egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
@@ -4644,19 +4645,19 @@ fn bare_escape_closes_focused_python_wasm_pane() {
 
     assert!(
         !h.state().open_panes.contains(&pane_id),
-        "bare Escape on a focused Python-WASM pane must close it (Escape→CloseApp)"
+        "bare Escape on a focused Python-WASM pane must close it (Escape→CloseView)"
     );
 }
 
 /// Stint 0426 root cause: `PlexiApp::pending_pane_clicks` is removed from its
 /// map by the render dispatcher (`tiling.rs`/`render.rs`) *before* calling
-/// `AppRuntime::ui`, so `LivePythonPane::ui` is a queued click's only chance
+/// `ViewRuntime::ui`, so `LivePythonPane::ui` is a queued click's only chance
 /// at delivery. It had three early-return branches (fatal error, not
 /// initialized, not `ready`) that discarded an already-dequeued click
 /// without using it and without any error — `plexi pane click --node`
 /// reported `{"ok": true}` while nothing ever happened. A hot-reload
-/// relaunch (`AppRuntime::Python::relaunch`, triggered by file-watch or
-/// `reload_app_pane`) is the most realistic way to land a queued click on
+/// relaunch (`ViewRuntime::Python::relaunch`, triggered by file-watch or
+/// `reload_plugin_pane`) is the most realistic way to land a queued click on
 /// exactly that not-ready window: the click resolves and queues against the
 /// pane's current tree, then the pane briefly cycles through
 /// not-initialized/not-ready before its relaunched subprocess re-renders.
@@ -4706,7 +4707,7 @@ fn queued_node_click_survives_a_hot_reload_relaunch_race() {
     // click, landing it on a not-initialized/not-ready `ui()` call.
     assert!(
         h.app.reload_app_pane(pane_id, "test: relaunch race"),
-        "reload_app_pane must find and relaunch the Python pane"
+        "reload_plugin_pane must find and relaunch the Python pane"
     );
 
     // Wait for the relaunched subprocess to become ready and render again,
@@ -4832,7 +4833,7 @@ fn context_1041_after_focus_loss_and_cancel_keys_reach_pane() {
     let tmp = tempfile::tempdir().unwrap();
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::<KeyBurstProbe>::default(), AppPermissions::builtin(),
+        Box::<KeyBurstProbe>::default(), PluginPermissions::builtin(),
         tmp.path().to_path_buf(), None, Some("split_h"), None,
     );
     let pane_id = h.state().open_panes[0];
@@ -5184,7 +5185,7 @@ fn sidebar_rename_keys_do_not_reach_focused_app_pane() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<KeyBurstProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -5228,7 +5229,7 @@ fn notification_modal_keys_do_not_reach_focused_app_pane() {
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
         Box::<KeyBurstProbe>::default(),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -5799,8 +5800,8 @@ fn focused_text_input_receives_typing_and_enter_submits() {
         "post-submit typing must stay with the still-focused TextInput"
     );
 
-    // Escape leaves the field without closing the app (the AppActive
-    // CloseApp binding must not fire); the next keystroke routes to the
+    // Escape leaves the field without closing the app (the ViewActive
+    // CloseView binding must not fire); the next keystroke routes to the
     // app's raw KeyEvent path again.
     let panes_before = h.pane_count();
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
@@ -5884,16 +5885,16 @@ fn text_input_keeps_the_draft_while_the_guest_echo_is_in_flight() {
 // -- Declarative TextInput key routing -------------------------------------
 
 /// Escape that releases a real process app's focused `FormField` must also
-/// reach the guest exactly once, then stay consumed by the host so CloseApp
+/// reach the guest exactly once, then stay consumed by the host so CloseView
 /// cannot reclaim the pane. This drives the full physical-key route:
 /// focus -> egui TextInput focus-loss -> router -> Python bridge -> guest
 /// update -> host reconciliation.
 #[test]
 fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pane() {
     let mut h = HostHarness::new();
-    let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+    let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
     h.app
-        .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+        .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
         .expect("launch todo");
     let pane_id = *h.state().open_panes.last().expect("todo pane appears");
 
@@ -5937,7 +5938,7 @@ fn escape_leaving_todo_form_field_cancels_form_without_closing_or_reclaiming_pan
 
     // Physical bare Escape: egui has already dropped focus by dispatch time.
     // The dedicated bridge must deliver it to todo, which exits the form;
-    // dispatch must consume it before AppActive can fire CloseApp.
+    // dispatch must consume it before ViewActive can fire CloseView.
     frame_with_events(&mut h, vec![pressed_key(egui::Key::Escape)]);
     let start = std::time::Instant::now();
     while app_text(&h).contains("What needs doing?") {
@@ -6127,8 +6128,8 @@ fn open_gate_note(h: &mut HostHarness, dir: &std::path::Path, initial: &str) -> 
     let note = dir.join("gate-note.md");
     std::fs::write(&note, initial).expect("seed gate note");
     h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
-        crate::app::permissions::AppPermissions::builtin(),
+        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.to_path_buf(),
         None,
         Some("split_h"),
@@ -6257,7 +6258,7 @@ fn editor_gate_paste_preserves_literal_text_and_is_one_undo_step() {
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
     assert_eq!(gate_note_semantics(&h, pane_id)["source_text"], text);
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "cmd+z".into(),
         response_file: None,
@@ -6276,7 +6277,7 @@ fn editor_gate_pane_state_captures_rendered_text_with_experiments_off() {
     let tmp = tempfile::tempdir().unwrap();
     let pane_id = open_gate_note(&mut h, tmp.path(), "Core semantic paragraph");
     let response = temp_response(tmp.path(), "core-semantic");
-    let query = || AppRequest::GetPaneState {
+    let query = || HostRequest::GetPaneState {
         pane_id,
         response_file: response.clone(),
         stale_after_secs: None,
@@ -6336,7 +6337,7 @@ fn editor_gate_harness_matrix() {
             for (sub, input) in inputs.into_iter().enumerate() {
                 let response = temp_response(tmp.path(), &format!("gate-{name}-{index}-{sub}"));
                 match input {
-                    GateHostInput::Text(text) => h.inject_ipc(AppRequest::SendToPane {
+                    GateHostInput::Text(text) => h.inject_ipc(HostRequest::SendToPane {
                         generated_operation_id: false,
                         paste: false,
                         pane_id,
@@ -6346,7 +6347,7 @@ fn editor_gate_harness_matrix() {
                         operation_id: None,
                         peer_ancestry: None,
                     }),
-                    GateHostInput::Key(key) => h.inject_ipc(AppRequest::KeyPane {
+                    GateHostInput::Key(key) => h.inject_ipc(HostRequest::KeyPane {
                         pane_id,
                         key,
                         response_file: Some(response.clone()),
@@ -6437,7 +6438,7 @@ fn editor_gate_host_surfaces() {
     // Live Preview toggle through the app's real key handler.
     assert_eq!(state["preview_mode"].as_str(), Some("live_preview"));
     let response = temp_response(tmp.path(), "gate-toggle");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "cmd+g".to_string(),
         response_file: Some(response.clone()),
@@ -6450,7 +6451,7 @@ fn editor_gate_host_surfaces() {
     // Cmd+S on a dirty buffer saves and reports ok (on a clean one it is a
     // no-op, so dirty the buffer first).
     let response = temp_response(tmp.path(), "gate-save-text");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -6463,7 +6464,7 @@ fn editor_gate_host_surfaces() {
     h.run_frames(2);
     assert_eq!(read_json_response(&response)["ok"], true);
     let response = temp_response(tmp.path(), "gate-save");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "cmd+s".to_string(),
         response_file: Some(response.clone()),
@@ -6479,7 +6480,7 @@ fn editor_gate_host_surfaces() {
         .save(&png)
         .expect("write fixture png");
     let response = temp_response(tmp.path(), "gate-drop-accept");
-    h.inject_ipc(AppRequest::DropFile {
+    h.inject_ipc(HostRequest::DropFile {
         pane_id,
         path_or_url: png.to_string_lossy().into_owned(),
         response_file: response.clone(),
@@ -6506,7 +6507,7 @@ fn editor_gate_host_surfaces() {
     let junk = tmp.path().join("junk.png");
     std::fs::write(&junk, b"not an image").expect("write junk");
     let response = temp_response(tmp.path(), "gate-drop-reject");
-    h.inject_ipc(AppRequest::DropFile {
+    h.inject_ipc(HostRequest::DropFile {
         pane_id,
         path_or_url: junk.to_string_lossy().into_owned(),
         response_file: response.clone(),
@@ -6535,7 +6536,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
     let pane_id = open_gate_note(&mut h, &note_dir, "seed ");
 
     let response = temp_response(tmp.path(), "gate-save-fail-text");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -6553,7 +6554,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
     std::fs::set_permissions(&note_dir, std::fs::Permissions::from_mode(0o555))
         .expect("make note dir read-only");
     let response = temp_response(tmp.path(), "gate-save-fail-key");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "cmd+s".to_string(),
         response_file: Some(response.clone()),
@@ -6579,7 +6580,7 @@ fn editor_gate_save_failure_reports_error_semantically() {
         .expect("restore note dir permissions");
 }
 
-/// `plexi host log` / `AppRequest::LogMarker` must land in the host process
+/// `plexi host log` / `HostRequest::LogMarker` must land in the host process
 /// (the owner of the channel logger) and acknowledge through the response
 /// file — the mechanism installed release gates use to leave start/finish
 /// summaries in `~/.plexi-<channel>/plexi.log`.
@@ -6588,7 +6589,7 @@ fn host_log_marker_dispatches_and_acknowledges() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let response = temp_response(tmp.path(), "log-marker");
-    h.app.handle_pane_ipc_request(AppRequest::LogMarker {
+    h.app.handle_pane_ipc_request(HostRequest::LogMarker {
         source: "editor_gate".to_string(),
         message: "started scenes=9\nsecond line flattened".to_string(),
         response_file: Some(response.clone()),
@@ -6709,8 +6710,8 @@ fn open_focused_note_with_layout(
     let before: std::collections::HashSet<PaneId> =
         h.app.windows[0].panes.keys().copied().collect();
     h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorApp::new_for_test_note(note)),
-        crate::app::permissions::AppPermissions::builtin(),
+        Box::new(crate::app::text_editor_app::TextEditorView::new_for_test_note(note)),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.to_path_buf(),
         None,
         Some(layout),
@@ -6961,8 +6962,8 @@ fn scroll_regression_open_wrapped_note_reveals_end_caret() {
     let path = notes_dir.join("long-note.md");
     std::fs::write(&path, &body).expect("seed note");
     h.app.open_builtin_app_pane(
-        Box::new(crate::app::text_editor_app::TextEditorApp::new(path)),
-        crate::app::permissions::AppPermissions::builtin(),
+        Box::new(crate::app::text_editor_app::TextEditorView::new(path)),
+        crate::app::permissions::PluginPermissions::builtin(),
         notes_dir,
         None,
         Some("split_h"),
@@ -7063,7 +7064,7 @@ fn blank_text_editor_open_acquires_input_focus() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let open_response = temp_response(tmp.path(), "blank-editor-open");
-    h.inject_ipc(AppRequest::SpawnPane {
+    h.inject_ipc(HostRequest::SpawnPane {
         type_id: "text-editor".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -7093,7 +7094,7 @@ fn blank_text_editor_open_acquires_input_focus() {
         .expect("open response pane id");
 
     let text_response = temp_response(tmp.path(), "blank-editor-text");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -7114,7 +7115,7 @@ fn blank_text_editor_open_acquires_input_focus() {
     );
 
     let key_response = temp_response(tmp.path(), "blank-editor-ctrl-enter");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "ctrl+enter".to_string(),
         response_file: Some(key_response.clone()),
@@ -7211,10 +7212,10 @@ fn explorer_enter_opens_text_file_in_text_editor_split() {
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -7251,10 +7252,10 @@ fn explorer_open_deduplicates_already_open_text_editor_pane() {
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -7324,10 +7325,10 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
     std::fs::write(&doc, "# hello").expect("seed doc");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -7339,10 +7340,10 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
     // A second pane, focused, so a missing anchor would split THIS pane
     // rather than the explorer.
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -7362,11 +7363,11 @@ fn explorer_open_anchors_text_editor_on_the_requesting_pane() {
             .get_mut(&browser)
             .and_then(Pane::as_app_mut)
             .expect("file browser pane");
-        let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime else {
+        let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime else {
             panic!("file browser is a builtin");
         };
         app.as_any_mut()
-            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+            .downcast_mut::<crate::file_browser::FileBrowserView>()
             .expect("file browser")
             .request_open_for_test(&doc);
     }
@@ -7467,7 +7468,7 @@ fn pane_ipc_serviced_while_window_hidden() {
     h.run_frames(1);
 
     let list_file = temp_response(tmp.path(), "hidden-pane-list");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         response_file: list_file.clone(),
         context_id: None,
     });
@@ -7486,11 +7487,11 @@ fn pane_ipc_serviced_while_window_hidden() {
 }
 
 /// Stint 0688: an app pane's outbound commands are external-client servicing,
-/// not rendering. `drain_all_app_commands` and the command execution it feeds
+/// not rendering. `drain_all_view_commands` and the command execution it feeds
 /// lived in `App::ui`, so a minimized or fully occluded host executed no app
 /// command at all — every assistant tool call, notification, and host request
 /// from every runtime sat queued until the window was uncovered. They now run
-/// from `App::logic` via `service_app_commands`; this pins that they complete
+/// from `App::logic` via `service_view_commands`; this pins that they complete
 /// on hidden passes alone.
 #[test]
 fn app_commands_execute_while_window_hidden() {
@@ -7506,7 +7507,7 @@ fn app_commands_execute_while_window_hidden() {
     );
 
     h.assistant_mut(pane).pending_commands.push(
-        crate::app::app_trait::AppCommand::ShowNotification {
+        crate::app::app_trait::ViewCommand::ShowNotification {
             notify_id: "hidden-pass-notify".to_string(),
             sender_pane_id: pane,
             source_context_id: 0,
@@ -7594,7 +7595,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some(p.display_name()),
+                ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
             })
     };
@@ -7646,15 +7647,7 @@ fn mcp_reply_reaches_guest_while_window_hidden() {
 fn write_hidden_axis_probe(dir: &std::path::Path, title: &str) {
     std::fs::write(
         dir.join("manifest.toml"),
-        "schema_version = 1\n\n\
-             [app]\n\
-             id = \"hidden-axis-probe\"\n\
-             type = \"app\"\n\
-             name = \"Hidden Axis Probe\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n\
-             description = \"stint 0759 HostHarness fixture\"\n\
-             watch = true\n",
+        "schema_version = 2\n\n[plugin]\nid = \"hidden-axis-probe\"\nname = \"Hidden Axis Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0759 HostHarness fixture\"\nwatch = true\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"hidden-axis-probe.main\"\ndefault = true\n",
     )
     .expect("write manifest.toml");
     std::fs::write(
@@ -7683,7 +7676,7 @@ fn python_pane_title(h: &HostHarness, pane_id: PaneId) -> Option<String> {
         .get(&pane_id)
         .and_then(Pane::as_app)
         .and_then(|pane| match &pane.runtime {
-            AppRuntime::Python(p) => Some(p.display_name()),
+            ViewRuntime::Python(p) => Some(p.display_name()),
             _ => None,
         })
 }
@@ -7693,7 +7686,7 @@ fn python_pane_has_rendered_tree(h: &HostHarness, pane_id: PaneId) -> bool {
         .panes
         .get(&pane_id)
         .and_then(Pane::as_app)
-        .is_some_and(|pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()))
+        .is_some_and(|pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()))
 }
 
 fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
@@ -7702,7 +7695,7 @@ fn python_pane_error(h: &HostHarness, pane_id: PaneId) -> Option<String> {
         .get(&pane_id)
         .and_then(Pane::as_app)
         .and_then(|pane| match &pane.runtime {
-            AppRuntime::Python(p) => p.error().map(str::to_string),
+            ViewRuntime::Python(p) => p.error().map(str::to_string),
             _ => None,
         })
 }
@@ -7902,7 +7895,7 @@ fn experiment_off_blocks_mcp_client_and_spawns_no_server_process() {
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some(p.display_name()),
+                ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
             })
     };
@@ -7980,7 +7973,7 @@ fn experiment_on_allows_mcp_client_and_spawns_the_server_process() {
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some(p.display_name()),
+                ViewRuntime::Python(p) => Some(p.display_name()),
                 _ => None,
             })
     };
@@ -8079,7 +8072,7 @@ fn screenshot_capture_requested_on_hidden_passes() {
     h.run_frames(1);
 
     let response_file = temp_response(tmp.path(), "hidden-screenshot");
-    h.inject_ipc(AppRequest::Screenshot {
+    h.inject_ipc(HostRequest::Screenshot {
         pane_id: None,
         output_path: tmp.path().join("hidden.png").to_string_lossy().into_owned(),
         response_file,
@@ -8114,7 +8107,7 @@ fn screenshot_without_viewport_delivery_replies_with_typed_error() {
         .join("stalled.png")
         .to_string_lossy()
         .into_owned();
-    h.inject_ipc(AppRequest::Screenshot {
+    h.inject_ipc(HostRequest::Screenshot {
         pane_id: None,
         output_path: output_path.clone(),
         response_file: response_file.clone(),
@@ -8167,7 +8160,7 @@ fn screenshot_delivered_capture_still_fulfills() {
         .join("delivered.png")
         .to_string_lossy()
         .into_owned();
-    h.inject_ipc(AppRequest::Screenshot {
+    h.inject_ipc(HostRequest::Screenshot {
         pane_id: None,
         output_path: output_path.clone(),
         response_file: response_file.clone(),
@@ -8216,7 +8209,7 @@ fn screenshot_rejects_unmatched_and_wrong_viewport_events() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
     let response_file = temp_response(tmp.path(), "fresh-screenshot");
-    h.inject_ipc(AppRequest::Screenshot {
+    h.inject_ipc(HostRequest::Screenshot {
         pane_id: None,
         output_path: tmp.path().join("fresh.png").to_string_lossy().into_owned(),
         response_file: response_file.clone(),
@@ -8344,10 +8337,10 @@ fn file_browser_rename_modal_preselects_entry_name() {
     std::fs::write(tmp.path().join("alpha.txt"), b"x").expect("seed file");
     let mut h = HostHarness::new();
     h.app.open_builtin_app_pane(
-        Box::new(crate::file_browser::FileBrowserApp::new(
+        Box::new(crate::file_browser::FileBrowserView::new(
             tmp.path().to_path_buf(),
         )),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -8357,7 +8350,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     h.run_frames(2);
 
     let response_file = temp_response(tmp.path(), "rename-key");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "f2".to_string(),
         response_file: Some(response_file.clone()),
@@ -8380,7 +8373,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     // Complete the tester's repro end-to-end: typed text must REPLACE the
     // selected prefill, and the rename must land in the source's own
     // directory (not the browse/host cwd).
-    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id,
@@ -8392,7 +8385,7 @@ fn file_browser_rename_modal_preselects_entry_name() {
     });
     run_blurred_frames(&mut h, 2);
     let enter_response = temp_response(tmp.path(), "rename-enter");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "enter".to_string(),
         response_file: Some(enter_response.clone()),
@@ -8426,7 +8419,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
             id_salt: 1,
             ..Default::default()
         }),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -8441,7 +8434,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
             id_salt: 2,
             ..Default::default()
         }),
-        AppPermissions::builtin(),
+        PluginPermissions::builtin(),
         tmp.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -8456,7 +8449,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
 
     // Queue text for B while A's raw widget still holds egui focus.
     let response_file = temp_response(tmp.path(), "send-text-b");
-    h.app.handle_pane_ipc_request(AppRequest::SendToPane {
+    h.app.handle_pane_ipc_request(HostRequest::SendToPane {
         generated_operation_id: false,
         paste: false,
         pane_id: pane_b,
@@ -8500,7 +8493,7 @@ fn send_to_pane_never_routes_text_into_previous_panes_raw_focus_widget() {
 mod routine_firing {
     use super::*;
     use crate::host::context::{Context, Window};
-    use crate::host::pane::{AppPane, AppRuntime, Pane};
+    use crate::host::pane::{ViewPane, ViewRuntime, Pane};
     use crate::spatial::tiling::PaneId;
 
     /// Write `routines.toml` into `root`'s workspace channel dir.
@@ -8522,14 +8515,14 @@ mod routine_firing {
     /// into `win_idx` and focus it, so `split_focused` has a split target.
     fn add_focused_app_pane(h: &mut HostHarness, win_idx: usize, root: &std::path::Path) -> PaneId {
         let pane_id = h.app.host.alloc_pane_id();
-        let pane = AppPane {
+        let pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+            runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                 root.to_path_buf(),
             ))),
             workspace_root: root.to_path_buf(),
-            permissions: crate::app::permissions::AppPermissions::builtin(),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
             manifest_id: "test".to_string(),
             name: "Test App".to_string(),
             pane_group: None,
@@ -8671,7 +8664,7 @@ mod routine_firing {
         let active_win_before = h.app.active_window;
         let main_panes_before = h.app.windows[0].panes.len();
         let response = temp_response(tmp.path(), "ctx-name-spawn");
-        h.app.handle_pane_ipc_request(AppRequest::SpawnPane {
+        h.app.handle_pane_ipc_request(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -8721,7 +8714,7 @@ mod routine_firing {
         let panes_before = h.app.windows[0].panes.len();
 
         let response = temp_response(tmp.path(), "ctx-name-missing");
-        h.app.handle_pane_ipc_request(AppRequest::SpawnPane {
+        h.app.handle_pane_ipc_request(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -9139,7 +9132,7 @@ mod routine_firing {
 
 mod agent_boot {
     use super::*;
-    use crate::protocol::{AgentState, AppRequest};
+    use crate::protocol::{AgentState, HostRequest};
 
     /// Spawn a terminal with `--agent` semantics and return its response file.
     fn spawn_agent_pane(
@@ -9149,7 +9142,7 @@ mod agent_boot {
         boot_timeout_secs: Option<f64>,
     ) -> String {
         let response = temp_response(dir, "agent-spawn");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec![],
@@ -9186,7 +9179,7 @@ mod agent_boot {
     }
 
     fn report_agent(h: &mut HostHarness, pane_id: u64, state: AgentState) {
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id,
             state,
@@ -9300,7 +9293,7 @@ mod agent_boot {
         h.run_frames(1);
         let pane_id = spawned_terminal(&h);
 
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: None,
         });
@@ -9338,7 +9331,7 @@ mod agent_boot {
             std::thread::sleep(std::time::Duration::from_millis(20));
             h.run_frames(1);
             let capture = temp_response(tmp.path(), "agent-capture");
-            h.inject_ipc(AppRequest::CapturePane {
+            h.inject_ipc(HostRequest::CapturePane {
                 pane_id,
                 lines: 50,
                 response_file: capture.clone(),
@@ -9366,7 +9359,7 @@ mod agent_boot {
         h.app.set_context_root(tmp.path().to_path_buf(), None);
 
         let response = temp_response(tmp.path(), "agent-app-spawn");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "text-editor".to_string(),
             layout: Some("split_h".to_string()),
             args: vec![],
@@ -9465,7 +9458,7 @@ mod agent_boot {
 
     fn pane_info(h: &mut HostHarness, dir: &std::path::Path, pane_id: u64) -> serde_json::Value {
         let response = temp_response(dir, "agent-info");
-        h.inject_ipc(AppRequest::GetPaneInfo {
+        h.inject_ipc(HostRequest::GetPaneInfo {
             pane_id,
             response_file: response.clone(),
         });
@@ -9510,7 +9503,7 @@ mod agent_boot {
         let facts: Vec<_> = timeline
             .events()
             .iter()
-            .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
+            .filter(|event| event.plugin_id == "plexi.host.panes" && event.pane_id == pane_id)
             .map(|event| event.payload.as_ref().unwrap())
             .collect();
         let boot: Vec<_> = facts
@@ -9664,7 +9657,7 @@ mod agent_boot {
             "a continuously streaming agent must never satisfy the boot predicate: {reply}"
         );
 
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: None,
         });
@@ -9844,7 +9837,7 @@ mod pane_send_submit_tests {
     }
 
     fn submit(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
-        h.inject_ipc(AppRequest::SendToPane {
+        h.inject_ipc(HostRequest::SendToPane {
             generated_operation_id: false,
             paste: false,
             pane_id: pane,
@@ -9857,7 +9850,7 @@ mod pane_send_submit_tests {
     }
 
     fn type_only(h: &HostHarness, pane: PaneId, text: &str, response_file: Option<String>) {
-        h.inject_ipc(AppRequest::SendToPane {
+        h.inject_ipc(HostRequest::SendToPane {
             generated_operation_id: false,
             paste: false,
             pane_id: pane,
@@ -10219,7 +10212,7 @@ fn continuous_app_frames_ride_the_scheduled_repaint() {
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some(p.suppressed_wakes()),
+                ViewRuntime::Python(p) => Some(p.suppressed_wakes()),
                 _ => None,
             })
             .expect("balls runs on the Python runtime")
@@ -10255,7 +10248,7 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
             .get(&pane_id)
             .and_then(Pane::as_app)
             .and_then(|pane| match &pane.runtime {
-                AppRuntime::Python(p) => Some(p.suppressed_wakes()),
+                ViewRuntime::Python(p) => Some(p.suppressed_wakes()),
                 _ => None,
             })
             .expect("key-event-probe runs on the Python runtime")
@@ -10263,7 +10256,7 @@ fn scheduled_mode_app_never_suppresses_its_frame_wake() {
 
     // Drive real input and let the response frame land.
     let key_response = temp_response(tmp.path(), "wake-probe-plus");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id,
         key: "plus".to_string(),
         response_file: Some(key_response.clone()),
@@ -10627,7 +10620,7 @@ mod pane_lifecycle_events {
             .unwrap()
             .events()
             .iter()
-            .filter(|event| event.app_id == "plexi.host.panes" && event.pane_id == pane_id)
+            .filter(|event| event.plugin_id == "plexi.host.panes" && event.pane_id == pane_id)
             .map(|event| event.payload.clone().unwrap())
             .collect()
     }
@@ -10696,7 +10689,7 @@ mod pane_lifecycle_events {
         let tmp = tempfile::tempdir().unwrap();
         for (n, bytes) in [vec![65, 255], vec![66]].into_iter().enumerate() {
             let response = temp_response(tmp.path(), &format!("slot-{n}"));
-            h.inject_ipc(crate::protocol::AppRequest::SlotWrite {
+            h.inject_ipc(crate::protocol::HostRequest::SlotWrite {
                 pane_id,
                 slot_name: "status".into(),
                 content: bytes,
@@ -10895,7 +10888,7 @@ mod pane_lifecycle_events {
                 "pr_url": { "type": "string" }
             }
         });
-        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
             role: "worker".into(),
             harness: "codex".into(),
             command: "sleep 30".into(),
@@ -10954,7 +10947,7 @@ mod pane_lifecycle_events {
 
         // 1. Invalid result payload is rejected synchronously by schema validation.
         let bad_done = temp_response(dir.path(), "agent-done-bad");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
             peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"wrong": 123}"#.into()),
@@ -10968,7 +10961,7 @@ mod pane_lifecycle_events {
 
         // 2. Valid result payload commits result, writes `completed` + `summary` slots.
         let good_done = temp_response(dir.path(), "agent-done-good");
-        h.inject_ipc(crate::protocol::AppRequest::AgentDone {
+        h.inject_ipc(crate::protocol::HostRequest::AgentDone {
             peer_ancestry: None,
             pane_id: worker_id,
             result: Some(r#"{"pr_url": "https://github.com/org/repo/pull/802"}"#.into()),
@@ -11010,7 +11003,7 @@ mod pane_lifecycle_events {
 
         // 4. Master can still read `completed` and `summary` slots after ephemeral close.
         let summary_slot = temp_response(dir.path(), "slot-summary");
-        h.inject_ipc(crate::protocol::AppRequest::SlotRead {
+        h.inject_ipc(crate::protocol::HostRequest::SlotRead {
             pane_id: worker_id,
             slot_name: "summary".into(),
             response_file: summary_slot.clone(),
@@ -11029,7 +11022,7 @@ mod pane_lifecycle_events {
         let dir = tempfile::tempdir().unwrap();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-crash");
-        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
             role: "crasher".into(),
             harness: "claude".into(),
             command: "sleep 30".into(),
@@ -11096,7 +11089,7 @@ mod pane_lifecycle_events {
         let initial_needs_you_count = mon.list_needs_you().len();
 
         let spawn_reply = temp_response(dir.path(), "agent-spawn-ask");
-        h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+        h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
             role: "implementer".into(),
             harness: "codex".into(),
             command: "sleep 30".into(),
@@ -11133,7 +11126,7 @@ mod pane_lifecycle_events {
         h.hidden_frame();
 
         let info_reply = temp_response(dir.path(), "pane-info");
-        h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+        h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
             pane_id: worker_id,
             response_file: info_reply.clone(),
         });
@@ -11145,7 +11138,7 @@ mod pane_lifecycle_events {
         // Tier 1 (`plexi agent ask`): worker transitions to Blocked, writes `question` slot,
         // rolls up `ContextStatus::Blocked` on parent PortalPane, and does NOT file human NeedsYou.
         let ask_reply = temp_response(dir.path(), "agent-ask");
-        h.inject_ipc(crate::protocol::AppRequest::AgentAsk {
+        h.inject_ipc(crate::protocol::HostRequest::AgentAsk {
             peer_ancestry: None,
             pane_id: worker_id,
             question: "Should we use BTreeMap or HashMap?".into(),
@@ -11174,7 +11167,7 @@ mod pane_lifecycle_events {
         );
 
         let fleet_reply = temp_response(dir.path(), "fleet");
-        h.inject_ipc(crate::protocol::AppRequest::AgentFleet {
+        h.inject_ipc(crate::protocol::HostRequest::AgentFleet {
             filter: crate::agent::fleet::FleetFilter::All,
             response_file: fleet_reply.clone(),
         });
@@ -11234,7 +11227,7 @@ mod pane_lifecycle_events {
 
         let spawn_worker = |h: &mut HostHarness, role: &str| -> (u64, u64) {
             let reply = temp_response(dir.path(), &format!("spawn-{role}"));
-            h.inject_ipc(crate::protocol::AppRequest::AgentSpawn {
+            h.inject_ipc(crate::protocol::HostRequest::AgentSpawn {
                 role: role.into(),
                 harness: "codex".into(),
                 command: "sleep 30".into(),
@@ -11402,7 +11395,7 @@ mod pane_lifecycle_events {
 mod flight_recorder_session {
     use super::*;
     use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
-    use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+    use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
     use crate::protocol::AiTool;
     use std::time::{Duration, Instant};
 
@@ -11418,7 +11411,7 @@ mod flight_recorder_session {
         }
     }
 
-    /// Two agent panes, an ask-gated `app call`, a desktop approval, and a
+    /// Two agent panes, an ask-gated `plugin call`, a desktop approval, and a
     /// pane lifecycle app event must leave one ordered, complete session trace
     /// that `debug session show --json` reconstructs.
     #[test]
@@ -11461,18 +11454,18 @@ mod flight_recorder_session {
                 timeout_ms: Some(tool_timeout.as_millis().try_into().unwrap()),
                 read_only: false,
             }],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             crate::host::scope::ScopeOrigin {
                 context_id,
                 context_root: workspace.clone(),
                 window_id: 1,
                 pane_id: target,
-                app_id: Some("flight-probe".into()),
+                plugin_id: Some("flight-probe".into()),
             },
         );
         let reply = workspace.join("flight-reply.json");
-        let request: crate::protocol::AppRequest = serde_json::from_value(serde_json::json!({
-            "type":"call_app_tool", "app_id":"flight-probe", "tool":"probe.todo",
+        let request: crate::protocol::HostRequest = serde_json::from_value(serde_json::json!({
+            "type":"call_plugin_tool", "plugin_id":"flight-probe", "tool":"probe.todo",
             "input_json": r#"{"text":"Buy groceries"}"#, "caller_pane_id": caller,
             "call_credential": credential, "peer_ancestry": [std::process::id()],
             "target_pane_id": target, "wait_approved": true, "response_file": reply,
@@ -11749,7 +11742,7 @@ mod pane_worktree_tests {
         h.add_test_pane();
 
         let spawn_resp = temp_response(tmp.path(), "wt-spawn-clean");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -11785,7 +11778,7 @@ mod pane_worktree_tests {
         assert!(wt_path.exists(), "worktree path must exist after spawn");
 
         let info_resp = temp_response(tmp.path(), "wt-info-clean");
-        h.inject_ipc(AppRequest::GetPaneInfo {
+        h.inject_ipc(HostRequest::GetPaneInfo {
             pane_id,
             response_file: info_resp.clone(),
         });
@@ -11801,7 +11794,7 @@ mod pane_worktree_tests {
         );
 
         let close_resp = temp_response(tmp.path(), "wt-close-clean");
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
@@ -11828,7 +11821,7 @@ mod pane_worktree_tests {
         h.add_test_pane();
 
         let spawn_resp = temp_response(tmp.path(), "wt-spawn-dirty");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -11864,7 +11857,7 @@ mod pane_worktree_tests {
             .expect("write untracked file");
 
         let close_resp = temp_response(tmp.path(), "wt-close-dirty");
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
@@ -11903,7 +11896,7 @@ mod pane_worktree_tests {
         h.add_test_pane();
 
         let spawn_resp = temp_response(tmp.path(), "wt-spawn-ahead");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -11946,7 +11939,7 @@ mod pane_worktree_tests {
         }
 
         let close_resp = temp_response(tmp.path(), "wt-close-ahead");
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: Some(close_resp.clone()),
         });
@@ -11989,7 +11982,7 @@ mod pane_result_harness_tests {
         });
 
         let spawn_resp = temp_response(tmp.path(), "result-spawn");
-        h.inject_ipc(AppRequest::SpawnPane {
+        h.inject_ipc(HostRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_h".to_string()),
             args: vec!["true".to_string()],
@@ -12019,7 +12012,7 @@ mod pane_result_harness_tests {
 
         // 1. Before any write: read returns sidecar .err with `no_result_yet` (exit 2).
         let read_before = temp_response(tmp.path(), "result-read-before");
-        h.inject_ipc(AppRequest::PaneResultRead {
+        h.inject_ipc(HostRequest::PaneResultRead {
             pane_id,
             wait: false,
             timeout_secs: 300.0,
@@ -12038,7 +12031,7 @@ mod pane_result_harness_tests {
 
         // 2. Agent writes malformed JSON -> rejected synchronously back to the agent.
         let write_malformed = temp_response(tmp.path(), "result-write-malformed");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: "{not valid json".to_string(),
             response_file: write_malformed.clone(),
@@ -12059,7 +12052,7 @@ mod pane_result_harness_tests {
 
         // 3. Agent writes schema-violating JSON (missing required `pr`) -> rejected synchronously.
         let write_invalid = temp_response(tmp.path(), "result-write-invalid");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: r#"{"status":"pass"}"#.to_string(),
             response_file: write_invalid.clone(),
@@ -12077,7 +12070,7 @@ mod pane_result_harness_tests {
 
         // 4. Reading after a rejected write returns `invalid_result` (exit 1), distinct from `no_result_yet` (exit 2).
         let read_after_invalid = temp_response(tmp.path(), "result-read-invalid");
-        h.inject_ipc(AppRequest::PaneResultRead {
+        h.inject_ipc(HostRequest::PaneResultRead {
             pane_id,
             wait: false,
             timeout_secs: 300.0,
@@ -12097,7 +12090,7 @@ mod pane_result_harness_tests {
 
         // 5. Agent self-corrects and writes a schema-valid JSON object -> committed.
         let write_valid = temp_response(tmp.path(), "result-write-valid");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: r#"{"status":"pass","pr":42}"#.to_string(),
             response_file: write_valid.clone(),
@@ -12110,7 +12103,7 @@ mod pane_result_harness_tests {
 
         // 6. Second write is rejected (`result_already_set`) and does not overwrite.
         let write_second = temp_response(tmp.path(), "result-write-second");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: r#"{"status":"fail","pr":99}"#.to_string(),
             response_file: write_second.clone(),
@@ -12124,14 +12117,14 @@ mod pane_result_harness_tests {
         );
 
         // 7. Reading returns the validated JSON object (exit 0), even after the pane closes.
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id,
             response_file: None,
         });
         h.run_frames(1);
 
         let read_committed = temp_response(tmp.path(), "result-read-committed");
-        h.inject_ipc(AppRequest::PaneResultRead {
+        h.inject_ipc(HostRequest::PaneResultRead {
             pane_id,
             wait: false,
             timeout_secs: 300.0,
@@ -12159,7 +12152,7 @@ mod pane_result_harness_tests {
         let pane_id = h.add_test_pane();
 
         let schema_resp = temp_response(tmp.path(), "result-schema-set");
-        h.inject_ipc(AppRequest::PaneResultSchemaSet {
+        h.inject_ipc(HostRequest::PaneResultSchemaSet {
             pane_id,
             schema: serde_json::json!({
                 "type": "object",
@@ -12176,7 +12169,7 @@ mod pane_result_harness_tests {
 
         // Park a `--wait` reader.
         let wait_resp = temp_response(tmp.path(), "result-wait");
-        h.inject_ipc(AppRequest::PaneResultRead {
+        h.inject_ipc(HostRequest::PaneResultRead {
             pane_id,
             wait: true,
             timeout_secs: 60.0,
@@ -12191,7 +12184,7 @@ mod pane_result_harness_tests {
 
         // Invalid write is rejected back to the agent; parked wait must NOT fire.
         let bad_write = temp_response(tmp.path(), "result-bad-write");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: r#"{"verdict":"MAYBE"}"#.to_string(),
             response_file: bad_write.clone(),
@@ -12208,7 +12201,7 @@ mod pane_result_harness_tests {
 
         // Agent self-corrects -> parked wait wakes immediately with the validated JSON object.
         let good_write = temp_response(tmp.path(), "result-good-write");
-        h.inject_ipc(AppRequest::PaneResultWrite {
+        h.inject_ipc(HostRequest::PaneResultWrite {
             pane_id,
             payload: r#"{"verdict":"PASS"}"#.to_string(),
             response_file: good_write.clone(),
@@ -12225,7 +12218,7 @@ mod pane_result_harness_tests {
 mod agent_state_restoration_tests {
     use super::*;
     use crate::host::context::{Context, ContextName};
-    use crate::protocol::{AgentBlockedReason, AgentState, AppRequest};
+    use crate::protocol::{AgentBlockedReason, AgentState, HostRequest};
     use crate::workspace::{
         SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
     };
@@ -12246,7 +12239,7 @@ mod agent_state_restoration_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
 
         h.app.workspace_dirty = false;
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id,
             state: AgentState::Working,
@@ -12264,7 +12257,7 @@ mod agent_state_restoration_tests {
 
         h.app.workspace_dirty = false;
         let slot_resp = temp_response(tmp.path(), "slot-write");
-        h.inject_ipc(AppRequest::SlotWrite {
+        h.inject_ipc(HostRequest::SlotWrite {
             pane_id,
             slot_name: "status".to_string(),
             content: b"impl:working".to_vec(),
@@ -12368,8 +12361,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("lead-claude".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -12403,8 +12396,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Portal { context_id: 2, reveal_after_close: false },
                             cwd: PathBuf::new(),
                             name: None,
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -12417,8 +12410,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Portal { context_id: 3, reveal_after_close: false },
                             cwd: PathBuf::new(),
                             name: None,
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -12442,8 +12435,8 @@ mod agent_state_restoration_tests {
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
                         name: Some("worker-codex".to_string()),
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: false,
                         heartbeat: None,
                         runtime_kind: None,
@@ -12489,8 +12482,8 @@ mod agent_state_restoration_tests {
                         kind: SavedPaneKind::Terminal,
                         cwd: tmp.path().to_path_buf(),
                         name: Some("ephemeral-pi".to_string()),
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: false,
                         heartbeat: None,
                         runtime_kind: None,
@@ -12637,7 +12630,7 @@ mod agent_state_restoration_tests {
 
         // 5. Explicit pane input resumes it via its Harness Adapter.
         let send_resp = temp_response(tmp.path(), "send-standby");
-        h.inject_ipc(AppRequest::SendToPane {
+        h.inject_ipc(HostRequest::SendToPane {
             generated_operation_id: false,
             pane_id: 20,
             text: "Use BTreeMap\n".to_string(),
@@ -12695,7 +12688,7 @@ mod agent_state_restoration_tests {
             standby_scrollback_tail: Some(vec!["saved line".to_string()]),
         });
 
-        h.inject_ipc(AppRequest::KeyPane {
+        h.inject_ipc(HostRequest::KeyPane {
             pane_id,
             key: "enter".to_string(),
             response_file: None,
@@ -12730,7 +12723,7 @@ mod agent_state_restoration_tests {
         let master_pane = h.add_focused_terminal();
 
         let spawn_reply = temp_response(tmp.path(), "spawn-worker");
-        h.inject_ipc(AppRequest::AgentSpawn {
+        h.inject_ipc(HostRequest::AgentSpawn {
             role: "auditor".into(),
             harness: "pi".into(),
             command: "sleep 30".into(),
@@ -12751,7 +12744,7 @@ mod agent_state_restoration_tests {
         let spawned = read_json_response(&spawn_reply);
         let worker_id = spawned["pane_id"].as_u64().unwrap();
 
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: worker_id,
             state: AgentState::Completed,
@@ -12765,7 +12758,7 @@ mod agent_state_restoration_tests {
 
         // Close the worker pane and verify `agent_history.jsonl` captured the closed run.
         let close_reply = temp_response(tmp.path(), "close-worker");
-        h.inject_ipc(AppRequest::ClosePane {
+        h.inject_ipc(HostRequest::ClosePane {
             pane_id: worker_id,
             response_file: Some(close_reply),
         });
@@ -12806,9 +12799,9 @@ mod agent_state_restoration_tests {
         );
         assert!(restored_history[0].fleet_seen);
 
-        // Reopen by session_id (`pi-sess-900`) via `AppRequest::AgentReopen`.
+        // Reopen by session_id (`pi-sess-900`) via `HostRequest::AgentReopen`.
         let reopen_reply = temp_response(tmp.path(), "reopen-worker");
-        h.inject_ipc(AppRequest::AgentReopen {
+        h.inject_ipc(HostRequest::AgentReopen {
             query: "pi-sess-900".into(),
             subcontext: None,
             response_file: reopen_reply.clone(),
@@ -12904,8 +12897,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("pi-no-sid".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -12938,8 +12931,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("pi-missing-sid".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -12972,8 +12965,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("pi-persisted".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -13018,8 +13011,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("standby-pi-none".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -13052,8 +13045,8 @@ mod agent_state_restoration_tests {
                             kind: SavedPaneKind::Terminal,
                             cwd: tmp.path().to_path_buf(),
                             name: Some("standby-pi-missing".to_string()),
-                            app_id: None,
-                            app_state: None,
+                            plugin_id: None,
+                            plugin_state: None,
                             hidden: false,
                             heartbeat: None,
                             runtime_kind: None,
@@ -13119,7 +13112,7 @@ mod agent_state_restoration_tests {
 
         // Starting and immediately exiting a blank `pi` instance (reporting `idle` with `session_id: None`)
         // on pane 12 must NOT clobber its previously persisted `agent_session_id`.
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
@@ -13130,7 +13123,7 @@ mod agent_state_restoration_tests {
             blocked_reason: None,
         });
         h.hidden_frame();
-        h.inject_ipc(AppRequest::SetAgentState {
+        h.inject_ipc(HostRequest::SetAgentState {
             peer_ancestry: None,
             pane_id: 12,
             state: AgentState::Idle,
@@ -13174,7 +13167,7 @@ mod agent_state_restoration_tests {
         }
         for pane_id in [20, 21] {
             let send_resp = temp_response(tmp.path(), &format!("wake-{pane_id}"));
-            h.inject_ipc(AppRequest::SendToPane {
+            h.inject_ipc(HostRequest::SendToPane {
                 generated_operation_id: false,
                 pane_id,
                 text: "\n".to_string(),
@@ -13209,16 +13202,7 @@ mod agent_state_restoration_tests {
 fn write_directed_pipe_receiver_app(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
-        "schema_version = 1\n\n\
-         [app]\n\
-         id = \"pipe-receiver-probe\"\n\
-         type = \"app\"\n\
-         name = \"Pipe Receiver Probe\"\n\
-         entry = \"main.py\"\n\
-         version = \"0.1.0\"\n\
-         description = \"stint 0742 directed pipe receiver\"\n\n\
-         [app.capabilities]\n\
-         capabilities = [\"pipe.open\"]\n",
+        "schema_version = 2\n\n[plugin]\nid = \"pipe-receiver-probe\"\nname = \"Pipe Receiver Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe receiver\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-receiver-probe.main\"\ndefault = true\n",
     )
     .expect("write receiver manifest.toml");
     std::fs::write(
@@ -13245,16 +13229,7 @@ fn write_directed_pipe_receiver_app(dir: &std::path::Path) {
 fn write_directed_pipe_sender_app(dir: &std::path::Path) {
     std::fs::write(
         dir.join("manifest.toml"),
-        "schema_version = 1\n\n\
-         [app]\n\
-         id = \"pipe-sender-probe\"\n\
-         type = \"app\"\n\
-         name = \"Pipe Sender Probe\"\n\
-         entry = \"main.py\"\n\
-         version = \"0.1.0\"\n\
-         description = \"stint 0742 directed pipe sender\"\n\n\
-         [app.capabilities]\n\
-         capabilities = [\"pipe.open\"]\n",
+        "schema_version = 2\n\n[plugin]\nid = \"pipe-sender-probe\"\nname = \"Pipe Sender Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 0742 directed pipe sender\"\n\n[plugin.capabilities]\ncapabilities = [\"pipe.open\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pipe-sender-probe.main\"\ndefault = true\n",
     )
     .expect("write sender manifest.toml");
     std::fs::write(
@@ -13282,7 +13257,7 @@ fn write_directed_pipe_sender_app(dir: &std::path::Path) {
     .expect("write sender main.py");
 }
 
-/// Stint 0742: two real CPython-in-WASM apps (not `PipeTestApp` stubs) open a
+/// Stint 0742: two real CPython-in-WASM apps (not `PipeTestView` stubs) open a
 /// directed pipe, register local pipe readers on both runtimes via
 /// `register_directed_pipe_on_target`, and exchange duplex JSON messages
 /// end-to-end.
@@ -13380,13 +13355,13 @@ fn real_python_apps_open_and_exchange_directed_pipe_end_to_end() {
     );
 }
 
-/// Stint 0742: `OpenDirectedPipe` targeting a real `AppRuntime::Wasm` pane must
+/// Stint 0742: `OpenDirectedPipe` targeting a real `ViewRuntime::Wasm` pane must
 /// register the pipe on the WASM target's local `TypedPipeRegistry` (so
 /// `has_pipe_reader` is true) and allocate a JSON pipe handle so inbound
 /// `DeliverPipeMessage` frames reach the WASM runtime.
 #[test]
 fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
-    use crate::host::wasm_app::{Grants, StateStore, WasmApp};
+    use crate::host::wasm_app::{Grants, StateStore, WasmView};
     use crate::host::wasm_pane::{LiveWasmPane, SysinfoStats, WasmPane};
 
     let mut h = HostHarness::new();
@@ -13395,7 +13370,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
 
     let wasm_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/wasm-fixtures/sysmon.wasm");
-    let app = WasmApp::load_with_grants(
+    let app = WasmView::load_with_grants(
         "sysmon",
         &wasm_path,
         StateStore::ephemeral(),
@@ -13420,12 +13395,12 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     live.set_context_id(ctx_id);
     h.app.windows[win_idx].panes.insert(
         wasm_pane_id,
-        Pane::App(Box::new(crate::host::pane::AppPane {
+        Pane::App(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: wasm_pane_id,
-            runtime: crate::host::pane::AppRuntime::Wasm(Box::new(live)),
+            runtime: crate::host::pane::ViewRuntime::Wasm(Box::new(live)),
             workspace_root: std::env::temp_dir(),
-            permissions: crate::app::permissions::AppPermissions::default(),
+            permissions: crate::app::permissions::PluginPermissions::default(),
             manifest_id: "sysmon".to_string(),
             name: "sysmon".to_string(),
             pane_group: None,
@@ -13442,7 +13417,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     queue_pipe_command(
         &mut h,
         sender_pane_id,
-        crate::app::app_trait::AppCommand::OpenDirectedPipe {
+        crate::app::app_trait::ViewCommand::OpenDirectedPipe {
             sender_pane_id,
             pipe_id: "wasm.directed".to_string(),
             target_pane_id: wasm_pane_id,
@@ -13451,7 +13426,7 @@ fn open_directed_pipe_registers_on_real_wasm_target_runtime() {
     queue_pipe_command(
         &mut h,
         sender_pane_id,
-        crate::app::app_trait::AppCommand::DeliverPipeMessage {
+        crate::app::app_trait::ViewCommand::DeliverPipeMessage {
             sender_pane_id,
             pipe_id: "wasm.directed".to_string(),
             payload: serde_json::json!({"track": 1}),
@@ -13554,9 +13529,9 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         "Cmd+Shift+Enter again must zoom out from the zoomed terminal pane"
     );
 
-    // 2. `pane zoom` CLI (`AppRequest::PaneZoom`) toggles both ways.
+    // 2. `pane zoom` CLI (`HostRequest::PaneZoom`) toggles both ways.
     let zoom_resp = tempfile::NamedTempFile::new().unwrap();
-    h.inject_ipc(crate::protocol::AppRequest::PaneZoom {
+    h.inject_ipc(crate::protocol::HostRequest::PaneZoom {
         pane_id: term,
         response_file: zoom_resp.path().to_string_lossy().into_owned(),
     });
@@ -13565,7 +13540,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         h.app.windows[0].zoomed_pane.is_some(),
         "pane zoom must zoom in when unzoomed"
     );
-    h.inject_ipc(crate::protocol::AppRequest::PaneZoom {
+    h.inject_ipc(crate::protocol::HostRequest::PaneZoom {
         pane_id: term,
         response_file: zoom_resp.path().to_string_lossy().into_owned(),
     });
@@ -13622,7 +13597,7 @@ fn zoom_cmd_enter_and_cli_toggle_both_ways_and_bare_escape_passes_through_withou
         h.app.windows[0].zoomed_pane.is_some(),
         "Cmd+Shift+Enter must zoom the focused app pane"
     );
-    // Press bare Escape: reaches `TextEditorApp::handle_key` (which releases edit mode to pane nav)
+    // Press bare Escape: reaches `TextEditorView::handle_key` (which releases edit mode to pane nav)
     // while keeping the pane zoomed and open!
     h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
     assert!(
@@ -13794,7 +13769,7 @@ fn agent_tool_call_protocol_accepts_blocking_and_async_requests() {
             "parent_pane_id": 42, "asynchronous": asynchronous,
             "response_file": "/tmp/unused-agent-call-reply"
         });
-        assert!(serde_json::from_value::<crate::protocol::AppRequest>(request).is_ok());
+        assert!(serde_json::from_value::<crate::protocol::HostRequest>(request).is_ok());
     }
 }
 
@@ -13819,7 +13794,7 @@ fn queued_spawn_wake_bypasses_idle_throttle_while_hidden() {
     h.hidden_frame();
     assert!(request.exists(), "idle polling remains throttled");
     h.app.last_notify_poll = std::time::Instant::now();
-    h.inject_ipc(AppRequest::Wake);
+    h.inject_ipc(HostRequest::Wake);
     h.hidden_frame();
     assert!(
         !request.exists(),
@@ -13875,7 +13850,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
     req_json["command"] = serde_json::Value::String("sleep 30".to_string());
     req_json["response_file"] = serde_json::Value::String(spawn_reply.clone());
 
-    let app_req: AppRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
+    let app_req: HostRequest = serde_json::from_value(req_json).expect("valid AgentSpawn request");
     h.inject_ipc(app_req);
     h.hidden_frame();
 
@@ -13923,7 +13898,7 @@ fn agent_start_spawns_interactive_pane_in_project_dir_with_agent_metadata_env_an
 
     // Verify `pane list --json` shows `agent=researcher` and `cwd` set to `~/temp/proj`.
     let list_reply = temp_response(fake_home.path(), "agent-start-pane-list");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         response_file: list_reply.clone(),
         context_id: None,
     });
@@ -13983,14 +13958,14 @@ impl AgentFocusFixture {
         vec![self.home.path().to_path_buf()]
     }
 
-    fn request(&self, mut payload: serde_json::Value) -> AppRequest {
+    fn request(&self, mut payload: serde_json::Value) -> HostRequest {
         payload["command"] = serde_json::Value::String("sleep 30".into());
         payload["response_file"] =
             serde_json::Value::String(temp_response(self.home.path(), "agent-focus"));
         serde_json::from_value(payload).expect("valid AgentSpawn request")
     }
 
-    fn start(&self, caller: Option<u64>) -> AppRequest {
+    fn start(&self, caller: Option<u64>) -> HostRequest {
         self.request(
             crate::cli::agent::resolve_agent_start_in_stopping_at(
                 "researcher",
@@ -14004,7 +13979,7 @@ impl AgentFocusFixture {
         )
     }
 
-    fn spawn(&self, caller: Option<u64>) -> AppRequest {
+    fn spawn(&self, caller: Option<u64>) -> HostRequest {
         self.request(
             crate::cli::agent::resolve_agent_spawn_in_stopping_at(
                 "researcher",
@@ -14021,9 +13996,9 @@ impl AgentFocusFixture {
     }
 }
 
-fn agent_spawn_reply(req: &AppRequest) -> String {
+fn agent_spawn_reply(req: &HostRequest) -> String {
     match req {
-        AppRequest::AgentSpawn { response_file, .. } => response_file.clone(),
+        HostRequest::AgentSpawn { response_file, .. } => response_file.clone(),
         _ => panic!("expected AgentSpawn"),
     }
 }
@@ -14172,7 +14147,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
 
     // 1. Human-spawned lead agent (`researcher`).
     let spawn_lead_reply = temp_response(&workspace, "spawn-lead");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "researcher".into(),
         harness: "pi".into(),
         command: "sleep 30".into(),
@@ -14197,7 +14172,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
 
     // 2. Agent-spawned child (`auditor`) from `lead_pane` (`researcher`).
     let spawn_child_reply = temp_response(&workspace, "spawn-child");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "auditor".into(),
         harness: "claude".into(),
         command: "sleep 30".into(),
@@ -14247,7 +14222,7 @@ fn unified_provenance_tracks_human_agent_team_and_system_origins_and_renders_pan
 
     // Verify `pane list --json` and `format_pane_tree` across all 4 origins.
     let list_reply = temp_response(&workspace, "provenance-pane-list");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         response_file: list_reply.clone(),
         context_id: None,
     });
@@ -14326,7 +14301,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     // Spawn interactive parent agent (`lead`), initially Working (mid-turn).
     let lead_reply = temp_response(dir.path(), "spawn-lead");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "lead".into(),
         harness: "pi".into(),
         command: "sleep 30".into(),
@@ -14350,7 +14325,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     let mut child_ids = Vec::new();
     for i in 1..=3 {
         let rep = temp_response(dir.path(), &format!("spawn-worker-{i}"));
-        h.inject_ipc(AppRequest::AgentSpawn {
+        h.inject_ipc(HostRequest::AgentSpawn {
             role: format!("worker-{i}"),
             harness: "claude".into(),
             command: "sleep 30".into(),
@@ -14375,7 +14350,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     // 1. Children 1 and 2 finish via `agent done` while `lead_id` is still Working (mid-turn).
     for (cid, label, ans) in [(c1, "first Done", "alpha"), (c2, "second Done", "beta")] {
         let done_rep = temp_response(dir.path(), &format!("done-{cid}"));
-        h.inject_ipc(AppRequest::AgentDone {
+        h.inject_ipc(HostRequest::AgentDone {
             peer_ancestry: None,
             pane_id: cid,
             result: Some(serde_json::json!({"answer": ans}).to_string()),
@@ -14411,7 +14386,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert_eq!(lead_row.pending_child_results_count, 2);
 
     // 2. When `lead_id` reports `Idle`, ALL queued results (c1 and c2) are delivered as ONE batched turn!
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
@@ -14448,7 +14423,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     //    finish `c3`, then transition `lead_id` to `Idle` -> `c3` is NOT re-delivered!
     // Clear any in-flight submit from batch 1 first.
     h.app.pending_submits.clear();
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Working,
@@ -14461,7 +14436,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     h.hidden_frame();
 
     let wait_c3_reply = temp_response(dir.path(), "wait-c3");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![c3],
         timeout_secs: 30.0,
         response_file: wait_c3_reply.clone(),
@@ -14474,7 +14449,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     );
 
     let done_c3_reply = temp_response(dir.path(), "done-c3");
-    h.inject_ipc(AppRequest::AgentDone {
+    h.inject_ipc(HostRequest::AgentDone {
         peer_ancestry: None,
         pane_id: c3,
         result: Some(serde_json::json!({"answer": "gamma"}).to_string()),
@@ -14489,7 +14464,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert_eq!(waited_json["results"][0]["result"]["answer"], "gamma");
 
     // Transition `lead_id` to Idle -> no second batch is delivered because c3 was pulled via AgentWait!
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(HostRequest::SetAgentState {
         peer_ancestry: None,
         pane_id: lead_id,
         state: AgentState::Idle,
@@ -14508,7 +14483,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
 
     // 4. Close parent pane (`lead_id`) -> child results remain readable via CLI (`AgentWait` and `ResultRead`).
     let close_lead = temp_response(dir.path(), "close-lead");
-    h.inject_ipc(AppRequest::ClosePane {
+    h.inject_ipc(HostRequest::ClosePane {
         pane_id: lead_id,
         response_file: Some(close_lead),
     });
@@ -14516,7 +14491,7 @@ fn orderly_child_result_batching_on_parent_idle_and_wait_deduplication_and_close
     assert!(h.app.find_pane_in_any_window(lead_id).is_none());
 
     let wait_after_close = temp_response(dir.path(), "wait-after-parent-close");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![c1, c2, c3],
         timeout_secs: 5.0,
         response_file: wait_after_close.clone(),
@@ -14536,7 +14511,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     let human_shell_id = h.add_focused_terminal();
 
     let spawn_reply = temp_response(dir.path(), "human-spawn-worker");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "helper".into(),
         harness: "script".into(),
         command: "sleep 30".into(),
@@ -14558,7 +14533,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     let worker_id = spawn_json["pane_id"].as_u64().expect("worker pane_id");
 
     let done_reply = temp_response(dir.path(), "worker-done");
-    h.inject_ipc(AppRequest::AgentDone {
+    h.inject_ipc(HostRequest::AgentDone {
         pane_id: worker_id,
         result: Some(serde_json::json!({"ok": true}).to_string()),
         summary: Some("helper finished".into()),
@@ -14582,7 +14557,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
     );
 
     let list_reply = temp_response(dir.path(), "list-panes-after-done");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         context_id: None,
         response_file: list_reply.clone(),
     });
@@ -14632,7 +14607,7 @@ fn plain_human_shell_spawner_does_not_retain_pending_child_results_badge() {
             });
     }
     let read_reply = temp_response(dir.path(), "read-worker-result");
-    h.inject_ipc(AppRequest::PaneResultRead {
+    h.inject_ipc(HostRequest::PaneResultRead {
         pane_id: worker_id,
         wait: false,
         timeout_secs: 0.0,
@@ -14735,7 +14710,7 @@ allow = ["pane.send"]
     // 3. Claude parent provenance:
     // Spawn a parent agent running Claude (`role: "claude-code"`).
     let spawn_claude_reply = temp_response(fake_home.path(), "spawn-claude");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "claude-code".into(),
         harness: "claude".into(),
         command: "sleep 30".into(),
@@ -14802,7 +14777,7 @@ allow = ["pane.send"]
 
     // 4. One bounded wait before completion: blocks while child is running.
     let wait_reply = temp_response(fake_home.path(), "wait-child");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![child_pane_id],
         timeout_secs: 30.0,
         response_file: wait_reply.clone(),
@@ -14816,7 +14791,7 @@ allow = ["pane.send"]
 
     // 5. Child calls `AgentDone` with structured result and summary:
     let done_reply = temp_response(fake_home.path(), "child-done");
-    h.inject_ipc(AppRequest::AgentDone {
+    h.inject_ipc(HostRequest::AgentDone {
         pane_id: child_pane_id,
         result: Some(serde_json::json!({"status": "passed", "vulnerabilities": 0}).to_string()),
         summary: Some("Token lifetime audit passed cleanly".to_string()),
@@ -14863,7 +14838,7 @@ allow = ["pane.send"]
 
     // 8. Closing child pane: result remains readable via AgentWait.
     let close_reply = temp_response(fake_home.path(), "close-child");
-    h.inject_ipc(AppRequest::ClosePane {
+    h.inject_ipc(HostRequest::ClosePane {
         pane_id: child_pane_id,
         response_file: Some(close_reply),
     });
@@ -14871,7 +14846,7 @@ allow = ["pane.send"]
     assert!(h.app.find_pane_in_any_window(child_pane_id).is_none());
 
     let wait_after_close = temp_response(fake_home.path(), "wait-after-close");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![child_pane_id],
         timeout_secs: 5.0,
         response_file: wait_after_close.clone(),
@@ -14885,7 +14860,7 @@ allow = ["pane.send"]
     // 9. Closing an interactive start-without-message pane before `agent done`
     // persists the host-synthesized unreported exit for the bounded wait.
     let start_close_wait = temp_response(fake_home.path(), "wait-start-closed-without-done");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![start_pane_id],
         timeout_secs: 30.0,
         response_file: start_close_wait.clone(),
@@ -14898,7 +14873,7 @@ allow = ["pane.send"]
     );
 
     let start_close_reply = temp_response(fake_home.path(), "close-start-without-done");
-    h.inject_ipc(AppRequest::ClosePane {
+    h.inject_ipc(HostRequest::ClosePane {
         pane_id: start_pane_id,
         response_file: Some(start_close_reply),
     });
@@ -14938,7 +14913,7 @@ allow = ["pane.send"]
         .expect("failed child pane id");
 
     let failed_wait = temp_response(fake_home.path(), "wait-failed-child");
-    h.inject_ipc(AppRequest::AgentWait {
+    h.inject_ipc(HostRequest::AgentWait {
         pane_ids: vec![failed_child_pane_id],
         timeout_secs: 30.0,
         response_file: failed_wait.clone(),
@@ -14950,7 +14925,7 @@ allow = ["pane.send"]
         "AgentWait must block until the failed child reports its harness exit"
     );
 
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(HostRequest::SetAgentState {
         pane_id: failed_child_pane_id,
         state: crate::protocol::AgentState::Failed,
         agent: "pi".to_string(),
@@ -15040,8 +15015,8 @@ ask = ["pane.send"]
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
                     name: Some("lead".to_string()),
-                    app_id: None,
-                    app_state: None,
+                    plugin_id: None,
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
@@ -15073,8 +15048,8 @@ ask = ["pane.send"]
                     kind: crate::workspace::SavedPaneKind::Terminal,
                     cwd: ws_dir.path().to_path_buf(),
                     name: Some("helper".to_string()),
-                    app_id: None,
-                    app_state: None,
+                    plugin_id: None,
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
@@ -15119,7 +15094,7 @@ ask = ["pane.send"]
         .backend
         .child_pid();
     let send_reply = temp_response(ws_dir.path(), "restored-lead-send");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: 11,
         text: "hello from restored lead".to_string(),
@@ -15192,7 +15167,7 @@ ask = ["pane.send"]
         .child_pid();
 
     let reply_1 = temp_response(&ws, "send-parked-1");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "first message".to_string(),
@@ -15226,7 +15201,7 @@ ask = ["pane.send"]
 
     // Second send must require a fresh approval because the Once grant was consumed.
     let reply_2 = temp_response(&ws, "send-parked-2");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "second message".to_string(),
@@ -15352,7 +15327,7 @@ ask = ["pane.send"]
     // Approval of one payload must not authorize a different payload to the
     // same pane, even when the earlier caller has already timed out.
     let unrelated_reply = temp_response(&ws, "send-retry-unrelated");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "unrelated message".to_string(),
@@ -15371,7 +15346,7 @@ ask = ["pane.send"]
 
     // Agent retries `pane send` — must consume the Once grant and succeed without asking again.
     let reply_2 = temp_response(&ws, "send-retry-2");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
@@ -15400,7 +15375,7 @@ ask = ["pane.send"]
     // A transport retry of an already executed operation must return a
     // duplicate receipt, not write the same terminal input a second time.
     let duplicate_reply = temp_response(&ws, "send-retry-duplicate");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 1".to_string(),
@@ -15426,7 +15401,7 @@ ask = ["pane.send"]
         crate::broker::gate::ContinuationState::Completed);
 
     let conflict_reply = temp_response(&ws, "send-retry-conflict");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "different text with same id".to_string(),
@@ -15447,7 +15422,7 @@ ask = ["pane.send"]
 
     // A third call after the retry consumed the Once grant must ask again.
     let reply_3 = temp_response(&ws, "send-retry-3");
-    h.inject_ipc(AppRequest::SendToPane {
+    h.inject_ipc(HostRequest::SendToPane {
         generated_operation_id: false,
         pane_id: target_pane,
         text: "attempt 3".to_string(),
@@ -15510,14 +15485,14 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
         let mut h = HostHarness::from_profile_dir(profile_dir.path());
         h.app.set_context_root(ws_dir.path().to_path_buf(), None);
         let scratch_id = h.add_focused_terminal();
-        h.inject_ipc(AppRequest::SetPaneTitle {
+        h.inject_ipc(HostRequest::SetPaneTitle {
             pane_id: scratch_id,
             name: "scratch".to_string(),
         });
         h.hidden_frame();
 
         let lead_reply = temp_response(ws_dir.path(), "spawn-lead");
-        h.inject_ipc(AppRequest::AgentSpawn {
+        h.inject_ipc(HostRequest::AgentSpawn {
             role: "lead".into(),
             harness: "script".into(),
             command: "sleep 30".into(),
@@ -15540,7 +15515,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
             .expect("lead pane_id");
 
         let helper_reply = temp_response(ws_dir.path(), "spawn-helper");
-        h.inject_ipc(AppRequest::AgentSpawn {
+        h.inject_ipc(HostRequest::AgentSpawn {
             role: "helper".into(),
             harness: "script".into(),
             command: "sleep 30".into(),
@@ -15586,7 +15561,7 @@ fn restored_agent_panes_preserve_names_under_osc_title_and_retain_spawner_proven
     h.run_frames(1);
 
     let list_reply = temp_response(ws_dir.path(), "list-after-restore");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         context_id: None,
         response_file: list_reply.clone(),
     });
@@ -15645,7 +15620,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
         }
     }
     let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot");
-    h.inject_ipc(AppRequest::AgentSpawn {
+    h.inject_ipc(HostRequest::AgentSpawn {
         role: "oneshot".into(),
         harness: "script".into(),
         command: "sleep 30".into(),
@@ -15669,7 +15644,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
 
     // 1. Script pane runs `agent done` and then the supervised wrapper reports HarnessExit (`exited_unreported`).
     let done_reply = temp_response(ws_dir.path(), "oneshot-done");
-    h.inject_ipc(AppRequest::AgentDone {
+    h.inject_ipc(HostRequest::AgentDone {
         pane_id: oneshot_pane,
         result: Some("{}".to_string()),
         summary: Some("oneshot-ok".to_string()),
@@ -15680,7 +15655,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
     let done_json = read_json_response(&done_reply);
     assert_eq!(done_json["ok"], true, "done_json: {done_json}");
 
-    h.inject_ipc(AppRequest::SetAgentState {
+    h.inject_ipc(HostRequest::SetAgentState {
         pane_id: oneshot_pane,
         state: crate::protocol::AgentState::ExitedUnreported,
         agent: "script".to_string(),
@@ -15695,7 +15670,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
     // 2. Verify `ListPanes` + `format_pane_tree`: script pane state is Completed (not ExitedUnreported),
     // and `pane tree` labels panes by their actual name/title instead of `"pane"`.
     let list_reply = temp_response(ws_dir.path(), "list-b4");
-    h.inject_ipc(AppRequest::ListPanes {
+    h.inject_ipc(HostRequest::ListPanes {
         context_id: None,
         response_file: list_reply.clone(),
     });
@@ -15755,7 +15730,7 @@ fn pane_tree_uses_title_and_script_pane_done_remains_completed() {
 mod restore_followups_0983b {
     use super::*;
     use crate::host::context::{Context, ContextName};
-    use crate::protocol::{AgentState, AppRequest};
+    use crate::protocol::{AgentState, HostRequest};
     use crate::workspace::{
         SavedAgentSession, SavedPane, SavedPaneKind, SavedWindow, WorkspaceFile,
     };
@@ -15793,8 +15768,8 @@ mod restore_followups_0983b {
                     kind: SavedPaneKind::Terminal,
                     cwd: tmp.path().to_path_buf(),
                     name: Some("finished-script".to_string()),
-                    app_id: None,
-                    app_state: None,
+                    plugin_id: None,
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     runtime_kind: None,
@@ -15844,7 +15819,7 @@ mod restore_followups_0983b {
         assert!(!banner.contains("Enter"), "banner offered resume: {banner}");
 
         let send_resp = temp_response(tmp.path(), "wake-30");
-        h.inject_ipc(AppRequest::SendToPane {
+        h.inject_ipc(HostRequest::SendToPane {
             generated_operation_id: false,
             pane_id: 30,
             text: "\n".to_string(),
@@ -15913,7 +15888,7 @@ mod restore_followups_0983b {
             }
 
             let spawn_reply = temp_response(ws_dir.path(), "spawn-oneshot-wait");
-            h.inject_ipc(AppRequest::AgentSpawn {
+            h.inject_ipc(HostRequest::AgentSpawn {
                 role: "oneshot".into(),
                 harness: "script".into(),
                 command: "sleep 30".into(),
@@ -15936,7 +15911,7 @@ mod restore_followups_0983b {
                 .expect("oneshot pane_id");
 
             let wait_reply = temp_response(ws_dir.path(), "wait-oneshot");
-            h.inject_ipc(AppRequest::AgentWait {
+            h.inject_ipc(HostRequest::AgentWait {
                 pane_ids: vec![child_id],
                 timeout_secs: 30.0,
                 response_file: wait_reply.clone(),
@@ -15944,7 +15919,7 @@ mod restore_followups_0983b {
             });
 
             let done_reply = temp_response(ws_dir.path(), "oneshot-done-wait");
-            h.inject_ipc(AppRequest::AgentDone {
+            h.inject_ipc(HostRequest::AgentDone {
                 pane_id: child_id,
                 result: Some("{\"answer\":42}".to_string()),
                 summary: Some("oneshot-ok".to_string()),
@@ -15952,7 +15927,7 @@ mod restore_followups_0983b {
                 peer_ancestry: None,
             });
 
-            h.inject_ipc(AppRequest::SetAgentState {
+            h.inject_ipc(HostRequest::SetAgentState {
                 pane_id: child_id,
                 state: AgentState::Completed,
                 agent: "script".to_string(),
@@ -16923,18 +16898,11 @@ fn notes_picker_keyboard_selection_stays_visible_and_wheel_does_not_snap() {
 /// Write a CPython-in-WASM app that appends every focus/visibility event it
 /// receives to its title (`log:shown,gained,...`), so the host-side title is a
 /// complete, ordered record of what the guest was told.
-fn write_presence_probe(dir: &std::path::Path, app_id: &str) {
+fn write_presence_probe(dir: &std::path::Path, plugin_id: &str) {
     std::fs::write(
         dir.join("manifest.toml"),
         format!(
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"{app_id}\"\n\
-             type = \"app\"\n\
-             name = \"Presence Probe\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n\
-             description = \"stint 1180 HostHarness fixture\"\n"
+            "schema_version = 2\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"Presence Probe\"\nversion = \"0.1.0\"\ndescription = \"stint 1180 HostHarness fixture\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
         ),
     )
     .expect("write manifest.toml");
@@ -16966,7 +16934,7 @@ fn presence_log(h: &HostHarness, pane_id: PaneId) -> Option<String> {
         .find_map(|window| window.panes.get(&pane_id))
         .and_then(Pane::as_app)
         .and_then(|pane| match &pane.runtime {
-            AppRuntime::Python(p) => p.display_name().strip_prefix("log:").map(str::to_string),
+            ViewRuntime::Python(p) => p.display_name().strip_prefix("log:").map(str::to_string),
             _ => None,
         })
 }

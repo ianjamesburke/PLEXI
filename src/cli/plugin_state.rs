@@ -1,4 +1,4 @@
-//! `plexi app state get/set` — the sanctioned surface for reading and writing
+//! `plexi plugin state get/set` — the sanctioned surface for reading and writing
 //! a file-backed app's state.
 //!
 //! An agent could write the state file directly; the
@@ -59,13 +59,13 @@ fn cli_context_root() -> Result<PathBuf, String> {
             let content = super::request(
                 serde_json::json!({"type":"get_pane_info", "pane_id":pane_id}),
                 "app-state-scope",
-                "app state scope",
+                "plugin state scope",
             )
             .map_err(|code| {
                 format!("cannot query current scope for pane {pane_id} (exit {code})")
             })?;
             let reply: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|error| format!("invalid app state scope reply: {error}"))?;
+                .map_err(|error| format!("invalid plugin state scope reply: {error}"))?;
             if let Some(error) = reply.get("error").and_then(|v| v.as_str()) {
                 return Err(error.to_string());
             }
@@ -78,7 +78,7 @@ fn cli_context_root() -> Result<PathBuf, String> {
             PathBuf::from(root)
         }
         None => {
-            let cwd = std::env::current_dir().map_err(|error| format!("app state cwd: {error}"))?;
+            let cwd = std::env::current_dir().map_err(|error| format!("plugin state cwd: {error}"))?;
             file_context_root(&cwd)?
         }
     };
@@ -103,32 +103,32 @@ fn file_context_root(cwd: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn cli_registry() -> Result<crate::app::registry::AppRegistry, String> {
+fn cli_registry() -> Result<crate::app::registry::PluginRegistry, String> {
     let root = if std::env::var_os("PLEXI_PANE_ID").is_some() {
         cli_context_root()?
     } else {
-        std::env::current_dir().map_err(|error| format!("app state cwd: {error}"))?
+        std::env::current_dir().map_err(|error| format!("plugin state cwd: {error}"))?
     };
-    Ok(crate::app::registry::AppRegistry::load(&root))
+    Ok(crate::app::registry::PluginRegistry::load(&root))
 }
 
-/// Resolve `app_id` + an optional `--scope` to a concrete state file.
+/// Resolve `plugin_id` + an optional `--scope` to a concrete state file.
 ///
 /// Rejects, each with a named reason: an unknown app, an app that declared no
 /// `[state]` section, a scope the app did not declare, an app id that is not a
 /// safe file stem, and a resolved path whose parent is not really the scope's
-/// state directory (a symlinked `.plexi/` or `app_states/`).
+/// state directory (a symlinked `.plexi/` or `plugin_states/`).
 fn resolve(
-    app_id: &str,
+    plugin_id: &str,
     scope_raw: Option<&str>,
-    registry: &crate::app::registry::AppRegistry,
+    registry: &crate::app::registry::PluginRegistry,
 ) -> Result<ResolvedState, String> {
-    let installed = registry.get(app_id).ok_or_else(|| {
-        format!("app '{app_id}' not found — run `plexi app list` to see installed apps")
+    let installed = registry.get(plugin_id).ok_or_else(|| {
+        format!("app '{plugin_id}' not found — run `plexi plugin list` to see installed apps")
     })?;
     if !installed.state_declared {
         return Err(format!(
-            "app '{app_id}' declares no [state] section — it has no file-backed state to address"
+            "app '{plugin_id}' declares no [state] section — it has no file-backed state to address"
         ));
     }
     let declared = &installed.state_scopes;
@@ -137,7 +137,7 @@ fn resolve(
             let requested = StateScope::parse(raw)?;
             if !declared.contains(&requested) {
                 return Err(format!(
-                    "app '{app_id}' does not declare the '{}' scope — it declares: {}",
+                    "app '{plugin_id}' does not declare the '{}' scope — it declares: {}",
                     requested.as_str(),
                     declared
                         .iter()
@@ -152,18 +152,18 @@ fn resolve(
         // app's own first declared scope, never a CLI-side constant.
         None => *declared
             .first()
-            .ok_or_else(|| format!("app '{app_id}' declares an empty scope list"))?,
+            .ok_or_else(|| format!("app '{plugin_id}' declares an empty scope list"))?,
     };
     let format = installed.state_format;
     let context_root = match scope {
         StateScope::Context => cli_context_root()?,
         StateScope::Global => PathBuf::new(),
     };
-    let path = crate::host::state_scope::state_file(scope, app_id, format, &context_root)?;
+    let path = crate::host::state_scope::state_file(scope, plugin_id, format, &context_root)?;
     crate::host::state_scope::assert_within_scope(
         &path,
         scope,
-        crate::host::state_scope::UserDataKind::AppStates,
+        crate::host::state_scope::UserDataKind::PluginStates,
         &context_root,
     )?;
     Ok(ResolvedState {
@@ -183,8 +183,8 @@ fn empty_document(format: StateFormat) -> &'static str {
     }
 }
 
-/// `plexi app state get <app> [--scope ...]`
-pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
+/// `plexi plugin state get <app> [--scope ...]`
+pub fn get(plugin_id: &str, scope: Option<&str>) -> i32 {
     let registry = match cli_registry() {
         Ok(registry) => registry,
         Err(error) => {
@@ -193,11 +193,11 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let resolved = match resolve(app_id, scope, &registry) {
+    let resolved = match resolve(plugin_id, scope, &registry) {
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
-                "app_state: get app={app_id} caller={} rejected — {error}",
+                "app_state: get app={plugin_id} caller={} rejected — {error}",
                 caller_label()
             );
             eprintln!("error: {error}");
@@ -211,7 +211,7 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
             if let Err(error) = crate::host::wasm_python::decode_state_file(&bytes, resolved.format)
             {
                 log::info!(
-                    "app_state: get app={app_id} scope={} caller={} path={} rejected — {error}",
+                    "app_state: get app={plugin_id} scope={} caller={} path={} rejected — {error}",
                     resolved.scope.as_str(),
                     caller_label(),
                     resolved.path.display()
@@ -224,7 +224,7 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
                 return 1;
             }
             log::info!(
-                "app_state: get app={app_id} scope={} format={} caller={} path={} accepted bytes={}",
+                "app_state: get app={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -236,7 +236,7 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             log::info!(
-                "app_state: get app={app_id} scope={} format={} caller={} path={} accepted (no file yet)",
+                "app_state: get app={plugin_id} scope={} format={} caller={} path={} accepted (no file yet)",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -247,7 +247,7 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
         }
         Err(error) => {
             log::info!(
-                "app_state: get app={app_id} scope={} caller={} path={} rejected — read failed: {error}",
+                "app_state: get app={plugin_id} scope={} caller={} path={} rejected — read failed: {error}",
                 resolved.scope.as_str(),
                 caller_label(),
                 resolved.path.display()
@@ -258,12 +258,12 @@ pub fn get(app_id: &str, scope: Option<&str>) -> i32 {
     }
 }
 
-/// `plexi app state set <app> [FILE] [--scope ...]`
+/// `plexi plugin state set <app> [FILE] [--scope ...]`
 ///
 /// Replaces the document wholesale. Reads `FILE` when given, else stdin. There
 /// is deliberately no partial/merge update — get/set proves the capability, and
 /// the right merge semantics are clearer once something real is using it.
-pub fn set(app_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
+pub fn set(plugin_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
     let input: Box<dyn Read> = match file {
         Some(path) => match std::fs::File::open(path) {
             Ok(file) => Box::new(file),
@@ -282,21 +282,21 @@ pub fn set(app_id: &str, file: Option<&Path>, scope: Option<&str>) -> i32 {
             return 1;
         }
     };
-    set_from(app_id, input, scope, &registry)
+    set_from(plugin_id, input, scope, &registry)
 }
 
 /// `set` with its input factored out so tests can drive it without a real stdin.
 fn set_from(
-    app_id: &str,
+    plugin_id: &str,
     mut input: impl Read,
     scope: Option<&str>,
-    registry: &crate::app::registry::AppRegistry,
+    registry: &crate::app::registry::PluginRegistry,
 ) -> i32 {
-    let resolved = match resolve(app_id, scope, registry) {
+    let resolved = match resolve(plugin_id, scope, registry) {
         Ok(resolved) => resolved,
         Err(error) => {
             log::info!(
-                "app_state: set app={app_id} caller={} rejected — {error}",
+                "app_state: set app={plugin_id} caller={} rejected — {error}",
                 caller_label()
             );
             eprintln!("error: {error}");
@@ -306,7 +306,7 @@ fn set_from(
     let mut bytes = Vec::new();
     if let Err(error) = input.read_to_end(&mut bytes) {
         log::info!(
-            "app_state: set app={app_id} scope={} caller={} rejected — read input: {error}",
+            "app_state: set app={plugin_id} scope={} caller={} rejected — read input: {error}",
             resolved.scope.as_str(),
             caller_label()
         );
@@ -317,7 +317,7 @@ fn set_from(
     // the app wakes to a corrupt file it did not cause.
     if let Err(error) = crate::host::wasm_python::decode_state_file(&bytes, resolved.format) {
         log::info!(
-            "app_state: set app={app_id} scope={} format={} caller={} path={} rejected — {error}",
+            "app_state: set app={plugin_id} scope={} format={} caller={} path={} rejected — {error}",
             resolved.scope.as_str(),
             resolved.format.as_str(),
             caller_label(),
@@ -330,7 +330,7 @@ fn set_from(
         return 1;
     }
     if resolved.scope == StateScope::Context {
-        // A user must never be able to accidentally commit their app state with
+        // A user must never be able to accidentally commit their plugin state with
         // a project — same standing ruling the host's own write path follows.
         if let Err(error) =
             crate::workspace::secrets::ensure_app_state_gitignore(&resolved.context_root)
@@ -344,7 +344,7 @@ fn set_from(
     match crate::platform::fs::atomic_write(&resolved.path, &bytes) {
         Ok(()) => {
             log::info!(
-                "app_state: set app={app_id} scope={} format={} caller={} path={} accepted bytes={}",
+                "app_state: set app={plugin_id} scope={} format={} caller={} path={} accepted bytes={}",
                 resolved.scope.as_str(),
                 resolved.format.as_str(),
                 caller_label(),
@@ -355,7 +355,7 @@ fn set_from(
         }
         Err(error) => {
             log::info!(
-                "app_state: set app={app_id} scope={} caller={} path={} rejected — write failed: {error}",
+                "app_state: set app={plugin_id} scope={} caller={} path={} rejected — write failed: {error}",
                 resolved.scope.as_str(),
                 caller_label(),
                 resolved.path.display()
@@ -376,20 +376,20 @@ mod tests {
     /// no chdir, which is process-global and would race the rest of the suite.
     fn install_app(
         state_section: Option<&str>,
-    ) -> (tempfile::TempDir, crate::app::registry::AppRegistry) {
+    ) -> (tempfile::TempDir, crate::app::registry::PluginRegistry) {
         let apps = tempdir().expect("apps dir");
-        let app_dir = apps.path().join("test.state");
-        std::fs::create_dir_all(&app_dir).expect("app dir");
-        std::fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").expect("entry");
+        let plugin_dir = apps.path().join("test.state");
+        std::fs::create_dir_all(&plugin_dir).expect("app dir");
+        std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").expect("entry");
         let manifest = format!(
             "schema_version = 1\n\n[app]\nid = \"test.state\"\ntype = \"app\"\n\
              name = \"State Test\"\nversion = \"0.0.1\"\nentry = \"run.sh\"\n{}",
             state_section.unwrap_or("")
         );
-        std::fs::write(app_dir.join("manifest.toml"), manifest).expect("manifest");
+        std::fs::write(plugin_dir.join("manifest.toml"), manifest).expect("manifest");
         let bare = tempdir().expect("bare cwd");
         let registry =
-            crate::app::registry::AppRegistry::load_with_global(bare.path(), apps.path());
+            crate::app::registry::PluginRegistry::load_with_global(bare.path(), apps.path());
         (apps, registry)
     }
 
@@ -512,7 +512,7 @@ mod tests {
         let current = tempdir().unwrap();
         h.app.set_context_root(current.path().to_path_buf(), None);
         let reply_path = h.profile_dir().join("pane-scope.json");
-        h.inject_ipc(crate::protocol::AppRequest::GetPaneInfo {
+        h.inject_ipc(crate::protocol::HostRequest::GetPaneInfo {
             pane_id: pane,
             response_file: reply_path.to_string_lossy().into_owned(),
         });

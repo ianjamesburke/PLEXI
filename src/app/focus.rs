@@ -158,7 +158,7 @@ pub(crate) trait FocusOwner {
         &self,
         app: &mut PlexiApp,
         ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand>;
+    ) -> Vec<crate::app::app_trait::ViewCommand>;
 }
 
 /// Define the stateless owner tokens whose `handle_key` returns a
@@ -183,7 +183,7 @@ macro_rules! focus_owner_tokens {
                     &self,
                     app: &mut PlexiApp,
                     ctx: &egui::Context,
-                ) -> Vec<crate::app::app_trait::AppCommand> {
+                ) -> Vec<crate::app::app_trait::ViewCommand> {
                     app.$draw_fn(ctx);
                     Vec::new()
                 }
@@ -225,7 +225,7 @@ impl FocusOwner for NotesPickerOwner {
         &self,
         app: &mut PlexiApp,
         ctx: &egui::Context,
-    ) -> Vec<crate::app::app_trait::AppCommand> {
+    ) -> Vec<crate::app::app_trait::ViewCommand> {
         app.draw_notes_picker(ctx);
         Vec::new()
     }
@@ -253,7 +253,7 @@ pub(crate) struct ContextCloseState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingRawWasmLaunch {
-    pub app_id: String,
+    pub plugin_id: String,
     pub wasm_path: PathBuf,
     pub workspace_root: PathBuf,
     pub missing_capabilities: Vec<String>,
@@ -474,7 +474,7 @@ impl PlexiApp {
             for (&pane_id, pane) in &window.panes {
                 if matches!(
                     pane.as_app().map(|app| &app.runtime),
-                    Some(crate::host::pane::AppRuntime::Python(_))
+                    Some(crate::host::pane::ViewRuntime::Python(_))
                 ) {
                     targets.push((
                         window_index,
@@ -491,7 +491,7 @@ impl PlexiApp {
             }
         }
         for (window_index, pane_id, presence) in targets {
-            if let Some(crate::host::pane::AppRuntime::Python(python)) = self.windows[window_index]
+            if let Some(crate::host::pane::ViewRuntime::Python(python)) = self.windows[window_index]
                 .panes
                 .get_mut(&pane_id)
                 .and_then(|pane| pane.as_app_mut())
@@ -565,8 +565,8 @@ impl PlexiApp {
         FocusLogOutcome::Heartbeat
     }
 
-    /// Returns `(app_active, keyboard_capture_active)` for the pane focused in
-    /// the active window. `app_active` is true whenever the focused pane is
+    /// Returns `(view_active, keyboard_capture_active)` for the pane focused in
+    /// the active window. `view_active` is true whenever the focused pane is
     /// running an app surface at all; `keyboard_capture_active` mirrors that
     /// pane's own declared `App::keyboard_capture()` (e.g. file-browser
     /// rename/quick-look mode, a CLI-backed app's Form view) — an advisory
@@ -903,9 +903,9 @@ impl PlexiApp {
         self.reload_config_for_active_context();
     }
 
-    /// Ensures the active context's `AppRegistry` view exists (a cache hit
+    /// Ensures the active context's `PluginRegistry` view exists (a cache hit
     /// after the first call — `RegistryViews` no longer needs a staleness
-    /// comparison the way the old single shared `AppRegistry` did, stint 0724
+    /// comparison the way the old single shared `PluginRegistry` did, stint 0724
     /// Phase B) and reloads config for the active workspace. Registry views
     /// for OTHER contexts are resolved independently at their own point of
     /// use (`RegistryViews::view_for_context`); this only guarantees the
@@ -1190,7 +1190,7 @@ impl PlexiApp {
             pane_entries.sort_by_key(|(id, _)| *id);
             for (_, pane) in pane_entries {
                 let Some(app) = pane.as_app() else { continue };
-                let crate::host::pane::AppRuntime::Builtin(builtin) = &app.runtime else {
+                let crate::host::pane::ViewRuntime::Builtin(builtin) = &app.runtime else {
                     continue;
                 };
                 let Some(path) = builtin.open_note_path() else {
@@ -1348,9 +1348,9 @@ impl PlexiApp {
         };
         match win.panes.get(&pane_id) {
             Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
-                crate::host::pane::AppRuntime::Builtin(_) => false,
-                crate::host::pane::AppRuntime::Python(_) => false,
-                crate::host::pane::AppRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
+                crate::host::pane::ViewRuntime::Builtin(_) => false,
+                crate::host::pane::ViewRuntime::Python(_) => false,
+                crate::host::pane::ViewRuntime::Wasm(wasm) => wasm.has_pending_capability_prompt(),
             },
             _ => false,
         }
@@ -1377,11 +1377,11 @@ impl PlexiApp {
     /// surfaces dispatch identically.
     pub(crate) fn dispatch_notify_action_cmds(
         &mut self,
-        cmds: Vec<crate::app::app_trait::AppCommand>,
+        cmds: Vec<crate::app::app_trait::ViewCommand>,
     ) {
-        use crate::app::app_trait::AppCommand;
+        use crate::app::app_trait::ViewCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction {
+            if let ViewCommand::DeliverNotifyAction {
                 pane_id,
                 notify_id,
                 action_label,

@@ -170,12 +170,12 @@ impl PaneLifecycleEvent {
 mod tests {
     use super::*;
     use crate::broker::{ActorType, GrantDuration};
-    use crate::host::app_timeline::{AppTimeline, EmittedEvent, SubscriptionRecord};
-    use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+    use crate::host::app_timeline::{PluginTimeline, EmittedEvent, SubscriptionRecord};
+    use crate::protocol::{PluginEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 
     #[test]
     fn pane_lifecycle_uses_scoped_resource_filtered_bus_and_reserves_publisher() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         timeline
             .record_pane_lifecycle(41, 7, &PaneLifecycleEvent::Spawned)
             .unwrap();
@@ -188,7 +188,7 @@ mod tests {
                 subscription_id: name.into(),
                 subscriber_id: name.into(),
                 subscriber_type: ActorType::Agent,
-                app_id: PUBLISHER.into(),
+                plugin_id: PUBLISHER.into(),
                 event_names: vec![STREAM.into()],
                 resource_id: Some(resource.into()),
                 subscriber_context_id: context,
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(payload["kind"], "exited");
         assert_eq!(payload["status"], "unknown");
         assert_eq!(payload["schema_version"], 1);
-        assert_eq!(deliveries[0].actor, AppEventActor::System);
+        assert_eq!(deliveries[0].actor, PluginEventActor::System);
         assert!(timeline
             .take_deliveries_for(ActorType::Agent, "other-pane")
             .is_empty());
@@ -240,7 +240,7 @@ mod tests {
                 7,
                 EmittedEvent {
                     event: STREAM.into(),
-                    actor: AppEventActor::System,
+                    actor: PluginEventActor::System,
                     actor_id: Some(PUBLISHER.into()),
                     caused_by: None,
                     summary: "forged clean exit".into(),
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn exit_status_serializes_code_signal_and_unknown_without_defaulting_to_zero() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         for (pty_status, expected_status) in [
             (
                 egui_term::PtyExitStatus::Code(0),

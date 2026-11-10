@@ -10,7 +10,7 @@ pub(crate) enum KeyDisposition {
 }
 
 /// Context passed to an app during rendering.
-pub struct AppRenderContext<'a> {
+pub struct ViewRenderContext<'a> {
     pub colors: &'a Colors,
     /// Host pane id of the pane being rendered. Apps use it to register their
     /// text surfaces against `SurfaceKey::Pane(pane_id)` so the post-frame
@@ -19,7 +19,7 @@ pub struct AppRenderContext<'a> {
 }
 
 /// Commands an app can issue back to the system.
-pub enum AppCommand {
+pub enum ViewCommand {
     Fleet(crate::app::agents_app::FleetAction),
     /// A capability-gated effect returned by a WASM component. The app model
     /// executes it through the same host services that native apps use.
@@ -39,9 +39,9 @@ pub enum AppCommand {
         error: Option<String>,
         error_code: Option<String>,
     },
-    /// Route one app-event request through the host-owned timeline and broker.
-    AppEventRequest {
-        request: crate::protocol::AppRequest,
+    /// Route one plugin-event request through the host-owned timeline and broker.
+    PluginEventRequest {
+        request: crate::protocol::HostRequest,
         pane_id: Option<u64>,
     },
     /// Execute an Assistant host tool against live host state without shelling
@@ -56,7 +56,7 @@ pub enum AppCommand {
     /// Request the host to spawn a new app pane.
     /// `layout`: "split_h" (right), "split_v" (below, default), or "overlay".
     /// `args`: passed as argv to the child process.
-    SpawnApp {
+    SpawnView {
         type_id: String,
         layout: Option<String>,
         args: Vec<String>,
@@ -70,13 +70,13 @@ pub enum AppCommand {
         request_id: Option<String>,
         target_context: Option<u64>,
     },
-    /// Forward a capability-gated pane read/control `AppRequest` (ListPanes,
+    /// Forward a capability-gated pane read/control `HostRequest` (ListPanes,
     /// FocusPane, SendToPane, ...) into the host's pane-IPC handler — the
     /// same code path CLI requests take over PLEXI_SOCKET (stint 0013/0014).
     /// Emitted by `routing.rs` after the `panes.read` / `panes.control`
     /// capability check passes.
     ForwardPaneRequest {
-        request: crate::protocol::AppRequest,
+        request: crate::protocol::HostRequest,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
@@ -253,7 +253,7 @@ pub trait App: Send {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     );
 
@@ -271,7 +271,7 @@ pub trait App: Send {
     /// Drain any commands the app has queued since the last call.
     /// Apps that navigate internally (e.g. file browser) push commands here
     /// so the host can act on them each frame without changing the trait signature.
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         vec![]
     }
 
@@ -293,7 +293,7 @@ pub trait App: Send {
         false
     }
 
-    /// Whether bare Enter submits the current app action even while one of its
+    /// Whether bare Enter submits the current pane action even while one of its
     /// declarative text inputs owns egui focus. Apps opt in only where Enter
     /// has no text-editing meaning; the dispatcher delivers that key before
     /// returning the rest of the input buffer to the focused `TextEdit`.
@@ -328,7 +328,7 @@ pub trait App: Send {
     fn sync_cwd(&mut self, _new_cwd: &std::path::Path) {}
 
     /// Queue a PlexiEvent to be sent to the app on the next flush.
-    /// Used to deliver host-originated events (e.g. AppSpawned) back to
+    /// Used to deliver host-originated events (e.g. ViewOpened) back to
     /// external process apps. Built-in apps ignore this by default.
     fn queue_outbound_event(&mut self, _event: crate::protocol::PlexiEvent) {}
 
@@ -337,12 +337,12 @@ pub trait App: Send {
         None
     }
 
-    /// Serialise app state to JSON for workspace persistence.
+    /// Serialise plugin state to JSON for workspace persistence.
     fn serialize_state(&self) -> Option<serde_json::Value> {
         None
     }
 
-    /// Restore app state from a previously serialised value.
+    /// Restore plugin state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
 
     /// The app's current internal font size in points, if supported.
@@ -352,27 +352,27 @@ pub trait App: Send {
     }
 
     /// Adjust the app's internal font size by `delta` points (positive = larger).
-    /// Only implemented by apps with their own font size, e.g. TextEditorApp, FileBrowserApp.
+    /// Only implemented by apps with their own font size, e.g. TextEditorView, FileBrowserView.
     fn adjust_font_size(&mut self, _delta: f32) {}
 
     /// Reset the app's internal font size to its default value.
     fn reset_font_size(&mut self) {}
 
     /// Seed text for the rename-pane overlay. `None` falls back to the pane's
-    /// current name. TextEditorApp returns the note's frontmatter title so
+    /// current name. TextEditorView returns the note's frontmatter title so
     /// renaming edits the title rather than the timestamp filename.
     fn rename_seed(&self) -> Option<String> {
         None
     }
 
-    /// Called when the user renames this app's pane. TextEditorApp persists
+    /// Called when the user renames this app's pane. TextEditorView persists
     /// the new name into the note's frontmatter `title`.
     fn on_pane_renamed(&mut self, _name: &str) {}
 
     /// The note this app currently has open, if any. The command palette
     /// lists notes that are open in a pane, so it asks every builtin app
     /// rather than scanning the notes dir. Apps that are not note editors —
-    /// and TextEditorApp on an ordinary file — return `None`.
+    /// and TextEditorView on an ordinary file — return `None`.
     fn open_note_path(&self) -> Option<&std::path::Path> {
         None
     }
@@ -434,7 +434,7 @@ pub trait App: Send {
     }
 
     /// Concrete-type access for host tests that assert on app-internal state
-    /// through `AppRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
+    /// through `ViewRuntime::Builtin`'s `dyn App`. Test-only: the sole consumer
     /// is `HostHarness` (`src/testing/`), which is `#[cfg(test)]`.
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;

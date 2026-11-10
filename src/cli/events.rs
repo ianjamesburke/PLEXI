@@ -9,7 +9,7 @@
 //! - `list` prints the apps' declared streams once and exits.
 //!
 //! `declare` and `emit` are the publish side: they send one control line and
-//! read a single `ok`/`error` reply. A first-time publish under an app-id
+//! read a single `ok`/`error` reply. A first-time publish under an plugin-id
 //! namespace the caller does not own prompts for host consent (broker `Ask`).
 //!
 //! Identity is host-stamped from `PLEXI_PANE_ID`; there is deliberately no flag
@@ -90,9 +90,9 @@ pub(crate) fn stream_control_line(payload: serde_json::Value) -> i32 {
     0
 }
 
-/// `plexi events subscribe <app_id> <stream>` — stream deliveries as NDJSON.
+/// `plexi events subscribe <plugin_id> <stream>` — stream deliveries as NDJSON.
 pub fn events_subscribe_cli(
-    app_id: &str,
+    plugin_id: &str,
     stream: Option<&str>,
     all: bool,
     payload: &str,
@@ -104,7 +104,7 @@ pub fn events_subscribe_cli(
         (false, Some(s)) => vec![s.to_string()],
         (false, None) => {
             eprintln!(
-                "error: specify a stream name (e.g. `plexi events subscribe {app_id} probe.tick`) \
+                "error: specify a stream name (e.g. `plexi events subscribe {plugin_id} probe.tick`) \
                  or pass --all to subscribe to every stream"
             );
             return 2;
@@ -114,7 +114,7 @@ pub fn events_subscribe_cli(
     let trigger_mode = trigger_mode_json(trigger);
     let req = serde_json::json!({
         "type": "events_subscribe",
-        "app_id": app_id,
+        "plugin_id": plugin_id,
         "event_names": event_names,
         "payload_mode": payload_mode,
         "trigger_mode": trigger_mode,
@@ -165,9 +165,9 @@ fn send_and_read_reply(payload: serde_json::Value) -> i32 {
     }
 }
 
-/// `plexi events declare <app_id> <stream>` — register a stream schema.
+/// `plexi events declare <plugin_id> <stream>` — register a stream schema.
 pub fn events_declare_cli(
-    app_id: &str,
+    plugin_id: &str,
     stream: &str,
     schema: &str,
     description: Option<&str>,
@@ -185,7 +185,7 @@ pub fn events_declare_cli(
     }
     let req = serde_json::json!({
         "type": "events_declare",
-        "app_id": app_id,
+        "plugin_id": plugin_id,
         "streams": [decl],
         "from_pane_id": from_pane_id(),
     });
@@ -194,7 +194,7 @@ pub fn events_declare_cli(
 
 /// Arguments for `plexi events emit`, mirroring the `EventsCmd::Emit` fields.
 pub struct EmitArgs<'a> {
-    pub app_id: &'a str,
+    pub plugin_id: &'a str,
     pub event: &'a str,
     pub summary: &'a str,
     pub resource: &'a str,
@@ -208,7 +208,7 @@ pub struct EmitArgs<'a> {
     pub changed_resources: &'a [String],
 }
 
-/// `plexi events emit <app_id> <event>` — record + fan out one event.
+/// `plexi events emit <plugin_id> <event>` — record + fan out one event.
 pub fn events_emit_cli(args: EmitArgs) -> i32 {
     let payload_json = match args.payload {
         Some(p) => match serde_json::from_str::<serde_json::Value>(p) {
@@ -222,7 +222,7 @@ pub fn events_emit_cli(args: EmitArgs) -> i32 {
     };
     let req = serde_json::json!({
         "type": "events_emit",
-        "app_id": args.app_id,
+        "plugin_id": args.plugin_id,
         "event": args.event,
         "actor": args.actor,
         "summary": args.summary,

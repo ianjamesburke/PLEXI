@@ -17,11 +17,11 @@ use std::sync::{LazyLock, Mutex};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepaintCause {
     /// App-runtime idle poll for async responses (per visible pane).
-    AppIdlePoll,
+    ViewIdlePoll,
     /// App-runtime click forwarding (immediate repaint + awaiting-frame echo).
-    AppClick,
+    ViewClick,
     /// App-requested `ScheduleRender { after_ms }`.
-    AppScheduleRender,
+    ViewScheduleRender,
     /// Pointer-tracking apps at ~60fps while the pointer moves; also terminal
     /// drag-selection auto-scroll.
     PointerTracking,
@@ -51,9 +51,9 @@ pub enum RepaintCause {
 
 /// All variants, in declaration order. Indexes into [`COUNTERS`].
 const ALL_CAUSES: [RepaintCause; 15] = [
-    RepaintCause::AppIdlePoll,
-    RepaintCause::AppClick,
-    RepaintCause::AppScheduleRender,
+    RepaintCause::ViewIdlePoll,
+    RepaintCause::ViewClick,
+    RepaintCause::ViewScheduleRender,
     RepaintCause::PointerTracking,
     RepaintCause::TerminalCursorBlink,
     RepaintCause::TerminalSearchBlink,
@@ -74,9 +74,9 @@ impl RepaintCause {
     /// Stable snake_case label for log output.
     pub fn label(self) -> &'static str {
         match self {
-            RepaintCause::AppIdlePoll => "app_idle_poll",
-            RepaintCause::AppClick => "app_click",
-            RepaintCause::AppScheduleRender => "app_schedule_render",
+            RepaintCause::ViewIdlePoll => "plugin_idle_poll",
+            RepaintCause::ViewClick => "view_click",
+            RepaintCause::ViewScheduleRender => "view_schedule_render",
             RepaintCause::PointerTracking => "pointer_tracking",
             RepaintCause::TerminalCursorBlink => "terminal_cursor_blink",
             RepaintCause::TerminalSearchBlink => "terminal_search_blink",
@@ -165,7 +165,7 @@ pub fn snapshot_and_reset() -> Vec<(RepaintCause, u32)> {
 }
 
 /// Formats one summary line, e.g.
-/// `frames=102 window=10.0s fps=10.2 causes: app_idle_poll=95 user_input=12`.
+/// `frames=102 window=10.0s fps=10.2 causes: plugin_idle_poll=95 user_input=12`.
 pub fn summary_line(frames: u32, elapsed_secs: f32, counts: &[(RepaintCause, u32)]) -> String {
     let fps = if elapsed_secs > 0.0 {
         frames as f32 / elapsed_secs
@@ -244,12 +244,12 @@ mod tests {
     #[test]
     fn summary_line_format() {
         let counts = vec![
-            (RepaintCause::AppIdlePoll, 95),
+            (RepaintCause::ViewIdlePoll, 95),
             (RepaintCause::UserInput, 12),
         ];
         assert_eq!(
             summary_line(102, 10.0, &counts),
-            "frames=102 window=10.0s fps=10.2 causes: app_idle_poll=95 user_input=12"
+            "frames=102 window=10.0s fps=10.2 causes: plugin_idle_poll=95 user_input=12"
         );
         assert_eq!(
             summary_line(0, 10.0, &[]),

@@ -1,6 +1,6 @@
 //! Native, broker-admitted MCP explorer. Transport is host-owned and serviced off paint.
 use super::{descriptor_widgets, mcp_descriptor};
-use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::{App, ViewRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::Command;
 use crate::broker::gate::{Admission, AdmitRequest, PermissionMonitor};
 use crate::broker::{ActorScope, ActorType, TargetType};
@@ -25,7 +25,7 @@ struct Pending {
     pages: usize,
 }
 
-pub struct McpRendererApp {
+pub struct McpRendererView {
     server: String,
     workspace: PathBuf,
     identity: Option<(u64, u64)>,
@@ -48,7 +48,7 @@ pub struct McpRendererApp {
     config: Option<McpServerConfig>,
     valid_server_id: bool,
 }
-impl McpRendererApp {
+impl McpRendererView {
     pub fn new(args: &[String], workspace: PathBuf) -> Self {
         let (sender, receiver) = mcp_client::inbound_channel();
         let valid = args.len() == 1 && !args[0].is_empty();
@@ -368,7 +368,7 @@ impl McpRendererApp {
         changed
     }
 }
-impl App for McpRendererApp {
+impl App for McpRendererView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -446,13 +446,13 @@ impl App for McpRendererApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         if !self.pending.is_empty() {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
-        crate::ui::app_chrome::AppChrome::new(ctx.colors).paint_app_bar(
+        crate::ui::app_chrome::ViewChrome::new(ctx.colors).paint_app_bar(
             ui,
             &self.display_name(),
             "Explore tools, resources and prompts",
@@ -549,8 +549,8 @@ mod tests {
     impl crate::app::ui_mailbox::UiWake for Wake {
         fn wake(&self, _source: &'static str) {}
     }
-    fn configured(dir: &std::path::Path) -> McpRendererApp {
-        let mut app = McpRendererApp::new(&["fixture".into()], dir.to_path_buf());
+    fn configured(dir: &std::path::Path) -> McpRendererView {
+        let mut app = McpRendererView::new(&["fixture".into()], dir.to_path_buf());
         app.bind_host_identity(91, 7);
         app.config = Some(McpServerConfig {
             command: "/bin/sh".into(),
@@ -631,8 +631,8 @@ mod tests {
         assert_eq!(pending[0].tool, "mcp.fixture.connect");
         for pane in h.app.windows[h.app.active_window].panes.values_mut() {
             if let Some(pane) = pane.as_app_mut() {
-                if let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime {
-                    if let Some(app) = app.as_any_mut().downcast_mut::<McpRendererApp>() {
+                if let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime {
+                    if let Some(app) = app.as_any_mut().downcast_mut::<McpRendererView>() {
                         assert_eq!(app.identity.unwrap().0, pane.id);
                         assert!(app.connection.is_none());
                         assert!(app.result.contains("Permission required"));
@@ -733,7 +733,7 @@ done
             app.result = "Connected. Select an endpoint.".into();
             host.open_builtin_app_pane(
                 Box::new(app),
-                crate::app::permissions::AppPermissions::builtin(),
+                crate::app::permissions::PluginPermissions::builtin(),
                 cwd,
                 None,
                 None,

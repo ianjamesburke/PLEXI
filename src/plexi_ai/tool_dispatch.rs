@@ -2,10 +2,10 @@
 //!
 //! The tool registry is a singleton shared across all `WASM app runtime` instances.
 //! When an app sends `DrawCommand::ExposeTools`, its pane registers tool
-//! definitions + an `AppEventSender` here. When the broker wants to call a
+//! definitions + an `PluginEventSender` here. When the broker wants to call a
 //! tool, it creates a `ToolDispatcher` snapshot, then calls `dispatch_call`
 //! which:
-//!   1. Looks up the owning pane's `AppEventSender`.
+//!   1. Looks up the owning pane's `PluginEventSender`.
 //!   2. Sends `PlexiEvent::ToolCall { call_id, name, input_json }` to that pane.
 //!   3. Blocks (up to `timeout_ms`) on a `SyncReceiver` for the result.
 //!   4. Returns `ToolCallResult { output_json, error }`.
@@ -21,7 +21,7 @@
 //! When building a `ToolDispatcher`, the caller supplies its own
 //! `viewer_context_id`, also host-resolved, never read from `router.active()`
 //! or any client-supplied path. Reachability is decided by
-//! `crate::host::scope::evaluate_reach` against `Scope::AppInstance`: only
+//! `crate::host::scope::evaluate_reach` against `Scope::PluginInstance`: only
 //! tools owned in the caller's own context are included in the snapshot — two
 //! contexts sharing the same canonical root are NOT mutually reachable,
 //! because reachability's runtime dimension is `context_id`, not root. Every
@@ -32,7 +32,7 @@
 //! before they can be attempted.
 //!
 //! Every dispatched call is logged at `info` level with both the caller
-//! (app_id, pane_id) and provider (pane_id, tool name) so every invocation is
+//! (plugin_id, pane_id) and provider (pane_id, tool name) so every invocation is
 //! attributable in the audit trail.
 
 use std::collections::HashMap;
@@ -42,18 +42,18 @@ use std::time::Duration;
 use crate::protocol::{AiTool, PlexiEvent};
 use crate::host::scope::{evaluate_reach, Reach, ScopeOrigin};
 
-// ── AppEventSender ──────────────────────────────────────────────────────────
+// ── PluginEventSender ──────────────────────────────────────────────────────────
 
 /// Thin wrapper that lets external code send `PlexiEvent`s into a pane's
 /// stdin channel without exposing the `StdinItem` enum publicly.
-pub(crate) enum AppEventSender {
+pub(crate) enum PluginEventSender {
     #[cfg(test)]
     Channel(std::sync::mpsc::Sender<String>),
     Python(crate::host::wasm_python::AppendableStdin),
     Wasm(crate::host::wasm_pane::WasmInputSender),
 }
 
-impl AppEventSender {
+impl PluginEventSender {
     pub(crate) fn send_event(&self, event: &PlexiEvent) -> Result<(), String> {
         match self {
             #[cfg(test)]
@@ -114,9 +114,9 @@ impl AppEventSender {
 /// authorization checks).
 struct RegistryEntry {
     tools: Vec<AiTool>,
-    sender: AppEventSender,
+    sender: PluginEventSender,
     /// App type id (manifest `app.id`) — used to group tools by app for `/apps`.
-    app_id: String,
+    plugin_id: String,
     /// Host-established origin of the pane that exposed these tools, captured
     /// once at registration time via `PlexiApp::origin_for_pane` — stint 0724
     /// Phase C. Reachability is decided from `origin.context_id`, never from
@@ -127,14 +127,14 @@ struct RegistryEntry {
 impl RegistryEntry {
     /// The owner scope for `evaluate_reach`: context-owned, per the stint's
     /// rule that context-owned resources are visible only inside their
-    /// owning context. Two entries with colliding `pane_id`/`app_id` in
-    /// different contexts are still distinct scopes — `Scope::AppInstance`
+    /// owning context. Two entries with colliding `pane_id`/`plugin_id` in
+    /// different contexts are still distinct scopes — `Scope::PluginInstance`
     /// carries `context_id` precisely so a numeric collision across contexts
     /// never grants reach.
     fn owner_scope(&self, pane_id: u64) -> crate::host::scope::Scope {
-        crate::host::scope::Scope::AppInstance {
+        crate::host::scope::Scope::PluginInstance {
             pane_id,
-            app_id: self.app_id.clone(),
+            plugin_id: self.plugin_id.clone(),
             context_id: self.origin.context_id,
         }
     }
@@ -155,9 +155,9 @@ impl ToolRegistry {
     fn register(
         &mut self,
         pane_id: u64,
-        app_id: String,
+        plugin_id: String,
         tools: Vec<AiTool>,
-        sender: AppEventSender,
+        sender: PluginEventSender,
         origin: ScopeOrigin,
     ) {
         self.entries.insert(
@@ -165,7 +165,7 @@ impl ToolRegistry {
             RegistryEntry {
                 tools,
                 sender,
-                app_id,
+                plugin_id,
                 origin,
             },
         );
@@ -237,7 +237,7 @@ impl ToolRegistry {
     }
 
     /// Snapshot for the host MCP server, where every app tool is externally
-    /// named `<app_id>__<tool>`. The original tool name remains attached to
+    /// named `<plugin_id>__<tool>`. The original tool name remains attached to
     /// the target so dispatch sends the provider exactly what it registered.
     ///
     /// Multiple live instances keep distinct names `<app>:<pane>__<tool>`.
@@ -266,7 +266,7 @@ impl ToolRegistry {
                 continue;
             };
             for tool in &entry.tools {
-                let external_name = format!("{}__{}", entry.app_id, tool.name);
+                let external_name = format!("{}__{}", entry.plugin_id, tool.name);
                 let mut external_tool = tool.clone();
                 external_tool.name = external_name.clone();
                 candidates.entry(external_name).or_default().push((
@@ -288,12 +288,12 @@ impl ToolRegistry {
             log::info!(
                 "tool_dispatch: {external_name} is live on panes {panes:?}; address <app>:<pane>__<tool>"
             );
-            let app_id = external_name
+            let plugin_id = external_name
                 .split_once("__")
                 .map(|(app, _)| app)
                 .unwrap_or(external_name.as_str());
             for (pane_id, provider_name, mut tool) in owners {
-                let qualified = format!("{app_id}:{pane_id}__{provider_name}");
+                let qualified = format!("{plugin_id}:{pane_id}__{provider_name}");
                 tool.name = qualified.clone();
                 snapshot.insert(qualified, (pane_id, provider_name, tool));
             }
@@ -301,7 +301,7 @@ impl ToolRegistry {
         snapshot
     }
 
-    /// Map from app_id to tool list for all panes reachable from
+    /// Map from plugin_id to tool list for all panes reachable from
     /// `viewer_context_id`. Used by `/apps` to present tools grouped by the
     /// app that exposed them.
     fn apps_for_context(&self, viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
@@ -315,7 +315,7 @@ impl ToolRegistry {
                 continue;
             }
             by_app
-                .entry(entry.app_id.clone())
+                .entry(entry.plugin_id.clone())
                 .or_default()
                 .extend(entry.tools.iter().cloned());
         }
@@ -334,7 +334,7 @@ impl ToolRegistry {
                 Some(LiveToolEntry {
                     name: exposed_name,
                     provider_name,
-                    app_id: entry.app_id.clone(),
+                    plugin_id: entry.plugin_id.clone(),
                     pane_id,
                     context_id: entry.origin.context_id,
                     description: tool.description,
@@ -346,8 +346,8 @@ impl ToolRegistry {
             })
             .collect();
         out.sort_by(|a, b| {
-            a.app_id
-                .cmp(&b.app_id)
+            a.plugin_id
+                .cmp(&b.plugin_id)
                 .then_with(|| a.pane_id.cmp(&b.pane_id))
                 .then_with(|| a.name.cmp(&b.name))
         });
@@ -367,7 +367,7 @@ pub struct LiveToolEntry {
     /// Tool name as originally registered by the owning app (`AiTool.name`).
     pub provider_name: String,
     /// Manifest `app.id` of the owning app.
-    pub app_id: String,
+    pub plugin_id: String,
     /// Live pane id that registered the tool.
     pub pane_id: u64,
     /// Host-established context id of the owning pane's `ScopeOrigin`.
@@ -398,16 +398,16 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 /// `workspace_root` field, which `sync_app_cwd` can mutate live.
 pub(crate) fn register(
     pane_id: u64,
-    app_id: String,
+    plugin_id: String,
     tools: Vec<AiTool>,
-    sender: AppEventSender,
+    sender: PluginEventSender,
     origin: ScopeOrigin,
 ) {
     let count = tools.len();
     global_registry()
         .lock()
         .unwrap()
-        .register(pane_id, app_id, tools, sender, origin);
+        .register(pane_id, plugin_id, tools, sender, origin);
     log::info!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
 }
 
@@ -423,7 +423,7 @@ pub(crate) fn live_exposed_tools() -> Vec<(String, u64, String, String)> {
     for (pane_id, entry) in &registry.entries {
         for tool in &entry.tools {
             tools.push((
-                entry.app_id.clone(),
+                entry.plugin_id.clone(),
                 *pane_id,
                 tool.name.clone(),
                 tool.description.clone(),
@@ -568,7 +568,7 @@ pub trait ToolCallHooks: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct DispatchScope {
     pub caller_pane_id: u64,
-    pub caller_app_id: String,
+    pub caller_plugin_id: String,
     pub actor_type: crate::broker::ActorType,
     pub actor_scope: crate::broker::ActorScope,
     pub workspace_root: std::path::PathBuf,
@@ -580,12 +580,12 @@ pub struct DispatchScope {
 impl DispatchScope {
     pub fn new(
         caller_pane_id: u64,
-        caller_app_id: impl Into<String>,
+        caller_plugin_id: impl Into<String>,
         workspace_root: impl Into<std::path::PathBuf>,
         context_id: u64,
     ) -> Self {
-        let caller_app_id = caller_app_id.into();
-        let actor_type = if caller_app_id.starts_with("agent:") || caller_app_id.starts_with("pane:")
+        let caller_plugin_id = caller_plugin_id.into();
+        let actor_type = if caller_plugin_id.starts_with("agent:") || caller_plugin_id.starts_with("pane:")
         {
             crate::broker::ActorType::Agent
         } else {
@@ -593,7 +593,7 @@ impl DispatchScope {
         };
         Self {
             caller_pane_id,
-            caller_app_id,
+            caller_plugin_id,
             actor_type,
             actor_scope: crate::broker::ActorScope::User,
             workspace_root: workspace_root.into(),
@@ -629,7 +629,7 @@ pub struct ToolDispatcher {
     /// Handler for `host_tools` calls. Runs on the broker worker thread.
     host_handler: Option<HostToolHandler>,
     /// Caller identity for audit logging.
-    caller_app_id: String,
+    caller_plugin_id: String,
     /// Caller pane id for audit logging.
     caller_pane_id: u64,
     scope: DispatchScope,
@@ -647,7 +647,7 @@ impl std::fmt::Debug for ToolDispatcher {
         f.debug_struct("ToolDispatcher")
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
             .field("host_tools", &self.host_tools.keys().collect::<Vec<_>>())
-            .field("caller_app_id", &self.caller_app_id)
+            .field("caller_plugin_id", &self.caller_plugin_id)
             .field("caller_pane_id", &self.caller_pane_id)
             .field("hooks", &self.hooks.is_some())
             .field("presenter", &self.presenter.is_some())
@@ -665,7 +665,7 @@ impl ToolDispatcher {
         let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
         log::info!(
             "tool_dispatch: dispatcher for caller={} pane={} viewer_context={} — {} tool(s) visible: {visible:?}",
-            scope.caller_app_id,
+            scope.caller_plugin_id,
             scope.caller_pane_id,
             scope.context_id,
             tools.len(),
@@ -674,7 +674,7 @@ impl ToolDispatcher {
     }
 
     /// Build the context-scoped snapshot exposed by the singleton host MCP
-    /// server. Definitions are namespaced `<app_id>__<tool>` while dispatch
+    /// server. Definitions are namespaced `<plugin_id>__<tool>` while dispatch
     /// retains the provider's original tool name.
     pub(crate) fn from_namespaced_registry(
         scope: DispatchScope,
@@ -693,7 +693,7 @@ impl ToolDispatcher {
         let tools = registry.namespaced_snapshot_for_caller(scope.context_id);
         log::info!(
             "tool_dispatch: namespaced dispatcher caller={} viewer_context={} — {} tool(s) visible",
-            scope.caller_app_id,
+            scope.caller_plugin_id,
             scope.context_id,
             tools.len(),
         );
@@ -706,12 +706,12 @@ impl ToolDispatcher {
         tools: HashMap<String, (u64, String, AiTool)>,
         registry: &ToolRegistry,
     ) -> Self {
-        let caller_app_id = scope.caller_app_id.clone();
+        let caller_plugin_id = scope.caller_plugin_id.clone();
         let caller_pane_id = scope.caller_pane_id;
         let provider_apps = tools
             .values()
             .filter_map(|(pane, _, _)| {
-                registry.entries.get(pane).map(|entry| (*pane, entry.app_id.clone()))
+                registry.entries.get(pane).map(|entry| (*pane, entry.plugin_id.clone()))
             })
             .collect();
         Self {
@@ -719,7 +719,7 @@ impl ToolDispatcher {
             provider_apps,
             host_tools: HashMap::new(),
             host_handler: None,
-            caller_app_id,
+            caller_plugin_id,
             caller_pane_id,
             scope,
             monitor,
@@ -735,7 +735,7 @@ impl ToolDispatcher {
         for tool in tools {
             log::info!(
                 "tool_dispatch: caller={} registered host tool '{}'",
-                self.caller_app_id,
+                self.caller_plugin_id,
                 tool.name
             );
             self.host_tools.insert(tool.name.clone(), tool);
@@ -763,7 +763,7 @@ impl ToolDispatcher {
     }
 
     /// Apps and their tools visible to the caller's context — for `/apps`.
-    /// Returns `(app_id, tools)` pairs sorted by app_id.
+    /// Returns `(plugin_id, tools)` pairs sorted by plugin_id.
     pub fn apps_for_context(viewer_context_id: u64) -> Vec<(String, Vec<AiTool>)> {
         global_registry()
             .lock()
@@ -772,7 +772,7 @@ impl ToolDispatcher {
     }
 
     /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
-    /// runtime applies broker `app_connector` decisions here). Removed tools
+    /// runtime applies broker `plugin_connector` decisions here). Removed tools
     /// are invisible to the model and `dispatch_call` returns
     /// `tool_not_found` for them — gating both visibility and invocation.
     pub fn retain_allowed(&mut self, allowed: &std::collections::HashSet<String>) {
@@ -782,7 +782,7 @@ impl ToolDispatcher {
             if !self.tools.contains_key(&name) {
                 log::info!(
                     "tool_dispatch: caller={} pane={} — tool '{name}' removed by broker gate",
-                    self.caller_app_id,
+                    self.caller_plugin_id,
                     self.caller_pane_id
                 );
             }
@@ -796,7 +796,7 @@ impl ToolDispatcher {
         let context = Some(self.scope.context_id);
         log::info!(
             "tool_dispatch: requested call_id={call_id} caller={} tool={name}",
-            self.scope.caller_app_id
+            self.scope.caller_plugin_id
         );
         // The monitor's profile is the trace's address; an ephemeral monitor
         // has none and stays off disk. (Worker threads have no thread-local
@@ -813,8 +813,8 @@ impl ToolDispatcher {
             "tool_call_requested",
             &call_id,
             serde_json::json!({
-                "caller": self.scope.caller_app_id,
-                "app_id": self.provider_of(name).0,
+                "caller": self.scope.caller_plugin_id,
+                "plugin_id": self.provider_of(name).0,
                 "tool": name,
                 "wait_approved": self.presenter.is_some(),
                 "input": serde_json::from_str::<serde_json::Value>(&input_json)
@@ -845,7 +845,7 @@ impl ToolDispatcher {
         if !known {
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: tool_not_found caller={} tool={name} call_id={call_id}",
-                self.caller_app_id
+                self.caller_plugin_id
             ));
             return self.dispatch_inner(call_id, name, input_json, None);
         }
@@ -853,14 +853,14 @@ impl ToolDispatcher {
         let target_type = if self.host_tools.contains_key(name) {
             crate::broker::TargetType::HostTool
         } else {
-            crate::broker::TargetType::AppConnector
+            crate::broker::TargetType::PluginConnector
         };
         let mut admission = self.monitor.admit_with_posture(crate::broker::gate::AdmitRequest {
             call_id: &call_id,
             tool: name,
             input_json: &input_json,
             actor_type: self.scope.actor_type,
-            actor_id: &self.scope.caller_app_id,
+            actor_id: &self.scope.caller_plugin_id,
             actor_scope: self.scope.actor_scope,
             trust_origin: &self.scope.trust_origin,
             workspace_root: &self.scope.workspace_root,
@@ -876,14 +876,14 @@ impl ToolDispatcher {
                     pending_request_id,
                     name,
                     &input_json,
-                    &self.scope.caller_app_id,
+                    &self.scope.caller_plugin_id,
                     resource_id.as_deref().unwrap_or(""),
                 ) {
                     Ok(choice) => choice,
                     Err(message) => {
                         log::error!(
                             "tool_dispatch: permission was not saved caller={} tool={name} call_id={call_id}: {message}",
-                            self.caller_app_id
+                            self.caller_plugin_id
                         );
                         return ToolCallResult::err(message);
                     }
@@ -922,7 +922,7 @@ impl ToolDispatcher {
                     tool: name,
                     input_json: &input_json,
                     actor_type: self.scope.actor_type,
-                    actor_id: &self.scope.caller_app_id,
+                    actor_id: &self.scope.caller_plugin_id,
                     actor_scope: self.scope.actor_scope,
                     trust_origin: &self.scope.trust_origin,
                     workspace_root: &self.scope.workspace_root,
@@ -934,7 +934,7 @@ impl ToolDispatcher {
             } else {
                 log::info!(
                     "tool_dispatch: permission_required caller={} tool={name} pending={pending_request_id}",
-                    self.caller_app_id
+                    self.caller_plugin_id
                 );
                 return ToolCallResult::coded(
                     "permission_required",
@@ -962,7 +962,7 @@ impl ToolDispatcher {
         if self
             .monitor
             .note_use(
-                &self.scope.caller_app_id,
+                &self.scope.caller_plugin_id,
                 &call_id,
                 &grant_id,
                 &fingerprint,
@@ -973,7 +973,7 @@ impl ToolDispatcher {
         {
             log::info!(
                 "tool_dispatch: blocked before execution caller={} tool={name} call_id={call_id}",
-                self.caller_app_id
+                self.caller_plugin_id
             );
             return ToolCallResult::coded("permission_denied", &call_id, None);
         }
@@ -982,7 +982,7 @@ impl ToolDispatcher {
         }
         let envelope = authorization_envelope(
             &grant_id,
-            &self.scope.caller_app_id,
+            &self.scope.caller_plugin_id,
             &package,
             resource_id.as_deref(),
             &call_id,
@@ -994,7 +994,7 @@ impl ToolDispatcher {
             };
             log::info!(
                 "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?} grant={grant_id}",
-                self.caller_app_id
+                self.caller_plugin_id
             );
             handler(name, &input_json)
         } else {
@@ -1005,7 +1005,7 @@ impl ToolDispatcher {
             let detail: String = error.chars().take(180).collect();
             crate::broker::gate::trace_gate(format!(
                 "tool_dispatch: result code={code} caller={} tool={name} call_id={call_id} detail={detail}",
-                self.scope.caller_app_id
+                self.scope.caller_plugin_id
             ));
         }
         let outcome = if result.error.is_none() { "ok" } else { "error" };
@@ -1014,7 +1014,7 @@ impl ToolDispatcher {
         if self
             .monitor
             .note_outcome(
-                &self.scope.caller_app_id,
+                &self.scope.caller_plugin_id,
                 &call_id,
                 &grant_id,
                 &fingerprint,
@@ -1052,13 +1052,13 @@ impl ToolDispatcher {
     /// `<app>__<tool>`. Several instances require `<app>:<pane>__<tool>`.
     pub(crate) fn select_app_tool(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         tool: &str,
         target_pane: Option<u64>,
     ) -> Result<String, String> {
-        let plain = format!("{app_id}__{tool}");
+        let plain = format!("{plugin_id}__{tool}");
         if let Some(pane) = target_pane {
-            let qualified = format!("{app_id}:{pane}__{tool}");
+            let qualified = format!("{plugin_id}:{pane}__{tool}");
             if self.tools.contains_key(&qualified) {
                 log::info!("tool_dispatch: routed {plain} to pane {pane}");
                 return Ok(qualified);
@@ -1074,7 +1074,7 @@ impl ToolDispatcher {
         if self.tools.contains_key(&plain) {
             return Ok(plain);
         }
-        let prefix = format!("{app_id}:");
+        let prefix = format!("{plugin_id}:");
         let suffix = format!("__{tool}");
         let mut matches: Vec<String> = self
             .tools
@@ -1130,7 +1130,7 @@ impl ToolDispatcher {
             None => {
                 log::warn!(
                     "tool_dispatch: caller={} pane={} requested unknown tool {name:?} call_id={call_id:?}",
-                    self.caller_app_id, self.caller_pane_id,
+                    self.caller_plugin_id, self.caller_pane_id,
                 );
                 return ToolCallResult::err(format!(
                     "tool_not_found: no tool named {name:?} in registry"
@@ -1142,7 +1142,7 @@ impl ToolDispatcher {
 
         log::info!(
             "tool_dispatch: caller={} caller_pane={} → tool={name:?} provider_pane={pane_id} call_id={call_id:?}",
-            self.caller_app_id, self.caller_pane_id,
+            self.caller_plugin_id, self.caller_pane_id,
         );
 
         // Register the pending call before sending the event to avoid a race.
@@ -1158,7 +1158,7 @@ impl ToolDispatcher {
             if let Some(entry) = registry.entries.get(pane_id) {
                 // A pane may be replaced or moved while a human considers the
                 // request. Recheck the snapshot under the same lock as send.
-                if self.provider_apps.get(pane_id) != Some(&entry.app_id)
+                if self.provider_apps.get(pane_id) != Some(&entry.plugin_id)
                     || entry.origin.context_id != self.scope.context_id
                     || !entry.tools.iter().any(|current| current.name == *provider_tool_name)
                 {
@@ -1175,7 +1175,7 @@ impl ToolDispatcher {
                         call_id: call_id.clone(),
                         name: provider_tool_name.clone(),
                         input_json,
-                        caller_id: self.caller_app_id.clone(),
+                        caller_id: self.caller_plugin_id.clone(),
                         authorization,
                     })
                     .is_ok()
@@ -1264,14 +1264,14 @@ mod tests {
 
     /// A minimal `ScopeOrigin` for tests that only care about `context_id` —
     /// every other field is a deterministic placeholder never inspected by
-    /// `evaluate_reach` or `Scope::AppInstance`.
+    /// `evaluate_reach` or `Scope::PluginInstance`.
     fn origin(context_id: u64, pane_id: u64) -> ScopeOrigin {
         ScopeOrigin {
             context_id,
             context_root: PathBuf::from(format!("/ctx-root-{context_id}")),
             window_id: context_id,
             pane_id,
-            app_id: None,
+            plugin_id: None,
         }
     }
 
@@ -1285,7 +1285,7 @@ mod tests {
             1,
             "search-app".to_string(),
             vec![make_tool("search")],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             origin(10, 1),
         );
 
@@ -1305,14 +1305,14 @@ mod tests {
             10,
             "attacker-app".to_string(),
             vec![make_tool("dangerous_tool")],
-            AppEventSender::Channel(tx.clone()),
+            PluginEventSender::Channel(tx.clone()),
             origin(100, 10),
         );
         reg.register(
             20,
             "victim-app".to_string(),
             vec![make_tool("safe_tool")],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             origin(200, 20),
         );
 
@@ -1341,7 +1341,7 @@ mod tests {
             5,
             "app-x".to_string(),
             vec![make_tool("tool_a")],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             origin(1, 5),
         );
 
@@ -1363,7 +1363,7 @@ mod tests {
     /// Deliberate tightening vs. pre-Phase-C behavior (stint 0724 Phase C):
     /// two sibling contexts anchored at the SAME canonical root are no longer
     /// mutually visible. Before this phase, reachability was decided by
-    /// path-equality on `AppPane::workspace_root`, so two panes whose contexts
+    /// path-equality on `ViewPane::workspace_root`, so two panes whose contexts
     /// happened to share a root were mutually reachable regardless of
     /// `context_id`. Reachability's runtime dimension is now `context_id`
     /// only — a tool registered from a pane in context A must stay invisible
@@ -1381,13 +1381,13 @@ mod tests {
             context_root: shared_root.clone(),
             window_id: 1,
             pane_id: 30,
-            app_id: Some("root-app".to_string()),
+            plugin_id: Some("root-app".to_string()),
         };
         reg.register(
             30,
             "root-app".to_string(),
             vec![make_tool("shared_root_tool")],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             origin_a,
         );
 
@@ -1417,7 +1417,7 @@ mod tests {
             999,
             "app-b".to_string(),
             vec![make_tool("secret_tool")],
-            AppEventSender::Channel(tx_b),
+            PluginEventSender::Channel(tx_b),
             origin(200, 999),
         );
 
@@ -1462,14 +1462,14 @@ mod tests {
         ] {
             let (original, _original_rx) = std::sync::mpsc::channel();
             register(pane, "todo".into(), vec![make_tool("todo.list")],
-                AppEventSender::Channel(original), origin(9792, pane));
+                PluginEventSender::Channel(original), origin(9792, pane));
             let dispatcher = ToolDispatcher::namespaced_for(
                 DispatchScope::new(9791, "pane:9791", "/ws", 9792),
                 crate::broker::gate::PermissionMonitor::ephemeral(),
             );
             let (replacement, replacement_rx) = std::sync::mpsc::channel();
             register(pane, app.into(), vec![make_tool(tool)],
-                AppEventSender::Channel(replacement), origin(context, pane));
+                PluginEventSender::Channel(replacement), origin(context, pane));
             let result = dispatcher.dispatch_inner(
                 format!("stale-{app}-{context}-{tool}"), "todo__todo.list", "{}".into(), None,
             );
@@ -1491,14 +1491,14 @@ mod tests {
             10,
             "app-conflict-1".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_a")],
-            AppEventSender::Channel(tx1),
+            PluginEventSender::Channel(tx1),
             origin(50, 10),
         );
         reg.register(
             20,
             "app-conflict-2".to_string(),
             vec![make_tool("shared_tool"), make_tool("unique_b")],
-            AppEventSender::Channel(tx2),
+            PluginEventSender::Channel(tx2),
             origin(50, 20),
         );
 
@@ -1529,14 +1529,14 @@ mod tests {
             30,
             "same-app".to_string(),
             vec![make_tool("echo")],
-            AppEventSender::Channel(tx1),
+            PluginEventSender::Channel(tx1),
             origin(60, 30),
         );
         reg.register(
             20,
             "same-app".to_string(),
             vec![make_tool("echo"), make_tool("unique")],
-            AppEventSender::Channel(tx2),
+            PluginEventSender::Channel(tx2),
             origin(60, 20),
         );
 
@@ -1572,7 +1572,7 @@ mod tests {
             998,
             "hooks-app".to_string(),
             vec![make_tool("gated_tool")],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             origin(70, 998),
         );
         let hook = Arc::new(ObserveHook {
@@ -1609,7 +1609,7 @@ mod tests {
             997,
             "wasm-tools".to_string(),
             vec![make_tool("wasm.echo")],
-            AppEventSender::Wasm(sender),
+            PluginEventSender::Wasm(sender),
             origin(80, 997),
         );
         let input = r#"{"value":7}"#;
@@ -1622,7 +1622,7 @@ mod tests {
                 actor_scope: crate::broker::ActorScope::User,
                 trust_origin: "host".to_string(),
                 workspace_root: PathBuf::from("/ws-wasm"),
-                target_type: crate::broker::TargetType::AppConnector,
+                target_type: crate::broker::TargetType::PluginConnector,
                 target_id: "wasm.echo".to_string(),
                 resource_scope: crate::broker::ResourceScope::Workspace,
                 resource_id: None,
@@ -1682,7 +1682,7 @@ mod tests {
             996,
             "wasm-denied".to_string(),
             vec![make_tool("wasm.write")],
-            AppEventSender::Wasm(sender),
+            PluginEventSender::Wasm(sender),
             origin(90, 996),
         );
         let dispatcher = ToolDispatcher::from_registry(
@@ -1740,21 +1740,21 @@ mod tests {
             1901,
             "calc".to_string(),
             vec![add_tool.clone(), state_tool.clone()],
-            AppEventSender::Channel(tx1),
+            PluginEventSender::Channel(tx1),
             origin(501, 1901),
         );
         register(
             1902,
             "calc".to_string(),
             vec![add_tool.clone()],
-            AppEventSender::Channel(tx2),
+            PluginEventSender::Channel(tx2),
             origin(501, 1902),
         );
         register(
             1903,
             "other".to_string(),
             vec![make_tool("other.secret")],
-            AppEventSender::Channel(tx3),
+            PluginEventSender::Channel(tx3),
             origin(502, 1903),
         );
 
@@ -1765,7 +1765,7 @@ mod tests {
 
         assert_eq!(snap.len(), 3, "expected 3 exposed entries in context 501: {snap:?}");
         assert!(
-            snap.iter().all(|e| e.context_id == 501 && e.app_id == "calc"),
+            snap.iter().all(|e| e.context_id == 501 && e.plugin_id == "calc"),
             "cross-context tools must never appear in context 501 snapshot: {snap:?}"
         );
         let add_1901 = snap

@@ -52,11 +52,11 @@ mod keychain_prompt_guard {
     static GUARD: extern "C" fn() = disable_keychain_prompts;
 }
 
-use crate::app::permissions::AppPermissions;
+use crate::app::permissions::PluginPermissions;
 use crate::app::PlexiApp;
-use crate::protocol::AppRequest;
+use crate::protocol::HostRequest;
 use crate::config::set_test_profile_dir;
-use crate::host::pane::{AppPane, AppRuntime, Pane};
+use crate::host::pane::{ViewPane, ViewRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
@@ -108,10 +108,10 @@ impl HostSnapshot {
 /// (e.g. `plexi_ai::tool_dispatch::GLOBAL_REGISTRY`, keyed by `pane_id`) stay
 /// exactly that global in test builds too — there is no per-test process to
 /// isolate them. `HostModel` is the allocator for panes opened through the
-/// app (`launch_app_by_path`, scenes). `HostHarness` keeps a second counter
+/// app (`open_view_by_path`, scenes). `HostHarness` keeps a second counter
 /// for panes it inserts directly. Both draw from this atomic, and
 /// `PlexiApp::new_for_test` seeds `HostModel` from it. A fixed start of `1`
-/// made every chess launch and every scene claim pane 1; `AppPane`'s drop
+/// made every chess launch and every scene claim pane 1; `ViewPane`'s drop
 /// then unregistered whichever test still held that key.
 static NEXT_TEST_PANE_ID_BLOCK: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(100);
@@ -161,7 +161,7 @@ pub(crate) fn scratch_context_root(label: &str) -> std::path::PathBuf {
 /// ```rust,no_run
 /// let mut h = HostHarness::new();
 /// let pane = h.add_test_pane();
-/// h.inject_ipc(AppRequest::SetPipStatus {
+/// h.inject_ipc(HostRequest::SetPipStatus {
 ///     pane_id: pane,
 ///     status: crate::protocol::PipStatus::Green,
 /// });
@@ -174,8 +174,8 @@ pub struct HostHarness {
     ctx: egui::Context,
     /// Next pane id to assign.
     next_pane_id: u64,
-    /// IPC mailbox for injecting AppRequests into the pane_ipc channel.
-    pub ipc_tx: crate::app::ui_mailbox::UiMailbox<AppRequest>,
+    /// IPC mailbox for injecting HostRequests into the pane_ipc channel.
+    pub ipc_tx: crate::app::ui_mailbox::UiMailbox<HostRequest>,
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
@@ -314,11 +314,11 @@ impl HostHarness {
     /// Add a builtin app pane (not a Terminal) for host testing.
     /// The pane has builtin permissions (all capability checks pass).
     pub fn add_test_pane(&mut self) -> PaneId {
-        self.add_test_pane_with_permissions(AppPermissions::builtin())
+        self.add_test_pane_with_permissions(PluginPermissions::builtin())
     }
 
     /// Add a test app pane with the given permissions.
-    pub fn add_test_pane_with_permissions(&mut self, permissions: AppPermissions) -> PaneId {
+    pub fn add_test_pane_with_permissions(&mut self, permissions: PluginPermissions) -> PaneId {
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
 
@@ -326,10 +326,10 @@ impl HostHarness {
         // the real temp_dir(), which on a dev machine can hold ~50k entries
         // and balloons any test that renders the pane by gigabytes.
         let browser_root = self._workspace_dir.path().to_path_buf();
-        let app_pane = AppPane {
+        let app_pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+            runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                 browser_root.clone(),
             ))),
             workspace_root: browser_root,
@@ -378,7 +378,7 @@ impl HostHarness {
             ) -> crate::plexi_ai::broker::AiBrokerResponse {
                 log::warn!(
                     "testing: InertBroker dispatch for '{}' — no AI in harness",
-                    request.app_id
+                    request.plugin_id
                 );
                 crate::plexi_ai::broker::AiBrokerResponse {
                     content: None,
@@ -405,18 +405,18 @@ impl HostHarness {
         // `windows[0]`'s, so a pane placed in a secondary context gets that
         // context's identity.
         let context_id = self.app.windows[win_idx].context_id;
-        let assistant = crate::assistant::AssistantApp::new(
+        let assistant = crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
             &crate::config::config_dir(),
             context_id,
         );
-        let app_pane = AppPane {
+        let app_pane = ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: AppRuntime::Builtin(Box::new(assistant)),
+            runtime: ViewRuntime::Builtin(Box::new(assistant)),
             workspace_root,
-            permissions: AppPermissions::builtin(),
+            permissions: PluginPermissions::builtin(),
             manifest_id: "assistant".to_string(),
             name: "Assistant".to_string(),
             pane_group: None,
@@ -449,20 +449,20 @@ impl HostHarness {
     /// Searches every window, not just `windows[0]` — a pane placed via
     /// [`Self::add_assistant_pane_in_window`] with a non-zero index must
     /// still be found.
-    pub fn assistant_mut(&mut self, pane_id: PaneId) -> &mut crate::assistant::AssistantApp {
+    pub fn assistant_mut(&mut self, pane_id: PaneId) -> &mut crate::assistant::AssistantView {
         let pane = self
             .app
             .windows
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("assistant pane not found");
-        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
         else {
             panic!("pane {pane_id} is not a builtin app");
         };
         app.as_any_mut()
-            .downcast_mut::<crate::assistant::AssistantApp>()
-            .expect("pane is not an AssistantApp")
+            .downcast_mut::<crate::assistant::AssistantView>()
+            .expect("pane is not an AssistantView")
     }
 
     /// Mutable access to a text-editor pane's concrete app for scroll/focus
@@ -470,20 +470,20 @@ impl HostHarness {
     pub fn text_editor_mut(
         &mut self,
         pane_id: PaneId,
-    ) -> &mut crate::app::text_editor_app::TextEditorApp {
+    ) -> &mut crate::app::text_editor_app::TextEditorView {
         let pane = self
             .app
             .windows
             .iter_mut()
             .find_map(|window| window.panes.get_mut(&pane_id))
             .expect("text editor pane not found");
-        let AppRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
+        let ViewRuntime::Builtin(app) = &mut pane.as_app_mut().expect("not an app pane").runtime
         else {
             panic!("pane {pane_id} is not a builtin app");
         };
         app.as_any_mut()
-            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
-            .expect("pane is not a TextEditorApp")
+            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
+            .expect("pane is not a TextEditorView")
     }
 
     // ── Frame pump ───────────────────────────────────────────────────────────
@@ -667,8 +667,8 @@ impl HostHarness {
         img.save(path.as_ref()).map_err(|e| format!("failed to save PNG: {e}"))
     }
 
-    /// Inject a `AppRequest` directly into the pane_ipc channel.
-    pub fn inject_ipc(&self, cmd: AppRequest) -> &Self {
+    /// Inject a `HostRequest` directly into the pane_ipc channel.
+    pub fn inject_ipc(&self, cmd: HostRequest) -> &Self {
         let _ = self.ipc_tx.send(cmd);
         self
     }
@@ -678,12 +678,12 @@ impl HostHarness {
     /// test drives startup itself (a title-phase poll, a scheduler-wake
     /// probe); otherwise prefer `launch_dev_app`, which also waits.
     pub fn launch_dev_app_without_render(&mut self, name: &str) -> PaneId {
-        let app_dir =
+        let plugin_dir =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("apps/dev/{name}"));
         let before = self.state().open_panes;
         let focused = self
             .app
-            .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, None, &[])
+            .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, None, &[])
             .unwrap_or_else(|e| panic!("launch {name}: {e}"));
         self.state()
             .open_panes
@@ -707,12 +707,12 @@ impl HostHarness {
     /// rooted in the harness's scratch workspace (so any `PersistState` lands
     /// in a tempdir, never the checkout), and wait for its first render.
     pub fn launch_repo_app(&mut self, rel_dir: &str, args: &[String]) -> PaneId {
-        let app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
+        let plugin_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_dir);
         let workspace = self._workspace_dir.path().to_path_buf();
         let before = self.state().open_panes;
         let focused = self
             .app
-            .launch_app_by_path_with_layout(&app_dir.to_string_lossy(), None, Some(workspace), args)
+            .launch_app_by_path_with_layout(&plugin_dir.to_string_lossy(), None, Some(workspace), args)
             .unwrap_or_else(|e| panic!("launch {rel_dir}: {e}"));
         let pane_id = self
             .state()
@@ -766,7 +766,7 @@ impl HostHarness {
                 .get(&pane_id)
                 .and_then(Pane::as_app)
                 .is_some_and(
-                    |pane| matches!(&pane.runtime, AppRuntime::Python(p) if p.has_rendered_tree()),
+                    |pane| matches!(&pane.runtime, ViewRuntime::Python(p) if p.has_rendered_tree()),
                 );
             if rendered {
                 break;
@@ -780,7 +780,7 @@ impl HostHarness {
         self.run_frames(2);
     }
 
-    /// Poll the recorded event bus — the global `AppTimeline`, the same store
+    /// Poll the recorded event bus — the global `PluginTimeline`, the same store
     /// production `EmitEvent` requests record into — until an event on
     /// `stream` whose serialized JSON payload contains `payload_contains`
     /// (when set) appears, pumping one harness frame per poll (stint 0511).
@@ -793,7 +793,7 @@ impl HostHarness {
         stream: &str,
         payload_contains: Option<&str>,
         timeout: std::time::Duration,
-    ) -> Result<crate::host::app_timeline::AppEventRecord, String> {
+    ) -> Result<crate::host::app_timeline::PluginEventRecord, String> {
         let started = std::time::Instant::now();
         loop {
             {
@@ -826,7 +826,7 @@ impl HostHarness {
     }
 
     /// Inject a synthetic pointer click at pane-pixel coordinates (origin at
-    /// the pane's top-left), through the real `AppRequest::ClickPane`
+    /// the pane's top-left), through the real `HostRequest::ClickPane`
     /// dispatch path — the same host code `plexi pane click` drives. A real
     /// pointer move + press + release is delivered into the live production
     /// egui pass, so it exercises the pane's own `canvas_transform`
@@ -841,7 +841,7 @@ impl HostHarness {
         button: &str,
         response_file: Option<String>,
     ) -> &Self {
-        self.inject_ipc(AppRequest::ClickPane {
+        self.inject_ipc(HostRequest::ClickPane {
             pane_id,
             x,
             y,
@@ -851,7 +851,7 @@ impl HostHarness {
     }
 
     /// Inject a sanctioned pointer drag through the real
-    /// `AppRequest::DragPane` dispatch path — the same host code
+    /// `HostRequest::DragPane` dispatch path — the same host code
     /// `plexi pane drag` drives (stint 0510). `from`/`to` are pane-pixel
     /// coordinates (origin at the pane's top-left). The host queues a
     /// press → `steps` moves → release schedule delivered one frame at a
@@ -868,7 +868,7 @@ impl HostHarness {
         button: &str,
         response_file: Option<String>,
     ) -> &Self {
-        self.inject_ipc(AppRequest::DragPane {
+        self.inject_ipc(HostRequest::DragPane {
             pane_id,
             from: Some([from.0, from.1]),
             from_node: None,
@@ -894,7 +894,7 @@ impl HostHarness {
         button: &str,
         response_file: Option<String>,
     ) -> &Self {
-        self.inject_ipc(AppRequest::DragPane {
+        self.inject_ipc(HostRequest::DragPane {
             pane_id,
             from: None,
             from_node: Some(from_node.to_string()),
@@ -907,7 +907,7 @@ impl HostHarness {
     }
 
     /// Inject a synthetic node-targeted click, through the real
-    /// `AppRequest::ClickPaneNode` dispatch path — the same host code
+    /// `HostRequest::ClickPaneNode` dispatch path — the same host code
     /// `plexi pane click <pane_id> --node <node_id>` drives. `node_id`
     /// matches `SemanticPaneNode.id`, the id `plexi pane state` reports for
     /// every node in the pane's tree. The host resolves the node's on-screen
@@ -923,7 +923,7 @@ impl HostHarness {
         button: &str,
         response_file: Option<String>,
     ) -> &Self {
-        self.inject_ipc(AppRequest::ClickPaneNode {
+        self.inject_ipc(HostRequest::ClickPaneNode {
             pane_id,
             node_id: node_id.to_string(),
             button: Some(button.to_string()),

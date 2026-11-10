@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
 use crate::host::cli_ops::fixture;
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{ViewRuntime, Pane};
 use crate::release::ReleaseFeature;
 
 use super::HostHarness;
@@ -54,18 +54,7 @@ def view():
     return Column([Text("cli operation fixture")])
 "#;
 
-const MANIFEST: &str = r#"schema_version = 1
-
-[app]
-id = "cliop-e2e"
-type = "app"
-name = "Cli Op E2E"
-entry = "main.py"
-version = "0.1.0"
-description = "approved operation end-to-end fixture"
-
-[app.capabilities]
-capabilities = ["cli.operations"]
+const MANIFEST: &str = r#"schema_version = 2
 
 [[cli_operation]]
 id = "fixture.echo"
@@ -91,11 +80,28 @@ format = "json"
 max_bytes = 4096
 [cli_operation.authority]
 mode = "read"
+
+[plugin]
+id = "cliop-e2e"
+name = "Cli Op E2E"
+version = "0.1.0"
+description = "approved operation end-to-end fixture"
+
+[plugin.capabilities]
+capabilities = ["cli.operations"]
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "cliop-e2e.main"
+default = true
 "#;
 
 struct E2e {
     _root: tempfile::TempDir,
-    app_dir: PathBuf,
+    plugin_dir: PathBuf,
     workspace: PathBuf,
     _search: crate::host::cli_ops::TestSearchDirsGuard,
     _experiments: Option<crate::release::TestExperimentsGuard>,
@@ -105,12 +111,12 @@ struct E2e {
 impl E2e {
     fn new(enabled: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let app_dir = root.path().join("app");
+        let plugin_dir = root.path().join("app");
         let workspace = root.path().join("ws");
-        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(app_dir.join("manifest.toml"), MANIFEST).unwrap();
-        std::fs::write(app_dir.join("main.py"), MAIN_PY).unwrap();
+        std::fs::write(plugin_dir.join("manifest.toml"), MANIFEST).unwrap();
+        std::fs::write(plugin_dir.join("main.py"), MAIN_PY).unwrap();
         let bin = fixture::install("a", &root.path().join("bin/fixturecli"));
         let search =
             crate::host::cli_ops::set_test_search_dirs(vec![bin.parent().unwrap().to_path_buf()]);
@@ -119,7 +125,7 @@ impl E2e {
         Self {
             h: HostHarness::new(),
             _root: root,
-            app_dir,
+            plugin_dir,
             workspace,
             _search: search,
             _experiments: experiments,
@@ -131,7 +137,7 @@ impl E2e {
         self.h
             .app
             .launch_app_by_path_with_layout(
-                &self.app_dir.to_string_lossy(),
+                &self.plugin_dir.to_string_lossy(),
                 None,
                 Some(self.workspace.clone()),
                 &[plan.to_string()],
@@ -153,7 +159,7 @@ impl E2e {
             .find_map(|w| w.panes.get(&pane))
             .and_then(Pane::as_app)
             .and_then(|p| match &p.runtime {
-                AppRuntime::Python(py) => Some(py.display_name()),
+                ViewRuntime::Python(py) => Some(py.display_name()),
                 _ => None,
             })
     }

@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::app::PlexiApp;
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{ViewRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ fn assistant_harness_factory(
 ) -> Box<dyn crate::app::app_trait::App> {
     let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
         std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
-    Box::new(crate::assistant::AssistantApp::new(
+    Box::new(crate::assistant::AssistantView::new(
         workspace_root.to_path_buf(),
         broker,
         workspace_root,
@@ -256,7 +256,7 @@ impl PlexiUiHarness {
     }
 
     /// Fresh directory owned by this harness. Scenes use it when an open step
-    /// omits `cwd`, keeping native app state out of the developer's workspace.
+    /// omits `cwd`, keeping native plugin state out of the developer's workspace.
     pub fn workspace_root(&self) -> &Path {
         self.workspace.path()
     }
@@ -292,7 +292,7 @@ impl PlexiUiHarness {
             self.with_app_mut(|host| {
                 host.open_builtin_app_pane(
                     app,
-                    crate::app::permissions::AppPermissions::builtin(),
+                    crate::app::permissions::PluginPermissions::builtin(),
                     cwd.to_path_buf(),
                     None,
                     Some("split_v"),
@@ -321,7 +321,7 @@ impl PlexiUiHarness {
             host.windows.iter().any(|window| {
                 matches!(
                     window.panes.get(&pane_id),
-                    Some(Pane::App(app)) if matches!(app.runtime, AppRuntime::Builtin(_))
+                    Some(Pane::App(app)) if matches!(app.runtime, ViewRuntime::Builtin(_))
                 )
             })
         });
@@ -385,8 +385,8 @@ impl PlexiUiHarness {
         self.inner.query_all_by_label(label).next().is_some()
     }
 
-    /// Launch a real PGAP app process from `app_dir` (a directory containing
-    /// `manifest.toml`) — the same production path as `plexi app open <path>`.
+    /// Launch a real PGAP app process from `plugin_dir` (a directory containing
+    /// `manifest.toml`) — the same production path as `plexi view open <path>`.
     /// The child process, IPC threads, and L1 render pipeline are all real.
     /// Returns the new pane's id.
     ///
@@ -396,7 +396,7 @@ impl PlexiUiHarness {
     ///
     /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
     /// pass JSON state for deterministic scenes.
-    pub fn open_app_at(&mut self, app_dir: &Path, args: &[String]) -> Result<PaneId, String> {
+    pub fn open_app_at(&mut self, plugin_dir: &Path, args: &[String]) -> Result<PaneId, String> {
         if std::env::var_os("PLEXI_SDK_PATH").is_none() {
             let dev_sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("sdk")
@@ -412,7 +412,7 @@ impl PlexiUiHarness {
                 .copied()
                 .collect()
         });
-        let path = app_dir.to_string_lossy().into_owned();
+        let path = plugin_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
             app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
                 .map(|_| ())
@@ -428,19 +428,19 @@ impl PlexiUiHarness {
     }
 
     /// Open a sandboxed WASM component app, forwarding `args` to the guest's
-    /// `init` as its argv (the same path as `plexi app open <path> -- <args>`).
+    /// `init` as its argv (the same path as `plexi view open <path> -- <args>`).
     pub fn open_wasm_at_with_args(
         &mut self,
         wasm_path: &Path,
         args: Vec<String>,
     ) -> Result<PaneId, String> {
-        let app_id = wasm_path
+        let plugin_id = wasm_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm")
             .to_string();
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        self.with_app_mut(|app| app.open_wasm_app_pane(&app_id, wasm_path, cwd, args))
+        self.with_app_mut(|app| app.open_wasm_app_pane(&plugin_id, wasm_path, cwd, args))
     }
 
     /// Step frames until the real app process behind `pane_id` commits its
@@ -462,12 +462,12 @@ impl PlexiUiHarness {
                     return Probe::Dead(format!("pane {pane_id} is not an app pane"));
                 };
                 match &app_pane.runtime {
-                    AppRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
-                    AppRuntime::Python(p) => p
+                    ViewRuntime::Python(p) if p.has_rendered_tree() => Probe::Rendered,
+                    ViewRuntime::Python(p) => p
                         .error()
                         .map(|error| Probe::Dead(error.to_string()))
                         .unwrap_or(Probe::Waiting),
-                    AppRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
+                    ViewRuntime::Wasm(p) if p.is_running() => Probe::Rendered,
                     _ => Probe::Dead(format!("pane {pane_id} is not a WASM app")),
                 }
             });
@@ -492,8 +492,8 @@ impl PlexiUiHarness {
     pub fn open_file_browser(&mut self, cwd: std::path::PathBuf) {
         self.with_app_mut(|app| {
             let fb: Box<dyn crate::app::app_trait::App> =
-                Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
-            let perms = crate::app::permissions::AppPermissions::builtin();
+                Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
+            let perms = crate::app::permissions::PluginPermissions::builtin();
             app.open_builtin_app_pane(
                 fb,
                 perms,
@@ -523,7 +523,7 @@ impl PlexiUiHarness {
         let context_id = self.with_app_mut(|app| app.windows[app.active_window].context_id);
         // Grants/audit also stay inside the temp workspace, never the real
         // channel profile dir.
-        let assistant = crate::assistant::AssistantApp::new(
+        let assistant = crate::assistant::AssistantView::new(
             workspace_root.clone(),
             broker,
             &workspace_root,
@@ -536,12 +536,12 @@ impl PlexiUiHarness {
     /// pending permission sheet) through the same builtin pane path.
     pub fn open_assistant_built(
         &mut self,
-        assistant: crate::assistant::AssistantApp,
+        assistant: crate::assistant::AssistantView,
         workspace_root: std::path::PathBuf,
     ) {
         self.with_app_mut(|app| {
             let boxed: Box<dyn crate::app::app_trait::App> = Box::new(assistant);
-            let perms = crate::app::permissions::AppPermissions::builtin();
+            let perms = crate::app::permissions::PluginPermissions::builtin();
             app.open_builtin_app_pane(
                 boxed,
                 perms,
@@ -606,10 +606,10 @@ pub(crate) fn evidence_png_path(test_name: &str, suffix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::permissions::AppPermissions;
+    use crate::app::permissions::PluginPermissions;
     use crate::app::FocusKind;
     use crate::host::context::Window;
-    use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane, TerminalPane};
+    use crate::host::pane::{ViewPane, ViewRuntime, Pane, PortalPane, TerminalPane};
     use egui_kittest::kittest::Queryable;
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
     fn cmd_plus_minus_changes_only_focused_pane_in_seeded_fixture() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 700.0);
         h.step();
-        let (term_a_id, term_b_id, app_id, _tile_a, tile_app) = h.with_app_mut(|app| {
+        let (term_a_id, term_b_id, plugin_id, _tile_a, tile_app) = h.with_app_mut(|app| {
             app.sidebar_visible = false;
             let workspace_root = app.router.active().root.clone();
 
@@ -1062,14 +1062,14 @@ mod tests {
             .expect("spawn terminal pane B");
 
             let id_app = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: id_app,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     workspace_root.clone(),
                 ))),
                 workspace_root,
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "file-browser".to_string(),
                 name: "Files".to_string(),
                 pane_group: None,
@@ -1109,14 +1109,14 @@ mod tests {
             h.with_app(|app| {
                 let pane = app.windows[app.active_window].panes.get(&pid).unwrap();
                 let Pane::App(a) = pane else { panic!("not app") };
-                let AppRuntime::Builtin(b) = &a.runtime else { panic!("not builtin") };
+                let ViewRuntime::Builtin(b) = &a.runtime else { panic!("not builtin") };
                 b.font_size().unwrap_or(0.0)
             })
         };
 
         assert_eq!(term_font(&h, term_a_id), 14.0);
         assert_eq!(term_font(&h, term_b_id), 14.0);
-        assert_eq!(app_font(&h, app_id), crate::ui::style::TEXT_HINT);
+        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT);
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
 
         // 1. Cmd+= on focused Terminal A
@@ -1124,7 +1124,7 @@ mod tests {
         h.run_steps(3);
         assert_eq!(term_font(&h, term_a_id), 15.0);
         assert_eq!(term_font(&h, term_b_id), 14.0, "unfocused terminal untouched");
-        assert_eq!(app_font(&h, app_id), crate::ui::style::TEXT_HINT, "unfocused app untouched");
+        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "unfocused app untouched");
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0, "ui_scale untouched");
 
         // 2. Cmd+- on focused Terminal A
@@ -1151,7 +1151,7 @@ mod tests {
         h.run_steps(3);
         h.harness().key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
         h.run_steps(3);
-        assert_eq!(app_font(&h, app_id), crate::ui::style::TEXT_HINT + 1.0, "focused app font stepped");
+        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT + 1.0, "focused app font stepped");
         assert_eq!(term_font(&h, term_a_id), 14.0);
         assert_eq!(term_font(&h, term_b_id), 14.0);
         assert_eq!(h.with_app(|a| a.ui_scale), 1.0);
@@ -1161,7 +1161,7 @@ mod tests {
             egui::Key::Num0,
         );
         h.run_steps(3);
-        assert_eq!(app_font(&h, app_id), crate::ui::style::TEXT_HINT, "Cmd+Alt+0 resets app font");
+        assert_eq!(app_font(&h, plugin_id), crate::ui::style::TEXT_HINT, "Cmd+Alt+0 resets app font");
     }
 
     /// Cmd+= / Cmd+- in Tree Atlas adjusts only the remembered
@@ -1400,7 +1400,7 @@ mod tests {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
             let Pane::App(a) = pane else { panic!() };
-            let AppRuntime::Builtin(b) = &a.runtime else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
 
@@ -1411,7 +1411,7 @@ mod tests {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
             let Pane::App(a) = pane else { panic!() };
-            let AppRuntime::Builtin(b) = &a.runtime else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
         assert_eq!(font_after_equals, initial_font + 1.0);
@@ -1423,7 +1423,7 @@ mod tests {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
             let Pane::App(a) = pane else { panic!() };
-            let AppRuntime::Builtin(b) = &a.runtime else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
         assert_eq!(font_after_plus, initial_font + 2.0);
@@ -1454,7 +1454,7 @@ mod tests {
                     &mut input,
                     &app.binding_table,
                     &mut claimed_key_releases,
-                    /* app_active */ true,
+                    /* view_active */ true,
                     /* keyboard_capture */ false,
                     /* overlay_open */ false,
                     /* shortcuts_overlay_open */ false,
@@ -1482,7 +1482,7 @@ mod tests {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
             let Pane::App(a) = pane else { panic!() };
-            let AppRuntime::Builtin(b) = &a.runtime else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
         assert_eq!(font_unchanged, font_after_plus, "Cmd+= overridden so should not step");
@@ -1497,7 +1497,7 @@ mod tests {
             let (win, _) = app.find_pane_in_any_window(app.active_focused_pane_id().unwrap()).unwrap();
             let pane = app.windows[win].panes.get(&app.active_focused_pane_id().unwrap()).unwrap();
             let Pane::App(a) = pane else { panic!() };
-            let AppRuntime::Builtin(b) = &a.runtime else { panic!() };
+            let ViewRuntime::Builtin(b) = &a.runtime else { panic!() };
             b.font_size().unwrap()
         });
         assert_eq!(font_stepped, font_after_plus + 1.0, "Cmd+Alt+= custom override steps font");
@@ -2579,14 +2579,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     browser_root.clone(),
                 ))),
                 workspace_root: browser_root.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "test".to_string(),
                 name: "Test App".to_string(),
                 pane_group: None,
@@ -2633,7 +2633,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             let layer = ui.layer_id();
@@ -2714,7 +2714,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 if let Some(Pane::App(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
-                    pane.runtime = AppRuntime::Builtin(Box::new(PressFixture {
+                    pane.runtime = ViewRuntime::Builtin(Box::new(PressFixture {
                         kind,
                         snapshot: snapshot.clone(),
                     }));
@@ -2859,7 +2859,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let _ = std::fs::remove_file(&shot_path);
     }
 
-    /// Regression for stint 0351: `AppRequest::KeyPane` (the `plexi pane key`
+    /// Regression for stint 0351: `HostRequest::KeyPane` (the `plexi pane key`
     /// socket path) must drive a native app pane through its real
     /// `App::handle_key` — not the PGAP event queue, which native apps never
     /// read. Enter on the File Explorer's selected directory must run the
@@ -2885,7 +2885,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let rf_dir = tempfile::tempdir().expect("tempdir");
         let rf = rf_dir.path().join("key-response.json");
         h.with_app_mut(|app| {
-            app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+            app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
                 pane_id,
                 key: "enter".to_string(),
                 response_file: Some(rf.to_string_lossy().into_owned()),
@@ -3117,7 +3117,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             !has_wasm,
@@ -3132,16 +3132,16 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
-            "approving raw WASM review should spawn an AppRuntime::Wasm pane"
+            "approving raw WASM review should spawn an ViewRuntime::Wasm pane"
         );
     }
 
     /// Once raw `.wasm` imports are reviewed and persisted for the path scope,
-    /// the same path-launch entry point must still spawn an `AppRuntime::Wasm`
+    /// the same path-launch entry point must still spawn an `ViewRuntime::Wasm`
     /// pane rather than attempting a manifest/process launch.
     #[test]
     fn wasm_path_launch_opens_wasm_pane_after_review() {
@@ -3150,18 +3150,18 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .join("tests/wasm-fixtures/sysmon.wasm");
         let config_dir = tempfile::tempdir().expect("temp config dir");
         let _profile_guard = crate::config::set_test_profile_dir(config_dir.path().to_path_buf());
-        let app_id = fixture
+        let plugin_id = fixture
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("wasm");
         let workspace_root = fixture.parent().expect("fixture parent");
-        let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(&fixture)
+        let grants = crate::host::wasm_app::WasmView::inspect_required_grants(&fixture)
             .expect("inspect fixture grants");
         let mut store =
             crate::app::permissions::PermissionStore::load_or_default(config_dir.path());
         for capability_id in grants.capability_ids() {
             store.set_wasm(
-                app_id,
+                plugin_id,
                 workspace_root,
                 &capability_id,
                 crate::app::permissions::PermissionState::Green,
@@ -3184,11 +3184,11 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             app.windows[app.active_window]
                 .panes
                 .values()
-                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, AppRuntime::Wasm(_))))
+                .any(|p| matches!(p, Pane::App(a) if matches!(a.runtime, ViewRuntime::Wasm(_))))
         });
         assert!(
             has_wasm,
-            "a reviewed .wasm path launch should produce an AppRuntime::Wasm pane"
+            "a reviewed .wasm path launch should produce an ViewRuntime::Wasm pane"
         );
     }
 
@@ -3221,14 +3221,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
             // Child window holding the text-editor pane the portal previews.
             let editor_pane_id = app.host.alloc_pane_id();
-            let editor = AppPane {
+            let editor = ViewPane {
                 pip_status: Some(crate::protocol::PipStatus::Green),
                 id: editor_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     editor_path.clone(),
                 ))),
                 workspace_root: editor_path.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "note.md".to_string(),
                 pane_group: None,
@@ -3298,7 +3298,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
     /// Direct paint of `paint_portal_minimap` with hand-built `MiniPane`s — no
     /// PTY needed — so every glyph arm (terminal `>_`, text-editor document,
     /// generic app grid) and the status pip render in one screenshot for size
-    /// verification. The full-app test above cannot fabricate a Terminal pane
+    /// verification. The full-plugin test above cannot fabricate a Terminal pane
     /// because that needs a real `TerminalBackend`; this bypasses that by
     /// setting `PaneKind` directly.
     #[test]
@@ -3369,7 +3369,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             .expect("open initial master pane");
         h.step();
 
-        let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::AppRequest| {
+        let send_req = |h: &mut PlexiUiHarness, req: crate::protocol::HostRequest| {
             h.with_app_mut(|app| {
                 app.handle_pane_ipc_request(req);
             });
@@ -3381,7 +3381,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 let reply = dir.path().join(format!("spawn-{subctx}-{name}.json"));
                 send_req(
                     h,
-                    crate::protocol::AppRequest::AgentSpawn {
+                    crate::protocol::HostRequest::AgentSpawn {
                         role: name.into(),
                         harness: "codex".into(),
                         command: "sleep 30".into(),
@@ -3470,7 +3470,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let reply = dir.path().join(format!("split-{name}.json"));
             send_req(
                 h,
-                crate::protocol::AppRequest::AgentSpawn {
+                crate::protocol::HostRequest::AgentSpawn {
                     role: name.into(),
                     harness: "codex".into(),
                     command: "sleep 30".into(),
@@ -3518,7 +3518,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         // and arrange the active window into a clean 2-row layout:
         //   Top row:    [lane-working | lane-blocked | lane-needs-you | lane-error]
         //   Bottom row: [squad-alpha  | squad-deploy | squad-ci]
-        send_req(&mut h, crate::protocol::AppRequest::SetPipStatus {
+        send_req(&mut h, crate::protocol::HostRequest::SetPipStatus {
             pane_id: master_pane,
             status: crate::protocol::PipStatus::Yellow,
         });
@@ -3766,14 +3766,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -3825,14 +3825,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: file_name.clone(),
                 pane_group: None,
@@ -3872,14 +3872,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         let pane_id = h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorView::new(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: file_name.clone(),
                 pane_group: None,
@@ -3900,14 +3900,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             pane_id
         });
         let with_editor = |h: &mut PlexiUiHarness,
-                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorApp)| {
+                           f: &mut dyn FnMut(&mut crate::app::text_editor_app::TextEditorView)| {
             h.with_app_mut(|app| {
                 let win = &mut app.windows[app.active_window];
                 if let Some(Pane::App(a)) = win.panes.get_mut(&pane_id) {
-                    if let AppRuntime::Builtin(b) = &mut a.runtime {
+                    if let ViewRuntime::Builtin(b) = &mut a.runtime {
                         let ed = b
                             .as_any_mut()
-                            .downcast_mut::<crate::app::text_editor_app::TextEditorApp>()
+                            .downcast_mut::<crate::app::text_editor_app::TextEditorView>()
                             .expect("text editor");
                         f(ed);
                     }
@@ -3967,14 +3967,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -4621,14 +4621,14 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             let mut tiles = Vec::with_capacity(count);
             for _ in 0..count {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let app_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "test".to_string(),
                     name: "Test App".to_string(),
                     pane_group: None,
@@ -5493,8 +5493,8 @@ open(out + ".done", "w").close()
     #[test]
     fn screenshot_python_app_delta_frames_paint() {
         let mut h = PlexiUiHarness::new_sized(900.0, 700.0);
-        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
-        let pane_id = h.open_app_at(&app_dir, &[]).expect("open breakout");
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/breakout");
+        let pane_id = h.open_app_at(&plugin_dir, &[]).expect("open breakout");
         h.wait_for_app_frame(pane_id, Duration::from_secs(30))
             .expect("breakout first frame");
         // Advance host frames so the guest emits delta frames that the decoder
@@ -5564,7 +5564,7 @@ open(out + ".done", "w").close()
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             ui.set_width(self.width);
@@ -5585,7 +5585,7 @@ open(out + ".done", "w").close()
                 if let Some(Pane::App(pane)) =
                     app.windows[app.active_window].panes.get_mut(&pane_id)
                 {
-                    pane.runtime = AppRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
+                    pane.runtime = ViewRuntime::Builtin(Box::new(GalleryRowsFixture { width }));
                 }
             });
             h.run_steps(3);
@@ -5848,7 +5848,7 @@ open(out + ".done", "w").close()
                 std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app-icon.png"), &path).unwrap();
                 h.open_target(HarnessOpenTarget::Builtin { id: "image-viewer", cwd: &root, args: &[path.display().to_string()] }).unwrap();
                 h.run_steps(4);
-                assert_layout_surface(&h, "app_bar");
+                assert_layout_surface(&h, "surface_header");
                 h.save_screenshot(&evidence_png!(&format!("_{theme}_{scale}_appbar"))).unwrap();
                 h.with_app_mut(|app| {
                     app.show_ui_gallery = true;
@@ -5963,7 +5963,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         let row = |role: TurnRole, text: &str, at: &str| Turn {
             role,
             text: text.to_string(),
@@ -6023,7 +6023,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -6096,7 +6096,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![Turn {
             role: TurnRole::User,
             text: "build me a tictactoe app".to_string(),
@@ -6126,7 +6126,7 @@ open(out + ".done", "w").close()
         let broker2: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant2 =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker2, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker2, ws.path(), 1);
         assistant2.model.streaming.in_flight = true;
         assistant2.model.streaming.partial_answer =
             "The SDK uses state.get() from plexi_sdk. Let me fix all the issues.".to_string();
@@ -6157,7 +6157,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
 
         let mut write_tool = Turn::tool("host.files.write", ToolStatus::Succeeded);
         write_tool.input_summary = Some("path: main.py".to_string());
@@ -6169,11 +6169,11 @@ open(out + ".done", "w").close()
         check_tool.input_summary = Some(r#"{"app": "guessing-game"}"#.to_string());
         check_tool.output_preview = Some(r#"{"ok": true}"#.to_string());
         let mut failed_tool = Turn::tool("host.build.run — exit 1: mypy error", ToolStatus::Failed);
-        failed_tool.input_summary = Some(r#"{"cmd": "app check"}"#.to_string());
+        failed_tool.input_summary = Some(r#"{"cmd": "plugin check"}"#.to_string());
         // Multi-line output preview (stint 0460): real newlines render as a
         // framed block, so a command's output reads as the lines it printed.
         failed_tool.output_preview = Some(
-            "stdout: ✓ manifest — fish-game\n✗ types — mypy found errors:\nmain.py:12: error: \"UiValueChange\" has no attribute \"payload\"\n✗ app check failed — 1 error(s)".to_string(),
+            "stdout: ✓ manifest — fish-game\n✗ types — mypy found errors:\nmain.py:12: error: \"UiValueChange\" has no attribute \"payload\"\n✗ plugin check failed — 1 error(s)".to_string(),
         );
 
         assistant.model.turns = vec![
@@ -6228,7 +6228,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant.model.turns = vec![
             Turn {
                 role: TurnRole::User,
@@ -6348,7 +6348,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         assistant
             .model
             .permission_requested("csv.write_range", r#"{"range": "A1:B2"}"#);
@@ -6391,7 +6391,7 @@ open(out + ".done", "w").close()
         let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
             std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
         let mut assistant =
-            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path(), 1);
+            crate::assistant::AssistantView::new(ws.path().to_path_buf(), broker, ws.path(), 1);
         let turn = |role, text: &str| crate::assistant::model::Turn {
             role,
             text: text.to_string(),
@@ -6605,14 +6605,14 @@ open(out + ".done", "w").close()
         let browser_root = h.workspace.path().to_path_buf();
         h.with_app_mut(|app| {
             let second_pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: second_pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     browser_root.clone(),
                 ))),
                 workspace_root: browser_root.clone(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "hidden-test".to_string(),
                 name: "Hidden Test App".to_string(),
                 pane_group: None,
@@ -7166,9 +7166,9 @@ open(out + ".done", "w").close()
         }
     }
 
-    struct AppContrastFixture;
+    struct ViewContrastFixture;
 
-    impl crate::app::app_trait::App for AppContrastFixture {
+    impl crate::app::app_trait::App for ViewContrastFixture {
         fn type_id(&self) -> &'static str {
             "app_contrast_fixture"
         }
@@ -7181,7 +7181,7 @@ open(out + ".done", "w").close()
         fn ui(
             &mut self,
             ui: &mut egui::Ui,
-            ctx: &crate::app::app_trait::AppRenderContext<'_>,
+            ctx: &crate::app::app_trait::ViewRenderContext<'_>,
             _: Option<crate::host::pane::PendingPaneClick>,
         ) {
             // Serialized from the unchanged Stint board build_view at f46a711,
@@ -7213,7 +7213,7 @@ open(out + ".done", "w").close()
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 if let Some(Pane::App(pane)) = app.windows[app.active_window].panes.get_mut(&pane_id) {
-                    pane.runtime = AppRuntime::Builtin(Box::new(AppContrastFixture));
+                    pane.runtime = ViewRuntime::Builtin(Box::new(ViewContrastFixture));
                 }
             });
             h.run_steps(3);
@@ -7403,14 +7403,14 @@ open(out + ".done", "w").close()
                               state: crate::protocol::AgentState,
                               detail: Option<&str>| {
                 let pane_id = app.host.alloc_pane_id();
-                let pane = Pane::App(Box::new(AppPane {
+                let pane = Pane::App(Box::new(ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "terminal".to_string(),
                     name: pane_name.to_string(),
                     pane_group: None,
@@ -7483,14 +7483,14 @@ open(out + ".done", "w").close()
             let ordinary_id = app.host.alloc_pane_id();
             squad.push((
                 ordinary_id,
-                Pane::App(Box::new(AppPane {
+                Pane::App(Box::new(ViewPane {
                     pip_status: None,
                     id: ordinary_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "file-browser".to_string(),
                     name: "parked build log".to_string(),
                     pane_group: None,
@@ -7610,7 +7610,7 @@ open(out + ".done", "w").close()
         let img = h.render().expect("render failed");
         img.save(evidence_png!()).expect("save screenshot");
         // Probe the blank right gutter inside the modal. The image center can
-        // land on a command description as the registered app list changes.
+        // land on a command description as the registered plugin list changes.
         let surface = img.get_pixel(img.width() * 3 / 4, img.height() / 2).0;
         let center_luma =
             (u16::from(surface[0]) + u16::from(surface[1]) + u16::from(surface[2])) / 3;
@@ -8019,14 +8019,14 @@ open(out + ".done", "w").close()
                 (pane_id_a, "A very long tab title that should not wrap onto a second line under any circumstances"),
                 (pane_id_b, "Short"),
             ] {
-                let app_pane = AppPane {
+                let app_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(browser_root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(browser_root.clone()),
                     )),
                     workspace_root: browser_root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "test".to_string(),
                     name: name.to_string(),
                     pane_group: None,
@@ -8296,14 +8296,14 @@ open(out + ".done", "w").close()
 
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(
-                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                runtime: ViewRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorView::new_for_test_note(path.clone()),
                 )),
                 workspace_root: crate::testing::scratch_context_root("ui"),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "text-editor".to_string(),
                 name: "Text Editor".to_string(),
                 pane_group: None,
@@ -8566,14 +8566,14 @@ open(out + ".done", "w").close()
         h.step();
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
-            let app_pane = AppPane {
+            let app_pane = ViewPane {
                 pip_status: None,
                 id: pane_id,
-                runtime: AppRuntime::Builtin(Box::new(crate::file_browser::FileBrowserApp::new(
+                runtime: ViewRuntime::Builtin(Box::new(crate::file_browser::FileBrowserView::new(
                     dir.path().to_path_buf(),
                 ))),
                 workspace_root: dir.path().to_path_buf(),
-                permissions: AppPermissions::builtin(),
+                permissions: PluginPermissions::builtin(),
                 manifest_id: "file-browser".to_string(),
                 name: "Files".to_string(),
                 pane_group: None,
@@ -8614,7 +8614,7 @@ open(out + ".done", "w").close()
     //      (0530). Each calls the production code path — it never re-implements
     //      the invariant.
     //
-    // The `paint_app_bar` title+subtitle band is painted only from
+    // The `paint_surface_header` title+subtitle band is painted only from
     // `wasm_render`; rather than depend on a fixture app declaring app-chrome,
     // its two crispness invariants are frozen mechanically below — the subtitle
     // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
@@ -8622,8 +8622,8 @@ open(out + ".done", "w").close()
     mod crispness_gate {
         use super::*;
         use crate::app::permissions::{PermissionState, PermissionStore};
-        use crate::app::text_editor_app::TextEditorApp;
-        use crate::host::wasm_app::{StateSnapshot, StateStore, WasmApp};
+        use crate::app::text_editor_app::TextEditorView;
+        use crate::host::wasm_app::{StateSnapshot, StateStore, WasmView};
         use crate::host::wasm_pane::{SysinfoStats, WasmPane};
 
         /// The two display scales every text surface must stay crisp at: 1.0
@@ -8641,15 +8641,15 @@ open(out + ".done", "w").close()
         /// it. Returns `None` if no editor pane is open.
         fn with_editor<R>(
             h: &mut PlexiUiHarness,
-            f: impl FnOnce(&mut TextEditorApp) -> R,
+            f: impl FnOnce(&mut TextEditorView) -> R,
         ) -> Option<R> {
             let mut f = Some(f);
             h.with_app_mut(|app| {
                 for win in &mut app.windows {
                     for pane in win.panes.values_mut() {
                         if let Pane::App(a) = pane {
-                            if let AppRuntime::Builtin(b) = &mut a.runtime {
-                                if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorApp>() {
+                            if let ViewRuntime::Builtin(b) = &mut a.runtime {
+                                if let Some(ed) = b.as_any_mut().downcast_mut::<TextEditorView>() {
                                     return Some((f.take().expect("f consumed once"))(ed));
                                 }
                             }
@@ -8703,14 +8703,14 @@ open(out + ".done", "w").close()
             std::fs::write(&path, &body).expect("seed note");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let app_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(TextEditorApp::new_for_test_note(
+                    runtime: ViewRuntime::Builtin(Box::new(TextEditorView::new_for_test_note(
                         path.clone(),
                     ))),
                     workspace_root: crate::testing::scratch_context_root("ui"),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "text-editor".to_string(),
                     name: "Text Editor".to_string(),
                     pane_group: None,
@@ -8750,14 +8750,14 @@ open(out + ".done", "w").close()
             std::fs::create_dir_all(root.join("assets")).expect("seed subdir");
             h.with_app_mut(|app| {
                 let pane_id = app.host.alloc_pane_id();
-                let app_pane = AppPane {
+                let app_pane = ViewPane {
                     pip_status: None,
                     id: pane_id,
-                    runtime: AppRuntime::Builtin(Box::new(
-                        crate::file_browser::FileBrowserApp::new(root.clone()),
+                    runtime: ViewRuntime::Builtin(Box::new(
+                        crate::file_browser::FileBrowserView::new(root.clone()),
                     )),
                     workspace_root: root.clone(),
-                    permissions: AppPermissions::builtin(),
+                    permissions: PluginPermissions::builtin(),
                     manifest_id: "file-browser".to_string(),
                     name: "Files".to_string(),
                     pane_group: None,
@@ -8779,21 +8779,21 @@ open(out + ".done", "w").close()
         }
 
         /// Launch the sysmon WASM fixture through the reviewed-path production
-        /// launcher: text-heavy L1 body plus its `paint_app_bar` title band.
+        /// launcher: text-heavy L1 body plus its `paint_surface_header` title band.
         /// Grants are pre-persisted into the harness profile so the review
         /// auto-approves. The returned guard must outlive the harness.
         fn seed_wasm_text(h: &mut PlexiUiHarness, profile: &std::path::Path) {
             let fixture = wasm_fixture("sysmon.wasm");
-            let app_id = fixture
+            let plugin_id = fixture
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("wasm");
             let workspace_root = fixture.parent().expect("fixture parent");
-            let grants = WasmApp::inspect_required_grants(&fixture).expect("inspect grants");
+            let grants = WasmView::inspect_required_grants(&fixture).expect("inspect grants");
             let mut store = PermissionStore::load_or_default(profile);
             for capability_id in grants.capability_ids() {
                 store.set_wasm(
-                    app_id,
+                    plugin_id,
                     workspace_root,
                     &capability_id,
                     PermissionState::Green,
@@ -8877,7 +8877,7 @@ open(out + ".done", "w").close()
         #[test]
         fn gate_wasm_app_surface_scales_with_ppp() {
             fn surface_at(ppp: f32) -> (u32, u32) {
-                let app = WasmApp::load_ephemeral_run(
+                let app = WasmView::load_ephemeral_run(
                     "pong-crispness",
                     &wasm_fixture("pong.wasm"),
                     StateStore::ephemeral(),
@@ -8939,7 +8939,7 @@ open(out + ".done", "w").close()
         }
 
         /// Stint 0528: the labels the host hand-paints in `text_secondary`
-        /// (sidebar context names, app-bar subtitles, pane-name bars) clear the
+        /// (sidebar context names, surface-header subtitles, pane-name bars) clear the
         /// WCAG AA 4.5:1 floor against every background they actually sit on —
         /// mirroring the contrast check apps get. Reuses the production WCAG
         /// math and the default theme.
@@ -9008,9 +9008,9 @@ open(out + ".done", "w").close()
     /// The assertion is the gate; the PNG is for a human/agent to look at.
     #[test]
     fn screenshot_todo_add_form_autofocused_draft() {
-        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
+        let plugin_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/todo");
         let mut h = PlexiUiHarness::new_sized(900.0, 620.0);
-        let pane_id = h.open_app_at(&app_dir, &[]).expect("launch todo");
+        let pane_id = h.open_app_at(&plugin_dir, &[]).expect("launch todo");
         h.wait_for_app_frame(pane_id, Duration::from_secs(30))
             .expect("todo renders its first frame");
         h.focus_pane(pane_id).expect("focus todo pane");
@@ -9303,8 +9303,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(leaf_clone.clone())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(leaf_clone.clone())),
+                PluginPermissions::builtin(),
                 leaf_clone,
                 None,
                 None,
@@ -9364,13 +9364,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             assert_eq!(fb.cwd, parent_dir, "clicking breadcrumb must navigate to ancestor");
         });
     }
@@ -9404,8 +9404,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -9442,11 +9442,11 @@ open(out + ".done", "w").close()
                     .panes
                     .values_mut()
                     .find_map(|p| {
-                        let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                        let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                             return None;
                         };
                         b.as_any_mut()
-                            .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                            .downcast_mut::<crate::file_browser::FileBrowserView>()
                     })
                     .is_some_and(|fb| fb.search_result_count() >= 3)
             });
@@ -9484,8 +9484,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -9519,11 +9519,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
                 .map(|fb| fb.is_in_search())
         });
@@ -9544,11 +9544,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
                 .map(|fb| fb.is_in_search())
         });
@@ -9583,11 +9583,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
                 .map(|fb| fb.is_in_search())
         });
@@ -9615,11 +9615,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
                 .map(|fb| (fb.is_in_search(), fb.search_result_count()))
         });
@@ -9644,11 +9644,11 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
                 .map(|fb| (fb.is_in_search(), fb.opened_files.len()))
         });
@@ -9674,8 +9674,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -9688,13 +9688,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             let layout = fb
                 .last_status_bar_layout
                 .as_ref()
@@ -9732,13 +9732,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             let layout = fb
                 .last_status_bar_layout
                 .as_ref()
@@ -9763,13 +9763,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::file_browser::FileBrowserApp>()
+                        .downcast_mut::<crate::file_browser::FileBrowserView>()
                 })
-                .expect("FileBrowserApp pane");
+                .expect("FileBrowserView pane");
             let layout = fb
                 .last_status_bar_layout
                 .as_ref()
@@ -9843,8 +9843,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::render::cli_renderer_app::CliRendererApp::new(desc_str)),
-                AppPermissions::builtin(),
+                Box::new(crate::render::cli_renderer_app::CliRendererView::new(desc_str)),
+                PluginPermissions::builtin(),
                 cwd,
                 None,
                 None,
@@ -9857,13 +9857,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererView>()
                 })
-                .expect("CliRendererApp pane");
+                .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
             assert!(cli.last_footer_chip_rects.len() >= 3);
         });
@@ -9884,13 +9884,13 @@ open(out + ".done", "w").close()
                 .panes
                 .values_mut()
                 .find_map(|p| {
-                    let AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                    let ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                         return None;
                     };
                     b.as_any_mut()
-                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererApp>()
+                        .downcast_mut::<crate::render::cli_renderer_app::CliRendererView>()
                 })
-                .expect("CliRendererApp pane");
+                .expect("CliRendererView pane");
             assert!(cli.last_header_rect.is_some());
             assert_eq!(cli.last_footer_chip_rects.len(), 2);
         });
@@ -9914,8 +9914,8 @@ open(out + ".done", "w").close()
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root_clone.clone())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(root_clone.clone())),
+                PluginPermissions::builtin(),
                 root_clone,
                 None,
                 None,
@@ -10011,7 +10011,7 @@ open(out + ".done", "w").close()
         let ws_cmds = ws_channel_dir.join("commands.toml");
         std::fs::write(
             &ws_cmds,
-            "[commands]\ngs = \"git status -sb\"\n\n[commands.play]\ndescription = \"Open mixer + editor\"\nsteps = [\n  \"pane new --right --name mixer -- echo mix\",\n  \"app open text-editor --split down\",\n]\n",
+            "[commands]\ngs = \"git status -sb\"\n\n[commands.play]\ndescription = \"Open mixer + editor\"\nsteps = [\n  \"pane new --right --name mixer -- echo mix\",\n  \"view open text-editor --split down\",\n]\n",
         )
         .unwrap();
 
@@ -10889,7 +10889,7 @@ open(out + ".done", "w").close()
             }
             crate::app::app_trait::KeyDisposition::Passthrough
         }
-        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::app_trait::AppRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
+        fn ui(&mut self, ui: &mut egui::Ui, _: &crate::app::app_trait::ViewRenderContext<'_>, _: Option<crate::host::pane::PendingPaneClick>) {
             let raw_y = ui.input(|input| input.events.iter().filter_map(|event| match event {
                 egui::Event::MouseWheel { delta, .. } => Some(delta.y), _ => None,
             }).sum::<f32>());
@@ -10912,7 +10912,7 @@ open(out + ".done", "w").close()
             let state = Arc::new(std::sync::Mutex::new(StripWheelSnapshot::default()));
             h.with_app_mut(|app| {
                 let pane = app.windows[app.active_window].panes.get_mut(&first).unwrap().as_app_mut().unwrap();
-                pane.runtime = AppRuntime::Builtin(Box::new(StripWheelFixture { horizontal, state: state.clone() }));
+                pane.runtime = ViewRuntime::Builtin(Box::new(StripWheelFixture { horizontal, state: state.clone() }));
             });
             h.run_steps(2);
             h.with_app_mut(|app| app.split_focused(false, None, false, false, None)).unwrap();

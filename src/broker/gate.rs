@@ -21,7 +21,7 @@ use super::{
 const SCHEMA: u32 = 1;
 pub(crate) const ALWAYS_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 
-/// Process cache so Assistant, AgentHost, MCP, and `plexi app call` in one
+/// Process cache so Assistant, AgentHost, MCP, and `plexi plugin call` in one
 /// profile share grants. Tests with distinct profile directories stay isolated.
 fn monitors() -> &'static Mutex<std::collections::HashMap<PathBuf, Arc<PermissionMonitor>>> {
     static MONITORS: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<PermissionMonitor>>>> =
@@ -1127,8 +1127,8 @@ impl PermissionMonitor {
         let Some(pending) = pending else {
             return Err(format!("unknown pending request {pending_id}"));
         };
-        if choice == ApprovalChoice::AllowTool && pending.binding.target_type != TargetType::AppConnector {
-            return Err("tool allowance is only available for app tools".to_string());
+        if choice == ApprovalChoice::AllowTool && pending.binding.target_type != TargetType::PluginConnector {
+            return Err("tool allowance is only available for plugin tools".to_string());
         }
         if matches!(choice, ApprovalChoice::Deny | ApprovalChoice::DenyAlways) {
             let grant_id = if choice == ApprovalChoice::DenyAlways {
@@ -3152,18 +3152,18 @@ impl PermissionMonitor {
     /// same capability instead of adding a second row.
     pub fn grant_app_capability(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         cap: crate::app::permissions::Capability,
         decision: Decision,
     ) {
-        self.grant_capability_id(app_id, workspace_root, cap.as_str(), decision, GrantSource::User);
+        self.grant_capability_id(plugin_id, workspace_root, cap.as_str(), decision, GrantSource::User);
     }
 
     /// Persist one capability id (manifest capability or raw WASM import).
     pub fn grant_capability_id(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         capability_id: &str,
         decision: Decision,
@@ -3171,31 +3171,31 @@ impl PermissionMonitor {
     ) {
         {
             let mut store = self.store();
-            store.upsert_capability(app_id, workspace_root, capability_id, decision, source);
+            store.upsert_capability(plugin_id, workspace_root, capability_id, decision, source);
         }
         if let Err(error) = self.save_durable() {
             log::error!(
-                "permission_monitor: capability {capability_id} for {app_id} was not saved: {error}"
+                "permission_monitor: capability {capability_id} for {plugin_id} was not saved: {error}"
             );
         }
         log::info!(
-            "permission_monitor: stored capability {capability_id} for {app_id} = {} ({source:?})",
+            "permission_monitor: stored capability {capability_id} for {plugin_id} = {} ({source:?})",
             decision.as_str()
         );
     }
 
-    /// Turn declared capabilities into gate rows and an [`AppPermissions`] set.
+    /// Turn declared capabilities into gate rows and an [`PluginPermissions`] set.
     /// Non-sensitive capabilities with no stored decision are auto-granted.
     /// Sensitive capabilities stay withheld until a human grant exists.
     pub fn materialize_app_permissions(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &std::collections::HashSet<crate::app::permissions::Capability>,
         allowed_hosts: Vec<String>,
-    ) -> crate::app::permissions::AppPermissions {
+    ) -> crate::app::permissions::PluginPermissions {
         let ids: Vec<String> = declared.iter().map(|cap| cap.as_str().to_string()).collect();
-        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        let (granted, blocked) = self.materialize_capability_ids(plugin_id, workspace_root, &ids);
         let mut capabilities = std::collections::HashSet::new();
         let mut blocked_caps = std::collections::HashSet::new();
         for id in granted {
@@ -3208,7 +3208,7 @@ impl PermissionMonitor {
                 blocked_caps.insert(cap);
             }
         }
-        crate::app::permissions::AppPermissions {
+        crate::app::permissions::PluginPermissions {
             capabilities,
             blocked: blocked_caps,
             is_builtin: false,
@@ -3219,12 +3219,12 @@ impl PermissionMonitor {
     /// Raw WASM capability ids, same auto-grant rule as manifest capabilities.
     pub fn materialize_wasm_sets(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &std::collections::HashSet<String>,
     ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
         let ids: Vec<String> = declared.iter().cloned().collect();
-        let (granted, blocked) = self.materialize_capability_ids(app_id, workspace_root, &ids);
+        let (granted, blocked) = self.materialize_capability_ids(plugin_id, workspace_root, &ids);
         (
             granted.into_iter().collect(),
             blocked.into_iter().collect(),
@@ -3233,7 +3233,7 @@ impl PermissionMonitor {
 
     fn materialize_capability_ids(
         &self,
-        app_id: &str,
+        plugin_id: &str,
         workspace_root: &Path,
         declared: &[String],
     ) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
@@ -3245,7 +3245,7 @@ impl PermissionMonitor {
         {
             let mut store = self.store();
             for capability_id in declared {
-                match stored_capability_decision(&store, app_id, &ws, capability_id, now) {
+                match stored_capability_decision(&store, plugin_id, &ws, capability_id, now) {
                     Some(Decision::Deny) => {
                         blocked.insert(capability_id.clone());
                     }
@@ -3255,12 +3255,12 @@ impl PermissionMonitor {
                     Some(Decision::Ask) => {}
                     None if declared_capability_needs_click(capability_id) => {
                         log::info!(
-                            "permission_monitor: withheld {capability_id} for {app_id} until a human grants it"
+                            "permission_monitor: withheld {capability_id} for {plugin_id} until a human grants it"
                         );
                     }
                     None => {
                         store.upsert_capability(
-                            app_id,
+                            plugin_id,
                             workspace_root,
                             capability_id,
                             Decision::Allow,
@@ -3269,7 +3269,7 @@ impl PermissionMonitor {
                         granted.insert(capability_id.clone());
                         dirty = true;
                         log::info!(
-                            "permission_monitor: auto-granted {capability_id} for {app_id}"
+                            "permission_monitor: auto-granted {capability_id} for {plugin_id}"
                         );
                     }
                 }
@@ -3281,7 +3281,7 @@ impl PermissionMonitor {
                 .iter()
                 .filter(|record| {
                     record.actor_type == ActorType::App
-                        && record.actor_id == app_id
+                        && record.actor_id == plugin_id
                         && record.target_type == TargetType::Capability
                         && record.workspace_root.as_deref() == Some(ws.as_path())
                         && !declared_set.contains(record.target_id.as_str())
@@ -4013,7 +4013,7 @@ fn declared_capability_needs_click(capability_id: &str) -> bool {
 
 fn stored_capability_decision(
     store: &GrantStore,
-    app_id: &str,
+    plugin_id: &str,
     workspace: &Path,
     capability_id: &str,
     now: i64,
@@ -4023,7 +4023,7 @@ fn stored_capability_decision(
     let mut deny = false;
     for record in store.records() {
         if record.actor_type != ActorType::App
-            || record.actor_id != app_id
+            || record.actor_id != plugin_id
             || record.target_type != TargetType::Capability
             || record.target_id != capability_id
             || record.workspace_root.as_deref() != Some(workspace)
@@ -4233,7 +4233,7 @@ fn pending_view(row: &Pending) -> PendingView {
         resource_id: row.binding.resource_id.clone(),
         args_fingerprint: row.binding.args_fingerprint.clone(),
         input_summary: row.input_summary.clone(),
-        allow_tool: row.binding.target_type == TargetType::AppConnector,
+        allow_tool: row.binding.target_type == TargetType::PluginConnector,
         context_id: row.binding.context_id,
         instance_id: row.binding.instance_id,
     }
@@ -4734,7 +4734,7 @@ mod tests {
             actor_scope: ActorScope::User,
             trust_origin: "host".to_string(),
             workspace_root: PathBuf::from("/ws"),
-            target_type: TargetType::AppConnector,
+            target_type: TargetType::PluginConnector,
             target_id: "chess.play".to_string(),
             resource_scope: ResourceScope::Game,
             resource_id: Some("game-1".to_string()),
@@ -4936,7 +4936,7 @@ mod tests {
             actor_id: base.actor_id.clone(),
             actor_scope: ActorScope::User,
             workspace_root: None,
-            target_type: TargetType::AppConnector,
+            target_type: TargetType::PluginConnector,
             target_id: "chess.play".to_string(),
             resource_scope: ResourceScope::Global,
             resource_id: None,
@@ -5294,7 +5294,7 @@ mod tests {
         let donor = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
         let mut donor_store = GrantStore::load_or_default(donor.path());
-        donor_store.record(GrantRecord::app_capability(
+        donor_store.record(GrantRecord::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -5331,7 +5331,7 @@ mod tests {
         );
         let monitor = PermissionMonitor::open_profile(victim.path());
         assert!(monitor.store().records().is_empty());
-        let req = PermissionRequest::app_capability(
+        let req = PermissionRequest::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -5678,7 +5678,7 @@ mod tests {
             let ws = tempfile::tempdir().unwrap();
             write_legacy_grants(
                 dir.path(),
-                vec![GrantRecord::app_capability(
+                vec![GrantRecord::plugin_capability(
                     "assistant",
                     ws.path(),
                     crate::app::permissions::Capability::FsRead,
@@ -5798,7 +5798,7 @@ mod tests {
             monitor.store().records().is_empty(),
             "unverified grants start empty and loaded"
         );
-        let req = PermissionRequest::app_capability(
+        let req = PermissionRequest::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -5843,7 +5843,7 @@ mod tests {
         );
         assert!(dir.path().join("grants.toml").is_file());
         assert_no_untrusted(dir.path());
-        let req = PermissionRequest::app_capability(
+        let req = PermissionRequest::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -5880,7 +5880,7 @@ mod tests {
         assert_no_untrusted(dir.path());
         crate::broker::seal::verify_audit(&dir.path().join("permission-audit.jsonl"))
             .expect("rotated profile verifies");
-        let req = PermissionRequest::app_capability(
+        let req = PermissionRequest::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -5948,7 +5948,7 @@ mod tests {
         GrantStore::load_or_default(dir.path()).save();
         write_legacy_grants(
             dir.path(),
-            vec![GrantRecord::app_capability(
+            vec![GrantRecord::plugin_capability(
                 "assistant",
                 ws.path(),
                 crate::app::permissions::Capability::FsRead,
@@ -6139,7 +6139,7 @@ mod tests {
             monitor.open_needs_you()
         );
         assert!(monitor.store().records().is_empty());
-        let req = PermissionRequest::app_capability(
+        let req = PermissionRequest::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -6317,7 +6317,7 @@ mod tests {
                 "{:?}",
                 monitor.open_needs_you()
             );
-            let req = PermissionRequest::app_capability(
+            let req = PermissionRequest::plugin_capability(
                 "my-app",
                 ws.path(),
                 crate::app::permissions::Capability::NetHttp,
@@ -6355,7 +6355,7 @@ mod tests {
             ));
         });
         let response_file = crate::rpc::response_file_in(profile, "host-status", "json");
-        let request = crate::protocol::AppRequest::ListPanes {
+        let request = crate::protocol::HostRequest::ListPanes {
             response_file: response_file.clone(),
             context_id: None,
         };
@@ -6378,7 +6378,7 @@ mod tests {
         let monitor = PermissionMonitor::open_profile(dir);
         {
             let mut store = monitor.store();
-            store.record(GrantRecord::app_capability(
+            store.record(GrantRecord::plugin_capability(
                 "my-app",
                 workspace,
                 crate::app::permissions::Capability::NetHttp,
@@ -6446,7 +6446,7 @@ mod tests {
     fn seal_one_grant(dir: &Path) {
         let ws = tempfile::tempdir().unwrap();
         let mut store = GrantStore::load_or_default(dir);
-        store.record(GrantRecord::app_capability(
+        store.record(GrantRecord::plugin_capability(
             "my-app",
             ws.path(),
             crate::app::permissions::Capability::NetHttp,
@@ -6608,7 +6608,7 @@ mod tests {
                 context_id: 1,
                 package_id: "clip-editor-probe",
                 instance_id: 2,
-                target_type: TargetType::AppConnector,
+                target_type: TargetType::PluginConnector,
             })
         };
 

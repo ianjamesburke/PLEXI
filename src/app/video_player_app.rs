@@ -4,16 +4,16 @@ use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 
-use crate::app::app_trait::{App, AppRenderContext};
+use crate::app::app_trait::{App, ViewRenderContext};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::protocol::VideoState;
 use crate::ui::{
-    app_chrome::AppChrome,
+    app_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
 
-pub struct VideoPlayerApp {
+pub struct VideoPlayerView {
     path: PathBuf,
     decoder: Arc<dyn VideoDecoder>,
     frame_ring: Arc<ArrayQueue<Vec<u8>>>,
@@ -28,10 +28,10 @@ pub struct VideoPlayerApp {
     error: Option<String>,
 }
 
-impl VideoPlayerApp {
+impl VideoPlayerView {
     pub fn new(path: PathBuf) -> Self {
         log::info!(
-            "VideoPlayerApp: launch app_id=video-player path={}",
+            "VideoPlayerView: launch plugin_id=video-player path={}",
             path.display()
         );
         Self {
@@ -70,7 +70,7 @@ impl VideoPlayerApp {
                 self.duration_ms = Some(ack.duration_ms);
                 self.handle = Some(handle);
                 log::info!(
-                    "VideoPlayerApp: opened path={} handle={} duration_ms={}",
+                    "VideoPlayerView: opened path={} handle={} duration_ms={}",
                     self.path.display(),
                     ack.handle_id,
                     ack.duration_ms
@@ -79,7 +79,7 @@ impl VideoPlayerApp {
             }
             Err(err) => {
                 let msg = format!("Unable to open video: {err}");
-                log::warn!("VideoPlayerApp: {} path={}", msg, self.path.display());
+                log::warn!("VideoPlayerView: {} path={}", msg, self.path.display());
                 self.error = Some(msg);
                 false
             }
@@ -131,7 +131,7 @@ impl VideoPlayerApp {
         while let Some(frame) = self.frame_ring.pop() {
             if frame.len() != size[0].saturating_mul(size[1]).saturating_mul(4) {
                 log::warn!(
-                    "VideoPlayerApp: dropped malformed frame path={} bytes={} expected={}",
+                    "VideoPlayerView: dropped malformed frame path={} bytes={} expected={}",
                     self.path.display(),
                     frame.len(),
                     size[0].saturating_mul(size[1]).saturating_mul(4)
@@ -179,7 +179,7 @@ impl VideoPlayerApp {
     }
 }
 
-impl App for VideoPlayerApp {
+impl App for VideoPlayerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -196,7 +196,7 @@ impl App for VideoPlayerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.tick_position();
@@ -209,7 +209,7 @@ impl App for VideoPlayerApp {
             .frame_size
             .map(|[w, h]| format!("{w}×{h}"))
             .unwrap_or_else(|| "Video Player".to_string());
-        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
+        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), &subtitle);
 
         let available = ui.available_size();
         let viewport_height = (available.y - 48.0).max(160.0);

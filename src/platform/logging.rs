@@ -363,7 +363,7 @@ pub(crate) enum UiPhase {
     EventDeliveries = 26,
     PythonRuntimes = 27,
     AgentTick = 28,
-    AppCommands = 29,
+    ViewCommands = 29,
     ShutdownCleanup = 30,
 }
 
@@ -399,7 +399,7 @@ impl UiPhase {
             Self::EventDeliveries => "event_deliveries",
             Self::PythonRuntimes => "python_runtimes",
             Self::AgentTick => "agent_tick",
-            Self::AppCommands => "app_commands",
+            Self::ViewCommands => "view_commands",
             Self::ShutdownCleanup => "shutdown_cleanup",
         }
     }
@@ -434,7 +434,7 @@ impl UiPhase {
             26 => Self::EventDeliveries,
             27 => Self::PythonRuntimes,
             28 => Self::AgentTick,
-            29 => Self::AppCommands,
+            29 => Self::ViewCommands,
             30 => Self::ShutdownCleanup,
             _ => Self::Startup,
         }
@@ -771,7 +771,7 @@ mod tests {
             UiPhase::EventDeliveries,
             UiPhase::PythonRuntimes,
             UiPhase::AgentTick,
-            UiPhase::AppCommands,
+            UiPhase::ViewCommands,
             UiPhase::ShutdownCleanup,
         ];
         for variant in variants {

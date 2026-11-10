@@ -1,19 +1,9 @@
-schema_version = 1
-
-[app]
-id = "github-issues"
-type = "app"
-name = "GitHub Issues"
-version = "0.1.0"
-description = "GitHub Issues viewer for the workspace repo."
-entry = "main.py"
+schema_version = 2
 
 [runtime]
 python_compat = true
-
-[app.capabilities]
-capabilities = ["net.http"]
-allowed_hosts = ["api.github.com"]
+kind = "python"
+entry = "main.py"
 
 [launch]
 
@@ -22,3 +12,17 @@ allowed_hosts = ["api.github.com"]
 # visibility = "public"   # public | unlisted | private
 # price = "free"          # "free", or a price like "4.99"
 # publisher = "plexi"     # first-party Plexi app
+
+[plugin]
+id = "github-issues"
+name = "GitHub Issues"
+version = "0.1.0"
+description = "GitHub Issues viewer for the workspace repo."
+
+[plugin.capabilities]
+capabilities = ["net.http"]
+allowed_hosts = ["api.github.com"]
+
+[[contributes.views]]
+id = "github-issues.main"
+default = true

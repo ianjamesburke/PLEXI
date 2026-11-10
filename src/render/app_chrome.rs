@@ -1,4 +1,4 @@
-pub(crate) use crate::ui::app_chrome::{footer_keys_height, AppChrome, TextLabelStyle};
+pub(crate) use crate::ui::app_chrome::{footer_keys_height, ViewChrome, TextLabelStyle};
 
 #[cfg(test)]
 mod tests {
@@ -18,7 +18,7 @@ mod tests {
             ..ThemeConfig::default()
         };
         let colors = Colors::from_config(&cfg);
-        let chrome = AppChrome::new(&colors);
+        let chrome = ViewChrome::new(&colors);
 
         assert_eq!(chrome.toolbar_fill(), colors.bg_toolbar);
         assert_eq!(chrome.border(), colors.border);

@@ -625,7 +625,7 @@ impl PlexiApp {
                         Some(new_name.clone())
                     };
                 } else if let Some(a) = pane.as_app_mut() {
-                    // Let the app react first — TextEditorApp persists the new
+                    // Let the app react first — TextEditorView persists the new
                     // name into the note's frontmatter title.
                     a.runtime.on_pane_renamed(&new_name);
                     a.name = if new_name.is_empty() {

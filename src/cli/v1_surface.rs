@@ -9,7 +9,7 @@
 //!
 //! Limits: this covers subcommand paths only. Hidden commands (for example
 //! `descriptor` and the `_complete-*` helpers) and experiment-owned `Arg` gates
-//! (`secret set --folder`, `app open --mcp`) are not checked here.
+//! (`secret set --folder`, `view open --mcp`) are not checked here.
 
 use super::args::Cli;
 use crate::release::{GatePath, ReleaseFeature};

@@ -26,7 +26,7 @@ const MAX_STREAM_CHARS: usize = 16_384;
 
 /// How long to wait for the stream readers after the child is reaped. A
 /// grandchild that inherited the pipes (e.g. a python validator spawned by
-/// `plexi app check`) can hold them open past the child's death; the drain
+/// `plexi plugin check`) can hold them open past the child's death; the drain
 /// bound guarantees `run_build_command` always returns so the broker worker
 /// blocked on the tool reply can never wedge.
 const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -53,7 +53,7 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
     };
     if first != "app" || !matches!(second.as_str(), "init" | "check") {
         return Err(format!(
-            "command_not_allowed: only `plexi app init` and `plexi app check` run here, got `plexi {}`",
+            "command_not_allowed: only `plexi plugin init` and `plexi plugin check` run here, got `plexi {}`",
             args.join(" ")
         ));
     }
@@ -70,7 +70,7 @@ pub(crate) fn validate_build_args(args: &[String]) -> Result<(), String> {
 /// output streams captured on reader threads (so a chatty command can never
 /// deadlock the pipe), and a hard kill once `timeout` elapses. On Unix the
 /// child gets its own process group so the timeout kill reaches grandchildren
-/// (uv/python spawned by `plexi app check`) — killing only the direct child
+/// (uv/python spawned by `plexi plugin check`) — killing only the direct child
 /// would leave them running and holding the pipes open.
 pub(crate) fn run_build_command(
     exe: &Path,
@@ -193,16 +193,16 @@ mod tests {
 
     #[test]
     fn validate_allows_init_and_check_and_rejects_everything_else() {
-        validate_build_args(&args(&["app", "init", "--global", "snake"])).unwrap();
-        validate_build_args(&args(&["app", "check", "/tmp/apps/snake"])).unwrap();
+        validate_build_args(&args(&["plugin", "init", "--global", "snake"])).unwrap();
+        validate_build_args(&args(&["plugin", "check", "/tmp/apps/snake"])).unwrap();
 
         let empty = validate_build_args(&[]).unwrap_err();
         assert!(empty.starts_with("invalid_input"), "{empty}");
         let host = validate_build_args(&args(&["host", "start"])).unwrap_err();
         assert!(host.starts_with("command_not_allowed"), "{host}");
-        let uninstall = validate_build_args(&args(&["app", "uninstall", "x"])).unwrap_err();
+        let uninstall = validate_build_args(&args(&["plugin", "uninstall", "x"])).unwrap_err();
         assert!(uninstall.starts_with("command_not_allowed"), "{uninstall}");
-        let open = validate_build_args(&args(&["app", "init", "snake", "--open"])).unwrap_err();
+        let open = validate_build_args(&args(&["plugin", "init", "snake", "--open"])).unwrap_err();
         assert!(open.contains("host.apps.open"), "{open}");
     }
 
@@ -261,7 +261,7 @@ mod tests {
     fn missing_binary_fails_loudly() {
         let error = run_build_command(
             &PathBuf::from("/nonexistent/plexi"),
-            &args(&["app", "check"]),
+            &args(&["plugin", "check"]),
             &std::env::temp_dir(),
             Duration::from_secs(1),
         )

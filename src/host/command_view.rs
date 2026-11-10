@@ -76,7 +76,7 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
             }
         }
     });
-    let hello = json!({"type":"subscribed","event":STREAM,"app_id":PUBLISHER});
+    let hello = json!({"type":"subscribed","event":STREAM,"plugin_id":PUBLISHER});
     if writeln_line(&mut socket, &hello).is_err() {
         return;
     }
@@ -92,7 +92,7 @@ pub fn serve_follow(mut socket: crate::platform::ipc::IpcStream, workspace: Stri
             if let Some(obj) = event.as_object_mut() {
                 obj.insert("type".to_string(), json!("event"));
                 obj.insert("event".to_string(), json!(STREAM));
-                obj.insert("app_id".to_string(), json!(PUBLISHER));
+                obj.insert("plugin_id".to_string(), json!(PUBLISHER));
                 obj.insert("revision".to_string(), json!(revision));
             }
             if writeln_line(&mut socket, &event).is_err() {

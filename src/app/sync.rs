@@ -9,7 +9,7 @@ impl PlexiApp {
     /// working directory. Prefers the focused terminal; falls back to any terminal
     /// in the active context, so the sync still happens when an app pane is
     /// the egui-focused tile. Synchronization is a direct
-    /// `workspace_root` reassignment plus `AppRuntime::sync_cwd`; no event is
+    /// `workspace_root` reassignment plus `ViewRuntime::sync_cwd`; no event is
     /// emitted, and `sync_cwd` is a no-op for Python and WASM panes.
     pub(super) fn sync_app_cwd(&mut self) {
         self.sync_file_browser_cwd();
@@ -42,7 +42,7 @@ impl PlexiApp {
             return;
         };
 
-        let app_ids: Vec<_> = self.windows[active]
+        let plugin_ids: Vec<_> = self.windows[active]
             .panes
             .iter()
             .filter_map(|(&id, pane)| {
@@ -55,7 +55,7 @@ impl PlexiApp {
             })
             .collect();
 
-        for id in app_ids {
+        for id in plugin_ids {
             if let Some(pane) = self.windows[active].panes.get_mut(&id) {
                 if let Some(app) = pane.as_app_mut() {
                     if app.workspace_root != new_cwd {

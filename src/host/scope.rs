@@ -34,7 +34,7 @@ pub struct ScopeOrigin {
     pub context_root: PathBuf,
     pub window_id: u64,
     pub pane_id: u64,
-    pub app_id: Option<String>,
+    pub plugin_id: Option<String>,
 }
 
 /// The scope a resource (app instance, connector tool, event stream, pipe,
@@ -43,7 +43,7 @@ pub struct ScopeOrigin {
 /// host's ownership/visibility model for in-memory and wire resources.
 ///
 /// Every resource this model currently owns is either pane-scoped or
-/// app-instance-scoped — nothing in this codebase today has a genuinely
+/// plugin-instance-scoped — nothing in this codebase today has a genuinely
 /// global (visible-everywhere) or bare-context/window-scoped resource with
 /// no owning pane, so those broader variants aren't declared here. Add one
 /// back only when a real consumer needs it (matches `RegistryViews`'s own
@@ -55,10 +55,10 @@ pub enum Scope {
     /// another context happens to have a pane with the same `pane_id`.
     Pane { pane_id: u64, context_id: u64 },
     /// Visible only within the owning context — never cross-context even if
-    /// another context happens to have a pane/app_id pair that collides.
-    AppInstance {
+    /// another context happens to have a pane/plugin_id pair that collides.
+    PluginInstance {
         pane_id: u64,
-        app_id: String,
+        plugin_id: String,
         context_id: u64,
     },
 }
@@ -94,7 +94,7 @@ pub enum Reach {
 /// Rule: every scope is context-owned and visible only in the owning
 /// context, unless an explicit `CrossContextGrant` names exactly this
 /// (owner_context, viewer_context) pair — and even with a grant, reachability
-/// is decided purely by `context_id`. A `Pane`/`AppInstance` scope is never
+/// is decided purely by `context_id`. A `Pane`/`PluginInstance` scope is never
 /// reachable from another context merely because the numeric `pane_id`
 /// happens to match one there; ids are only unique within their owning
 /// context.
@@ -109,7 +109,7 @@ pub fn evaluate_reach(
     grant: Option<&CrossContextGrant>,
 ) -> Reach {
     let owner_context_id = match owner {
-        Scope::Pane { context_id, .. } | Scope::AppInstance { context_id, .. } => *context_id,
+        Scope::Pane { context_id, .. } | Scope::PluginInstance { context_id, .. } => *context_id,
     };
 
     if owner_context_id == viewer_context_id {
@@ -222,9 +222,9 @@ mod tests {
 
     #[test]
     fn app_instance_scope_same_context_is_allowed() {
-        let owner = Scope::AppInstance {
+        let owner = Scope::PluginInstance {
             pane_id: 200,
-            app_id: "acme.todo".to_string(),
+            plugin_id: "acme.todo".to_string(),
             context_id: 5,
         };
         assert_eq!(evaluate_reach(&owner, 5, None), Reach::Allowed);
@@ -232,9 +232,9 @@ mod tests {
 
     #[test]
     fn app_instance_scope_matching_ids_in_another_context_is_still_rejected() {
-        let owner = Scope::AppInstance {
+        let owner = Scope::PluginInstance {
             pane_id: 200,
-            app_id: "acme.todo".to_string(),
+            plugin_id: "acme.todo".to_string(),
             context_id: 5,
         };
         assert_eq!(evaluate_reach(&owner, 6, None), Reach::Rejected);
@@ -242,9 +242,9 @@ mod tests {
 
     #[test]
     fn app_instance_scope_different_context_with_grant_is_allowed_by_grant() {
-        let owner = Scope::AppInstance {
+        let owner = Scope::PluginInstance {
             pane_id: 200,
-            app_id: "acme.todo".to_string(),
+            plugin_id: "acme.todo".to_string(),
             context_id: 5,
         };
         let g = grant(5, 6);

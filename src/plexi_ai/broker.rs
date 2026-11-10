@@ -84,13 +84,13 @@ pub fn get_pane_snapshot() -> Arc<Vec<PaneContext>> {
     pane_snapshot().read().unwrap().clone()
 }
 
-/// One brokered request — what the routing layer hands to a broker. `app_id`
+/// One brokered request — what the routing layer hands to a broker. `plugin_id`
 /// is required so the ledger can attribute spend per-app.
 #[derive(Debug, Clone)]
 pub struct AiBrokerRequest {
-    pub app_id: String,
+    pub plugin_id: String,
     pub model_mode: ModelMode,
-    /// Optional agent-selected provider/model route. Ordinary app callers
+    /// Optional agent-selected provider/model route. Ordinary plugin callers
     /// leave this unset and retain configured tier routing.
     pub concrete_model: Option<ConcreteModelRoute>,
     /// Optional agent-selected reasoning effort.
@@ -213,16 +213,16 @@ impl AiBroker for LiveAiBroker {
             Some(c) => c,
             None => {
                 let msg = "ai_config_missing: add [ai] and [models.fast] / [models.slow] settings to config.toml";
-                log::warn!("ai_broker[{}]: dispatch failed — {}", request.app_id, msg);
+                log::warn!("ai_broker[{}]: dispatch failed — {}", request.plugin_id, msg);
                 return AiBrokerResponse::err(msg);
             }
         };
 
         // Budget gate — fail open on ledger I/O errors (today_spend returns 0 on error).
-        if let Err(reason) = ledger::check_budget(&request.app_id, ai_config) {
+        if let Err(reason) = ledger::check_budget(&request.plugin_id, ai_config) {
             log::warn!(
                 "ai_broker[{}]: request denied by budget gate — {reason}",
-                request.app_id
+                request.plugin_id
             );
             return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
         }
@@ -542,14 +542,14 @@ fn run_turn_and_respond(
     let tool_names: Vec<&str> = all_tools_vec.iter().map(|t| t.name.as_str()).collect();
     log::info!(
         "ai_broker[{}]: model={model_id}, tools={tool_names:?}",
-        request.app_id,
+        request.plugin_id,
     );
     let all_tools: Arc<[AiTool]> = all_tools_vec.into();
 
     // Convert messages to JSON values for the backend.
     let mut conv: Vec<serde_json::Value> = messages_to_json(&request.messages);
 
-    // High enough for multi-step host workflows (e.g. the build-plexi-app
+    // High enough for multi-step host workflows (e.g. the build-plexi-plugin
     // pipeline pairs every terminal command with a host.terminals.read).
     // Callers expecting longer turns (app-build skill) raise this via
     // `AiBrokerRequest::max_tool_iterations`.
@@ -573,7 +573,7 @@ fn run_turn_and_respond(
         if request.cancel.is_cancelled() {
             log::info!(
                 "ai_broker[{}]: turn cancelled before iteration {iteration} — folding partial ({} chars)",
-                request.app_id,
+                request.plugin_id,
                 final_text.len()
             );
             break;
@@ -581,7 +581,7 @@ fn run_turn_and_respond(
         if iteration == max_tool_iterations {
             log::warn!(
                 "ai_broker[{}]: tool loop hit max iterations ({max_tool_iterations}), pausing gracefully",
-                request.app_id
+                request.plugin_id
             );
             // Never end the turn silently, and never just truncate mid-build:
             // ask the model for one more, tool-free round summarizing what it
@@ -592,7 +592,7 @@ fn run_turn_and_respond(
                 &conv,
                 &system,
                 max_tool_iterations,
-                &request.app_id,
+                &request.plugin_id,
                 backend_tier(request.model_mode),
                 request.reasoning_effort,
                 &request.cancel,
@@ -627,12 +627,12 @@ fn run_turn_and_respond(
                 if request.cancel.is_cancelled() {
                     log::info!(
                         "ai_broker[{}]: stream cancelled mid-turn — folding partial ({} chars)",
-                        request.app_id,
+                        request.plugin_id,
                         final_text.len()
                     );
                     break;
                 }
-                log::warn!("ai_broker[{}]: turn failed error_chars={}", request.app_id, e.to_string().chars().count());
+                log::warn!("ai_broker[{}]: turn failed error_chars={}", request.plugin_id, e.to_string().chars().count());
                 let message = match e {
                     TurnError::BackendError(be) => format!("backend error: {be}"),
                     TurnError::StreamError(s) => format!("stream error: {s}"),
@@ -654,7 +654,7 @@ fn run_turn_and_respond(
                     final_text = result.text;
                     log::info!(
                         "ai_broker[{}]: turn cancelled after stream — folding partial ({} chars)",
-                        request.app_id,
+                        request.plugin_id,
                         final_text.len()
                     );
                     break;
@@ -694,7 +694,7 @@ fn run_turn_and_respond(
                     None => {
                         log::warn!(
                             "ai_broker[{}]: model requested tool calls but no dispatcher available",
-                            request.app_id
+                            request.plugin_id
                         );
                         // Append error result for each call so the model can recover.
                         for tc in &tool_calls {
@@ -716,7 +716,7 @@ fn run_turn_and_respond(
                     let call_id = format!("{}-{}", tc.id, i + 1);
                     log::debug!(
                         "ai_broker[{}]: dispatching tool '{}' call_id={call_id}",
-                        request.app_id,
+                        request.plugin_id,
                         tc.name,
                     );
                     let tool_result = dispatcher.dispatch_call(call_id, &tc.name, tc.arguments);
@@ -751,7 +751,7 @@ fn run_turn_and_respond(
     };
     log::info!(
         "ai_broker[{}]: recording ledger usage prompt={:?} completion={:?} cost_usd={cost_usd:?} client={:?} kind={} wall_ms={wall_ms:?}",
-        request.app_id,
+        request.plugin_id,
         total_tokens_in,
         total_tokens_out,
         tags.client,
@@ -760,7 +760,7 @@ fn run_turn_and_respond(
     let row = LedgerRow::with_attribution(
         backend.name(),
         billing,
-        Some(request.app_id.clone()),
+        Some(request.plugin_id.clone()),
         Some(model_id),
         total_tokens_in,
         total_tokens_out,
@@ -787,10 +787,10 @@ fn run_turn_and_respond(
         // Capture the ledger path on this thread. `config_dir()` is
         // thread-local under test, so the worker must not look it up itself.
         let ledger_path = ledger::ledger_path();
-        let app_id = request.app_id.clone();
+        let plugin_id = request.plugin_id.clone();
         let fill_ts = row_ts.clone();
         log::info!(
-            "ai_broker[{app_id}]: usage had no cost; generation lookup will fill row ts={row_ts} gen_id={gen_id}"
+            "ai_broker[{plugin_id}]: usage had no cost; generation lookup will fill row ts={row_ts} gen_id={gen_id}"
         );
         let spawn_result = std::thread::Builder::new()
             .name("plexi-ai-metrics".to_string())
@@ -799,26 +799,26 @@ fn run_turn_and_respond(
                     Some(metrics) => match metrics.cost_usd {
                         Some(cost) => {
                             log::info!(
-                                "ai_broker[{app_id}]: generation {gen_id} cost_usd={cost} cached={:?} reasoning={:?}",
+                                "ai_broker[{plugin_id}]: generation {gen_id} cost_usd={cost} cached={:?} reasoning={:?}",
                                 metrics.cached_tokens,
                                 metrics.reasoning_tokens,
                             );
                             if ledger::fill_cost(&ledger_path, &fill_ts, cost) {
                                 log::info!(
-                                    "ai_broker[{app_id}]: filled ledger cost_usd={cost} from generation {gen_id} on row ts={fill_ts}"
+                                    "ai_broker[{plugin_id}]: filled ledger cost_usd={cost} from generation {gen_id} on row ts={fill_ts}"
                                 );
                             }
                         }
                         None => {
                             let tokens_usable = generation_metrics_usable(&metrics);
                             log::info!(
-                                "ai_broker[{app_id}]: generation {gen_id} returned no cost (tokens_usable={tokens_usable}); row ts={fill_ts} stays unknown"
+                                "ai_broker[{plugin_id}]: generation {gen_id} returned no cost (tokens_usable={tokens_usable}); row ts={fill_ts} stays unknown"
                             );
                         }
                     },
                     None => {
                         log::info!(
-                            "ai_broker[{app_id}]: generation {gen_id} lookup failed; row ts={fill_ts} stays unknown"
+                            "ai_broker[{plugin_id}]: generation {gen_id} lookup failed; row ts={fill_ts} stays unknown"
                         );
                     }
                 }
@@ -826,7 +826,7 @@ fn run_turn_and_respond(
         if let Err(e) = spawn_result {
             log::error!(
                 "ai_broker[{}]: failed to spawn generation cost lookup: {e} — row ts={row_ts} keeps a null cost",
-                request.app_id,
+                request.plugin_id,
             );
         }
     }
@@ -910,7 +910,7 @@ fn summarize_progress_on_pause(
     conv: &[serde_json::Value],
     system: &Arc<str>,
     max_tool_iterations: usize,
-    app_id: &str,
+    plugin_id: &str,
     model_tier: ModelTier,
     reasoning_effort: Option<ReasoningEffort>,
     cancel: &CancelToken,
@@ -962,7 +962,7 @@ fn summarize_progress_on_pause(
         }
         Err(e) => {
             log::warn!(
-                "ai_broker[{app_id}]: pause-summary turn failed: {e} — falling back to canned message",
+                "ai_broker[{plugin_id}]: pause-summary turn failed: {e} — falling back to canned message",
             );
             turn_cost.note(None);
             fallback()
@@ -1195,7 +1195,7 @@ mod tests {
         ];
         let resp = broker.dispatch(
             AiBrokerRequest {
-                app_id: "test".to_string(),
+                plugin_id: "test".to_string(),
                 model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
@@ -1560,7 +1560,7 @@ mod tests {
         let broker = LiveAiBroker::new(None);
         let resp = broker.dispatch(
             AiBrokerRequest {
-                app_id: "test".to_string(),
+                plugin_id: "test".to_string(),
                 model_mode: ModelMode::Fast,
                 concrete_model: None,
                 reasoning_effort: None,
@@ -1683,7 +1683,7 @@ mod tests {
         // No dispatcher: the broker appends an error tool result and continues to
         // the next iteration, where the backend returns the final text.
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
+            plugin_id: "test".to_string(),
             model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
@@ -1800,7 +1800,7 @@ mod tests {
             read_only: false,
         };
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
+            plugin_id: "test".to_string(),
             model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
@@ -1889,7 +1889,7 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel();
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
+            plugin_id: "test".to_string(),
             model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
@@ -1974,7 +1974,7 @@ mod tests {
             cancel: cancel.clone(),
         };
         let request = AiBrokerRequest {
-            app_id: "test".to_string(),
+            plugin_id: "test".to_string(),
             model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,
@@ -2114,7 +2114,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp profile dir");
         let _guard = crate::config::set_test_profile_dir(dir.path().to_path_buf());
         let request = AiBrokerRequest {
-            app_id: "assistant".to_string(),
+            plugin_id: "assistant".to_string(),
             model_mode: ModelMode::Fast,
             concrete_model: None,
             reasoning_effort: None,

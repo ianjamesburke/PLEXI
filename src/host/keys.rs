@@ -93,7 +93,7 @@ pub enum Action {
     ScrollUp,
     ScrollDown,
     /// Dismiss the active app surface and return to full terminal.
-    CloseApp,
+    CloseView,
     /// Open the file browser app in the focused terminal.
     OpenFileBrowser,
     OpenAgents,
@@ -117,7 +117,7 @@ pub enum Action {
     /// Cmd+R is RenamePane and Cmd+Shift+R is RenameContext, so the
     /// Option (Alt) modifier is the next free chord. No-op when the
     /// focused pane isn't a process-backed app.
-    ForceReloadApp,
+    ForceReloadView,
     /// Create a new window to the right of the active one on the same
     /// grid row. Bound to Cmd+N.
     NewPageRight,
@@ -129,7 +129,7 @@ pub enum Action {
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
     ReloadConfig,
     /// Pop app navigation, falling back to focus history. Unbound by default.
-    NavBackApp,
+    NavBackView,
     /// Step forward through pane focus history. Unbound by default.
     FocusHistoryForward,
     /// Swap the focused pane with its neighbor in the given direction.
@@ -568,7 +568,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(reload_config, "reload_config");
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(open_assistant, "open_assistant");
-    apply_override!(force_reload_app, "force_reload_app");
+    apply_override!(force_reload_app, "force_reload_plugin");
     apply_override!(toggle_attention_queue, "toggle_attention_queue");
     apply_override!(zoom_in, "zoom_in");
     apply_override!(open_scratchpad, "open_scratchpad");
@@ -635,7 +635,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("reload_config", bindings.reload_config),
         ("open_secrets_manager", bindings.open_secrets_manager),
         ("open_assistant", bindings.open_assistant),
-        ("force_reload_app", bindings.force_reload_app),
+        ("force_reload_plugin", bindings.force_reload_app),
         ("toggle_attention_queue", bindings.toggle_attention_queue),
         ("zoom_in", bindings.zoom_in),
         ("open_scratchpad", bindings.open_scratchpad),
@@ -740,7 +740,7 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
             ("reload_config", b.reload_config),
             ("open_secrets_manager", b.open_secrets_manager),
             ("open_assistant", b.open_assistant),
-            ("force_reload_app", b.force_reload_app),
+            ("force_reload_plugin", b.force_reload_app),
             ("toggle_attention_queue", b.toggle_attention_queue),
             ("zoom_in", b.zoom_in),
             ("open_scratchpad", b.open_scratchpad),
@@ -782,7 +782,7 @@ fn reserved_host_shortcuts(bindings: &KeyBindings) -> std::collections::HashMap<
     }
     reserved.insert(
         binding_id(egui::Modifiers::NONE, egui::Key::Escape),
-        "close_app",
+        "close_view",
     );
     reserved
 }
@@ -902,7 +902,7 @@ pub enum BindingContext {
     /// Active only when no overlay holds focus and no app has keyboard capture.
     Normal,
     /// Active only when an app surface is focused AND no overlay/capture is active.
-    AppActive,
+    ViewActive,
 }
 
 /// A single entry in the declarative binding table.
@@ -1408,7 +1408,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: false,
             no_repeat: false,
             context: BindingContext::Normal,
-            action: Action::ForceReloadApp,
+            action: Action::ForceReloadView,
         },
         BindingEntry {
             modifiers: b.set_context_root_from_cwd.0,
@@ -1451,22 +1451,22 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenNotesPicker,
         },
-        // ── AppActive bindings (only when app surface focused) ───────────────
-        // CloseApp (Escape) — also suppressed when shortcuts overlay is open.
+        // ── ViewActive bindings (only when app surface focused) ───────────────
+        // CloseView (Escape) — also suppressed when shortcuts overlay is open.
         BindingEntry {
             modifiers: egui::Modifiers::NONE,
             key: egui::Key::Escape,
             exact: false,
             no_repeat: false,
-            context: BindingContext::AppActive,
-            action: Action::CloseApp,
+            context: BindingContext::ViewActive,
+            action: Action::CloseView,
         },
     ];
 
     for (binding, action) in [
         (b.next_context, Action::NextContext),
         (b.prev_context, Action::PrevContext),
-        (b.nav_back, Action::NavBackApp),
+        (b.nav_back, Action::NavBackView),
         (b.focus_history_forward, Action::FocusHistoryForward),
         (
             Some(b.select_pane_left),
@@ -1547,22 +1547,22 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
 
 /// Poll global keyboard actions using the pre-built binding table.
 ///
-/// `app_active` — focused pane has an active app surface (affects Escape/Tab).
+/// `view_active` — focused pane has an active app surface (affects Escape/Tab).
 /// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
 ///   When true, all host shortcuts are suppressed *except* Global-context bindings
 ///   (Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal).
 /// `overlay_open` — an overlay owns keyboard focus. Same suppression as `keyboard_capture_active`.
 ///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
-/// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseApp (Escape)
+/// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseView (Escape)
 ///   so the overlay can own Escape for dismissal.
 ///
 /// `input` is a [`crate::app::input_router::PlexiInput`] buffer already taken
 /// out of `ctx` for this frame (stint 0240's ownership-transfer router).
 /// The host calls this after the focused overlay owner in two passes: Global
-/// and Normal bindings before focused-app key dispatch, then AppActive
+/// and Normal bindings before focused-app key dispatch, then ViewActive
 /// bindings afterward. Thus host chords are structurally removed before a
 /// guest runtime can see them, while an app or focused text field still owns
-/// bare Escape before CloseApp.
+/// bare Escape before CloseView.
 pub fn poll_actions(
     input: &mut crate::app::input_router::PlexiInput,
     table: &[BindingEntry],
@@ -1592,13 +1592,13 @@ pub fn poll_actions(
                     continue;
                 }
             }
-            BindingContext::AppActive => {
+            BindingContext::ViewActive => {
                 if !app_active || keyboard_capture_active || overlay_open {
                     continue;
                 }
                 // Escape is suppressed when the shortcuts overlay is open so the overlay
                 // can own it for dismissal.
-                if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
+                if matches!(entry.action, Action::CloseView) && shortcuts_overlay_open {
                     continue;
                 }
             }
@@ -1797,7 +1797,7 @@ mod tests {
                 &mut input,
                 &table,
                 &mut claimed_key_releases,
-                /* app_active */ true,
+                /* view_active */ true,
                 /* keyboard_capture */ false,
                 /* overlay_open */ false,
                 /* shortcuts_overlay_open */ false,
@@ -1834,7 +1834,7 @@ mod tests {
                         &mut input,
                         &table,
                         claimed_key_releases,
-                        /* app_active */ true,
+                        /* view_active */ true,
                         /* keyboard_capture */ false,
                         overlay_open,
                         /* shortcuts_overlay_open */ false,
@@ -2042,7 +2042,7 @@ mod tests {
                     &mut input,
                     &table,
                     &mut claimed_key_releases,
-                    /* app_active */ false,
+                    /* view_active */ false,
                     /* keyboard_capture */ false,
                     /* overlay_open */ false,
                     /* shortcuts_overlay_open */ false,

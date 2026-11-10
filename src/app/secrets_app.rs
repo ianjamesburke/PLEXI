@@ -1,4 +1,4 @@
-use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::{App, ViewRenderContext, KeyDisposition};
 use crate::ui::button::{self, ButtonKind};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::{labels, row, style};
@@ -15,7 +15,7 @@ struct PendingImport {
     ready: Arc<AtomicBool>,
 }
 
-pub struct SecretsApp {
+pub struct SecretsView {
     entries: Vec<SecretEntry>,
     selected: usize,
     scroll_to_selected: bool,
@@ -35,7 +35,7 @@ pub struct SecretsApp {
     status_msg: String,
 }
 
-impl SecretsApp {
+impl SecretsView {
     pub fn new(cwd: PathBuf) -> Self {
         let mut app = Self {
             entries: Vec::new(),
@@ -308,7 +308,7 @@ impl SecretsApp {
         labels::description_label(ui, &self.target.label(), colors);
     }
 
-    fn form(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
+    fn form(&mut self, ui: &mut egui::Ui, ctx: &ViewRenderContext<'_>) {
         let colors = ctx.colors;
         labels::section_header(
             ui,
@@ -393,7 +393,7 @@ impl SecretsApp {
     }
 }
 
-impl App for SecretsApp {
+impl App for SecretsView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -516,7 +516,7 @@ impl App for SecretsApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
@@ -612,7 +612,7 @@ mod tests {
             &crate::config::workspace_channel_dir(),
         )
         .unwrap();
-        let mut app = SecretsApp::new(cwd.path().into());
+        let mut app = SecretsView::new(cwd.path().into());
         app.begin_add();
         app.new_key = "APP_TEST_TOKEN".into();
         *app.new_value = "canary-app-first".into();
@@ -668,7 +668,7 @@ mod tests {
         let fixture = root.path().join("fixture.env");
         let bytes = b"PICKER_0858_TOKEN=picker-secret-canary\n";
         std::fs::write(&fixture, bytes).unwrap();
-        let mut app = SecretsApp::new(root.path().into());
+        let mut app = SecretsView::new(root.path().into());
         app.picker = Arc::new(crate::host::services::ScriptedPickerService::from_outcomes(
             vec![crate::host::services::FilePickOutcome::Picked(vec![
                 fixture.clone(),
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn screenshot_secrets_scoped_inventory() {
-        use crate::app::permissions::AppPermissions;
+        use crate::app::permissions::PluginPermissions;
         let mut h = crate::ui_tests::PlexiUiHarness::new_sized_ppp(1000.0, 700.0, 1.0);
         let _experiment =
             crate::release::set_test_experiments(&[crate::release::ReleaseFeature::FolderSecrets]);
@@ -726,7 +726,7 @@ mod tests {
             ("DEPLOY_TOKEN", &folder),
         ] {
             manager::mutate_secret(
-                SecretsApp::store_for(target),
+                SecretsView::store_for(target),
                 &monitor,
                 target,
                 name,
@@ -738,7 +738,7 @@ mod tests {
         let read = || {
             crate::workspace::secrets::read_pane_secret(
                 &monitor,
-                SecretsApp::store_for(&global),
+                SecretsView::store_for(&global),
                 &actor,
                 "OPENAI_0858_SHOT_KEY",
                 &crate::workspace::secrets::SecretScope::Global,
@@ -760,8 +760,8 @@ mod tests {
         h.with_app_mut(|app| {
             app.sidebar_visible = false;
             app.open_builtin_app_pane(
-                Box::new(crate::file_browser::FileBrowserApp::new(root.path().into())),
-                AppPermissions::builtin(),
+                Box::new(crate::file_browser::FileBrowserView::new(root.path().into())),
+                PluginPermissions::builtin(),
                 root.path().into(),
                 None,
                 None,
@@ -784,12 +784,12 @@ mod tests {
                 .panes
                 .values_mut()
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(builtin) =
+                    let crate::host::pane::ViewRuntime::Builtin(builtin) =
                         &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
-                    builtin.as_any_mut().downcast_mut::<SecretsApp>()
+                    builtin.as_any_mut().downcast_mut::<SecretsView>()
                 })
                 .expect("hotkey opens Secrets");
             assert!(secrets
@@ -832,7 +832,7 @@ mod tests {
             ("DEPLOY_TOKEN", &folder),
         ] {
             manager::mutate_secret(
-                SecretsApp::store_for(target),
+                SecretsView::store_for(target),
                 &monitor,
                 target,
                 name,

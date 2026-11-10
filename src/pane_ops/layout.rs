@@ -26,7 +26,7 @@ pub(crate) enum SwapResult {
 /// `true`. Otherwise return `false` and leave the map unchanged.
 ///
 /// Restoring NEVER writes into the restored terminal. Cwd handoff is an
-/// explicit `AppCommand::CdRequest` only (#2145) — a coding agent may be
+/// explicit `ViewCommand::CdRequest` only (#2145) — a coding agent may be
 /// running in the terminal behind the overlay.
 pub(super) fn restore_overlay_replacement(
     panes: &mut HashMap<PaneId, Pane>,
@@ -39,15 +39,15 @@ pub(super) fn restore_overlay_replacement(
     match pane {
         Pane::App(mut app) => {
             if let Some(replaced) = app.overlay_replaced.take() {
-                let (app_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
+                let (plugin_id, type_id) = overlay_close_ids(&app.manifest_id, app.runtime.type_id());
                 log::info!(
-                    "app_closed: app_id={app_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
+                    "view_closed: plugin_id={plugin_id} type_id={type_id} pane_id={pane_id} reason=overlay_restored"
                 );
                 // Free function — no `PlexiApp`/router access, so no origin is
                 // resolvable here without a new ambient lookup. Global-only.
                 crate::host::event_log::emit_scoped(
-                    crate::host::event_log::HostEvent::AppClosed {
-                        app_id,
+                    crate::host::event_log::HostEvent::ViewClosed {
+                        plugin_id,
                         type_id,
                         pane_id,
                         reason: Some("overlay_restored".to_string()),
@@ -71,7 +71,7 @@ pub(super) fn restore_overlay_replacement(
 
 /// Catalog id vs runtime kind for an overlay close.
 ///
-/// Spawn events already split these: `app_id` is the manifest (`balls`) and
+/// Spawn events already split these: `plugin_id` is the manifest (`balls`) and
 /// `type_id` is the runtime (`python-wasm`). Copying `runtime.type_id()` into
 /// both fields made `plexi demo` wait forever for Balls to close. Builtins
 /// often use the same string for both, so the split is a no-op for them.
@@ -298,7 +298,7 @@ impl PlexiApp {
     /// that mirrors the focused pane's type:
     ///
     /// - Terminal → new terminal in the same cwd
-    /// - App      → fresh instance of the same app (`launch_app_by_id`)
+    /// - App      → fresh instance of the same app (`open_view_by_id`)
     ///
     /// If no pane is focused, falls back to creating a full-size terminal.
     pub(crate) fn split_focused_mirror(&mut self, placement: Placement) {
@@ -2386,8 +2386,8 @@ mod overlay_close_ids_tests {
 
     #[test]
     fn wasm_close_keeps_catalog_id_distinct_from_runtime() {
-        let (app_id, type_id) = overlay_close_ids("balls", "python-wasm");
-        assert_eq!(app_id, "balls");
+        let (plugin_id, type_id) = overlay_close_ids("balls", "python-wasm");
+        assert_eq!(plugin_id, "balls");
         assert_eq!(type_id, "python-wasm");
     }
 }

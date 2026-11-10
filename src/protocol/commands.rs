@@ -123,7 +123,7 @@ pub struct PaneAgentState {
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AppRequest {
+pub enum HostRequest {
     /// Rename a context through the same commit handler as the desktop editor.
     ContextRename { context_id: u64, name: String, response_file: String },
     /// Close a context, honoring the desktop confirmation policy.
@@ -155,7 +155,7 @@ pub enum AppRequest {
     },
     /// Submit one text turn to the Assistant. With `pane_id` omitted the host
     /// reuses an Assistant in the context or creates a hidden one, so a
-    /// CLI caller does not need `app open assistant` first.
+    /// CLI caller does not need `view open assistant` first.
     /// A `pane_id` that does not exist still fails with
     /// `assistant_pane_not_found`. The pane owns the normal composer path and
     /// writes the terminal JSON reply.
@@ -219,8 +219,8 @@ pub enum AppRequest {
         #[serde(default)]
         extensions: Vec<String>,
     },
-    /// Save app state. Host writes to workspace or global JSON file.
-    SaveAppState { payload: serde_json::Value },
+    /// Save plugin state. Host writes to workspace or global JSON file.
+    SavePluginState { payload: serde_json::Value },
     /// Request to start a run. Host surfaces in Run palette (Cmd+R).
     RunGet {
         intent: String,
@@ -433,8 +433,8 @@ pub enum AppRequest {
     /// `layout`: "split_h" (new pane right), "split_v" (default, new pane below),
     ///           or "overlay" (full pane, no split).
     /// `args`: argv passed to the child process (appended after the binary path).
-    /// Host responds with `PlexiEvent::AppSpawned { pane_id }` on success.
-    SpawnApp {
+    /// Host responds with `PlexiEvent::ViewOpened { pane_id }` on success.
+    SpawnView {
         type_id: String,
         #[serde(default)]
         layout: Option<String>,
@@ -442,7 +442,7 @@ pub enum AppRequest {
         args: Vec<String>,
     },
 
-    /// Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.
+    /// Unified pane spawn primitive (#592). Supersedes SpawnView for new apps.
     /// Requires `panes.spawn` capability.
     /// `layout`: one of "split_h", "split_right", "split_v", "split_below", "split_above", "split_left", "overlay",
     ///   "new_window" (terminal only — creates a new spatial grid window to the right
@@ -452,7 +452,7 @@ pub enum AppRequest {
     ///   "overlay_pane" and "background" are reserved but not yet implemented.
     /// A spawned child that needs to report completion back to its spawner does
     /// so over the event bus: it calls `EmitEvent` with `<app>::completed` and
-    /// the spawner reads it via `SubscribeAppEvents`. There is no JSON-pipe
+    /// the spawner reads it via `SubscribePluginEvents`. There is no JSON-pipe
     /// reply channel (the legacy `--pipe=<id>` coupling was removed in 0327).
     /// Host responds: `PlexiEvent::PaneSpawned { pane_id }` on success,
     ///               `PlexiEvent::PaneSpawnError { reason }` on failure.
@@ -478,7 +478,7 @@ pub enum AppRequest {
         /// rather than looking it up in the registry by type_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
-        /// When set, use this path as the workspace root for app state scoping
+        /// When set, use this path as the workspace root for plugin state scoping
         /// instead of defaulting to the app directory. Sent by `plexi open github:`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace_root: Option<String>,
@@ -570,7 +570,7 @@ pub enum AppRequest {
     /// {
     ///   "permissions": [
     ///     {
-    ///       "app_id": "...",
+    ///       "plugin_id": "...",
     ///       "workspace": "/abs/path",
     ///       "capability": "panes.read",
     ///       "state": "green" | "yellow" | "red",
@@ -579,7 +579,7 @@ pub enum AppRequest {
     ///       "description": "..."
     ///     }
     ///   ],
-    ///   "running": ["app_id", ...]
+    ///   "running": ["plugin_id", ...]
     /// }
     /// ```
     ///
@@ -594,14 +594,14 @@ pub enum AppRequest {
     /// Set the stored permission state for an (app, workspace, capability)
     /// triple (stint 0017). Gated on `permissions.manage` when arriving over
     /// PGAP. `state` is one of "green" | "yellow" | "red". When `workspace`
-    /// is omitted, the workspace root of a running app with `app_id` is used;
+    /// is omitted, the workspace root of a running app with `plugin_id` is used;
     /// if no such app is running the request fails. Persists to
     /// `permissions.toml` AND live-updates any running app's permission set,
     /// so a revocation takes effect on the app's next request. Host writes
     /// `{"ok":true}` or `{"error":"..."}` to `response_file`. Unknown
     /// capability or state strings fail closed with an error reply.
     SetPermission {
-        app_id: String,
+        plugin_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
         capability: String,
@@ -1092,10 +1092,10 @@ pub enum AppRequest {
         response_file: String,
     },
 
-    /// Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.
+    /// Dispatch a semantic action to an app pane. Sent by `plexi pane action <pane_id> <action> [args...]`.
     /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
     /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
-    SendAppAction {
+    SendPaneAction {
         pane_id: u64,
         /// Action name, e.g. "refresh", "navigate-to".
         action: String,
@@ -1202,14 +1202,14 @@ pub enum AppRequest {
         response_file: String,
     },
     /// Call an app-exposed tool through the host tool dispatcher. Sent by
-    /// `plexi app call`. The host resolves the viewer context from
+    /// `plexi plugin call`. The host resolves the viewer context from
     /// `caller_pane_id` (the credential's context when absent), stamps the
     /// caller identity (`pane:<id>`, `agent:<id>`, `mcp:pane:<id>`, or
     /// `session:<id>` — never `user`), and writes
     /// `{"ok":true,"output":<json>}` or `{"error":"..."}` to `response_file`
     /// from a worker thread once the app answers or the host deadline passes.
-    CallAppTool {
-        app_id: String,
+    CallPluginTool {
+        plugin_id: String,
         tool: String,
         /// Wait for a real desktop decision before dispatching this exact call.
         #[serde(default)]
@@ -1232,15 +1232,15 @@ pub enum AppRequest {
         response_file: Option<String>,
     },
     /// Snapshot the live tool registry exposed by running app panes in the
-    /// resolved context. Sent by `plexi app tools` and `plexi app info`.
+    /// resolved context. Sent by `plexi plugin tools` and `plexi plugin info`.
     /// The host resolves the viewer context from `context_id` when explicitly
     /// supplied, otherwise from the verified socket peer pane or
     /// `caller_pane_id` (falling back to the active context when run outside a
     /// pane), and writes `{"ok":true,"context_id":<u64>,"tools":[...]}` to
     /// `response_file`.
-    ListAppTools {
+    ListPluginTools {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        app_id: Option<String>,
+        plugin_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context_id: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1403,7 +1403,7 @@ pub enum AppRequest {
     /// All fields are required — no `serde(default)`. `tools` may be empty;
     /// non-empty `tools` causes the broker to dispatch through a tool loop
     /// (#399) — the AI can call tools on any pane that exposed them via
-    /// `AppRequest::ExposeTools`.
+    /// `HostRequest::ExposeTools`.
     AiQuery {
         request_id: String,
         model_tier: ModelTier,
@@ -1648,7 +1648,7 @@ pub enum AppRequest {
     ///
     /// The host pipes stdout and stderr, batches available bytes at ~30 Hz,
     /// and delivers each batch as `PlexiEvent::StreamChunk`. When the child
-    /// exits (or the app calls `CancelProcess`) the host sends
+    /// exits (or the plugin calls `CancelProcess`) the host sends
     /// `PlexiEvent::StreamEnd`. `channel` selects which output stream to
     /// forward; v1 treats `structured` identically to `stdout`.
     ///
@@ -1719,7 +1719,7 @@ pub enum AppRequest {
         /// Declared stream name, e.g. `"move.played"`.
         event: String,
         /// Who caused the state change.
-        actor: AppEventActor,
+        actor: PluginEventActor,
         /// Optional stable identity for the actor (e.g. an agent id).
         /// Defaults to the emitting app's id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1732,7 +1732,7 @@ pub enum AppRequest {
         caused_by: Option<String>,
         /// One-line human-readable description, e.g. `"White played e4"`.
         summary: String,
-        /// Document, game, pane, or app-instance id the event is about.
+        /// Document, game, pane, or plugin-instance id the event is about.
         resource_id: String,
         /// Scope class of `resource_id` (`"document"`, `"game"`, `"pane"`…).
         /// Defaults to `"pane"` (the app instance) when omitted.
@@ -1773,18 +1773,18 @@ pub enum AppRequest {
     },
 
     /// Subscribe this pane to another app's declared event streams. Gated
-    /// through the unified broker (`TargetType::AppEventStream`, one
+    /// through the unified broker (`TargetType::PluginEventStream`, one
     /// evaluation per event name) — the host stamps the subscriber identity
     /// from the requesting pane; apps cannot subscribe as someone else.
     /// Phase B wire subscriptions are session-scoped.
     ///
-    /// Host responds with `PlexiEvent::AppEventsSubscribed`. Matching events
-    /// are then delivered as `PlexiEvent::AppEvent`, shaped per
+    /// Host responds with `PlexiEvent::PluginEventsSubscribed`. Matching events
+    /// are then delivered as `PlexiEvent::PluginEvent`, shaped per
     /// `payload_mode` and tagged with the subscription's `trigger_mode`.
-    SubscribeAppEvents {
+    SubscribePluginEvents {
         request_id: String,
-        /// Publisher app package identity whose streams are subscribed.
-        app_id: String,
+        /// Publisher plugin package identity whose streams are subscribed.
+        plugin_id: String,
         /// Declared stream names. Empty = all streams the app declares.
         #[serde(default)]
         event_names: Vec<String>,
@@ -1795,26 +1795,26 @@ pub enum AppRequest {
         resource_id: Option<String>,
     },
 
-    /// Remove a subscription previously created by `SubscribeAppEvents`.
+    /// Remove a subscription previously created by `SubscribePluginEvents`.
     /// Only the subscriber that owns it may remove it.
-    UnsubscribeAppEvents {
+    UnsubscribePluginEvents {
         request_id: String,
         subscription_id: String,
     },
 
     /// List undo checkpoints from the host undo timeline, newest first.
-    /// `app_id` filters to one app; `None` = this app's own checkpoints.
+    /// `plugin_id` filters to one app; `None` = this app's own checkpoints.
     /// Host responds with `PlexiEvent::UndoCheckpoints`.
     ListUndoCheckpoints {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        app_id: Option<String>,
+        plugin_id: Option<String>,
     },
 
     /// Request rollback of an undo checkpoint. Gated through the unified
     /// broker (`TargetType::UndoCheckpoint`). On allow, the host starts the
     /// revision-verification round-trip with the checkpoint's owning app
-    /// (`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →
+    /// (`PlexiEvent::RollbackVerify` → `HostRequest::RollbackVerifyResult` →
     /// `PlexiEvent::RollbackApply`). Denials and conflicts are logged.
     RequestRollback { checkpoint_id: String },
 
@@ -1834,10 +1834,10 @@ pub enum AppRequest {
     Shutdown,
 }
 
-/// Who caused an app state change (`AppRequest::EmitEvent`).
+/// Who caused an plugin state change (`HostRequest::EmitEvent`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AppEventActor {
+pub enum PluginEventActor {
     User,
     Agent,
     App,
@@ -1875,7 +1875,7 @@ pub enum PayloadMode {
     StateRef,
 }
 
-/// One declared app event stream (`AppRequest::DeclareEventStreams`).
+/// One declared app event stream (`HostRequest::DeclareEventStreams`).
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 pub struct EventStreamDecl {
     /// Stream name, e.g. `"move.played"`. Must be non-empty.
@@ -1887,7 +1887,7 @@ pub struct EventStreamDecl {
     pub description: Option<String>,
 }
 
-/// Replace-vs-append behaviour for `AppRequest::InsertPathToken`.
+/// Replace-vs-append behaviour for `HostRequest::InsertPathToken`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PathTokenMode {
@@ -1898,7 +1898,7 @@ pub enum PathTokenMode {
     Append,
 }
 
-/// Routing target for `AppRequest::OpenArtifact`.
+/// Routing target for `HostRequest::OpenArtifact`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactOpenMode {
@@ -2062,7 +2062,7 @@ mod tests {
         // No `selectable` field — must fail because the field is required
         // (no `#[serde(default)]` on it).
         let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"x","size":14.0,"color":"#fff","max_width":null,"elide":true}"##;
-        let result: Result<AppRequest, _> = serde_json::from_str(json);
+        let result: Result<HostRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `selectable` field"
@@ -2076,9 +2076,9 @@ mod tests {
     #[test]
     fn ai_query_drawcommand_round_trips_serde() {
         let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::AiQuery {
+            HostRequest::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -2163,7 +2163,7 @@ mod tests {
         // (no `#[serde(default)]` on it).
         let json =
             r#"{"type":"ai_query","request_id":"r","model_tier":"low","system":"","messages":[]}"#;
-        let result: Result<AppRequest, _> = serde_json::from_str(json);
+        let result: Result<HostRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `tools` field"
@@ -2177,9 +2177,9 @@ mod tests {
     #[test]
     fn list_audio_devices_drawcommand_round_trips_serde() {
         let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::ListAudioDevices { request_id } => {
+            HostRequest::ListAudioDevices { request_id } => {
                 assert_eq!(request_id, "req-9");
             }
             other => panic!("expected ListAudioDevices, got {other:?}"),
@@ -2226,9 +2226,9 @@ mod tests {
     #[test]
     fn list_midi_devices_drawcommand_round_trips_serde() {
         let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::ListMidiDevices { request_id } => {
+            HostRequest::ListMidiDevices { request_id } => {
                 assert_eq!(request_id, "req-m1");
             }
             other => panic!("expected ListMidiDevices, got {other:?}"),
@@ -2274,9 +2274,9 @@ mod tests {
         // array of numbers — the human-readable shape (no base64) keeps the
         // wire debuggable and side-steps SDK plumbing for binary payloads.
         let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SendMidi { port_id, bytes } => {
+            HostRequest::SendMidi { port_id, bytes } => {
                 assert_eq!(port_id, "123");
                 assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
             }
@@ -2291,7 +2291,7 @@ mod tests {
         // Required-field discipline: dropping `bytes` fails deserialisation.
         let bad = r#"{"type":"send_midi","port_id":"123"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `bytes` field"
         );
     }
@@ -2300,9 +2300,9 @@ mod tests {
     fn pipe_open_directed_drawcommand_round_trips_serde() {
         let json =
             r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::PipeOpenDirected {
+            HostRequest::PipeOpenDirected {
                 pipe_id,
                 target_pane_id,
             } => {
@@ -2326,7 +2326,7 @@ mod tests {
     fn pipe_open_directed_missing_target_pane_id_fails_deserialise() {
         // No `target_pane_id` — must fail. Required.
         let json = r#"{"type":"pipe_open_directed","pipe_id":"x"}"#;
-        let result: Result<AppRequest, _> = serde_json::from_str(json);
+        let result: Result<HostRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "deserialise should fail without `target_pane_id` field"
@@ -2339,13 +2339,13 @@ mod tests {
         // `device_id` is the only optional field.
         let bad = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required sample_rate/buffer_size"
         );
         let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
-        let cmd: AppRequest = serde_json::from_str(good).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(good).expect("deserialise");
         match &cmd {
-            AppRequest::AudioCapture {
+            HostRequest::AudioCapture {
                 pipe_id,
                 device_id,
                 sample_rate,
@@ -2368,9 +2368,9 @@ mod tests {
     #[test]
     fn open_video_drawcommand_round_trips_serde() {
         let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::OpenVideo {
+            HostRequest::OpenVideo {
                 request_id,
                 source,
                 pipe_id,
@@ -2390,17 +2390,17 @@ mod tests {
         // Required-field discipline — dropping any field fails.
         let bad = r#"{"type":"open_video","source":"mock://gradient","pipe_id":"video-stream"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `request_id`"
         );
         let bad = r#"{"type":"open_video","request_id":"r","pipe_id":"p"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `source`"
         );
         let bad = r#"{"type":"open_video","request_id":"r","source":"mock://x"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `pipe_id`"
         );
     }
@@ -2408,9 +2408,9 @@ mod tests {
     #[test]
     fn set_video_state_drawcommand_round_trips_serde() {
         let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
-        let cmd: AppRequest = serde_json::from_str(play_json).expect("deserialise play");
+        let cmd: HostRequest = serde_json::from_str(play_json).expect("deserialise play");
         match &cmd {
-            AppRequest::SetVideoState { handle_id, state } => {
+            HostRequest::SetVideoState { handle_id, state } => {
                 assert_eq!(*handle_id, 7);
                 assert_eq!(*state, crate::protocol::VideoState::Play);
             }
@@ -2423,16 +2423,16 @@ mod tests {
         );
 
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
-        let cmd: AppRequest = serde_json::from_str(pause_json).expect("deserialise pause");
-        if let AppRequest::SetVideoState { state, .. } = &cmd {
+        let cmd: HostRequest = serde_json::from_str(pause_json).expect("deserialise pause");
+        if let HostRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(*state, crate::protocol::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
         }
 
         let seek_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
-        let cmd: AppRequest = serde_json::from_str(seek_json).expect("deserialise seek");
-        if let AppRequest::SetVideoState { state, .. } = &cmd {
+        let cmd: HostRequest = serde_json::from_str(seek_json).expect("deserialise seek");
+        if let HostRequest::SetVideoState { state, .. } = &cmd {
             assert_eq!(
                 *state,
                 crate::protocol::VideoState::Seek { position_ms: 1500 }
@@ -2445,14 +2445,14 @@ mod tests {
     #[test]
     fn close_video_drawcommand_round_trips_serde() {
         let json = r#"{"type":"close_video","handle_id":42}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
+            HostRequest::CloseVideo { handle_id } => assert_eq!(*handle_id, 42),
             other => panic!("expected CloseVideo, got {other:?}"),
         }
         let bad = r#"{"type":"close_video"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `handle_id`"
         );
     }
@@ -2500,9 +2500,9 @@ mod tests {
     #[test]
     fn request_linked_terminal_drawcommand_round_trips_serde() {
         let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::RequestLinkedTerminal {
+            HostRequest::RequestLinkedTerminal {
                 request_id,
                 cwd,
                 label,
@@ -2522,16 +2522,16 @@ mod tests {
         // Required-field discipline — no `serde(default)` on `request_id`.
         let bad = r#"{"type":"request_linked_terminal","cwd":null,"label":null}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `request_id`"
         );
 
         // Optional fields: explicit null deserialises to None.
         let null_json =
             r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
-        let cmd: AppRequest = serde_json::from_str(null_json).expect("deserialise null");
+        let cmd: HostRequest = serde_json::from_str(null_json).expect("deserialise null");
         match &cmd {
-            AppRequest::RequestLinkedTerminal { cwd, label, .. } => {
+            HostRequest::RequestLinkedTerminal { cwd, label, .. } => {
                 assert!(cwd.is_none());
                 assert!(label.is_none());
             }
@@ -2568,9 +2568,9 @@ mod tests {
     #[test]
     fn run_in_linked_terminal_round_trips_serde() {
         let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::RunInLinkedTerminal {
+            HostRequest::RunInLinkedTerminal {
                 terminal_pane_id,
                 command,
                 echo,
@@ -2590,7 +2590,7 @@ mod tests {
         // Required-field discipline — `echo` has no default.
         let bad = r#"{"type":"run_in_linked_terminal","terminal_pane_id":1,"command":"ls"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `echo`"
         );
     }
@@ -2599,9 +2599,9 @@ mod tests {
     fn insert_path_token_mode_enum_serde() {
         let replace_json =
             r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
-        let cmd: AppRequest = serde_json::from_str(replace_json).expect("deserialise replace");
+        let cmd: HostRequest = serde_json::from_str(replace_json).expect("deserialise replace");
         match &cmd {
-            AppRequest::InsertPathToken {
+            HostRequest::InsertPathToken {
                 mode,
                 path,
                 terminal_pane_id,
@@ -2615,8 +2615,8 @@ mod tests {
 
         let append_json =
             r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
-        let cmd: AppRequest = serde_json::from_str(append_json).expect("deserialise append");
-        if let AppRequest::InsertPathToken { mode, .. } = &cmd {
+        let cmd: HostRequest = serde_json::from_str(append_json).expect("deserialise append");
+        if let HostRequest::InsertPathToken { mode, .. } = &cmd {
             assert_eq!(*mode, PathTokenMode::Append);
         } else {
             panic!("expected InsertPathToken, got {cmd:?}");
@@ -2633,7 +2633,7 @@ mod tests {
         let bad =
             r#"{"type":"insert_path_token","terminal_pane_id":1,"path":"/x","mode":"INSERT"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "unknown mode must fail to deserialise"
         );
     }
@@ -2641,9 +2641,9 @@ mod tests {
     #[test]
     fn request_command_preview_round_trips_serde() {
         let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::RequestCommandPreview {
+            HostRequest::RequestCommandPreview {
                 request_id,
                 terminal_pane_id,
                 command,
@@ -2680,9 +2680,9 @@ mod tests {
         ];
         for (wire, expected) in cases {
             let json = format!(r#"{{"type":"open_artifact","path":"/tmp/x","mode":"{wire}"}}"#);
-            let cmd: AppRequest = serde_json::from_str(&json).expect("deserialise");
+            let cmd: HostRequest = serde_json::from_str(&json).expect("deserialise");
             match &cmd {
-                AppRequest::OpenArtifact { path, mode } => {
+                HostRequest::OpenArtifact { path, mode } => {
                     assert_eq!(path, "/tmp/x");
                     assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
                 }
@@ -2691,7 +2691,7 @@ mod tests {
         }
 
         // Round-trip serialise → snake_case on the wire.
-        let cmd = AppRequest::OpenArtifact {
+        let cmd = HostRequest::OpenArtifact {
             path: "/tmp/x".to_string(),
             mode: ArtifactOpenMode::RevealInFinder,
         };
@@ -2731,9 +2731,9 @@ mod tests {
         // (the structured `payload` from issue #74), and an optional
         // single-char hotkey (`shortcut`, the `key` from issue #74).
         let json = r#"{"type":"notify","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}]}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 kind,
                 options,
                 image_inline,
@@ -2773,9 +2773,9 @@ mod tests {
         // attempt to decode + render; tiny or invalid images render a
         // placeholder, never crash.
         let json = r#"{"type":"notify","title":"Pic","body":"see image","kind":"message","image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
@@ -2803,9 +2803,9 @@ mod tests {
     #[test]
     fn notify_with_image_pipe_id_round_trips_serde() {
         let json = r#"{"type":"notify","title":"Pic","body":"piped","kind":"message","image_pipe_id":"render-out"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 image_pipe_id,
                 image_inline,
                 ..
@@ -2822,9 +2822,9 @@ mod tests {
         // Existing apps that never set image fields must continue to work.
         // Missing `image_inline` / `image_pipe_id` deserialise as None.
         let json = r#"{"type":"notify","title":"Plain","body":"no image","kind":"message"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
@@ -2859,9 +2859,9 @@ mod tests {
     #[test]
     fn stream_process_drawcommand_round_trips_serde() {
         let json = r#"{"type":"stream_process","correlation_id":"cid-1","terminal_pane_id":42,"command":"ls -la","channel":"stdout"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::StreamProcess {
+            HostRequest::StreamProcess {
                 correlation_id,
                 terminal_pane_id,
                 command,
@@ -2883,7 +2883,7 @@ mod tests {
         let bad =
             r#"{"type":"stream_process","terminal_pane_id":42,"command":"ls","channel":"stdout"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `correlation_id`"
         );
     }
@@ -2891,9 +2891,9 @@ mod tests {
     #[test]
     fn cancel_process_drawcommand_round_trips_serde() {
         let json = r#"{"type":"cancel_process","correlation_id":"cid-2"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::CancelProcess { correlation_id } => {
+            HostRequest::CancelProcess { correlation_id } => {
                 assert_eq!(correlation_id, "cid-2");
             }
             other => panic!("expected CancelProcess, got {other:?}"),
@@ -2906,7 +2906,7 @@ mod tests {
 
         let bad = r#"{"type":"cancel_process"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required `correlation_id`"
         );
     }
@@ -2977,9 +2977,9 @@ mod tests {
     #[test]
     fn test_notify_timeout_fields() {
         let json = r#"{"type":"notify","title":"T","body":"B","timeout_secs":30,"on_dismiss":"user_ignored"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 timeout_secs,
                 on_dismiss,
                 ..
@@ -2987,16 +2987,16 @@ mod tests {
                 assert_eq!(timeout_secs, Some(30));
                 assert_eq!(on_dismiss.as_deref(), Some("user_ignored"));
             }
-            other => panic!("expected AppRequest::Notify, got {other:?}"),
+            other => panic!("expected HostRequest::Notify, got {other:?}"),
         }
     }
 
     #[test]
     fn test_notify_timeout_fields_default() {
         let json = r#"{"type":"notify","title":"T","body":"B"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            AppRequest::Notify {
+            HostRequest::Notify {
                 timeout_secs,
                 on_dismiss,
                 ..
@@ -3004,7 +3004,7 @@ mod tests {
                 assert!(timeout_secs.is_none());
                 assert!(on_dismiss.is_none());
             }
-            other => panic!("expected AppRequest::Notify, got {other:?}"),
+            other => panic!("expected HostRequest::Notify, got {other:?}"),
         }
     }
 
@@ -3013,7 +3013,7 @@ mod tests {
         for removed in ["priority", "level"] {
             let json = format!(r#"{{"type":"notify","title":"T","body":"B","{removed}":1}}"#);
             assert!(
-                serde_json::from_str::<AppRequest>(&json).is_err(),
+                serde_json::from_str::<HostRequest>(&json).is_err(),
                 "removed notification field {removed} must fail loudly"
             );
         }
@@ -3022,16 +3022,16 @@ mod tests {
     #[test]
     fn set_pane_title_deserializes() {
         let json = r#"{"type":"set_pane_title","pane_id":42,"name":"my label"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).unwrap();
-        assert!(matches!(cmd, AppRequest::SetPaneTitle { pane_id: 42, .. }));
+        let cmd: HostRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(cmd, HostRequest::SetPaneTitle { pane_id: 42, .. }));
     }
 
     #[test]
     fn spawn_pane_drawcommand_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"]}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane {
+            HostRequest::SpawnPane {
                 type_id,
                 layout,
                 args,
@@ -3055,9 +3055,9 @@ mod tests {
 
         // defaults: layout is None (absent from wire), args to []
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
-        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            AppRequest::SpawnPane {
+            HostRequest::SpawnPane {
                 layout,
                 args,
                 from_pane_id,
@@ -3122,9 +3122,9 @@ mod tests {
     #[test]
     fn spawn_pane_with_new_fields_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","from_pane_id":42,"request_id":"req-1"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane {
+            HostRequest::SpawnPane {
                 from_pane_id,
                 request_id,
                 ..
@@ -3148,9 +3148,9 @@ mod tests {
     #[test]
     fn spawn_pane_no_focus_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","no_focus":true}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane { no_focus, .. } => {
+            HostRequest::SpawnPane { no_focus, .. } => {
                 assert!(*no_focus, "no_focus should be true");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3163,10 +3163,10 @@ mod tests {
 
         // default (false) should be omitted from serialised output
         let json_default = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_default: AppRequest =
+        let cmd_default: HostRequest =
             serde_json::from_str(json_default).expect("deserialise default");
         match &cmd_default {
-            AppRequest::SpawnPane { no_focus, .. } => {
+            HostRequest::SpawnPane { no_focus, .. } => {
                 assert!(!*no_focus, "no_focus should default to false");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3182,9 +3182,9 @@ mod tests {
     fn spawn_pane_with_workspace_root_round_trips_serde() {
         let json =
             r#"{"type":"spawn_pane","type_id":"terminal","workspace_root":"/tmp/github-repo"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane { workspace_root, .. } => {
+            HostRequest::SpawnPane { workspace_root, .. } => {
                 assert_eq!(workspace_root.as_deref(), Some("/tmp/github-repo"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3197,9 +3197,9 @@ mod tests {
 
         // None should be omitted from serialised output.
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            AppRequest::SpawnPane { workspace_root, .. } => {
+            HostRequest::SpawnPane { workspace_root, .. } => {
                 assert!(
                     workspace_root.is_none(),
                     "absent workspace_root must deserialise to None"
@@ -3217,9 +3217,9 @@ mod tests {
     #[test]
     fn spawn_pane_name_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","name":"dev server"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane { name, .. } => {
+            HostRequest::SpawnPane { name, .. } => {
                 assert_eq!(name.as_deref(), Some("dev server"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3231,9 +3231,9 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            AppRequest::SpawnPane { name, .. } => {
+            HostRequest::SpawnPane { name, .. } => {
                 assert!(name.is_none(), "absent name must deserialise to None");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3248,9 +3248,9 @@ mod tests {
     #[test]
     fn spawn_pane_context_name_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","context_name":"work"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane { context_name, .. } => {
+            HostRequest::SpawnPane { context_name, .. } => {
                 assert_eq!(context_name.as_deref(), Some("work"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3262,9 +3262,9 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            AppRequest::SpawnPane { context_name, .. } => {
+            HostRequest::SpawnPane { context_name, .. } => {
                 assert!(
                     context_name.is_none(),
                     "absent context_name must deserialise to None"
@@ -3282,9 +3282,9 @@ mod tests {
     #[test]
     fn spawn_pane_worktree_round_trips_serde() {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","worktree":"feature/0668-test"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SpawnPane { worktree, .. } => {
+            HostRequest::SpawnPane { worktree, .. } => {
                 assert_eq!(worktree.as_deref(), Some("feature/0668-test"));
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -3296,9 +3296,9 @@ mod tests {
         );
 
         let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
-        let cmd_absent: AppRequest = serde_json::from_str(json_absent).expect("deserialise absent");
+        let cmd_absent: HostRequest = serde_json::from_str(json_absent).expect("deserialise absent");
         match &cmd_absent {
-            AppRequest::SpawnPane { worktree, .. } => {
+            HostRequest::SpawnPane { worktree, .. } => {
                 assert!(
                     worktree.is_none(),
                     "absent worktree must deserialise to None"
@@ -3316,9 +3316,9 @@ mod tests {
     #[test]
     fn close_pane_response_file_round_trips_serde() {
         let json = r#"{"type":"close_pane","pane_id":12,"response_file":"/tmp/close.json"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::ClosePane {
+            HostRequest::ClosePane {
                 pane_id,
                 response_file,
             } => {
@@ -3331,9 +3331,9 @@ mod tests {
         assert!(serialised.contains(r#""response_file":"/tmp/close.json""#));
 
         let legacy = r#"{"type":"close_pane","pane_id":12}"#;
-        let cmd_legacy: AppRequest = serde_json::from_str(legacy).expect("deserialise legacy");
+        let cmd_legacy: HostRequest = serde_json::from_str(legacy).expect("deserialise legacy");
         match &cmd_legacy {
-            AppRequest::ClosePane {
+            HostRequest::ClosePane {
                 pane_id,
                 response_file,
             } => {
@@ -3430,9 +3430,9 @@ mod tests {
     fn key_pane_drawcommand_round_trips_serde() {
         let json =
             r#"{"type":"key_pane","pane_id":42,"key":"enter","response_file":"result.json"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::KeyPane {
+            HostRequest::KeyPane {
                 pane_id,
                 key,
                 response_file,
@@ -3451,9 +3451,9 @@ mod tests {
 
         // Optional field: response_file absent → None
         let minimal = r#"{"type":"key_pane","pane_id":1,"key":"h"}"#;
-        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            AppRequest::KeyPane { response_file, .. } => {
+            HostRequest::KeyPane { response_file, .. } => {
                 assert!(
                     response_file.is_none(),
                     "absent response_file must deserialise to None"
@@ -3465,7 +3465,7 @@ mod tests {
         // Required-field discipline: missing key field must fail
         let bad = r#"{"type":"key_pane","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required key field"
         );
     }
@@ -3473,9 +3473,9 @@ mod tests {
     #[test]
     fn click_pane_command_round_trips_serde() {
         let json = r#"{"type":"click_pane","pane_id":42,"x":12.5,"y":7.0,"button":"left","response_file":"result.json"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::ClickPane {
+            HostRequest::ClickPane {
                 pane_id,
                 x,
                 y,
@@ -3498,9 +3498,9 @@ mod tests {
 
         // Optional fields: button and response_file absent → None
         let minimal = r#"{"type":"click_pane","pane_id":1,"x":0.0,"y":0.0}"#;
-        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            AppRequest::ClickPane {
+            HostRequest::ClickPane {
                 button,
                 response_file,
                 ..
@@ -3517,7 +3517,7 @@ mod tests {
         // Required-field discipline: missing x/y must fail
         let bad = r#"{"type":"click_pane","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required x/y fields"
         );
     }
@@ -3525,9 +3525,9 @@ mod tests {
     #[test]
     fn click_pane_node_command_round_trips_serde() {
         let json = r#"{"type":"click_pane_node","pane_id":42,"node_id":"5","button":"left","response_file":"result.json"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::ClickPaneNode {
+            HostRequest::ClickPaneNode {
                 pane_id,
                 node_id,
                 button,
@@ -3548,9 +3548,9 @@ mod tests {
 
         // Optional fields: button and response_file absent → None
         let minimal = r#"{"type":"click_pane_node","pane_id":1,"node_id":"3"}"#;
-        let cmd2: AppRequest = serde_json::from_str(minimal).expect("deserialise minimal");
+        let cmd2: HostRequest = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            AppRequest::ClickPaneNode {
+            HostRequest::ClickPaneNode {
                 button,
                 response_file,
                 ..
@@ -3567,7 +3567,7 @@ mod tests {
         // Required-field discipline: missing node_id must fail
         let bad = r#"{"type":"click_pane_node","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required node_id field"
         );
     }
@@ -3576,9 +3576,9 @@ mod tests {
     fn capture_pane_command_round_trips_serde() {
         let json =
             r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::CapturePane {
+            HostRequest::CapturePane {
                 pane_id,
                 lines,
                 response_file,
@@ -3605,10 +3605,10 @@ mod tests {
 
         // full_output=true should round-trip
         let json_full = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","full_output":true}"#;
-        let cmd_full: AppRequest =
+        let cmd_full: HostRequest =
             serde_json::from_str(json_full).expect("deserialise full_output");
         match &cmd_full {
-            AppRequest::CapturePane { full_output, .. } => {
+            HostRequest::CapturePane { full_output, .. } => {
                 assert!(*full_output, "full_output should be true when set");
             }
             other => panic!("expected CapturePane, got {other:?}"),
@@ -3616,24 +3616,24 @@ mod tests {
 
         // from_cursor should round-trip
         let json_cursor = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","from_cursor":42}"#;
-        let cmd_cursor: AppRequest =
+        let cmd_cursor: HostRequest =
             serde_json::from_str(json_cursor).expect("deserialise from_cursor");
         match &cmd_cursor {
-            AppRequest::CapturePane { from_cursor, .. } => {
+            HostRequest::CapturePane { from_cursor, .. } => {
                 assert_eq!(*from_cursor, Some(42), "from_cursor should be Some(42)");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
         // from_cursor absent → None
-        let cmd_no_cursor: AppRequest = serde_json::from_str(json).expect("deserialise no cursor");
+        let cmd_no_cursor: HostRequest = serde_json::from_str(json).expect("deserialise no cursor");
         match &cmd_no_cursor {
-            AppRequest::CapturePane { from_cursor, .. } => {
+            HostRequest::CapturePane { from_cursor, .. } => {
                 assert!(from_cursor.is_none(), "from_cursor should default to None");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
         // from_cursor=0 should be omitted from wire format
-        let cmd_zero: AppRequest = serde_json::from_str(
+        let cmd_zero: HostRequest = serde_json::from_str(
             r#"{"type":"capture_pane","pane_id":7,"lines":5,"response_file":"f.json"}"#,
         )
         .unwrap();
@@ -3646,7 +3646,7 @@ mod tests {
         // Missing required fields must fail
         let bad = r#"{"type":"capture_pane","pane_id":1}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without lines and response_file"
         );
     }
@@ -3654,9 +3654,9 @@ mod tests {
     #[test]
     fn pane_status_command_round_trips_serde() {
         let json = r#"{"type":"pane_status","pane_id":7,"response_file":"status.json"}"#;
-        let command: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let command: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &command {
-            AppRequest::PaneStatus {
+            HostRequest::PaneStatus {
                 pane_id,
                 response_file,
             } => {
@@ -3674,9 +3674,9 @@ mod tests {
     #[test]
     fn set_context_description_round_trips_serde() {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
-        let cmd: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let cmd: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            AppRequest::SetContextDescription {
+            HostRequest::SetContextDescription {
                 description,
                 context_id,
                 ..
@@ -3687,8 +3687,8 @@ mod tests {
             other => panic!("expected SetContextDescription, got {other:?}"),
         }
         let targeted = r#"{"type":"set_context_description","description":"d","context_id":7}"#;
-        match serde_json::from_str::<AppRequest>(targeted).expect("deserialise targeted") {
-            AppRequest::SetContextDescription { context_id, .. } => {
+        match serde_json::from_str::<HostRequest>(targeted).expect("deserialise targeted") {
+            HostRequest::SetContextDescription { context_id, .. } => {
                 assert_eq!(context_id, Some(7));
             }
             other => panic!("expected SetContextDescription, got {other:?}"),
@@ -3701,7 +3701,7 @@ mod tests {
 
         let bad = r#"{"type":"set_context_description"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(bad).is_err(),
+            serde_json::from_str::<HostRequest>(bad).is_err(),
             "must fail without required description field"
         );
     }
@@ -3748,7 +3748,7 @@ mod tests {
         // No `max_width` field — required, must fail.
         let json =
             r#"{"type":"measure_text_wrapped","request_id":"r","text":"hi","font_size":12.0}"#;
-        let result: Result<AppRequest, _> = serde_json::from_str(json);
+        let result: Result<HostRequest, _> = serde_json::from_str(json);
         assert!(
             result.is_err(),
             "must fail without required max_width field"
@@ -3759,7 +3759,7 @@ mod tests {
     fn avatar_missing_required_field_fails_deserialise() {
         // No `radius` — required, must fail.
         let json = r#"{"type":"avatar","src":"h","cx":0.0,"cy":0.0}"#;
-        let result: Result<AppRequest, _> = serde_json::from_str(json);
+        let result: Result<HostRequest, _> = serde_json::from_str(json);
         assert!(result.is_err(), "must fail without required radius field");
     }
 
@@ -3967,9 +3967,9 @@ mod ai_stream_chunk_tests {
     fn get_previous_pane_info_round_trips_serde() {
         // Without steps — default should be 1.
         let json = r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json"}"#;
-        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let req: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &req {
-            AppRequest::GetPreviousPaneInfo {
+            HostRequest::GetPreviousPaneInfo {
                 response_file,
                 steps,
             } => {
@@ -3991,9 +3991,9 @@ mod ai_stream_chunk_tests {
         // With explicit steps=3.
         let json3 =
             r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json","steps":3}"#;
-        let req3: AppRequest = serde_json::from_str(json3).expect("deserialise steps=3");
+        let req3: HostRequest = serde_json::from_str(json3).expect("deserialise steps=3");
         match &req3 {
-            AppRequest::GetPreviousPaneInfo { steps, .. } => {
+            HostRequest::GetPreviousPaneInfo { steps, .. } => {
                 assert_eq!(*steps, 3);
             }
             other => panic!("expected GetPreviousPaneInfo with steps=3, got {other:?}"),
@@ -4004,9 +4004,9 @@ mod ai_stream_chunk_tests {
     /// after a spawn-queue write.
     #[test]
     fn wake_round_trips_serde() {
-        let req: AppRequest = serde_json::from_str(r#"{"type":"wake"}"#).expect("deserialise");
+        let req: HostRequest = serde_json::from_str(r#"{"type":"wake"}"#).expect("deserialise");
         assert!(
-            matches!(req, AppRequest::Wake),
+            matches!(req, HostRequest::Wake),
             "expected Wake, got {req:?}"
         );
         let serialised = serde_json::to_string(&req).expect("serialise");
@@ -4021,7 +4021,7 @@ mod ai_stream_chunk_tests {
     fn get_previous_pane_info_missing_response_file_fails() {
         let json = r#"{"type":"get_previous_pane_info"}"#;
         assert!(
-            serde_json::from_str::<AppRequest>(json).is_err(),
+            serde_json::from_str::<HostRequest>(json).is_err(),
             "missing required response_file must fail"
         );
     }
@@ -4029,9 +4029,9 @@ mod ai_stream_chunk_tests {
     #[test]
     fn set_agent_state_detail_round_trips_serde() {
         let json = r#"{"type":"set_agent_state","pane_id":7,"state":"working","agent":"claude-code","detail":"Bash: cargo test","session_id":"abc"}"#;
-        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let req: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &req {
-            AppRequest::SetAgentState {
+            HostRequest::SetAgentState {
                 pane_id,
                 state,
                 agent,
@@ -4058,9 +4058,9 @@ mod ai_stream_chunk_tests {
     #[test]
     fn set_agent_state_missing_detail_defaults_to_none() {
         let json = r#"{"type":"set_agent_state","pane_id":7,"state":"idle","agent":"claude-code"}"#;
-        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        let req: HostRequest = serde_json::from_str(json).expect("deserialise");
         match &req {
-            AppRequest::SetAgentState {
+            HostRequest::SetAgentState {
                 detail, session_id, ..
             } => {
                 assert!(detail.is_none());
@@ -4093,10 +4093,10 @@ mod pip_status_tests {
     #[test]
     fn pip_status_wire_format_is_snake_case_and_pane_id_defaults() {
         // The SDK omits pane_id (host stamps it); it must default to 0.
-        let req: AppRequest =
+        let req: HostRequest =
             serde_json::from_str(r#"{"type":"set_pip_status","status":"red"}"#).unwrap();
         match req {
-            AppRequest::SetPipStatus { pane_id, status } => {
+            HostRequest::SetPipStatus { pane_id, status } => {
                 assert_eq!(
                     pane_id, 0,
                     "omitted pane_id must default to 0 for host stamping"

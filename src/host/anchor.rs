@@ -44,7 +44,7 @@ impl Anchor {
         }
 
         // Guard: never treat home dir as an anchor. ~/.plexi/ is the stable
-        // profile dir, and ~/  would cause the AppRegistry to load stable
+        // profile dir, and ~/  would cause the PluginRegistry to load stable
         // apps instead of the active channel's apps (issue #1064).
         if is_profile_dir(path) {
             log::info!("anchor::detect: skipping profile dir at {}", path.display());

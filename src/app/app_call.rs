@@ -1,4 +1,4 @@
-//! `plexi app call` — invoke an app-exposed tool from the command socket.
+//! `plexi plugin call` — invoke an app-exposed tool from the command socket.
 //!
 //! The call runs through the same `ToolDispatcher` the Assistant and the host
 //! MCP server use, so the app receives an ordinary `ToolCall` and answers with
@@ -612,7 +612,7 @@ impl PlexiApp {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn call_app_tool(
         &mut self,
-        app_id: String,
+        plugin_id: String,
         tool: String,
         input_json: String,
         caller_pane_id: Option<u64>,
@@ -642,9 +642,9 @@ impl PlexiApp {
                 let actor = caller_pane_id
                     .map(|pane| format!("pane:{pane}"))
                     .unwrap_or_else(|| "session:unscoped".to_string());
-                monitor.note_denial(&actor, "app-call", &app_id, "", "identity");
+                monitor.note_denial(&actor, "app-call", &plugin_id, "", "identity");
                 log::info!(
-                    "app_call: denied app={app_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
+                    "app_call: denied app={plugin_id} tool={tool} identity={error:?} claim={caller_pane_id:?} actor={actor}"
                 );
                 let code = match error {
                     crate::broker::gate::IdentityError::StaleCredential => "permission_denied",
@@ -723,10 +723,10 @@ impl PlexiApp {
                 timeout: crate::cli::app::APP_CALL_APPROVAL_TIMEOUT,
             }));
         }
-        let namespaced = match dispatcher.select_app_tool(&app_id, &tool, target_pane_id) {
+        let namespaced = match dispatcher.select_app_tool(&plugin_id, &tool, target_pane_id) {
             Ok(name) => name,
             Err(error) => {
-                monitor.note_denial(&caller, "app-call", &app_id, "", "ambiguous_instance");
+                monitor.note_denial(&caller, "app-call", &plugin_id, "", "ambiguous_instance");
                 log::info!("app_call: {error}");
                 reply(serde_json::json!({
                     "ok": false,
@@ -738,7 +738,7 @@ impl PlexiApp {
         };
         let call_id = format!("cli-{}", uuid::Uuid::new_v4());
         log::info!(
-            "app_call: caller={caller} context={context_id} app={app_id} tool={tool} call_id={call_id}"
+            "app_call: caller={caller} context={context_id} app={plugin_id} tool={tool} call_id={call_id}"
         );
         let spawned = std::thread::Builder::new()
             .name("app-call".to_string())
@@ -774,7 +774,7 @@ impl PlexiApp {
 
     pub(crate) fn list_app_tools(
         &self,
-        app_id: Option<&str>,
+        plugin_id: Option<&str>,
         explicit_context_id: Option<u64>,
         caller_pane_id: Option<u64>,
         caller_context_id: Option<u64>,
@@ -818,11 +818,11 @@ impl PlexiApp {
 
         let mut tools =
             crate::plexi_ai::tool_dispatch::snapshot_tools_for_context(resolved_context_id);
-        if let Some(filter_app) = app_id.map(str::trim).filter(|s| !s.is_empty()) {
-            tools.retain(|entry| entry.app_id == filter_app);
+        if let Some(filter_app) = plugin_id.map(str::trim).filter(|s| !s.is_empty()) {
+            tools.retain(|entry| entry.plugin_id == filter_app);
         }
         log::info!(
-            "pane_ipc: kind=list_app_tools context_id={resolved_context_id} app_id={app_id:?} count={}",
+            "pane_ipc: kind=list_plugin_tools context_id={resolved_context_id} plugin_id={plugin_id:?} count={}",
             tools.len()
         );
         crate::rpc::write_json_response(
@@ -1147,7 +1147,7 @@ mod tests {
                 context_id: 1,
                 package_id: "probe",
                 instance_id: 1,
-                target_type: TargetType::AppConnector,
+                target_type: TargetType::PluginConnector,
             }) {
                 Admission::Required { pending_request_id } => pending_request_id,
                 _ => panic!("expected pending request"),

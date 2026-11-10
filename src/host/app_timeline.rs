@@ -1,16 +1,16 @@
 //! App event timeline + undo checkpoints.
 //!
-//! Apps own state. The host owns the timeline. Agents never own app state.
+//! Apps own state. The host owns the timeline. Agents never own plugin state.
 //!
 //! This module is the host-owned record of:
 //! - **Declared event streams**: apps must declare named streams (with a
 //!   schema) before emitting on them.
-//! - **App events**: every accepted `AppRequest::EmitEvent` enters the
+//! - **App events**: every accepted `HostRequest::EmitEvent` enters the
 //!   timeline. Malformed events are rejected and logged, never recorded.
 //! - **Undo checkpoints**: events carrying rollback metadata
 //!   (`rollback_token`) also create a reversible checkpoint.
 //! - **Subscriptions**: actors subscribe to streams only through the broker
-//!   (`TargetType::AppEventStream`); accepted events are routed into a
+//!   (`TargetType::PluginEventStream`); accepted events are routed into a
 //!   delivery queue keyed by trigger mode.
 //!
 //! Phase C (agent runtime) consumes `drain_deliveries()` — the delivery
@@ -18,30 +18,30 @@
 //! so the runtime knows whether to inject context, trigger a turn, run an
 //! ambient workflow, or prompt first. Until then deliveries accumulate here.
 
-use crate::protocol::{AppEventActor, EventStreamDecl, PayloadMode, TriggerMode};
+use crate::protocol::{PluginEventActor, EventStreamDecl, PayloadMode, TriggerMode};
 use crate::broker::{ActorType, GrantDuration};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-fn reserved_host_publisher(app_id: &str) -> bool {
-    app_id == crate::host::pane_lifecycle::PUBLISHER
-        || app_id == crate::host::command_view::PUBLISHER
+fn reserved_host_publisher(plugin_id: &str) -> bool {
+    plugin_id == crate::host::pane_lifecycle::PUBLISHER
+        || plugin_id == crate::host::command_view::PUBLISHER
 }
 
 // ── Validated event ──────────────────────────────────────────────────────────
 
 /// A validated, host-accepted app event. Constructed only via
-/// [`AppTimeline::record_event`] so every record in the timeline passed the
+/// [`PluginTimeline::record_event`] so every record in the timeline passed the
 /// required-field checks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppEventRecord {
+pub struct PluginEventRecord {
     /// Host-assigned, unique within this timeline.
     pub event_id: u64,
     /// App that emitted the event (host-stamped, not app-supplied).
-    pub app_id: String,
+    pub plugin_id: String,
     /// Host-established context the emitting app instance lives in (stint
-    /// 0724 Phase D) — the owning `Scope::AppInstance` for reachability.
+    /// 0724 Phase D) — the owning `Scope::PluginInstance` for reachability.
     /// Never app-supplied; resolved by the caller from
     /// `PlexiApp::origin_for_pane` at the point the event was recorded.
     pub owner_context_id: u64,
@@ -49,14 +49,14 @@ pub struct AppEventRecord {
     pub pane_id: u64,
     /// Declared stream name, e.g. `move.played`.
     pub event: String,
-    pub actor: AppEventActor,
+    pub actor: PluginEventActor,
     /// Actor identity. Defaults to the emitting app id when not supplied.
     pub actor_id: String,
     /// Causal tool caller (e.g. `"agent:chess-opponent"`) when this event
     /// was emitted while servicing a `ToolCall`; `None` for organic events.
     pub caused_by: Option<String>,
     pub summary: String,
-    /// Document, game, pane, or app-instance id.
+    /// Document, game, pane, or plugin-instance id.
     pub resource_id: String,
     /// Scope class of `resource_id` (`pane` when the app didn't say).
     pub resource_scope: String,
@@ -72,12 +72,12 @@ pub struct AppEventRecord {
     pub created_at: String,
 }
 
-/// Unvalidated emit payload — the wire shape of `AppRequest::EmitEvent`
+/// Unvalidated emit payload — the wire shape of `HostRequest::EmitEvent`
 /// plus the host-stamped identity of the emitter.
 #[derive(Debug, Clone)]
 pub struct EmittedEvent {
     pub event: String,
-    pub actor: AppEventActor,
+    pub actor: PluginEventActor,
     pub actor_id: Option<String>,
     pub caused_by: Option<String>,
     pub summary: String,
@@ -114,9 +114,9 @@ pub enum CheckpointStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UndoCheckpoint {
     pub checkpoint_id: String,
-    pub actor_type: AppEventActor,
+    pub actor_type: PluginEventActor,
     pub actor_id: String,
-    pub app_id: String,
+    pub plugin_id: String,
     pub pane_id: u64,
     pub resource_scope: String,
     pub resource_id: String,
@@ -194,8 +194,8 @@ pub enum RollbackVerdict {
 // ── Subscriptions ────────────────────────────────────────────────────────────
 
 /// A broker-granted subscription of one actor to one app's event stream(s).
-/// Created only through [`AppTimeline::add_subscription`], which callers must
-/// gate behind a `TargetType::AppEventStream` broker decision (see
+/// Created only through [`PluginTimeline::add_subscription`], which callers must
+/// gate behind a `TargetType::PluginEventStream` broker decision (see
 /// `WASM app runtime::subscribe_event_stream`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionRecord {
@@ -203,7 +203,7 @@ pub struct SubscriptionRecord {
     pub subscriber_type: ActorType,
     pub subscriber_id: String,
     /// App package identity whose events are subscribed.
-    pub app_id: String,
+    pub plugin_id: String,
     /// Declared stream names. Empty = all streams the app declares.
     pub event_names: Vec<String>,
     pub payload_mode: PayloadMode,
@@ -222,19 +222,19 @@ pub struct SubscriptionRecord {
 }
 
 impl SubscriptionRecord {
-    /// A subscription matches an event when: the publisher app-id matches,
+    /// A subscription matches an event when: the publisher plugin-id matches,
     /// the event's owning scope is reachable from this subscriber's context
     /// (stint 0724 Phase D — same context only, since no cross-context grant
     /// is ever issued yet), the event name is one of the subscribed names
     /// (or the subscription covers all of the app's streams), and the
     /// resource filter (if any) matches.
-    fn matches(&self, app_id: &str, record: &AppEventRecord) -> bool {
-        if self.app_id != app_id {
+    fn matches(&self, plugin_id: &str, record: &PluginEventRecord) -> bool {
+        if self.plugin_id != plugin_id {
             return false;
         }
-        let owner = crate::host::scope::Scope::AppInstance {
+        let owner = crate::host::scope::Scope::PluginInstance {
             pane_id: record.pane_id,
-            app_id: app_id.to_string(),
+            plugin_id: plugin_id.to_string(),
             context_id: record.owner_context_id,
         };
         if crate::host::scope::evaluate_reach(&owner, self.subscriber_context_id, None)
@@ -262,11 +262,11 @@ pub struct EventDelivery {
     pub subscriber_type: ActorType,
     pub subscriber_id: String,
     pub trigger_mode: TriggerMode,
-    pub app_id: String,
+    pub plugin_id: String,
     pub event: String,
     pub event_id: u64,
     pub resource_id: String,
-    pub actor: AppEventActor,
+    pub actor: PluginEventActor,
     pub actor_id: String,
     /// Causal tool caller — agent runtimes must not trigger on deliveries
     /// the subscriber itself caused.
@@ -281,25 +281,25 @@ pub struct EventDelivery {
     pub created_at: String,
 }
 
-/// How many recent events [`AppTimeline`] keeps in memory. A host left open for
+/// How many recent events [`PluginTimeline`] keeps in memory. A host left open for
 /// days would otherwise grow this without bound.
 pub(crate) const EVENT_RING_CAP: usize = 4096;
 
-// ── AppTimeline ──────────────────────────────────────────────────────────────
+// ── PluginTimeline ──────────────────────────────────────────────────────────────
 
 /// Host-owned timeline of app events, undo checkpoints, subscriptions, and
-/// pending deliveries. Shared as `Arc<Mutex<AppTimeline>>`: production panes
+/// pending deliveries. Shared as `Arc<Mutex<PluginTimeline>>`: production panes
 /// all point at [`global()`], harness tests construct isolated instances.
 #[derive(Debug, Default)]
-pub struct AppTimeline {
-    /// `(context_id, app_id) -> stream name -> declaration`. Context-keyed
-    /// (stint 0724 Phase D) so two contexts running the same `app_id` never
+pub struct PluginTimeline {
+    /// `(context_id, plugin_id) -> stream name -> declaration`. Context-keyed
+    /// (stint 0724 Phase D) so two contexts running the same `plugin_id` never
     /// share a stream namespace or clobber each other's schema — the
     /// cross-context bleed this phase fixes.
     streams: HashMap<(u64, String), HashMap<String, EventStreamDecl>>,
     /// Ring buffer of the most recent events (see [`EVENT_RING_CAP`]); the
     /// durable record is the session flight trace, not this window.
-    events: VecDeque<AppEventRecord>,
+    events: VecDeque<PluginEventRecord>,
     /// Ring capacity; `0` (the `Default`) means [`EVENT_RING_CAP`].
     event_cap: usize,
     checkpoints: Vec<UndoCheckpoint>,
@@ -312,29 +312,29 @@ pub struct AppTimeline {
     next_checkpoint_seq: u64,
 }
 
-impl AppTimeline {
+impl PluginTimeline {
     // ── Stream declaration ──────────────────────────────────────────────────
 
     /// Register an app's declared event streams, namespaced under the
     /// declaring instance's host-established `context_id` (stint 0724 Phase
-    /// D) so the same `app_id` running in two different contexts never
+    /// D) so the same `plugin_id` running in two different contexts never
     /// shares a stream namespace. Replaces any previous declaration for the
-    /// same `(context_id, app_id, stream name)` (hot-reload friendly).
+    /// same `(context_id, plugin_id, stream name)` (hot-reload friendly).
     /// Returns the names accepted; invalid declarations are rejected with a
     /// reason.
     pub fn declare_streams(
         &mut self,
         context_id: u64,
-        app_id: &str,
+        plugin_id: &str,
         decls: Vec<EventStreamDecl>,
     ) -> Result<Vec<String>, String> {
-        if reserved_host_publisher(app_id) {
+        if reserved_host_publisher(plugin_id) {
             return Err("pane lifecycle publisher is reserved for the host".into());
         }
-        self.declare_streams_inner(context_id, app_id, decls)
+        self.declare_streams_inner(context_id, plugin_id, decls)
     }
 
-    fn declare_streams_inner(&mut self, context_id: u64, app_id: &str, decls: Vec<EventStreamDecl>) -> Result<Vec<String>, String> {
+    fn declare_streams_inner(&mut self, context_id: u64, plugin_id: &str, decls: Vec<EventStreamDecl>) -> Result<Vec<String>, String> {
         if decls.is_empty() {
             return Err("declare_event_streams: empty stream list".to_string());
         }
@@ -352,21 +352,21 @@ impl AppTimeline {
         }
         let entry = self
             .streams
-            .entry((context_id, app_id.to_string()))
+            .entry((context_id, plugin_id.to_string()))
             .or_default();
         for decl in decls {
             accepted.push(decl.name.clone());
             entry.insert(decl.name.clone(), decl);
         }
         log::info!(
-            "app_timeline: '{app_id}' (context={context_id}) declared event streams {accepted:?}"
+            "app_timeline: '{plugin_id}' (context={context_id}) declared event streams {accepted:?}"
         );
         Ok(accepted)
     }
 
-    /// Every declared `(context_id, app_id, stream_name)` triple, sorted —
+    /// Every declared `(context_id, plugin_id, stream_name)` triple, sorted —
     /// the discovery surface for actors that subscribe at runtime (Phase D
-    /// Assistant). Context-qualified since the same `app_id` may declare
+    /// Assistant). Context-qualified since the same `plugin_id` may declare
     /// different streams/schemas in different contexts.
     pub fn all_declared_streams(&self) -> Vec<(u64, String, String)> {
         let mut out: Vec<(u64, String, String)> = self
@@ -383,20 +383,20 @@ impl AppTimeline {
 
     /// Declared streams for an app in one context (empty when none declared).
     #[cfg(test)]
-    pub fn declared_streams(&self, context_id: u64, app_id: &str) -> Vec<&EventStreamDecl> {
+    pub fn declared_streams(&self, context_id: u64, plugin_id: &str) -> Vec<&EventStreamDecl> {
         self.streams
-            .get(&(context_id, app_id.to_string()))
+            .get(&(context_id, plugin_id.to_string()))
             .map(|m| m.values().collect())
             .unwrap_or_default()
     }
 
-    /// Whether `app_id` in `context_id` has declared a stream named `name` —
+    /// Whether `plugin_id` in `context_id` has declared a stream named `name` —
     /// an O(1) lookup (mirrors `record_event`'s declared-stream check), for
     /// callers that only need existence and not the full `EventStreamDecl`
     /// list.
-    pub fn has_stream(&self, context_id: u64, app_id: &str, name: &str) -> bool {
+    pub fn has_stream(&self, context_id: u64, plugin_id: &str, name: &str) -> bool {
         self.streams
-            .get(&(context_id, app_id.to_string()))
+            .get(&(context_id, plugin_id.to_string()))
             .is_some_and(|m| m.contains_key(name))
     }
 
@@ -409,17 +409,17 @@ impl AppTimeline {
     pub fn record_event(
         &mut self,
         context_id: u64,
-        app_id: &str,
+        plugin_id: &str,
         pane_id: u64,
         emitted: EmittedEvent,
     ) -> Result<EventOutcome, String> {
-        if reserved_host_publisher(app_id) {
+        if reserved_host_publisher(plugin_id) {
             return Err("pane lifecycle publisher is reserved for the host".into());
         }
-        self.record_event_inner(context_id, app_id, pane_id, emitted)
+        self.record_event_inner(context_id, plugin_id, pane_id, emitted)
     }
 
-    fn record_event_inner(&mut self, context_id: u64, app_id: &str, pane_id: u64, emitted: EmittedEvent) -> Result<EventOutcome, String> {
+    fn record_event_inner(&mut self, context_id: u64, plugin_id: &str, pane_id: u64, emitted: EmittedEvent) -> Result<EventOutcome, String> {
         // Required-field validation (spec: event name, actor, summary,
         // resource id, revision after).
         if emitted.event.trim().is_empty() {
@@ -434,15 +434,15 @@ impl AppTimeline {
         if emitted.revision_after.trim().is_empty() {
             return Err("emit_event: 'revision_after' must be non-empty".to_string());
         }
-        // Streams must be declared (in this context, under this app_id) with
+        // Streams must be declared (in this context, under this plugin_id) with
         // a schema before use.
         let declared = self
             .streams
-            .get(&(context_id, app_id.to_string()))
+            .get(&(context_id, plugin_id.to_string()))
             .is_some_and(|m| m.contains_key(&emitted.event));
         if !declared {
             return Err(format!(
-                "emit_event: '{}' is not a declared event stream for app '{app_id}' \
+                "emit_event: '{}' is not a declared event stream for app '{plugin_id}' \
                  in this context — declare it via declare_event_streams first",
                 emitted.event
             ));
@@ -454,14 +454,14 @@ impl AppTimeline {
         }
 
         self.next_event_id += 1;
-        let record = AppEventRecord {
+        let record = PluginEventRecord {
             event_id: self.next_event_id,
-            app_id: app_id.to_string(),
+            plugin_id: plugin_id.to_string(),
             owner_context_id: context_id,
             pane_id,
             event: emitted.event,
             actor: emitted.actor,
-            actor_id: emitted.actor_id.unwrap_or_else(|| app_id.to_string()),
+            actor_id: emitted.actor_id.unwrap_or_else(|| plugin_id.to_string()),
             caused_by: emitted.caused_by,
             summary: emitted.summary,
             resource_id: emitted.resource_id,
@@ -484,7 +484,7 @@ impl AppTimeline {
                 checkpoint_id: checkpoint_id.clone(),
                 actor_type: record.actor,
                 actor_id: record.actor_id.clone(),
-                app_id: record.app_id.clone(),
+                plugin_id: record.plugin_id.clone(),
                 pane_id: record.pane_id,
                 resource_scope: record.resource_scope.clone(),
                 resource_id: record.resource_id.clone(),
@@ -498,7 +498,7 @@ impl AppTimeline {
             };
             log::info!(
                 "app_timeline: undo checkpoint {checkpoint_id} for '{}' ({} -> {})",
-                record.app_id,
+                record.plugin_id,
                 record.revision_before.as_deref().unwrap_or("?"),
                 record.revision_after
             );
@@ -507,10 +507,10 @@ impl AppTimeline {
         });
 
         // Route to matching subscriptions.
-        let deliveries_queued = self.route_to_subscriptions(app_id, &record);
+        let deliveries_queued = self.route_to_subscriptions(plugin_id, &record);
 
         log::info!(
-            "app_timeline: recorded '{}' event {} from '{app_id}' (resource={}, rev_after={}, \
+            "app_timeline: recorded '{}' event {} from '{plugin_id}' (resource={}, rev_after={}, \
              checkpoint={:?}, deliveries={deliveries_queued})",
             record.event,
             record.event_id,
@@ -539,7 +539,7 @@ impl AppTimeline {
     }
 
     /// Append to the ring, evicting the oldest event once it is full.
-    fn push_event(&mut self, record: AppEventRecord) {
+    fn push_event(&mut self, record: PluginEventRecord) {
         let cap = if self.event_cap == 0 { EVENT_RING_CAP } else { self.event_cap };
         self.events.push_back(record);
         let mut evicted = 0usize;
@@ -585,7 +585,7 @@ impl AppTimeline {
         let summary = format!("pane {pane_id}: {kind}");
         log::info!("pane_lifecycle: pane={pane_id} context={context_id} kind={kind}");
         self.record_event_inner(context_id, PUBLISHER, pane_id, EmittedEvent {
-            event: STREAM.into(), actor: AppEventActor::System,
+            event: STREAM.into(), actor: PluginEventActor::System,
             actor_id: Some(PUBLISHER.into()), caused_by: None,
             summary, resource_id: pane_id.to_string(), resource_scope: Some("pane".into()),
             revision_after: (self.next_event_id + 1).to_string(), payload: Some(payload),
@@ -625,7 +625,7 @@ impl AppTimeline {
             0,
             EmittedEvent {
                 event: STREAM.into(),
-                actor: AppEventActor::System,
+                actor: PluginEventActor::System,
                 actor_id: Some(PUBLISHER.into()),
                 caused_by: None,
                 summary: summary.to_string(),
@@ -642,13 +642,13 @@ impl AppTimeline {
         )
     }
 
-    fn route_to_subscriptions(&mut self, app_id: &str, record: &AppEventRecord) -> usize {
+    fn route_to_subscriptions(&mut self, plugin_id: &str, record: &PluginEventRecord) -> usize {
         let mut queued = 0;
         let mut new_deliveries = Vec::new();
         for sub in self
             .subscriptions
             .iter()
-            .filter(|s| s.matches(app_id, record))
+            .filter(|s| s.matches(plugin_id, record))
         {
             // `never` = record in the timeline only — no delivery.
             if sub.trigger_mode == TriggerMode::Never {
@@ -669,7 +669,7 @@ impl AppTimeline {
                 subscriber_type: sub.subscriber_type,
                 subscriber_id: sub.subscriber_id.clone(),
                 trigger_mode: sub.trigger_mode,
-                app_id: app_id.to_string(),
+                plugin_id: plugin_id.to_string(),
                 event: record.event.clone(),
                 event_id: record.event_id,
                 resource_id: record.resource_id.clone(),
@@ -699,7 +699,7 @@ impl AppTimeline {
 
     /// All recorded events (read-only, oldest first).
     #[cfg(test)]
-    pub fn events(&self) -> &VecDeque<AppEventRecord> {
+    pub fn events(&self) -> &VecDeque<PluginEventRecord> {
         &self.events
     }
 
@@ -713,11 +713,11 @@ impl AppTimeline {
 
     /// Checkpoints for one app, newest first — the listing API for history UI.
     #[cfg(test)]
-    pub fn checkpoints_for_app(&self, app_id: &str) -> Vec<&UndoCheckpoint> {
+    pub fn checkpoints_for_app(&self, plugin_id: &str) -> Vec<&UndoCheckpoint> {
         let mut out: Vec<&UndoCheckpoint> = self
             .checkpoints
             .iter()
-            .filter(|c| c.app_id == app_id)
+            .filter(|c| c.plugin_id == plugin_id)
             .collect();
         out.reverse();
         out
@@ -823,7 +823,7 @@ impl AppTimeline {
         }
     }
 
-    pub(crate) fn lifecycle_record(&self, event_id: u64) -> Option<&AppEventRecord> {
+    pub(crate) fn lifecycle_record(&self, event_id: u64) -> Option<&PluginEventRecord> {
         self.events.iter().rev().find(|event| event.event_id == event_id)
     }
 
@@ -831,15 +831,15 @@ impl AppTimeline {
     /// snapshot; queued deliveries bridge any transition before the snapshot lock.
     pub(crate) fn lifecycle_snapshot(
         &self, subscription_id: &str, pane_id: u64, predicate: Option<&str>,
-    ) -> Result<Option<AppEventRecord>, String> {
+    ) -> Result<Option<PluginEventRecord>, String> {
         use crate::host::pane_lifecycle::{PUBLISHER, STREAM};
         let sub = self.subscriptions.iter().find(|sub| sub.subscription_id == subscription_id)
             .ok_or("lifecycle subscription is no longer active")?;
-        if sub.app_id != PUBLISHER || !sub.event_names.iter().any(|name| name == STREAM) {
+        if sub.plugin_id != PUBLISHER || !sub.event_names.iter().any(|name| name == STREAM) {
             return Err("not a pane lifecycle subscription".into());
         }
         let records = || self.events.iter().rev().filter(|event|
-            event.app_id == PUBLISHER && event.event == STREAM && event.pane_id == pane_id);
+            event.plugin_id == PUBLISHER && event.event == STREAM && event.pane_id == pane_id);
         let exited = records().find(|event| event.payload.as_ref()
             .is_some_and(|payload| payload["kind"] == "exited"));
         let context_id = self.pane_locations.get(&pane_id).copied()
@@ -864,7 +864,7 @@ impl AppTimeline {
     // ── Subscriptions ───────────────────────────────────────────────────────
 
     /// Add a broker-approved subscription. Callers MUST have evaluated a
-    /// `TargetType::AppEventStream` request to `Allow` first.
+    /// `TargetType::PluginEventStream` request to `Allow` first.
     pub fn add_subscription(&mut self, sub: SubscriptionRecord) {
         log::info!(
             "app_timeline: subscription {} — {:?} '{}' -> '{}' events {:?} \
@@ -872,7 +872,7 @@ impl AppTimeline {
             sub.subscription_id,
             sub.subscriber_type,
             sub.subscriber_id,
-            sub.app_id,
+            sub.plugin_id,
             sub.event_names,
             sub.payload_mode,
             sub.trigger_mode
@@ -956,7 +956,7 @@ impl AppTimeline {
     // ── Delivery queue (Phase C seam) ───────────────────────────────────────
 
     /// Take all queued deliveries addressed to one subscriber. Subscriber
-    /// panes call this each frame to receive `PlexiEvent::AppEvent`s; the
+    /// panes call this each frame to receive `PlexiEvent::PluginEvent`s; the
     /// Phase C agent runtime consumes the same queue — `trigger_mode` tells
     /// it whether to inject and trigger a turn (`conversation`), run a
     /// bounded workflow (`ambient`), or prompt the user first (`ask`).
@@ -996,12 +996,12 @@ impl AppTimeline {
 
 // ── Global shared instance ───────────────────────────────────────────────────
 
-static GLOBAL_TIMELINE: OnceLock<Arc<Mutex<AppTimeline>>> = OnceLock::new();
+static GLOBAL_TIMELINE: OnceLock<Arc<Mutex<PluginTimeline>>> = OnceLock::new();
 
 /// The host-wide shared timeline. Production `WASM app runtime`s all clone this
-/// handle; tests construct isolated `Arc<Mutex<AppTimeline>>`s instead.
-pub fn global() -> Arc<Mutex<AppTimeline>> {
-    Arc::clone(GLOBAL_TIMELINE.get_or_init(|| Arc::new(Mutex::new(AppTimeline::default()))))
+/// handle; tests construct isolated `Arc<Mutex<PluginTimeline>>`s instead.
+pub fn global() -> Arc<Mutex<PluginTimeline>> {
+    Arc::clone(GLOBAL_TIMELINE.get_or_init(|| Arc::new(Mutex::new(PluginTimeline::default()))))
 }
 
 #[cfg(test)]
@@ -1019,7 +1019,7 @@ mod tests {
     fn emitted(event: &str) -> EmittedEvent {
         EmittedEvent {
             event: event.to_string(),
-            actor: AppEventActor::User,
+            actor: PluginEventActor::User,
             actor_id: None,
             caused_by: None,
             summary: "White played e4".to_string(),
@@ -1042,8 +1042,8 @@ mod tests {
     /// A second, distinct context — used only by the cross-context tests.
     const OTHER_CTX: u64 = 2;
 
-    fn timeline_with_stream() -> AppTimeline {
-        let mut t = AppTimeline::default();
+    fn timeline_with_stream() -> PluginTimeline {
+        let mut t = PluginTimeline::default();
         t.declare_streams(CTX, "chess", vec![decl("move.played")])
             .unwrap();
         t
@@ -1054,7 +1054,7 @@ mod tests {
             subscription_id: "sub-1".to_string(),
             subscriber_type: ActorType::Agent,
             subscriber_id: "chess-opponent".to_string(),
-            app_id: "chess".to_string(),
+            plugin_id: "chess".to_string(),
             event_names: vec!["move.played".to_string()],
             payload_mode,
             trigger_mode,
@@ -1068,10 +1068,10 @@ mod tests {
     #[test]
     fn pane_consumer_registration_queue_bridges_transient_match_before_snapshot() {
         use crate::host::pane_lifecycle::{PaneLifecycleEvent, Provenance, Source, PUBLISHER, STREAM};
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         timeline.locate_lifecycle_pane(7, CTX);
         let mut sub = subscription(PayloadMode::Full, TriggerMode::Conversation);
-        sub.app_id = PUBLISHER.into();
+        sub.plugin_id = PUBLISHER.into();
         sub.event_names = vec![STREAM.into()];
         sub.resource_id = Some("7".into());
         timeline.add_subscription(sub);
@@ -1117,7 +1117,7 @@ mod tests {
 
     #[test]
     fn declare_rejects_empty_name_and_non_object_schema() {
-        let mut t = AppTimeline::default();
+        let mut t = PluginTimeline::default();
         assert!(t.declare_streams(CTX, "a", vec![]).is_err());
         assert!(t.declare_streams(CTX, "a", vec![decl(" ")]).is_err());
         let bad = EventStreamDecl {
@@ -1134,7 +1134,7 @@ mod tests {
 
     #[test]
     fn undeclared_stream_is_rejected() {
-        let mut t = AppTimeline::default();
+        let mut t = PluginTimeline::default();
         let err = t
             .record_event(CTX, "chess", 1, emitted("move.played"))
             .unwrap_err();
@@ -1143,10 +1143,10 @@ mod tests {
     }
 
     #[test]
-    fn same_app_id_in_different_context_needs_its_own_declaration() {
+    fn same_plugin_id_in_different_context_needs_its_own_declaration() {
         // Declaring "move.played" for "chess" in CTX must not make it usable
-        // for the same app_id running in OTHER_CTX — stream namespace is
-        // (context_id, app_id), not app_id alone.
+        // for the same plugin_id running in OTHER_CTX — stream namespace is
+        // (context_id, plugin_id), not plugin_id alone.
         let mut t = timeline_with_stream();
         let err = t
             .record_event(OTHER_CTX, "chess", 99, emitted("move.played"))
@@ -1204,9 +1204,9 @@ mod tests {
         );
         assert_eq!(t.events().len(), 1);
         let rec = &t.events()[0];
-        assert_eq!(rec.app_id, "chess");
+        assert_eq!(rec.plugin_id, "chess");
         assert_eq!(rec.pane_id, 7);
-        assert_eq!(rec.actor_id, "chess", "actor_id defaults to app_id");
+        assert_eq!(rec.actor_id, "chess", "actor_id defaults to plugin_id");
         assert_eq!(rec.resource_scope, "game");
         assert!(t.checkpoints().is_empty());
     }
@@ -1432,7 +1432,7 @@ mod tests {
 
     #[test]
     fn app_subscriptions_deliver_across_python_and_wasm_publishers() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         timeline
             .declare_streams(CTX, "python-notes", vec![decl("note.saved")])
             .unwrap();
@@ -1444,7 +1444,7 @@ mod tests {
         wasm_subscriber.subscription_id = "wasm-sub".to_string();
         wasm_subscriber.subscriber_type = ActorType::App;
         wasm_subscriber.subscriber_id = "app-pane:41".to_string();
-        wasm_subscriber.app_id = "python-notes".to_string();
+        wasm_subscriber.plugin_id = "python-notes".to_string();
         wasm_subscriber.event_names = vec!["note.saved".to_string()];
         timeline.add_subscription(wasm_subscriber);
 
@@ -1452,7 +1452,7 @@ mod tests {
         python_subscriber.subscription_id = "python-sub".to_string();
         python_subscriber.subscriber_type = ActorType::App;
         python_subscriber.subscriber_id = "app-pane:42".to_string();
-        python_subscriber.app_id = "wasm-counter".to_string();
+        python_subscriber.plugin_id = "wasm-counter".to_string();
         python_subscriber.event_names = vec!["count.changed".to_string()];
         timeline.add_subscription(python_subscriber);
 
@@ -1496,16 +1496,16 @@ mod tests {
 
     // ── Phase D: context-scoped stream ownership / reachability ─────────────
 
-    /// The falsifying regression this phase fixes: the SAME `app_id`
+    /// The falsifying regression this phase fixes: the SAME `plugin_id`
     /// ("chess") runs once in `CTX` and once in `OTHER_CTX`. A subscriber
     /// whose own context is `CTX` must receive ONLY `CTX`'s emitted events —
     /// never `OTHER_CTX`'s — even though both declare identical stream names
-    /// under the identical app_id. Before this phase, `SubscriptionRecord`
+    /// under the identical plugin_id. Before this phase, `SubscriptionRecord`
     /// carried no context dimension at all, so this delivery would have
     /// bled across contexts.
     #[test]
-    fn cross_context_same_app_id_does_not_bleed_into_subscriber() {
-        let mut t = AppTimeline::default();
+    fn cross_context_same_plugin_id_does_not_bleed_into_subscriber() {
+        let mut t = PluginTimeline::default();
         t.declare_streams(CTX, "chess", vec![decl("move.played")])
             .unwrap();
         t.declare_streams(OTHER_CTX, "chess", vec![decl("move.played")])
@@ -1522,14 +1522,14 @@ mod tests {
             .unwrap();
         assert_eq!(out.deliveries_queued, 1, "same-context event must deliver");
 
-        // OTHER_CTX's "chess" instance (identical app_id, identical stream
+        // OTHER_CTX's "chess" instance (identical plugin_id, identical stream
         // name) emits — must NOT deliver to the CTX subscriber.
         let out = t
             .record_event(OTHER_CTX, "chess", 99, emitted("move.played"))
             .unwrap();
         assert_eq!(
             out.deliveries_queued, 0,
-            "a different context's same-app_id event must never reach a subscriber \
+            "a different context's same-plugin_id event must never reach a subscriber \
              scoped to another context"
         );
 
@@ -1543,7 +1543,7 @@ mod tests {
     /// only `OTHER_CTX`'s events, never `CTX`'s.
     #[test]
     fn subscriber_in_other_context_only_sees_its_own_context_events() {
-        let mut t = AppTimeline::default();
+        let mut t = PluginTimeline::default();
         t.declare_streams(CTX, "chess", vec![decl("move.played")])
             .unwrap();
         t.declare_streams(OTHER_CTX, "chess", vec![decl("move.played")])
@@ -1580,13 +1580,13 @@ mod tests {
         let mut cross_context = subscription(PayloadMode::Full, TriggerMode::Conversation);
         cross_context.subscriber_context_id = OTHER_CTX;
 
-        let record = AppEventRecord {
+        let record = PluginEventRecord {
             event_id: 1,
-            app_id: "chess".to_string(),
+            plugin_id: "chess".to_string(),
             owner_context_id: CTX,
             pane_id: 7,
             event: "move.played".to_string(),
-            actor: AppEventActor::User,
+            actor: PluginEventActor::User,
             actor_id: "chess".to_string(),
             caused_by: None,
             summary: "White played e4".to_string(),
@@ -1608,7 +1608,7 @@ mod tests {
 
     #[test]
     fn command_publisher_is_reserved_and_the_host_records_it() {
-        let mut timeline = AppTimeline::default();
+        let mut timeline = PluginTimeline::default();
         let refused = timeline
             .declare_streams(
                 0,
@@ -1630,10 +1630,10 @@ mod tests {
 }
 
 /// Predicates deliberately describe observed/reported state, never task verdicts.
-pub(crate) fn lifecycle_matches(event: &AppEventRecord, predicate: &str) -> bool {
+pub(crate) fn lifecycle_matches(event: &PluginEventRecord, predicate: &str) -> bool {
     let kind = match predicate {
         "idle" => "agent_idle", "blocked" => "agent_blocked", "exited" => "exited", _ => return false,
     };
-    event.app_id == crate::host::pane_lifecycle::PUBLISHER
+    event.plugin_id == crate::host::pane_lifecycle::PUBLISHER
         && event.payload.as_ref().is_some_and(|payload| payload["kind"] == kind)
 }

@@ -17,7 +17,7 @@ use super::wasm_app::bindings::plexi::platform::types::{
 };
 use super::wasm_app::{Alignment, BadgeColor, ButtonStyle, Color, IndexedNode, UiNodeData, UiTree};
 
-use crate::render::app_chrome::{self, AppChrome};
+use crate::render::app_chrome::{self, ViewChrome};
 
 mod text_role;
 pub(crate) use text_role::TextRole;
@@ -122,7 +122,7 @@ pub fn render_ui_tree_with_canvas_fits(
     ui.painter()
         .rect_filled(ui.max_rect(), 0.0, colors.terminal_bg);
     if tree_wants_content_padding(&tree.nodes) {
-        // Stint 0674: chrome bands are exempt from the inset. A leading AppBar
+        // Stint 0674: chrome bands are exempt from the inset. A leading SurfaceHeader
         // and a trailing FooterKeys are the app's *edges*, not its content —
         // insetting them floats the title bar off the pane's top-left corner
         // with a strip of background above and beside it. Render those bands
@@ -226,7 +226,7 @@ fn resolve_default_text(
     });
 }
 
-/// Render a root `Column` whose leading `AppBar`s and trailing `FooterKeys`
+/// Render a root `Column` whose leading `SurfaceHeader`s and trailing `FooterKeys`
 /// paint full-bleed while its body carries the standard content inset.
 /// Returns false when the tree is not a column (the caller then insets the
 /// whole tree, which is correct for a bare root widget).
@@ -247,7 +247,7 @@ fn render_root_with_chrome_bands(
         .take_while(|id| {
             matches!(
                 find_node(nodes, **id).map(|n| &n.data),
-                Some(UiNodeData::AppBar(_))
+                Some(UiNodeData::SurfaceHeader(_))
             )
         })
         .count();
@@ -343,8 +343,8 @@ fn tree_wants_content_padding(nodes: &[IndexedNode]) -> bool {
 
 /// Headless render of a `UiTree` to PNG bytes via `egui_kittest`'s wgpu
 /// offscreen backend — the same rasterization path `PlexiUiHarness` uses for
-/// screenshot tests, reused here for `plexi app render --png` /
-/// `plexi app check --png-dir` so the CLI renders exactly what the live host
+/// screenshot tests, reused here for `plexi view render --png` /
+/// `plexi plugin check --png-dir` so the CLI renders exactly what the live host
 /// would paint instead of hand-rolling a second rasterizer for widget chrome
 /// (buttons, fonts, footer key chips) that has no flat-primitive form.
 /// `pixels_per_point` is explicit: the CLI renders at 1.0; HiDPI screenshot
@@ -443,7 +443,7 @@ fn cross_align(a: Alignment) -> egui::Align {
     }
 }
 
-/// True when `pending_click` (from `AppRequest::ClickPaneNode`/
+/// True when `pending_click` (from `HostRequest::ClickPaneNode`/
 /// `HostHarness::inject_node_click`) targets this frame's node `id` by its
 /// arena id — the same honest match `PaneClickTarget::Pos` does by rect
 /// containment, just keyed on identity instead of geometry.
@@ -1006,7 +1006,7 @@ fn render_node(
                 // doesn't dismiss the field. Escape leaves the field via
                 // egui's native focus surrender in `begin_pass`; the
                 // dispatch gate swallows that same-frame Escape so it
-                // can't fire the AppActive CloseApp binding.
+                // can't fire the ViewActive CloseView binding.
                 if let Some(key) = surface_key {
                     crate::ui::focus::claim_text_surface(ui.ctx(), key, resp.id);
                 }
@@ -1425,12 +1425,12 @@ fn render_node(
             }
         }
 
-        UiNodeData::AppBar(a) => {
-            AppChrome::new(colors).paint_app_bar(ui, &a.title, &a.subtitle);
+        UiNodeData::SurfaceHeader(a) => {
+            ViewChrome::new(colors).paint_app_bar(ui, &a.title, &a.subtitle);
         }
 
         UiNodeData::FooterKeys(f) => {
-            AppChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
+            ViewChrome::new(colors).paint_footer_keys(ui, &f.entries, f.divider);
         }
 
         // Bottom-pinned nodes are partitioned and rendered by the enclosing
@@ -1460,7 +1460,7 @@ fn render_node(
                 }
                 if !sp.label.is_empty() {
                     ui.add_space(style::SPACE_SM);
-                    AppChrome::new(colors).text_label(
+                    ViewChrome::new(colors).text_label(
                         ui,
                         &sp.label,
                         app_chrome::TextLabelStyle {
@@ -1603,10 +1603,10 @@ fn render_data_table_node(
 mod tests {
     use super::*;
     use crate::host::wasm_app::bindings::plexi::platform::types::{
-        AppBarNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, FooterKeyEntry,
+        SurfaceHeaderNode, ButtonNode, CanvasNode, CanvasRect, CanvasText, ColumnNode, FooterKeyEntry,
         FooterKeysNode, RowNode, SpaceNode, SurfaceNode, TextInputNode, TextNode,
     };
-    use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmApp};
+    use crate::host::wasm_app::{InputEvent, StateSnapshot, StateStore, SystemStats, WasmView};
 
     #[test]
     fn plain_text_uses_host_theme_when_egui_visuals_differ() {
@@ -1700,10 +1700,10 @@ mod tests {
             .expect("write screenshot for visual review");
     }
 
-    /// Stints 0527/0528/0530 evidence: a text-heavy app (AppBar with
+    /// Stints 0527/0528/0530 evidence: a text-heavy app (SurfaceHeader with
     /// title+subtitle, flow text, canvas text commands) rendered at ppp 1.0
     /// and 2.0. The ppp-2.0 capture must show 2× pixel detail — crisp canvas
-    /// text at the snapped effective size, pixel-grid AppBar galleys, and the
+    /// text at the snapped effective size, pixel-grid SurfaceHeader galleys, and the
     /// contrast-floored subtitle tone. Review artifacts:
     /// /tmp/plexi-render-0527-app-text-ppp{1,2}.png.
     #[test]
@@ -1739,7 +1739,7 @@ mod tests {
                 ),
                 node(
                     1,
-                    UiNodeData::AppBar(AppBarNode {
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
                         title: "Pixel Grid Fixture".to_string(),
                         subtitle: "surface resolution · typography evidence".to_string(),
                     }),
@@ -2254,7 +2254,7 @@ mod tests {
         assert_eq!(inset.bottom, style::SPACE_MD as i8);
     }
 
-    /// A `Column([AppBar, body…, FooterKeys])` — the shape every flow app has.
+    /// A `Column([SurfaceHeader, body…, FooterKeys])` — the shape every flow app has.
     fn chrome_tree() -> UiTree {
         UiTree {
             root: 0,
@@ -2270,7 +2270,7 @@ mod tests {
                 ),
                 node(
                     1,
-                    UiNodeData::AppBar(AppBarNode {
+                    UiNodeData::SurfaceHeader(SurfaceHeaderNode {
                         title: "Todo".to_string(),
                         subtitle: "2 open".to_string(),
                     }),
@@ -2330,7 +2330,7 @@ mod tests {
         }
     }
 
-    /// Stint 0674: an `AppBar` is the app's top edge, not its content. Insetting
+    /// Stint 0674: an `SurfaceHeader` is the app's top edge, not its content. Insetting
     /// it floated the title band off the pane's corner — a strip of background
     /// above and beside every flow app's chrome. The band paints against the
     /// pane rect while the body below it keeps the standard inset.
@@ -2679,7 +2679,7 @@ mod tests {
     #[test]
     fn renders_sysmon_tree_headless() -> wasmtime::Result<()> {
         let mut app =
-            WasmApp::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
+            WasmView::load_ephemeral_run("sysmon-render", &fixture(), StateStore::ephemeral())?;
         app.init(&StateSnapshot { entries: vec![] }, (400.0, 300.0), &[])?;
         app.update(&InputEvent::SystemStatsResult(SystemStats {
             cpu_usage_pct: 42.0,
@@ -2735,7 +2735,7 @@ mod tests {
                         "id": 1,
                         "key": "bar",
                         "data": {
-                            "type": "AppBar",
+                            "type": "SurfaceHeader",
                             "title": "SDK v3 Hardening",
                             "subtitle": "Card · DataTable · SelectList · Text"
                         }

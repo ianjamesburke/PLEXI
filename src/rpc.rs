@@ -585,7 +585,7 @@ mod tests {
         let (mut server_stream, client_stream) = std::os::unix::net::UnixStream::pair().expect("pair");
         register_client_stream(wait_token.clone(), client_stream);
 
-        let wait_req = crate::protocol::AppRequest::SlotWait {
+        let wait_req = crate::protocol::HostRequest::SlotWait {
             pane_id,
             slot_name: "status".to_string(),
             pattern: "^done:".to_string(),
@@ -611,7 +611,7 @@ mod tests {
         let write_token = response_file_in(dir.path(), "slot-write", "json");
         let (mut write_srv, write_cli) = std::os::unix::net::UnixStream::pair().expect("pair");
         register_client_stream(write_token.clone(), write_cli);
-        let write_req = crate::protocol::AppRequest::SlotWrite {
+        let write_req = crate::protocol::HostRequest::SlotWrite {
             pane_id,
             slot_name: "status".to_string(),
             content: b"done:ok".to_vec(),

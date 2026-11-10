@@ -7,7 +7,7 @@
 //! autosave, save errors, the find/replace bar, focus routing, and host
 //! command surface.
 
-use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
 use crate::editor::preview::{self, LinkKind, LinkTarget, MarkdownLayoutCache};
 use crate::editor::widget::{CodeTheme, EditorWidget, ImageCache, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
@@ -94,7 +94,7 @@ impl FindBar {
     }
 }
 
-pub struct TextEditorApp {
+pub struct TextEditorView {
     path: PathBuf,
     /// Editable document. For notes this holds the body only — the
     /// frontmatter block is held in `note_header` and never shown.
@@ -138,7 +138,7 @@ pub struct TextEditorApp {
     last_link_activation: Option<serde_json::Value>,
     /// Host commands queued by link activation, drained by the host each
     /// frame via `take_pending_commands`.
-    pending_commands: Vec<AppCommand>,
+    pending_commands: Vec<ViewCommand>,
     /// Inline Live Preview image textures (mtime-keyed reload inside).
     image_cache: ImageCache,
     /// This pane's host id, observed from the render context each frame.
@@ -223,7 +223,7 @@ fn pick_change_set(
         .cloned()
 }
 
-impl TextEditorApp {
+impl TextEditorView {
     #[cfg(test)]
     pub fn new(path: PathBuf) -> Self {
         Self::new_with_workspace(path, None)
@@ -1513,7 +1513,7 @@ impl TextEditorApp {
     /// Queues a host command to open `path` in a new text-editor pane,
     /// anchored to this pane so the split lands next to the source note.
     fn open_note_pane(&mut self, path: &Path) {
-        self.pending_commands.push(AppCommand::SpawnPane {
+        self.pending_commands.push(ViewCommand::SpawnPane {
             type_id: "text-editor".to_string(),
             layout: "split_h".to_string(),
             args: vec![path.to_string_lossy().into_owned()],
@@ -1781,7 +1781,7 @@ struct EditorChrome {
     commands_switch_label: Option<&'static str>,
 }
 
-impl TextEditorApp {
+impl TextEditorView {
     /// Shared header for notes and ordinary files. Both surfaces used to
     /// diverge: notes painted a title bar (frontmatter title, or the file
     /// stem when the title was empty) and files painted nothing. One chrome
@@ -1946,7 +1946,7 @@ fn paint_editor_header(
     switched_scope
 }
 
-impl App for TextEditorApp {
+impl App for TextEditorView {
     fn sync_change_set(&mut self) -> bool {
         self.apply_change_set()
     }
@@ -2135,7 +2135,7 @@ impl App for TextEditorApp {
         // editor's egui focus on this same Escape press (its EventFilter allows
         // escape), which flips the dispatch text-surface gate off and routes
         // the Escape here (stint 0460 delivery) rather than to the render pass.
-        // Returning `Consumed` suppresses the AppActive CloseApp binding so the
+        // Returning `Consumed` suppresses the ViewActive CloseView binding so the
         // pane is not closed. A click re-enters the editor. (An L1 declarative
         // `TextInput` is a different surface with its own Escape-to-leave-field
         // behavior; this only fires for the focused body editor.)
@@ -2166,7 +2166,7 @@ impl App for TextEditorApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
@@ -2641,7 +2641,7 @@ impl App for TextEditorApp {
         }
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -2922,7 +2922,7 @@ fn asset_stem(source: &Path) -> String {
     }
 }
 
-impl TextEditorApp {
+impl TextEditorView {
     /// 0478 drop ingest: local decodable images copy into
     /// `<note-parent>/assets/` under a content-hash stable name and insert a
     /// relative reference; http(s) image URLs insert a remote reference
@@ -3029,7 +3029,7 @@ impl TextEditorApp {
     }
 }
 
-impl Drop for TextEditorApp {
+impl Drop for TextEditorView {
     fn drop(&mut self) {
         // Save unsaved edits; also clean up empty notes (flush deletes them).
         if self.last_edit.is_some() || self.is_effectively_empty() {
@@ -3106,7 +3106,7 @@ mod tests {
         tempfile::TempDir,
         crate::config::TestProfileDirGuard,
         PathBuf,
-        TextEditorApp,
+        TextEditorView,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let profile = dir.path().join("profile");
@@ -3114,7 +3114,7 @@ mod tests {
         let guard = crate::config::set_test_profile_dir(profile);
         let file = dir.path().join("draft.txt");
         std::fs::write(&file, body).unwrap();
-        let app = TextEditorApp::new(file.clone());
+        let app = TextEditorView::new(file.clone());
         (dir, guard, file, app)
     }
 
@@ -3227,11 +3227,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("__init__.py");
         std::fs::write(&path, "").unwrap();
-        let app = TextEditorApp::new(path.clone());
+        let app = TextEditorView::new(path.clone());
         drop(app);
         assert!(path.exists(), "opening and closing must not delete the file");
 
-        let mut app = TextEditorApp::new(path.clone());
+        let mut app = TextEditorView::new(path.clone());
         app.doc.apply(EditorCommand::InsertText("x".into()));
         app.doc.apply(EditorCommand::Undo);
         app.last_edit = Some(Instant::now());
@@ -3249,7 +3249,7 @@ mod tests {
         std::fs::create_dir_all(&tier).unwrap();
         let path = tier.join("scratch.md");
         std::fs::write(&path, "---\nsource: \"scratchpad\"\n---\n\n").unwrap();
-        let app = TextEditorApp::new(path.clone());
+        let app = TextEditorView::new(path.clone());
         drop(app);
         assert!(!path.exists(), "an empty tier note is deleted on close");
         let _ = std::fs::remove_dir_all(dir);
@@ -3261,7 +3261,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("unicode.md");
         std::fs::write(&path, "😀 café\nsecond").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
         // Markdown block granularity: the two lines are one paragraph block.
@@ -3277,7 +3277,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("multi.md");
         std::fs::write(&path, "one\ntwo\nthree").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 2)));
         app.doc.apply(EditorCommand::ExtendTo(Cursor::new(2, 3)));
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
@@ -3298,7 +3298,7 @@ mod tests {
             "---\ntitle: \"\"\nsource: \"quick-note\"\n---\n\nand now?\n",
         )
         .unwrap();
-        let quick = TextEditorApp::new_for_test_note(note_path);
+        let quick = TextEditorView::new_for_test_note(note_path);
         let quick_chrome = quick.editor_chrome();
         assert_eq!(quick_chrome.file_name, "note-20261008-175654.md");
         assert_eq!(quick_chrome.title, None, "an empty frontmatter title is not a header title");
@@ -3310,7 +3310,7 @@ mod tests {
             "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk\n",
         )
         .unwrap();
-        let titled = TextEditorApp::new_for_test_note(titled_path);
+        let titled = TextEditorView::new_for_test_note(titled_path);
         let titled_chrome = titled.editor_chrome();
         assert_eq!(titled_chrome.file_name, "groceries.md");
         assert_eq!(titled_chrome.title.as_deref(), Some("Groceries"));
@@ -3318,7 +3318,7 @@ mod tests {
 
         let file_path = dir.join("temp.md");
         std::fs::write(&file_path, "# hello\n").unwrap();
-        let mut file = TextEditorApp::new(file_path);
+        let mut file = TextEditorView::new(file_path);
         let file_chrome = file.editor_chrome();
         assert!(!file.is_note, "a file outside a notes tier is not a note");
         assert_eq!(file_chrome.file_name, "temp.md");
@@ -3345,7 +3345,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut app = TextEditorApp::new(md_path.clone());
+        let mut app = TextEditorView::new(md_path.clone());
         assert!(
             !app.is_note,
             "a Markdown file outside a notes tier is not a note"
@@ -3380,7 +3380,7 @@ mod tests {
         let empty_body_md = dir.join("frontmatter-only.md");
         let raw_fm = "---\nname: empty-skill\ntitle: \"Empty Skill\"\n---\n\n";
         std::fs::write(&empty_body_md, raw_fm).unwrap();
-        let app = TextEditorApp::new(empty_body_md.clone());
+        let app = TextEditorView::new(empty_body_md.clone());
         assert!(!app.is_note);
         assert_eq!(app.doc.text(), "");
         drop(app);
@@ -3543,7 +3543,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("replace.md");
         std::fs::write(&path, "foo bar foo baz foo").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         let mut bar = FindBar::new();
         bar.query = "foo".to_string();
         bar.replace = "qux".to_string();
@@ -3573,7 +3573,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sel.md");
         std::fs::write(&path, "alpha beta gamma").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         let before = app.doc.revision();
         app.select_match((6, 10));
         assert_eq!(app.doc.selected_text(), "beta");
@@ -3587,7 +3587,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("debounce.md");
         std::fs::write(&path, "seed").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path.clone());
+        let mut app = TextEditorView::new_for_test_note(path.clone());
         app.doc.apply(EditorCommand::Move {
             movement: crate::editor::commands::Movement::DocEnd,
             extend: false,
@@ -3620,7 +3620,7 @@ mod tests {
         let blocker = dir.join("blocker");
         std::fs::write(&blocker, "in the way").unwrap();
         let path = blocker.join("child.md");
-        let mut app = TextEditorApp::new(path);
+        let mut app = TextEditorView::new(path);
         app.doc.apply(EditorCommand::InsertText("content".into()));
         app.last_edit = Some(Instant::now());
         app.explicit_save();
@@ -3649,7 +3649,7 @@ mod tests {
         )
         .unwrap();
         {
-            let mut app = TextEditorApp::new_for_test_note(path.clone());
+            let mut app = TextEditorView::new_for_test_note(path.clone());
             assert_eq!(app.doc.text(), "packing list\n");
             app.doc.apply(EditorCommand::Move {
                 movement: crate::editor::commands::Movement::DocEnd,
@@ -3659,7 +3659,7 @@ mod tests {
             app.last_edit = Some(Instant::now());
             app.flush();
         }
-        let reopened = TextEditorApp::new_for_test_note(path.clone());
+        let reopened = TextEditorView::new_for_test_note(path.clone());
         assert_eq!(reopened.doc.text(), "packing list\ntent\n");
         assert_eq!(reopened.note_title, "Trip");
         assert!(std::fs::read_to_string(&path)
@@ -3723,7 +3723,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("main.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
-        let mut app = TextEditorApp::new(path.clone());
+        let mut app = TextEditorView::new(path.clone());
         assert!(app.mode.is_code());
         assert!(app.highlighter.is_some(), "rust syntax is bundled");
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
@@ -3745,7 +3745,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("preview.md");
         std::fs::write(&path, "# Title\n\npara **bold** text\n\n- item").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         assert!(
             app.mode.is_live_preview(),
             "markdown defaults to live preview"
@@ -3782,10 +3782,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("blocks.md");
         std::fs::write(&path, "# Head\n\n- one\n- two\n\n```\ncode\n```").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         let revision = app.doc.revision();
 
-        let block_at = |app: &TextEditorApp| {
+        let block_at = |app: &TextEditorView| {
             let s = crate::app::app_trait::App::semantic_state(app).unwrap();
             (
                 s["active_markdown_block"]["kind"]
@@ -3827,7 +3827,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "seed\n").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::Move {
             movement: crate::editor::commands::Movement::DocEnd,
             extend: false,
@@ -3865,7 +3865,7 @@ mod tests {
         std::fs::create_dir_all(&tier).unwrap();
         let path = tier.join("current.md");
         std::fs::write(&path, "").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
 
         let result =
             crate::app::app_trait::App::drop_file(&mut app, &fixture_png().to_string_lossy())
@@ -3894,7 +3894,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         let source = fixture_png().to_string_lossy().into_owned();
 
         let first = crate::app::app_trait::App::drop_file(&mut app, &source).unwrap();
@@ -3920,7 +3920,7 @@ mod tests {
         // validation is by decodable content, never extension.
         let fake = dir.join("fake.png");
         std::fs::write(&fake, b"not an image at all").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
 
         let err = crate::app::app_trait::App::drop_file(&mut app, &fake.to_string_lossy())
             .expect_err("undecodable content rejected");
@@ -3937,7 +3937,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
 
         let url = "https://example.com/pic.png";
         let result = crate::app::app_trait::App::drop_file(&mut app, url).unwrap();
@@ -3959,7 +3959,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "visit plexi today").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 6)));
         app.doc.apply(EditorCommand::ExtendTo(Cursor::new(0, 11)));
 
@@ -3987,7 +3987,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "[A](http://a.test) mid [[wiki b]] end").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         app.doc.apply(EditorCommand::SetCursor(Cursor::new(0, 0)));
 
         app.focus_visible_link(true);
@@ -4007,7 +4007,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "x").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
         let link = preview::LinkTarget {
             kind: LinkKind::Markdown,
             bytes: 0..1,
@@ -4033,7 +4033,7 @@ mod tests {
         std::fs::write(&target, "target note").unwrap();
         let path = dir.join("note.md");
         std::fs::write(&path, "[other](other.md) [gone](missing.md)").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(path);
+        let mut app = TextEditorView::new_for_test_note(path);
 
         // Existing relative target opens via a queued SpawnPane command.
         let link = preview::link_targets(&app.doc.text())[0].clone();
@@ -4045,7 +4045,7 @@ mod tests {
         let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1);
         match &commands[0] {
-            AppCommand::SpawnPane { type_id, args, .. } => {
+            ViewCommand::SpawnPane { type_id, args, .. } => {
                 assert_eq!(type_id, "text-editor");
                 assert!(args[0].ends_with("other.md"));
             }
@@ -4083,7 +4083,7 @@ mod tests {
 
         let note_path = notes_dir.join("current.md");
         std::fs::write(&note_path, "[[trip-ideas]] and [[nowhere]]").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(note_path);
+        let mut app = TextEditorView::new_for_test_note(note_path);
 
         let links = preview::link_targets(&app.doc.text());
         app.activate_link(&links[0]);
@@ -4107,7 +4107,7 @@ mod tests {
         let commands = crate::app::app_trait::App::take_pending_commands(&mut app);
         assert_eq!(commands.len(), 1, "creation opens the new note in a pane");
         match &commands[0] {
-            AppCommand::SpawnPane { type_id, args, .. } => {
+            ViewCommand::SpawnPane { type_id, args, .. } => {
                 assert_eq!(type_id, "text-editor");
                 assert!(args[0].ends_with("nowhere.md"));
             }
@@ -4129,7 +4129,7 @@ mod tests {
 
         let note_path = notes_dir.join("current.md");
         std::fs::write(&note_path, "[[project/idea]]").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(note_path);
+        let mut app = TextEditorView::new_for_test_note(note_path);
 
         let links = preview::link_targets(&app.doc.text());
         app.activate_link(&links[0]);
@@ -4157,7 +4157,7 @@ mod tests {
         // The source note lives elsewhere; only the wiki resolution matters.
         let note_path = profile.join("current.md");
         std::fs::write(&note_path, "[[first-note]]").unwrap();
-        let mut app = TextEditorApp::new(note_path);
+        let mut app = TextEditorView::new(note_path);
         // Force note-mode resolution against the (absent) notes root.
         app.is_note = true;
 
@@ -4177,7 +4177,7 @@ mod tests {
         std::fs::create_dir_all(&notes_dir).unwrap();
         let note_path = notes_dir.join("current.md");
         std::fs::write(&note_path, "[[../escape]]").unwrap();
-        let mut app = TextEditorApp::new_for_test_note(note_path);
+        let mut app = TextEditorView::new_for_test_note(note_path);
 
         let links = preview::link_targets(&app.doc.text());
         app.activate_link(&links[0]);
@@ -4202,7 +4202,7 @@ mod tests {
             "[Plexi](https://plexiapp.com) [[wiki page]] ![alt](assets/p.png)",
         )
         .unwrap();
-        let app = TextEditorApp::new_for_test_note(path);
+        let app = TextEditorView::new_for_test_note(path);
         let state = crate::app::app_trait::App::semantic_state(&app).unwrap();
         let targets: Vec<&str> = state["visible_link_targets"]
             .as_array()
@@ -4240,13 +4240,13 @@ mod tests {
         let path = dir.join("note.md");
         std::fs::write(&path, "hello").unwrap();
 
-        let mut app = TextEditorApp::new(path.clone());
+        let mut app = TextEditorView::new(path.clone());
         app.adjust_font_size(FONT_SIZE_MAX);
         assert_eq!(app.font_size, FONT_SIZE_MAX);
         let state = crate::app::app_trait::App::serialize_state(&app).unwrap();
         assert_eq!(state["font_size"], FONT_SIZE_MAX as f64);
 
-        let mut restored = TextEditorApp::new(path.clone());
+        let mut restored = TextEditorView::new(path.clone());
         assert_eq!(restored.font_size, FONT_SIZE_DEFAULT);
         crate::app::app_trait::App::restore_state(&mut restored, &state);
         assert_eq!(restored.font_size, FONT_SIZE_MAX);
@@ -4261,7 +4261,7 @@ mod tests {
         let path = dir.join("note.md");
         std::fs::write(&path, "hello").unwrap();
 
-        let mut app = TextEditorApp::new(path);
+        let mut app = TextEditorView::new(path);
         let state = serde_json::json!({ "font_size": FONT_SIZE_MAX + 100.0 });
         crate::app::app_trait::App::restore_state(&mut app, &state);
         assert_eq!(app.font_size, FONT_SIZE_MAX);
@@ -4276,7 +4276,7 @@ mod tests {
         let path = dir.join("note.md");
         std::fs::write(&path, "hello").unwrap();
 
-        let mut app = TextEditorApp::new(path.clone());
+        let mut app = TextEditorView::new(path.clone());
         let state = serde_json::json!({ "path": path.to_string_lossy() });
         crate::app::app_trait::App::restore_state(&mut app, &state);
         assert_eq!(app.font_size, FONT_SIZE_DEFAULT);
@@ -4291,7 +4291,7 @@ mod tests {
         let path = dir.join("note.md");
         std::fs::write(&path, "hello").unwrap();
 
-        let mut app = TextEditorApp::new(path);
+        let mut app = TextEditorView::new(path);
         let key_ev = |key: egui::Key| egui::Event::Key {
             key,
             physical_key: None,
@@ -4349,7 +4349,7 @@ mod data_safety_tests {
     use super::*;
     use crate::app::app_trait::App;
 
-    fn plain_file(name: &str, body: &str) -> (PathBuf, TextEditorApp) {
+    fn plain_file(name: &str, body: &str) -> (PathBuf, TextEditorView) {
         let dir = std::env::temp_dir().join(format!(
             "editor-safety-{name}-{}-{}",
             std::process::id(),
@@ -4358,11 +4358,11 @@ mod data_safety_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("file.txt");
         std::fs::write(&path, body).unwrap();
-        let app = TextEditorApp::new(path.clone());
+        let app = TextEditorView::new(path.clone());
         (path, app)
     }
 
-    fn type_text(app: &mut TextEditorApp, text: &str) {
+    fn type_text(app: &mut TextEditorView, text: &str) {
         app.doc.apply(EditorCommand::Move {
             movement: crate::editor::commands::Movement::DocEnd,
             extend: false,
@@ -4567,8 +4567,8 @@ mod data_safety_tests {
         std::fs::write(&file, "seed").unwrap();
         let mut harness = crate::testing::HostHarness::new();
         harness.app.open_builtin_app_pane(
-            Box::new(TextEditorApp::new(file.clone())),
-            crate::app::permissions::AppPermissions::builtin(),
+            Box::new(TextEditorView::new(file.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             Some("split_h"),
@@ -4646,7 +4646,7 @@ mod data_safety_tests {
         )
         .unwrap();
 
-        let mut app = TextEditorApp::new(cmds_path.clone());
+        let mut app = TextEditorView::new(cmds_path.clone());
         assert!(app.is_commands_file());
         assert!(
             app.commands_diagnostics

@@ -41,7 +41,7 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
                         # secret, true allows reading plexi:user:<name>; false errors loudly.\n\
                         fallback = true\n\
                         \n\
-                        # [apps.<app-id>]\n\
+                        # [apps.<plugin-id>]\n\
                         # OPENAI_API_KEY = \"openai_personal\"\n\
                         \n\
                         # [default]\n\
@@ -53,13 +53,13 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
             .map_err(|e| format!("write {}: {e}", secrets_path.display()))?;
     }
 
-    // stub apps.toml under the channel dir
-    let apps_toml = workspace_root.join(channel_dir).join("apps.toml");
-    if !apps_toml.exists() {
+    // stub plugins.toml under the channel dir
+    let plugins_toml = workspace_root.join(channel_dir).join("plugins.toml");
+    if !plugins_toml.exists() {
         let stub = concat!(
             "schema_version = 1\n\n",
             "# Declare workspace app dependencies here.\n",
-            "# Run `plexi app install` in this directory to install them.\n",
+            "# Run `plexi plugin install` in this directory to install them.\n",
             "#\n",
             "# Example:\n",
             "#\n",
@@ -73,8 +73,8 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
             "# source  = \"github:org/my-tool\"\n",
             "# version = \"v1.0.0\"\n",
         );
-        std::fs::write(&apps_toml, stub)
-            .map_err(|e| format!("write {}: {e}", apps_toml.display()))?;
+        std::fs::write(&plugins_toml, stub)
+            .map_err(|e| format!("write {}: {e}", plugins_toml.display()))?;
     }
 
     // stub commands.toml under the channel dir
@@ -98,7 +98,7 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
     Ok(cfg)
 }
 
-/// Ensure channel-neutral app state cannot be committed with a context root.
+/// Ensure channel-neutral plugin state cannot be committed with a context root.
 ///
 /// App state is personal, single-user, local data — never committed, never
 /// shared. Existing user rules are preserved byte-for-byte and the required
@@ -445,8 +445,8 @@ mod tests {
     }
 
     /// The standing ruling made effective: in a real git repository, a state
-    /// file under `<root>/.plexi/app_states/` must be invisible to git after
-    /// the ensure runs — a user cannot accidentally commit their app state.
+    /// file under `<root>/.plexi/plugin_states/` must be invisible to git after
+    /// the ensure runs — a user cannot accidentally commit their plugin state.
     #[test]
     fn app_state_gitignore_is_effective_in_a_real_repo() {
         let repo = tempfile::tempdir().unwrap();
@@ -476,7 +476,7 @@ mod tests {
         let listing = String::from_utf8_lossy(&status.stdout).to_string();
         assert!(
             !listing.contains("app_states"),
-            "git status must not surface app state: {listing:?}"
+            "git status must not surface plugin state: {listing:?}"
         );
     }
 

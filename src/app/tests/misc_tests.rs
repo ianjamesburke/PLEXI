@@ -213,13 +213,13 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 #[test]
 fn socket_line_queues_request_and_requests_repaint() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
     handle_socket_line(r#"{"type":"wake"}"#, &mailbox, None, &mut std::io::sink());
     assert!(
-        matches!(rx.try_recv(), Ok(crate::protocol::AppRequest::Wake)),
+        matches!(rx.try_recv(), Ok(crate::protocol::HostRequest::Wake)),
         "request must be queued on the pane-IPC channel"
     );
     assert!(
@@ -232,7 +232,7 @@ fn socket_line_queues_request_and_requests_repaint() {
 #[test]
 fn socket_line_parse_error_queues_nothing() {
     let ctx = egui::Context::default();
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -245,13 +245,13 @@ fn socket_line_parse_error_queues_nothing() {
 
 fn run_socket_connection(
     payload: &[u8],
-) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::AppRequest> {
+) -> crate::app::ui_mailbox::MailboxReceiver<crate::protocol::HostRequest> {
     use std::io::Write as _;
 
     let ctx = egui::Context::default();
     let wake = std::sync::Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx));
     let (mailbox, rx) =
-        crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+        crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
             wake.clone(),
             "pane_ipc",
         );
@@ -448,7 +448,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     let rx = run_socket_connection(b"{\"type\":\"wake\"}\n");
     assert!(matches!(
         rx.try_recv(),
-        Ok(crate::protocol::AppRequest::Wake)
+        Ok(crate::protocol::HostRequest::Wake)
     ));
     assert!(
         rx.try_recv().is_err(),
@@ -456,7 +456,7 @@ fn socket_connection_dispatches_newline_framed_json_once() {
     );
 }
 
-/// `AppRequest::Wake` through the host handler is a pure no-op: no panic,
+/// `HostRequest::Wake` through the host handler is a pure no-op: no panic,
 /// no window/pane state change.
 #[test]
 fn wake_request_is_noop_on_host() {
@@ -464,7 +464,7 @@ fn wake_request_is_noop_on_host() {
     let windows_before = h.app.windows.len();
     let panes_before: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
 
-    h.inject_ipc(crate::protocol::AppRequest::Wake);
+    h.inject_ipc(crate::protocol::HostRequest::Wake);
     h.app.drain_pane_cmd_channel();
 
     assert_eq!(
@@ -576,11 +576,11 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
     std::fs::write(&selected_path, b"not decoded in this test").expect("write image");
 
     let browser: Box<dyn crate::app::app_trait::App> = Box::new(
-        crate::file_browser::FileBrowserApp::new(dir.path().to_path_buf()),
+        crate::file_browser::FileBrowserView::new(dir.path().to_path_buf()),
     );
     app.open_builtin_app_pane(
         browser,
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.path().to_path_buf(),
         Some("cwd".to_string()),
         Some("split_v"),
@@ -716,7 +716,7 @@ fn spawn_pane_new_window_uses_caller_context_not_active() {
     let windows_before = app.windows.len();
 
     // Inject a spawn-pane IPC from context 1's pane (pane_id_ctx1) with layout=new_window.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("new_window".to_string()),
         args: vec![],
@@ -802,7 +802,7 @@ fn spawn_pane_tab_anchors_to_from_pane_window_not_active() {
 
     // Inject a spawn-pane IPC from window 0's pane (pane_id_ctx1) with layout=tab,
     // while window 1 is active.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("tab".to_string()),
         args: vec![],
@@ -896,7 +896,7 @@ fn spawn_pane_seeds_root_in_empty_window() {
 
     // Split spawn (not --window), no from_pane_id: falls into the empty-window
     // fallback branch.
-    let _ = ipc_tx.send(crate::protocol::AppRequest::SpawnPane {
+    let _ = ipc_tx.send(crate::protocol::HostRequest::SpawnPane {
         type_id: "terminal".to_string(),
         layout: Some("split_h".to_string()),
         args: vec![],
@@ -1014,7 +1014,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
         delays_cb.lock().unwrap().push(info.delay);
     });
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -1022,7 +1022,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     handle_socket_line(line, &mailbox, None, &mut std::io::sink());
 
     match rx.try_recv() {
-        Ok(crate::protocol::AppRequest::LogMarker { source, .. }) => {
+        Ok(crate::protocol::HostRequest::LogMarker { source, .. }) => {
             assert_eq!(source, "test");
         }
         other => panic!("expected queued LogMarker request, got {other:?}"),
@@ -1047,7 +1047,7 @@ fn socket_lines_after_idle_each_request_a_prompt_repaint() {
     assert!(
         matches!(
             rx.try_recv(),
-            Ok(crate::protocol::AppRequest::ListPanes { .. })
+            Ok(crate::protocol::HostRequest::ListPanes { .. })
         ),
         "post-idle pane list must queue on the pane-IPC channel"
     );
@@ -1086,7 +1086,7 @@ fn socket_line_parse_error_does_not_wake() {
     let woke_cb = woke.clone();
     ctx.set_request_repaint_callback(move |_| *woke_cb.lock().unwrap() += 1);
 
-    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+    let (mailbox, rx) = crate::app::ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
         Arc::new(crate::app::ui_mailbox::EguiWake::new(ctx.clone())),
         "pane_ipc",
     );
@@ -1112,7 +1112,7 @@ fn running_build_identity_is_available_while_hidden_and_ignores_profile_tag() {
     std::fs::write(crate::config::config_dir().join("installed_tag"), "v999.0.0").unwrap();
     let dir = tempfile::tempdir().unwrap();
     let reply = dir.path().join("build.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
+    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo { response_file: reply.to_string_lossy().into_owned() });
     h.hidden_frame();
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(value["build_id"], env!("PLEXI_BUILD_ID"));
@@ -1252,7 +1252,7 @@ fn external_spawn_uses_supplied_cwd_for_app_workspace() {
     let mut h = crate::testing::HostHarness::new();
     let expected = h.workspace_root().join("external-caller");
     std::fs::create_dir(&expected).unwrap();
-    h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
         type_id: "file_browser".into(),
         layout: Some("split_h".into()),
         args: vec![],
@@ -1341,7 +1341,7 @@ fn file_browser_spawn_binds_caller_before_cross_context_focus_redirect() {
     });
     h.app.active_window = 1;
     h.app.router.set_active(1);
-    h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+    h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
         type_id: "file_browser".into(),
         layout: Some("split_h".into()),
         args: vec![],
@@ -1521,7 +1521,7 @@ fn file_browser_explicit_directory_artifact_keeps_requested_root() {
                     .unwrap();
             }
             _ => {
-                h.inject_ipc(crate::protocol::AppRequest::SpawnPane {
+                h.inject_ipc(crate::protocol::HostRequest::SpawnPane {
                     type_id: "file_browser".into(),
                     layout: Some("split_h".into()),
                     args: vec![],

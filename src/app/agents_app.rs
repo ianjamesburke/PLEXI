@@ -1,6 +1,6 @@
 //! Native master/detail fleet pane. State comes from the host's pure projection.
 use crate::agent::fleet::{AgentRow, AgentsView, DisplayState, FleetFilter};
-use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
 
 pub enum FleetAction {
     Seen(u64),
@@ -16,16 +16,16 @@ pub enum FleetAction {
 }
 
 #[derive(Default)]
-pub struct AgentsApp {
+pub struct AgentsPaneView {
     view: AgentsView,
     filter: FleetFilter,
     selected: Option<u64>,
     replying: bool,
     focus_reply: bool,
     reply: String,
-    commands: Vec<AppCommand>,
+    commands: Vec<ViewCommand>,
 }
-impl AgentsApp {
+impl AgentsPaneView {
     fn rows(&self) -> Vec<&AgentRow> {
         self.view
             .tasks
@@ -40,8 +40,8 @@ impl AgentsApp {
             .selected
             .filter(|id| self.rows().iter().any(|r| r.pane_id == *id && r.live))
         {
-            self.commands.push(AppCommand::ForwardPaneRequest {
-                request: crate::protocol::AppRequest::FocusPane { pane_id },
+            self.commands.push(ViewCommand::ForwardPaneRequest {
+                request: crate::protocol::HostRequest::FocusPane { pane_id },
             });
         }
     }
@@ -61,7 +61,7 @@ impl AgentsApp {
             Some(_) => {
                 if let Some(pane_id) = self.selected {
                     self.commands
-                        .push(AppCommand::Fleet(FleetAction::ReviewAttention { pane_id }));
+                        .push(ViewCommand::Fleet(FleetAction::ReviewAttention { pane_id }));
                 }
             }
             None => {}
@@ -75,10 +75,10 @@ impl AgentsApp {
         {
             if row.display_state == DisplayState::DoneUnseen {
                 self.commands
-                    .push(AppCommand::Fleet(FleetAction::Seen(row.pane_id)));
+                    .push(ViewCommand::Fleet(FleetAction::Seen(row.pane_id)));
             } else if row.display_state.is_failure_like() {
                 self.commands
-                    .push(AppCommand::Fleet(FleetAction::Dismiss(row.pane_id)));
+                    .push(ViewCommand::Fleet(FleetAction::Dismiss(row.pane_id)));
             }
         }
     }
@@ -99,7 +99,7 @@ impl AgentsApp {
         }
     }
 }
-impl App for AgentsApp {
+impl App for AgentsPaneView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -122,7 +122,7 @@ impl App for AgentsApp {
             serde_json::json!({"view":self.view, "selected":self.selected, "filter":self.filter, "replying":self.replying}),
         )
     }
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.commands)
     }
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
@@ -174,7 +174,7 @@ impl App for AgentsApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
@@ -433,7 +433,7 @@ impl App for AgentsApp {
                                                 )
                                                 .clicked()
                                             {
-                                                self.commands.push(AppCommand::Fleet(
+                                                self.commands.push(ViewCommand::Fleet(
                                                     FleetAction::Reply {
                                                         pane_id: row.pane_id,
                                                         from_pane_id: ctx.pane_id,

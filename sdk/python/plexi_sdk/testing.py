@@ -376,7 +376,7 @@ class PluginHarness:
         self._reader.start()
 
         # Handshake
-        self._send({"type": "init", "protocol": "pgap/3", "plugin_id": "test-harness",
+        self._send({"type": "init", "protocol": "pgap/4", "plugin_id": "test-harness",
                     "workspace_root": "/tmp", "capabilities": [], "feature_flags": []})
         ev = self._wait_for(lambda e: e.get("type") == "ready")
         if ev is None:

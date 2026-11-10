@@ -137,7 +137,7 @@ impl Colors {
     }
 
     /// Foreground for *primary* labels that used to render in `text_dim`
-    /// (sidebar context names, app-bar subtitles, pane-name bars). `text_dim`
+    /// (sidebar context names, surface-header subtitles, pane-name bars). `text_dim`
     /// sits around 3:1 on most presets — fine for true-secondary metadata,
     /// too faint for a label the user reads constantly. Blends `text_dim`
     /// toward `text_primary` just far enough to reach WCAG 4.5:1 on `bg`
@@ -412,7 +412,7 @@ pub fn resolve_theme_config(config: &crate::config::PlexiConfig) -> crate::confi
 }
 
 /// Resolve the active `Colors` from a loaded config. Shared by the GUI and
-/// the headless `app render` path.
+/// the headless `view render` path.
 pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
     Colors::from_config(&resolve_theme_config(config))
 }
@@ -1497,7 +1497,7 @@ mod tests {
     }
 
     /// Stint 0528 contrast floor: primary labels rendered in the secondary
-    /// tone (inactive sidebar context names, app-bar subtitles, pane-name
+    /// tone (inactive sidebar context names, surface-header subtitles, pane-name
     /// bars) must reach WCAG 4.5:1 on their actual backgrounds for every
     /// preset. `text_dim` alone sits near 3:1 on most presets.
     #[test]

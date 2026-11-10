@@ -1,4 +1,4 @@
-// WasmApp — wasmtime-backed runtime for Plexi v2 WASM component apps.
+// WasmView — wasmtime-backed runtime for Plexi v2 WASM component apps.
 //
 // One `Store` per pane. The component exports the `lifecycle` interface
 // (init/update/view) and imports host capabilities (host-log, host-state,
@@ -23,7 +23,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 pub mod bindings {
     wasmtime::component::bindgen!({
         path: "wit/plexi.wit",
-        world: "plexi-full-app",
+        world: "plexi-full-plugin",
     });
 }
 
@@ -216,7 +216,7 @@ struct PipeBinding {
 }
 
 pub struct HostCtx {
-    app_id: String,
+    plugin_id: String,
     state: StateStore,
     // Per-app typed-pipe registry backing the `pipes` import (G13). Binary
     // pipes get a unix socket + drain thread; the registry's Drop closes them
@@ -250,16 +250,16 @@ impl WasiView for HostCtx {
 
 impl host_log::Host for HostCtx {
     fn debug(&mut self, msg: String) {
-        log::debug!("app::{}: {}", self.app_id, msg);
+        log::debug!("app::{}: {}", self.plugin_id, msg);
     }
     fn info(&mut self, msg: String) {
-        log::info!("app::{}: {}", self.app_id, msg);
+        log::info!("app::{}: {}", self.plugin_id, msg);
     }
     fn warn(&mut self, msg: String) {
-        log::warn!("app::{}: {}", self.app_id, msg);
+        log::warn!("app::{}: {}", self.plugin_id, msg);
     }
     fn error(&mut self, msg: String) {
-        log::error!("app::{}: {}", self.app_id, msg);
+        log::error!("app::{}: {}", self.plugin_id, msg);
     }
 }
 
@@ -297,7 +297,7 @@ impl HostCtx {
             Err(e) => {
                 log::warn!(
                     "app::{}: failed to register directed pipe '{pipe_id}': {e}",
-                    self.app_id
+                    self.plugin_id
                 );
                 return false;
             }
@@ -316,7 +316,7 @@ impl HostCtx {
         }
         log::info!(
             "app::{}: registered directed pipe '{pipe_id}' on WASM runtime",
-            self.app_id
+            self.plugin_id
         );
         true
     }
@@ -355,7 +355,7 @@ impl pipes::Host for HostCtx {
                 binding.host_registered = false;
                 log::info!(
                     "app::{}: claimed host-registered json pipe '{id}' -> handle {handle}",
-                    self.app_id
+                    self.plugin_id
                 );
                 return Ok(handle);
             }
@@ -381,7 +381,7 @@ impl pipes::Host for HostCtx {
         );
         log::info!(
             "app::{}: opened {} pipe '{id}' -> handle {handle}",
-            self.app_id,
+            self.plugin_id,
             if binary { "binary" } else { "json" }
         );
         Ok(handle)
@@ -439,7 +439,7 @@ impl pipes::Host for HostCtx {
 // Backs the `audio-rt-control` import. Opening a stream registers its config;
 // the host's RT thread (live path) and the synchronous G12 gate both pull
 // samples by calling the guest's exported `process-output` via
-// `WasmApp::audio_process_output` — not through this registry.
+// `WasmView::audio_process_output` — not through this registry.
 
 #[derive(Default)]
 struct AudioStreams {
@@ -453,7 +453,7 @@ impl audio_rt_control::Host for HostCtx {
         self.audio_streams.next += 1;
         log::info!(
             "app::{}: audio open_output stream {handle} ({} Hz, {} ch, {} frames)",
-            self.app_id,
+            self.plugin_id,
             config.sample_rate,
             config.channels,
             config.buffer_frames
@@ -465,7 +465,7 @@ impl audio_rt_control::Host for HostCtx {
     fn open_input(&mut self, config: audio_rt_control::AudioConfig) -> Result<u32, String> {
         let handle = self.audio_streams.next;
         self.audio_streams.next += 1;
-        log::info!("app::{}: audio open_input stream {handle}", self.app_id);
+        log::info!("app::{}: audio open_input stream {handle}", self.plugin_id);
         self.audio_streams.streams.insert(handle, config);
         Ok(handle)
     }
@@ -496,7 +496,7 @@ impl audio_rt_control::Host for HostCtx {
 
     fn close(&mut self, handle: u32) -> Result<(), String> {
         self.audio_streams.streams.remove(&handle);
-        log::info!("app::{}: audio stream {handle} closed", self.app_id);
+        log::info!("app::{}: audio stream {handle} closed", self.plugin_id);
         Ok(())
     }
 }
@@ -591,9 +591,9 @@ impl gpu::Host for HostCtx {
     }
 }
 
-// ─── WasmApp ───────────────────────────────────────────────────────────────
+// ─── WasmView ───────────────────────────────────────────────────────────────
 
-pub struct WasmApp {
+pub struct WasmView {
     store: Store<HostCtx>,
     lifecycle: LifecycleGuest,
     // Some only when the component exports `audio-rt-process` (audio/full worlds).
@@ -619,7 +619,7 @@ fn grants_from_component(engine: &Engine, component: &Component) -> Grants {
     grants
 }
 
-impl WasmApp {
+impl WasmView {
     fn engine_and_component(path: &Path) -> wasmtime::Result<(Engine, Component)> {
         let engine = super::wasm_engine::create_engine()?;
         let component = Component::from_file(&engine, path)?;
@@ -638,33 +638,33 @@ impl WasmApp {
     /// then call `load_with_grants`.
     #[cfg(test)]
     pub fn load_ephemeral_run(
-        app_id: impl Into<String>,
+        plugin_id: impl Into<String>,
         path: &Path,
         state: StateStore,
     ) -> wasmtime::Result<Self> {
-        let app_id = app_id.into();
+        let plugin_id = plugin_id.into();
         let (engine, component) = Self::engine_and_component(path)?;
         let grants = grants_from_component(&engine, &component);
-        log::info!("app::{app_id}: ephemeral run grants {grants:?}");
-        Self::instantiate(app_id, &engine, &component, &grants, state)
+        log::info!("app::{plugin_id}: ephemeral run grants {grants:?}");
+        Self::instantiate(plugin_id, &engine, &component, &grants, state)
     }
 
     /// Load an installed/manifest-backed component with explicit host-interface
     /// grants derived from the manifest and remembered user decisions.
     pub fn load_with_grants(
-        app_id: impl Into<String>,
+        plugin_id: impl Into<String>,
         path: &Path,
         state: StateStore,
         grants: Grants,
     ) -> wasmtime::Result<Self> {
-        let app_id = app_id.into();
+        let plugin_id = plugin_id.into();
         let (engine, component) = Self::engine_and_component(path)?;
-        log::info!("app::{app_id}: manifest wasm grants {grants:?}");
-        Self::instantiate(app_id, &engine, &component, &grants, state)
+        log::info!("app::{plugin_id}: manifest wasm grants {grants:?}");
+        Self::instantiate(plugin_id, &engine, &component, &grants, state)
     }
 
     fn instantiate(
-        app_id: String,
+        plugin_id: String,
         engine: &Engine,
         component: &Component,
         grants: &Grants,
@@ -691,7 +691,7 @@ impl WasmApp {
                     rs.queue.clone(),
                 ),
                 None => crate::host::wasm_gpu::GpuDevice::new()
-                    .map_err(|e| wasmtime::Error::msg(format!("app::{app_id}: {e}")))?,
+                    .map_err(|e| wasmtime::Error::msg(format!("app::{plugin_id}: {e}")))?,
             })
         } else {
             None
@@ -701,7 +701,7 @@ impl WasmApp {
         }
 
         let ctx = HostCtx {
-            app_id: app_id.clone(),
+            plugin_id: plugin_id.clone(),
             state,
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
@@ -715,7 +715,7 @@ impl WasmApp {
         };
 
         // Instantiate raw, then build per-interface export accessors. The world
-        // struct's instantiate would demand every export of `plexi-full-app`;
+        // struct's instantiate would demand every export of `plexi-full-plugin`;
         // standard apps only export `lifecycle`, so build that unconditionally
         // and probe for the optional `audio-rt-process` export.
         let pre = linker.instantiate_pre(component)?;
@@ -732,10 +732,10 @@ impl WasmApp {
 
         log::info!(
             "app::{}: wasm component instantiated (audio={})",
-            app_id,
+            plugin_id,
             audio.is_some()
         );
-        Ok(WasmApp {
+        Ok(WasmView {
             store,
             lifecycle,
             audio,
@@ -756,8 +756,8 @@ impl WasmApp {
         self.lifecycle.call_update(&mut self.store, event)
     }
 
-    pub fn app_id(&self) -> &str {
-        &self.store.data().app_id
+    pub fn plugin_id(&self) -> &str {
+        &self.store.data().plugin_id
     }
 
     pub fn view(&mut self) -> wasmtime::Result<UiTree> {
@@ -942,7 +942,7 @@ mod tests {
 
     #[test]
     fn inspect_required_grants_maps_component_imports() -> wasmtime::Result<()> {
-        let grants = WasmApp::inspect_required_grants(&audio_fixture())?;
+        let grants = WasmView::inspect_required_grants(&audio_fixture())?;
 
         assert_eq!(
             grants.capability_ids(),
@@ -955,14 +955,14 @@ mod tests {
         Ok(())
     }
 
-    // Stint 0386: pong is compiled against the `plexi-gpu-app` world, which
+    // Stint 0386: pong is compiled against the `plexi-gpu-plugin` world, which
     // unconditionally imports `pipes` and `gpu`. Ground truth is the compiled
     // component's actual imports (dead-code elimination strips anything the
     // guest never calls, e.g. pong never touches host-state), not the WIT
     // world text.
     #[test]
     fn inspect_required_grants_maps_component_imports_for_pong() -> wasmtime::Result<()> {
-        let grants = WasmApp::inspect_required_grants(&pong_fixture())?;
+        let grants = WasmView::inspect_required_grants(&pong_fixture())?;
 
         assert_eq!(
             grants.capability_ids(),
@@ -982,16 +982,16 @@ mod tests {
     #[test]
     fn pong_manifest_capabilities_satisfy_compiled_component_imports() -> wasmtime::Result<()> {
         use crate::app::permissions::{parse_capability_strings, Capability};
-        use crate::app::registry::AppManifest;
+        use crate::app::registry::PluginManifest;
 
         let manifest_path =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/wasm-poc/pong/manifest.toml");
         let manifest_text = std::fs::read_to_string(&manifest_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
-        let manifest: AppManifest =
+        let manifest: PluginManifest =
             toml::from_str(&manifest_text).expect("pong manifest.toml parses");
 
-        let declared_caps = parse_capability_strings(&manifest.app.capabilities.capabilities)
+        let declared_caps = parse_capability_strings(&manifest.plugin.capabilities.capabilities)
             .expect("pong manifest declares only known capabilities");
 
         let grants = Grants {
@@ -1005,7 +1005,7 @@ mod tests {
             "pong manifest must declare pipe.open and gpu.render"
         );
 
-        WasmApp::load_with_grants(
+        WasmView::load_with_grants(
             "com.plexi.pong",
             &pong_fixture(),
             StateStore::ephemeral(),
@@ -1020,7 +1020,7 @@ mod tests {
         // short /tmp path for the bind to succeed.
         let dir = PathBuf::from("/tmp").join(format!("plpipe{}", std::process::id()));
         HostCtx {
-            app_id: "pipes-test".to_string(),
+            plugin_id: "pipes-test".to_string(),
             state: StateStore::ephemeral(),
             pipes: crate::host::typed_pipes::TypedPipeRegistry::new(dir),
             pipe_handles: std::collections::HashMap::new(),
@@ -1111,7 +1111,7 @@ mod tests {
         );
     }
 
-    // G12 (host side): a plexi-audio-app component links audio-rt-control and
+    // G12 (host side): a plexi-audio-plugin component links audio-rt-control and
     // exports audio-rt-process. After the guest starts playing, the host pulls
     // a buffer via process-output and gets non-silent interleaved samples. The
     // whole loop runs synchronously through wasmtime — no OS audio thread, which
@@ -1121,7 +1121,7 @@ mod tests {
     fn g12_audio_process_output_produces_sound() -> wasmtime::Result<()> {
         // Grants are derived from the component's imports; audio-synth imports
         // audio-rt-control, so the audio capability is linked.
-        let mut app = WasmApp::load_ephemeral_run(
+        let mut app = WasmView::load_ephemeral_run(
             "audio-synth-g12",
             &audio_fixture(),
             StateStore::ephemeral(),
@@ -1172,7 +1172,7 @@ mod tests {
         use std::io::Read;
         use std::os::unix::net::UnixStream;
 
-        let mut app = WasmApp::load_ephemeral_run(
+        let mut app = WasmView::load_ephemeral_run(
             "audio-synth-g13",
             &audio_fixture(),
             StateStore::ephemeral(),
@@ -1413,7 +1413,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
     #[test]
     fn g3_effect_roundtrip() -> wasmtime::Result<()> {
         let mut app =
-            WasmApp::load_ephemeral_run("sysmon-g3", &fixture(), StateStore::ephemeral())?;
+            WasmView::load_ephemeral_run("sysmon-g3", &fixture(), StateStore::ephemeral())?;
 
         let startup = app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
         assert!(
@@ -1448,7 +1448,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
 
         {
             let store = StateStore::persistent(path.clone())?;
-            let mut app = WasmApp::load_ephemeral_run("sysmon-g5", &fixture(), store)?;
+            let mut app = WasmView::load_ephemeral_run("sysmon-g5", &fixture(), store)?;
             app.init(&empty_snapshot(), (400.0, 300.0), &[])?;
             // default 2000ms + 3 x 1000ms = 5000ms
             for _ in 0..3 {
@@ -1458,7 +1458,7 @@ fn fs_main() -> @location(0) vec4<f32> { return u.color; }
 
         let store = StateStore::persistent(path.clone())?;
         let snapshot = store.snapshot();
-        let mut reloaded = WasmApp::load_ephemeral_run("sysmon-g5-reload", &fixture(), store)?;
+        let mut reloaded = WasmView::load_ephemeral_run("sysmon-g5-reload", &fixture(), store)?;
         let startup = reloaded.init(&snapshot, (400.0, 300.0), &[])?;
         assert!(
             startup

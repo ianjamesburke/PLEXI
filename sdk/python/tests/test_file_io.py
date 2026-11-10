@@ -71,7 +71,7 @@ def _init(proc, capabilities=None) -> list[dict]:
         "feature_flags": [],
         "width": 640.0,
         "height": 360.0,
-        "protocol": "pgap/3",
+        "protocol": "pgap/4",
     })
     return _collect_until(proc, "ready")
 

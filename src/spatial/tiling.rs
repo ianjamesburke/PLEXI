@@ -1,5 +1,5 @@
 use crate::protocol::AgentState;
-use crate::host::pane::{AppRuntime, Pane, TerminalPane};
+use crate::host::pane::{ViewRuntime, Pane, TerminalPane};
 use crate::render;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -461,7 +461,7 @@ pub struct PlexiBehavior<'a> {
     /// for unfocused terminals (which still need current modifiers for pointer
     /// link-hover and mouse reporting).
     pub frame_modifiers: egui::Modifiers,
-    /// Pending `AppRequest::ClickPane` injections, keyed by target pane.
+    /// Pending `HostRequest::ClickPane` injections, keyed by target pane.
     /// Consumed (via `remove`) by whichever pane actually renders this frame —
     /// see `crate::host::pane::PendingPaneClick`.
     pub pending_pane_clicks: &'a mut HashMap<PaneId, crate::host::pane::PendingPaneClick>,
@@ -624,9 +624,9 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
             let pending_click = self.pending_pane_clicks.remove(pane_id);
             let ui_profile_label = match &app_pane.runtime {
-                AppRuntime::Python(_) => format!("python:{}", app_pane.manifest_id),
-                AppRuntime::Wasm(_) => format!("wasm:{}", app_pane.manifest_id),
-                AppRuntime::Builtin(_) => format!("builtin:{}", app_pane.manifest_id),
+                ViewRuntime::Python(_) => format!("python:{}", app_pane.manifest_id),
+                ViewRuntime::Wasm(_) => format!("wasm:{}", app_pane.manifest_id),
+                ViewRuntime::Builtin(_) => format!("builtin:{}", app_pane.manifest_id),
             };
             crate::platform::ui_profile::time(&ui_profile_label, || {
                 render::app_pane::render(
@@ -959,7 +959,7 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
 pub(crate) fn deliver_dropped_files_to_app(
     ui: &egui::Ui,
     pane_id: PaneId,
-    app: &mut crate::host::pane::AppPane,
+    app: &mut crate::host::pane::ViewPane,
 ) {
     for file in ui.input(|i| i.raw.dropped_files.clone()) {
         let Some(path) = file.path else { continue };
@@ -973,7 +973,7 @@ pub(crate) fn deliver_dropped_files_to_app(
 
 pub(crate) fn dispatch_drop_to_app(
     pane_id: PaneId,
-    app: &mut crate::host::pane::AppPane,
+    app: &mut crate::host::pane::ViewPane,
     source: &str,
     pane_hovered: bool,
 ) -> Result<serde_json::Value, String> {

@@ -100,7 +100,7 @@ fn core_only_registry_stays_empty_after_rescan_and_context_changes() {
             .join(crate::config::workspace_channel_dir())
             .join("apps/probe");
         std::fs::create_dir_all(&plugin).unwrap();
-        std::fs::write(plugin.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'probe'\ntype = 'app'\nname = 'Probe'\nversion = '0.1.0'\nentry = 'run.sh'\n").unwrap();
+        std::fs::write(plugin.join("manifest.toml"), "schema_version = 2\n\n[plugin]\nid = 'probe'\nname = 'Probe'\nversion = '0.1.0'\n\n[runtime]\nkind = \"python\"\nentry = 'run.sh'\n\n[[contributes.views]]\nid = \"probe.main\"\ndefault = true\n").unwrap();
         std::fs::write(plugin.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
         let registry = h.app.registries.rescan_root(root.path());
         assert_eq!(registry.get("probe").is_none(), enabled);
@@ -155,7 +155,7 @@ fn core_only_status_reports_startup_mode_after_config_is_changed() {
     let mut h = HostHarness::from_profile_dir(profile.path());
     std::fs::write(profile.path().join("config.toml"), "core_only = false\n").unwrap();
     let response = profile.path().join("status.json");
-    h.inject_ipc(crate::protocol::AppRequest::GetBuildInfo {
+    h.inject_ipc(crate::protocol::HostRequest::GetBuildInfo {
         response_file: response.to_string_lossy().into_owned(),
     });
     h.run_frames(2);
@@ -198,11 +198,11 @@ fn core_only_external_restore_keeps_launch_and_opaque_state_without_touching_pac
     }
     let mut saved = crate::workspace::WorkspaceFile::load_from(profile.path()).unwrap();
     let pane = &mut saved.windows[0].panes[0];
-    pane.app_id = Some("external-probe".into());
+    pane.plugin_id = Some("external-probe".into());
     pane.runtime_kind = Some("python-wasm".into());
-    pane.app_state = Some(serde_json::json!({"document":"keep me", "cursor":17}));
-    pane.launch = Some(crate::workspace::SavedAppLaunch::Python {
-        app_dir: profile.path().join("deliberately-absent-plugin"),
+    pane.plugin_state = Some(serde_json::json!({"document":"keep me", "cursor":17}));
+    pane.launch = Some(crate::workspace::SavedViewLaunch::Python {
+        plugin_dir: profile.path().join("deliberately-absent-plugin"),
         args: vec!["--keep".into()],
     });
     saved.save_to(profile.path()).unwrap();

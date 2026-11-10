@@ -236,9 +236,9 @@ impl PlexiApp {
                     .filter(|value| !value.is_empty());
                 let live = crate::plexi_ai::tool_dispatch::live_exposed_tools()
                     .into_iter()
-                    .map(|(app_id, pane_id, name, description)| {
+                    .map(|(plugin_id, pane_id, name, description)| {
                         crate::cli::introspect::LiveTool {
-                            app_id,
+                            plugin_id,
                             pane_id,
                             name,
                             description,
@@ -254,7 +254,7 @@ impl PlexiApp {
                 let panes = self.introspect_panes();
                 let doc = crate::cli::introspect::assemble(
                     query,
-                    &crate::app::registry::apps_dir(),
+                    &crate::app::registry::plugins_dir(),
                     &panes,
                     &permissions,
                     &live,
@@ -263,7 +263,7 @@ impl PlexiApp {
                     "assistant_host_tool: host.introspect query={} cli={} apps={} panes={} permissions={}",
                     query.unwrap_or(""),
                     doc["cli"].as_array().map(|rows| rows.len()).unwrap_or(0),
-                    doc["apps"].as_array().map(|rows| rows.len()).unwrap_or(0),
+                    doc["plugins"].as_array().map(|rows| rows.len()).unwrap_or(0),
                     doc["panes"].as_array().map(|rows| rows.len()).unwrap_or(0),
                     doc["permissions"].as_array().map(|rows| rows.len()).unwrap_or(0),
                 );
@@ -856,7 +856,7 @@ impl PlexiApp {
                 egui_tiles::Tile::Pane(id) => Some(*id),
                 _ => None,
             });
-        self.handle_pane_ipc_request(crate::protocol::AppRequest::SpawnPane {
+        self.handle_pane_ipc_request(crate::protocol::HostRequest::SpawnPane {
             type_id: type_id.to_string(),
             layout,
             args,
@@ -935,7 +935,7 @@ impl PlexiApp {
                     .iter()
                     .filter(move |(id, _)| window.tree.tiles.find_pane(id).is_some())
                     .map(move |(id, pane)| {
-                        let (kind, title, app_id) = match pane {
+                        let (kind, title, plugin_id) = match pane {
                             crate::host::pane::Pane::Terminal(term) => (
                                 "terminal",
                                 term.name.clone().unwrap_or_else(|| "terminal".to_string()),
@@ -954,7 +954,7 @@ impl PlexiApp {
                             "id": id,
                             "type": kind,
                             "title": title,
-                            "app_id": app_id,
+                            "plugin_id": plugin_id,
                             "focused": window_index == active && focused == Some(*id),
                             "context_id": window.context_id,
                             "window_id": window.window_id,
@@ -1009,7 +1009,7 @@ impl PlexiApp {
     /// coding agent opened in that workspace. The global apps directory stays
     /// available as an explicit auxiliary root for app authoring.
     fn assistant_file_roots(&self, origin_context_id: u64) -> Vec<std::path::PathBuf> {
-        let global_apps = crate::app::registry::apps_dir();
+        let global_apps = crate::app::registry::plugins_dir();
         let mut roots = Vec::new();
         if let Some(root) = self.context_root_for(origin_context_id) {
             roots.push(root);
@@ -1849,7 +1849,7 @@ mod tests {
     #[test]
     fn scoped_file_helpers_write_read_edit_within_roots_and_reject_escapes() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("apps");
+        let apps = root.path().join("plugins");
         std::fs::create_dir_all(&apps).unwrap();
         let roots = vec![apps.clone()];
         let file = apps.join("demo/main.py").display().to_string();
@@ -1899,7 +1899,7 @@ mod tests {
     #[test]
     fn read_slice_numbers_lines_and_pages_through_the_file() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("apps");
+        let apps = root.path().join("plugins");
         std::fs::create_dir_all(apps.join("demo")).unwrap();
         let roots = vec![apps.clone()];
         let file = apps.join("demo/main.py").display().to_string();
@@ -1928,7 +1928,7 @@ mod tests {
     #[test]
     fn grep_scoped_matches_lines_respects_caps_and_rejects_bad_patterns() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("apps");
+        let apps = root.path().join("plugins");
         std::fs::create_dir_all(apps.join("demo")).unwrap();
         std::fs::create_dir_all(apps.join("demo/__pycache__")).unwrap();
         let roots = vec![apps.clone()];
@@ -1970,7 +1970,7 @@ mod tests {
     #[test]
     fn list_scoped_walks_sorted_and_skips_junk_dirs() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("apps");
+        let apps = root.path().join("plugins");
         std::fs::create_dir_all(apps.join("demo/.venv")).unwrap();
         let roots = vec![apps.clone()];
         std::fs::write(apps.join("demo/manifest.toml"), "x").unwrap();
@@ -2007,7 +2007,7 @@ mod tests {
     #[test]
     fn grep_and_list_walks_never_follow_symlinks() {
         let root = tempfile::tempdir().unwrap();
-        let apps = root.path().join("apps");
+        let apps = root.path().join("plugins");
         let outside = root.path().join("outside");
         std::fs::create_dir_all(apps.join("demo")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
@@ -2527,8 +2527,8 @@ mod tests {
             .set_context_root(workspace.path().to_path_buf(), None);
         let context = harness.app.windows[0].context_id;
         harness.app.open_builtin_app_pane(
-            Box::new(crate::app::text_editor_app::TextEditorApp::new(file.clone())),
-            crate::app::permissions::AppPermissions::builtin(),
+            Box::new(crate::app::text_editor_app::TextEditorView::new(file.clone())),
+            crate::app::permissions::PluginPermissions::builtin(),
             workspace.path().to_path_buf(),
             None,
             Some("split_h"),
@@ -2634,7 +2634,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
 
         harness.app.sync_editor_change_sets();
-        // `plexi pane state` puts builtin semantic_details in `app_state`.
+        // `plexi pane state` puts builtin semantic_details in `plugin_state`.
         let state = harness
             .app
             .windows

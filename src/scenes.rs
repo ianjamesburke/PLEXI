@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::host::pane::{AppRuntime, Pane};
+use crate::host::pane::{ViewRuntime, Pane};
 use crate::spatial::tiling::PaneId;
 use crate::ui_tests::PlexiUiHarness;
 
@@ -425,7 +425,7 @@ pub enum Step {
     /// Push the focused pane into a new subcontext with this name.
     PushToSubcontext { push_to_subcontext: String },
     /// Block until a process app handle commits its first real frame.
-    WaitAppFrame { wait_app_frame: WaitSpec },
+    WaitViewFrame { wait_app_frame: WaitSpec },
     /// Advance N harness frames.
     RunSteps { run_steps: usize },
     /// Structured assertions — every present key must match.
@@ -659,9 +659,9 @@ pub struct ExpectSpec {
     pub timeout_s: f32,
 }
 
-/// True when the recorded app-event expectation (if any) is satisfied: some
+/// True when the recorded plugin-event expectation (if any) is satisfied: some
 /// emitted event on `event_stream` whose serialized payload contains
-/// `event_payload_contains` (when set). Reads the same global `AppTimeline`
+/// `event_payload_contains` (when set). Reads the same global `PluginTimeline`
 /// the production event bus records into.
 fn app_event_expectation_match(spec: &ExpectSpec) -> bool {
     let Some(stream) = &spec.event_stream else {
@@ -769,7 +769,7 @@ pub struct SceneReport {
     pub handles: BTreeMap<String, PaneId>,
     pub host: HostState,
     /// Last-opened app pane state, when a scene opened one.
-    pub app: Option<AppState>,
+    pub app: Option<PluginState>,
     pub teardown: TeardownResult,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_bundle: Option<String>,
@@ -874,7 +874,7 @@ pub struct HostState {
 }
 
 #[derive(Serialize, Debug)]
-pub struct AppState {
+pub struct PluginState {
     pub pane_id: PaneId,
     pub lifecycle: String,
     /// Committed L1 render tree (the app's UI state), as JSON.
@@ -1111,7 +1111,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
 
     std::fs::create_dir_all(out_dir).ok();
 
-    // Install the scene's scripted picker before any app opens, and clear it
+    // Install the scene's scripted picker before any view opens, and clear it
     // however this run ends so no override leaks into the next scene.
     let _picker_guard = match scene.picker_script.as_deref() {
         Some(entries) => match install_scene_picker(entries, out_dir) {
@@ -1184,7 +1184,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
                         index - 1,
                         "headless",
                         &e,
-                        pass.app_state(),
+                        pass.plugin_state(),
                         Some(pass),
                     );
                     // Replay only the failing case and the prefix needed to reach it.
@@ -1232,7 +1232,7 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
         shots,
         handles: runner.handles.report(),
         host: runner.host_state(),
-        app: runner.app_state(),
+        app: runner.plugin_state(),
         teardown: TeardownResult::headless(),
         failure_bundle,
     };
@@ -1287,7 +1287,7 @@ fn write_failure_bundle(
     step: usize,
     backend: &str,
     error: &SceneError,
-    app: Option<AppState>,
+    app: Option<PluginState>,
     mut headless: Option<&mut HeadlessBackend>,
 ) -> String {
     let dir = out_dir.join(format!("{scene}.failure-{step}"));
@@ -1719,7 +1719,7 @@ impl LiveBackend {
                     }
                     OpenSpec::Builtin { id, .. } => id.clone(),
                 };
-                // A live wasm open shells `plexi app open`, whose raw-WASM
+                // A live wasm open shells `plexi view open`, whose raw-WASM
                 // review would block on a human at a TTY. Pre-approve through
                 // the real channel binary first (`plexi app trust`), which
                 // persists the fixture's import grants into the channel profile
@@ -1749,7 +1749,7 @@ impl LiveBackend {
                     .map_err(|error| {
                         SceneError::new(
                             "open_response_invalid",
-                            format!("app open did not return a pane id: {error}"),
+                            format!("view open did not return a pane id: {error}"),
                         )
                     })?;
                 self.handles.bind(open.handle(), pane_id)?;
@@ -1912,7 +1912,7 @@ impl LiveBackend {
                     message: format!("closed {close} (pane {pane_id})"),
                 }))
             }
-            Step::WaitAppFrame { wait_app_frame } => {
+            Step::WaitViewFrame { wait_app_frame } => {
                 let pane_id = self.handles.resolve(&wait_app_frame.target)?;
                 let _ = self.settled_state(pane_id, scene_timeout(wait_app_frame.timeout_s))?;
                 Ok(None)
@@ -2092,7 +2092,7 @@ impl LiveBackend {
         }
     }
 
-    fn app_state(&self) -> Option<AppState> {
+    fn plugin_state(&self) -> Option<PluginState> {
         let pane_id = self.last_app_pane?;
         let tree = self.pane_state(pane_id).ok()?;
         let lifecycle = tree
@@ -2100,7 +2100,7 @@ impl LiveBackend {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("unavailable")
             .to_string();
-        Some(AppState {
+        Some(PluginState {
             pane_id,
             lifecycle,
             tree,
@@ -2462,7 +2462,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
                         index,
                         "live",
                         &error,
-                        backend.app_state(),
+                        backend.plugin_state(),
                         None,
                     );
                     if let Some(pane_id) = backend.last_app_pane {
@@ -2504,7 +2504,7 @@ fn run_live_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRep
     }
     let handles = backend.handles.report();
     let host = backend.host_state();
-    let app = backend.app_state();
+    let app = backend.plugin_state();
     backend.teardown();
     passed &= backend.teardown.ok;
     let failure_bundle = steps.iter().find_map(|step| step.failure_bundle.clone());
@@ -2575,9 +2575,9 @@ fn step_label(step: &Step) -> String {
         Step::PushToSubcontext { push_to_subcontext } => {
             format!("push_to_subcontext {push_to_subcontext}")
         }
-        Step::WaitAppFrame { wait_app_frame } => {
+        Step::WaitViewFrame { wait_app_frame } => {
             format!(
-                "wait_app_frame {} {}s",
+                "wait_view_frame {} {}s",
                 wait_app_frame.target, wait_app_frame.timeout_s
             )
         }
@@ -2619,12 +2619,12 @@ fn resolve(path: &str) -> PathBuf {
 /// (`assert_test_profile_is_isolated`) — so it pre-approves through the real
 /// channel binary with `plexi app trust` instead.
 fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
-    let app_id = wasm_path
+    let plugin_id = wasm_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("wasm");
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let grants = crate::host::wasm_app::WasmApp::inspect_required_grants(wasm_path)
+    let grants = crate::host::wasm_app::WasmView::inspect_required_grants(wasm_path)
         .map_err(|e| format!("inspect {}: {e}", wasm_path.display()))?;
     let config_dir = crate::config::config_dir();
     let mut store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
@@ -2642,13 +2642,13 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
         .chain(std::iter::once("fs.pick".to_string()))
     {
         store.set_wasm(
-            app_id,
+            plugin_id,
             &workspace_root,
             &capability_id,
             crate::app::permissions::PermissionState::Green,
         );
         monitor.grant_capability_id(
-            app_id,
+            plugin_id,
             &workspace_root,
             &capability_id,
             crate::broker::Decision::Allow,
@@ -2658,7 +2658,7 @@ fn preapprove_wasm_scene_grants(wasm_path: &Path) -> Result<(), String> {
     store.save();
     log::info!(
         "scene: preapproved raw wasm grants app={} path={} workspace={}",
-        app_id,
+        plugin_id,
         wasm_path.display(),
         workspace_root.display()
     );
@@ -2847,7 +2847,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drop-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DropFile {
+                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DropFile {
                         pane_id,
                         path_or_url: drop_file.value.clone(),
                         response_file: response.to_string_lossy().into_owned(),
@@ -2882,7 +2882,7 @@ impl HeadlessBackend {
                     .workspace_root()
                     .join(format!("scene-drag-{pane_id}.json"));
                 self.h.with_app_mut(|app| {
-                    app.handle_pane_ipc_request(crate::protocol::AppRequest::DragPane {
+                    app.handle_pane_ipc_request(crate::protocol::HostRequest::DragPane {
                         pane_id,
                         from: drag.from,
                         from_node: drag.from_node.clone(),
@@ -3056,7 +3056,7 @@ impl HeadlessBackend {
                 };
                 let workspace = std::path::Path::new("/Users/demo/projects/plexi");
                 let disclosure = crate::host::cli_ops::service::Disclosure {
-                    app_id: "stint-board",
+                    plugin_id: "stint-board",
                     operation_id: "task.set_priority",
                     mode: authority.mode,
                     workspace,
@@ -3103,11 +3103,11 @@ impl HeadlessBackend {
                 self.h.step();
                 Ok(None)
             }
-            Step::WaitAppFrame { wait_app_frame } => {
+            Step::WaitViewFrame { wait_app_frame } => {
                 let pane_id = self.handles.resolve(&wait_app_frame.target)?;
                 self.h
                     .wait_for_app_frame(pane_id, scene_timeout(wait_app_frame.timeout_s))
-                    .map_err(|message| SceneError::new("wait_app_frame_failed", message))?;
+                    .map_err(|message| SceneError::new("wait_view_frame_failed", message))?;
                 Ok(None)
             }
             Step::RunSteps { run_steps } => {
@@ -3232,7 +3232,7 @@ impl HeadlessBackend {
                         .to_string_lossy()
                         .into_owned();
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::AppRequest::AgentDone {
+                        app.handle_pane_ipc_request(crate::protocol::HostRequest::AgentDone {
                             peer_ancestry: None,
                             pane_id: id,
                             result: Some("{}".into()),
@@ -3305,7 +3305,7 @@ impl HeadlessBackend {
                     context_id,
                     package_id: "chess",
                     instance_id: chess,
-                    target_type: crate::broker::TargetType::AppConnector,
+                    target_type: crate::broker::TargetType::PluginConnector,
                 });
                 if !matches!(admission, crate::broker::gate::Admission::Required { .. }) {
                     return Err(SceneError::new(
@@ -3367,12 +3367,12 @@ impl HeadlessBackend {
                         .find_map(|window| window.panes.get_mut(&assistant))
                         .expect("assistant pane");
                     let app_pane = pane.as_app_mut().expect("assistant is an app");
-                    let AppRuntime::Builtin(builtin) = &mut app_pane.runtime else {
+                    let ViewRuntime::Builtin(builtin) = &mut app_pane.runtime else {
                         panic!("assistant is not a builtin");
                     };
                     let assistant_app = builtin
                         .as_any_mut()
-                        .downcast_mut::<crate::assistant::AssistantApp>()
+                        .downcast_mut::<crate::assistant::AssistantView>()
                         .expect("assistant app");
                     assistant_app.queue_scripted_tool("chess.play", &input.to_string());
                     assistant_app
@@ -3419,7 +3419,7 @@ impl HeadlessBackend {
                         .workspace_root()
                         .join(format!("chess-key-{key}-{}.json", uuid::Uuid::new_v4()));
                     self.h.with_app_mut(|app| {
-                        app.handle_pane_ipc_request(crate::protocol::AppRequest::KeyPane {
+                        app.handle_pane_ipc_request(crate::protocol::HostRequest::KeyPane {
                             pane_id: chess,
                             key: (*key).to_string(),
                             response_file: Some(response.to_string_lossy().into_owned()),
@@ -3582,7 +3582,7 @@ impl HeadlessBackend {
                 SceneError::new(
                     "app_state_unavailable",
                     format!(
-                        "assert target '{target}' has no process or WASM app state; use assert_label for native UI"
+                        "assert target '{target}' has no process or WASM plugin state; use assert_label for native UI"
                     ),
                 )
             })?;
@@ -3610,7 +3610,7 @@ impl HeadlessBackend {
         let pane_id = self.handles.resolve(&spec.target)?;
         let before = self
             .app_state_for(pane_id)
-            .ok_or_else(|| SceneError::new("app_state_unavailable", "expect requires app state"))?
+            .ok_or_else(|| SceneError::new("app_state_unavailable", "expect requires plugin state"))?
             .tree;
         if let Some(key) = &spec.after_key {
             self.exec(
@@ -3642,7 +3642,7 @@ impl HeadlessBackend {
             let state = self
                 .app_state_for(pane_id)
                 .ok_or_else(|| {
-                    SceneError::new("app_state_unavailable", "expect requires app state")
+                    SceneError::new("app_state_unavailable", "expect requires plugin state")
                 })?
                 .tree;
             history.push(PollSample {
@@ -3696,34 +3696,34 @@ impl HeadlessBackend {
         })
     }
 
-    fn app_state(&self) -> Option<AppState> {
+    fn plugin_state(&self) -> Option<PluginState> {
         let pane_id = self.last_app_pane?;
         self.app_state_for(pane_id)
     }
 
-    fn app_state_for(&self, pane_id: PaneId) -> Option<AppState> {
+    fn app_state_for(&self, pane_id: PaneId) -> Option<PluginState> {
         self.h.with_app(|app| {
             for win in &app.windows {
                 if let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) {
                     let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
                     let tree = match &app_pane.runtime {
-                        AppRuntime::Builtin(_) => serde_json::json!({
+                        ViewRuntime::Builtin(_) => serde_json::json!({
                             "semantic": app_pane.semantic_state(),
                             "app_state": app_pane.runtime.semantic_details(),
                         }),
-                        AppRuntime::Python(_) => serde_json::json!({
+                        ViewRuntime::Python(_) => serde_json::json!({
                             "semantic": app_pane.semantic_state(),
                             // Same nested shape as the get_pane_state IPC
                             // response, so scene assertions exercise what
                             // agents actually read.
                             "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
                         }),
-                        AppRuntime::Wasm(w) => serde_json::json!({
+                        ViewRuntime::Wasm(w) => serde_json::json!({
                             "frame": w.last_render_text(),
                             "semantic": app_pane.semantic_state(),
                         }),
                     };
-                    return Some(AppState {
+                    return Some(PluginState {
                         pane_id,
                         lifecycle: lifecycle.to_string(),
                         tree,

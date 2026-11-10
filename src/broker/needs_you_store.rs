@@ -871,7 +871,7 @@ mod tests {
                     actor_scope: super::super::ActorScope::User,
                     trust_origin: "host".into(),
                     workspace_root: PathBuf::from("/ws"),
-                    target_type: super::super::TargetType::AppConnector,
+                    target_type: super::super::TargetType::PluginConnector,
                     target_id: "chess.play".into(),
                     resource_scope: super::super::ResourceScope::Game,
                     resource_id: Some("game-1".into()),

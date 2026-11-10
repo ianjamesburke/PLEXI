@@ -57,7 +57,7 @@ pub const INSTALLED_REGISTRY_SOURCE_FILE: &str = "marketplace_source.toml";
 
 /// Who can discover an app. Local-first default is [`Visibility::Private`]: an
 /// app is not public until its author explicitly publishes it. Drives whether
-/// `app browse`/`app search` list it.
+/// `plugin browse`/`plugin search` list it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
@@ -79,7 +79,7 @@ impl Visibility {
         }
     }
 
-    /// Whether `app browse` (the public catalog view) should list this app.
+    /// Whether `plugin browse` (the public catalog view) should list this app.
     pub fn is_listed(self) -> bool {
         matches!(self, Visibility::Public)
     }
@@ -229,7 +229,7 @@ pub struct RegistryEntry {
 impl RegistryEntry {
     /// Build a catalog entry from a locally-validated package plus the
     /// marketplace manifest facts. This is the publisher-side path: what
-    /// `app publish` would submit, and what the registry republishes verbatim.
+    /// `plugin publish` would submit, and what the registry republishes verbatim.
     pub fn from_report(
         report: &PackageReport,
         marketplace: &MarketplaceManifest,
@@ -271,7 +271,7 @@ pub struct RegistryIndex {
 }
 
 impl RegistryIndex {
-    /// Apps that should appear in `app browse` — public listings only.
+    /// Apps that should appear in `plugin browse` — public listings only.
     pub fn listed(&self) -> impl Iterator<Item = &RegistryEntry> {
         self.apps.iter().filter(|e| e.visibility.is_listed())
     }
@@ -438,7 +438,7 @@ pub struct InstalledRegistrySource {
     /// Stable discriminator for future update code.
     pub source: String,
     pub registry_url: String,
-    pub app_id: String,
+    pub plugin_id: String,
     pub version: String,
     #[serde(default)]
     pub publisher: String,
@@ -453,7 +453,7 @@ impl InstalledRegistrySource {
             schema_version: MARKETPLACE_SCHEMA_VERSION,
             source: "hosted-registry".to_string(),
             registry_url: registry_url.to_string(),
-            app_id: entry.id.clone(),
+            plugin_id: entry.id.clone(),
             version: entry.version.clone(),
             publisher: entry.publisher.clone(),
             checksum: entry.checksum.clone(),
@@ -462,16 +462,16 @@ impl InstalledRegistrySource {
         }
     }
 
-    pub fn write_to(&self, app_dir: &std::path::Path) -> Result<(), String> {
-        std::fs::create_dir_all(app_dir)
-            .map_err(|e| format!("create app dir {}: {e}", app_dir.display()))?;
+    pub fn write_to(&self, plugin_dir: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(plugin_dir)
+            .map_err(|e| format!("create app dir {}: {e}", plugin_dir.display()))?;
         let text = toml::to_string_pretty(self)
             .map_err(|e| format!("serialize registry source metadata: {e}"))?;
-        let path = app_dir.join(INSTALLED_REGISTRY_SOURCE_FILE);
+        let path = plugin_dir.join(INSTALLED_REGISTRY_SOURCE_FILE);
         std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
         log::info!(
             "marketplace: recorded installed source for '{}' v{} at {}",
-            self.app_id,
+            self.plugin_id,
             self.version,
             path.display()
         );
@@ -611,30 +611,20 @@ mod tests {
     }
 
     fn build_smoke_package(dir: &std::path::Path) -> (std::path::PathBuf, String) {
-        let app_dir = dir.join("reviewed-notes");
-        std::fs::create_dir(&app_dir).unwrap();
+        let plugin_dir = dir.join("reviewed-notes");
+        std::fs::create_dir(&plugin_dir).unwrap();
         std::fs::write(
-            app_dir.join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"reviewed-notes\"\n\
-             type = \"app\"\n\
-             name = \"Reviewed Notes\"\n\
-             version = \"0.1.0\"\n\
-             entry = \"main.py\"\n\
-             description = \"Reviewed free smoke app\"\n\n\
-             [app.capabilities]\n\
-             capabilities = []\n\n\
-             [launch]\n",
+            plugin_dir.join("manifest.toml"),
+            "schema_version = 2\n\n[launch]\n\n[plugin]\nid = \"reviewed-notes\"\nname = \"Reviewed Notes\"\nversion = \"0.1.0\"\ndescription = \"Reviewed free smoke app\"\n\n[plugin.capabilities]\ncapabilities = []\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"reviewed-notes.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(
-            app_dir.join("main.py"),
+            plugin_dir.join("main.py"),
             "from plexi_sdk import *\n\n\ndef view():\n    return Text('Reviewed Notes')\n",
         )
         .unwrap();
         let pkg_path = dir.join("reviewed-notes-0.1.0.plexipkg");
-        let pkg = crate::app::package::build_package(&app_dir, Some(&pkg_path)).unwrap();
+        let pkg = crate::app::package::build_package(&plugin_dir, Some(&pkg_path)).unwrap();
         let checksum = crate::app::package::sha256_file(&pkg).unwrap();
         (pkg, checksum)
     }
@@ -879,7 +869,7 @@ mod tests {
             std::fs::read_to_string(tmp.path().join(INSTALLED_REGISTRY_SOURCE_FILE)).unwrap();
         let parsed: InstalledRegistrySource = toml::from_str(&text).unwrap();
         assert_eq!(parsed, metadata);
-        assert_eq!(parsed.app_id, "reviewed-notes");
+        assert_eq!(parsed.plugin_id, "reviewed-notes");
         assert_eq!(parsed.version, "1.0.0");
     }
 }

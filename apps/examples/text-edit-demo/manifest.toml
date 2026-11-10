@@ -1,12 +1,18 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "text-edit-demo"
-type = "app"
 name = "TextEdit Demo"
 version = "0.1.0"
 description = "Demonstrates the TextEdit node: single-line and multiline text input."
+
+[plugin.capabilities]
+capabilities = []
+
+[runtime]
+kind = "python"
 entry = "text_edit_demo.py"
 
-[app.capabilities]
-capabilities = []
+[[contributes.views]]
+id = "text-edit-demo.main"
+default = true

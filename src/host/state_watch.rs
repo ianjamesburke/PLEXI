@@ -10,7 +10,7 @@
 //!   never the file itself. Everything writing state uses atomic temp+rename,
 //!   which replaces the inode — a single-file watch dies after the first
 //!   replacement. Events are filtered by file name instead.
-//! - **The watched dirs are shared** (`~/.plexi/app_states/` holds every
+//! - **The watched dirs are shared** (`~/.plexi/plugin_states/` holds every
 //!   app's global state), so filename filtering is mandatory: without it,
 //!   every app's save would fire every other app's watcher.
 //!

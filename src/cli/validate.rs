@@ -1,15 +1,15 @@
 pub fn validate_cli(path: &str) -> i32 {
-    let app_dir = std::path::Path::new(path);
-    if !app_dir.exists() {
+    let plugin_dir = std::path::Path::new(path);
+    if !plugin_dir.exists() {
         eprintln!("validate: path does not exist: {path}");
         return 1;
     }
     // A .plexipkg file gets the full fail-closed package validation.
-    if app_dir.is_file() {
-        if app_dir.extension().and_then(|e| e.to_str())
+    if plugin_dir.is_file() {
+        if plugin_dir.extension().and_then(|e| e.to_str())
             == Some(crate::app::package::PACKAGE_EXTENSION)
         {
-            return validate_package_cli(app_dir);
+            return validate_package_cli(plugin_dir);
         }
         eprintln!(
             "validate: path is not a directory or .{} file: {path}",
@@ -17,12 +17,12 @@ pub fn validate_cli(path: &str) -> i32 {
         );
         return 1;
     }
-    if !app_dir.is_dir() {
+    if !plugin_dir.is_dir() {
         eprintln!("validate: path is not a directory: {path}");
         return 1;
     }
 
-    let manifest_path = app_dir.join("manifest.toml");
+    let manifest_path = plugin_dir.join("manifest.toml");
     if !manifest_path.exists() {
         eprintln!("✗ manifest.toml not found in {path}");
         return 1;
@@ -75,7 +75,7 @@ pub fn validate_cli(path: &str) -> i32 {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if !entry.is_empty() {
-        let entry_path = app_dir.join(entry);
+        let entry_path = plugin_dir.join(entry);
         if !entry_path.exists() {
             errors.push(format!("  entry file not found: {}", entry_path.display()));
         } else {
@@ -232,20 +232,13 @@ mod validate_tests {
     fn write_valid_manifest(dir: &std::path::Path) {
         std::fs::write(
             dir.join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"test-app\"\n\
-             type = \"app\"\n\
-             name = \"Test App\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n\
-             description = \"A test app\"\n",
+            "schema_version = 2\n\n[plugin]\nid = \"test-app\"\nname = \"Test App\"\nversion = \"0.1.0\"\ndescription = \"A test app\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"test-app.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(dir.join("main.py"), "# stub\n").unwrap();
     }
 
-    /// `plexi app validate <path>` must succeed from a bare directory with no
+    /// `plexi plugin validate <path>` must succeed from a bare directory with no
     /// `.plexi/` workspace ancestor. This is the core invariant: workspace is
     /// irrelevant for stateless path operations.
     #[test]
@@ -271,16 +264,7 @@ mod validate_tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"test-app\"\n\
-             type = \"app\"\n\
-             name = \"Test App\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n\
-             description = \"A test app\"\n\n\
-             [app.capabilities]\n\
-             capabilities = [\"net.dns\"]\n",
+            "schema_version = 2\n\n[plugin]\nid = \"test-app\"\nname = \"Test App\"\nversion = \"0.1.0\"\ndescription = \"A test app\"\n\n[plugin.capabilities]\ncapabilities = [\"net.dns\"]\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"test-app.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
@@ -289,7 +273,7 @@ mod validate_tests {
         assert_eq!(code, 1, "unknown capability must be a hard error");
     }
 
-    /// stint 0411 follow-up (PR #2412 tester round): `plexi app validate
+    /// stint 0411 follow-up (PR #2412 tester round): `plexi plugin validate
     /// <dir>` has its own lightweight validation path, separate from
     /// `package::validate_dir`. It must reject the same unlaunchable-entry
     /// shape (non-WASM, non-`.py`) that the package/install path rejects —
@@ -299,14 +283,7 @@ mod validate_tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"test-app\"\n\
-             type = \"app\"\n\
-             name = \"Test App\"\n\
-             entry = \"bin/app\"\n\
-             version = \"0.1.0\"\n\
-             description = \"A test app\"\n",
+            "schema_version = 2\n\n[plugin]\nid = \"test-app\"\nname = \"Test App\"\nversion = \"0.1.0\"\ndescription = \"A test app\"\n\n[runtime]\nkind = \"python\"\nentry = \"bin/app\"\n\n[[contributes.views]]\nid = \"test-app.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::create_dir(dir.path().join("bin")).unwrap();
@@ -322,23 +299,16 @@ mod validate_tests {
     #[test]
     fn validate_routes_plexipkg_file_to_package_validation() {
         let dir = TempDir::new().unwrap();
-        let app_dir = dir.path().join("app");
-        std::fs::create_dir(&app_dir).unwrap();
+        let plugin_dir = dir.path().join("app");
+        std::fs::create_dir(&plugin_dir).unwrap();
         std::fs::write(
-            app_dir.join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             id = \"pkg-cli-test\"\n\
-             type = \"app\"\n\
-             name = \"Pkg CLI Test\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n\
-             description = \"A test app\"\n",
+            plugin_dir.join("manifest.toml"),
+            "schema_version = 2\n\n[plugin]\nid = \"pkg-cli-test\"\nname = \"Pkg CLI Test\"\nversion = \"0.1.0\"\ndescription = \"A test app\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"pkg-cli-test.main\"\ndefault = true\n",
         )
         .unwrap();
-        std::fs::write(app_dir.join("main.py"), "# stub\n").unwrap();
+        std::fs::write(plugin_dir.join("main.py"), "# stub\n").unwrap();
         let pkg = dir.path().join("pkg-cli-test-0.1.0.plexipkg");
-        crate::app::package::build_package(&app_dir, Some(&pkg)).unwrap();
+        crate::app::package::build_package(&plugin_dir, Some(&pkg)).unwrap();
 
         let code = super::validate_cli(&pkg.to_string_lossy());
         assert_eq!(code, 0, "a valid .plexipkg must pass validate_cli");
@@ -356,12 +326,7 @@ mod validate_tests {
         // id is missing
         std::fs::write(
             dir.path().join("manifest.toml"),
-            "schema_version = 1\n\n\
-             [app]\n\
-             type = \"app\"\n\
-             name = \"Test App\"\n\
-             entry = \"main.py\"\n\
-             version = \"0.1.0\"\n",
+            "schema_version = 2\n\n[plugin]\nname = \"Test App\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"main.py\"\n\n[[contributes.views]]\nid = \"plugin.main\"\ndefault = true\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();

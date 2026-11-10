@@ -22,7 +22,7 @@ impl crate::app::app_trait::App for ThemeEventRecorder {
     fn ui(
         &mut self,
         _ui: &mut egui::Ui,
-        _ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _ctx: &crate::app::app_trait::ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
     }
@@ -39,14 +39,14 @@ fn add_theme_event_recorder(
 ) -> Arc<Mutex<Vec<crate::protocol::PlexiEvent>>> {
     let events = Arc::new(Mutex::new(Vec::new()));
     let pane_id = app.host.alloc_pane_id();
-    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+    let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(ThemeEventRecorder {
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(ThemeEventRecorder {
             events: events.clone(),
         })),
         workspace_root: "/tmp".into(),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "theme-event-recorder".to_string(),
         name: "theme-event-recorder".to_string(),
         pane_group: None,
@@ -729,14 +729,14 @@ fn navigate_to_activates_ancestor_tabs() {
 /// Install a text editor pane on `path` in window 0.
 fn open_note_in_editor(app: &mut PlexiApp, path: &std::path::Path) {
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::AppPane {
+    let app_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.to_path_buf()),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::app::text_editor_app::TextEditorView::new_for_test_note(path.to_path_buf()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
         pane_group: None,
@@ -813,14 +813,14 @@ fn open_note_entries_ignores_non_note_editor_panes() {
     std::fs::write(&source, "fn main() {}").expect("write source");
 
     let (_tile, pane_id) = app.add_test_pane();
-    let app_pane = crate::host::pane::AppPane {
+    let app_pane = crate::host::pane::ViewPane {
         pip_status: None,
         id: pane_id,
-        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-            crate::app::text_editor_app::TextEditorApp::new(source.clone()),
+        runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+            crate::app::text_editor_app::TextEditorView::new(source.clone()),
         )),
         workspace_root: crate::testing::scratch_context_root("focus"),
-        permissions: crate::app::permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::PluginPermissions::builtin(),
         manifest_id: "text-editor".to_string(),
         name: "Text Editor".to_string(),
         pane_group: None,
@@ -861,14 +861,14 @@ fn palette_finds_open_note_editor_in_a_non_active_window() {
     let pane_id = app.host.alloc_pane_id();
     panes.insert(
         pane_id,
-        crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                crate::app::text_editor_app::TextEditorApp::new_for_test_note(note.clone()),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::app::text_editor_app::TextEditorView::new_for_test_note(note.clone()),
             )),
             workspace_root: crate::testing::scratch_context_root("focus"),
-            permissions: crate::app::permissions::AppPermissions::builtin(),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
             manifest_id: "text-editor".to_string(),
             name: "Text Editor".to_string(),
             pane_group: None,

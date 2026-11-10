@@ -11,7 +11,7 @@ pub use intent::{
     parse_file_explorer_intent, rank_file_explorer_candidates,
 };
 
-use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::app_trait::{App, ViewCommand, ViewRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list;
 use crate::ui::overlay::ModalShell;
@@ -331,7 +331,7 @@ fn classify_key(
     None
 }
 
-pub struct FileBrowserApp {
+pub struct FileBrowserView {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
@@ -360,7 +360,7 @@ pub struct FileBrowserApp {
     pending_operation: Option<PendingFileOperation>,
     rename_path: Option<PathBuf>,
     rename_buffer: String,
-    pending_cmds: Vec<AppCommand>,
+    pending_cmds: Vec<ViewCommand>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
     /// Remembers which entry was selected when leaving a directory,
@@ -423,7 +423,7 @@ fn move_to_system_trash(paths: &[PathBuf]) -> Result<(), String> {
         .map_err(|err| format!("Unable to move {} item(s) to the Trash: {err}", paths.len()))
 }
 
-impl FileBrowserApp {
+impl FileBrowserView {
     pub fn new(cwd: PathBuf) -> Self {
         log::info!("file_browser: opened with middle-elided filenames and tabular counts");
         let mut app = Self {
@@ -662,7 +662,7 @@ impl FileBrowserApp {
                 path.display()
             );
         }
-        self.pending_cmds.push(AppCommand::OpenArtifact {
+        self.pending_cmds.push(ViewCommand::OpenArtifact {
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
             path: path.to_string_lossy().to_string(),
             mode: crate::protocol::ArtifactOpenMode::OpenInPane,
@@ -677,7 +677,7 @@ impl FileBrowserApp {
             "file_browser: explicit cd handoff to linked terminal: '{}'",
             self.cwd.display()
         );
-        self.pending_cmds.push(AppCommand::CdRequest {
+        self.pending_cmds.push(ViewCommand::CdRequest {
             cwd: self.cwd.to_string_lossy().to_string(),
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
         });
@@ -1068,7 +1068,7 @@ impl FileBrowserApp {
             }
             FileExplorerIntent::OpenWithDefault { path } => {
                 log::info!("file_browser: open with default '{}'", path.display());
-                self.pending_cmds.push(AppCommand::OpenArtifact {
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
                     sender_pane_id: 0,
                     path: path.to_string_lossy().to_string(),
                     mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
@@ -1077,7 +1077,7 @@ impl FileBrowserApp {
             }
             FileExplorerIntent::Reveal { path } => {
                 log::info!("file_browser: reveal '{}'", path.display());
-                self.pending_cmds.push(AppCommand::OpenArtifact {
+                self.pending_cmds.push(ViewCommand::OpenArtifact {
                     sender_pane_id: 0,
                     path: path.to_string_lossy().to_string(),
                     mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
@@ -1096,7 +1096,7 @@ impl FileBrowserApp {
                     "file_browser: explicit cd handoff to linked terminal: '{}'",
                     target_dir.display()
                 );
-                self.pending_cmds.push(AppCommand::CdRequest {
+                self.pending_cmds.push(ViewCommand::CdRequest {
                     cwd: target_dir.to_string_lossy().to_string(),
                     sender_pane_id: 0,
                 });
@@ -1556,7 +1556,7 @@ impl FileBrowserApp {
     fn reveal_selected(&mut self) {
         for path in self.selected_paths() {
             log::info!("file_browser: reveal '{}'", path.display());
-            self.pending_cmds.push(AppCommand::OpenArtifact {
+            self.pending_cmds.push(ViewCommand::OpenArtifact {
                 sender_pane_id: 0,
                 path: path.to_string_lossy().to_string(),
                 mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
@@ -1567,7 +1567,7 @@ impl FileBrowserApp {
     fn open_selected_with_default(&mut self) {
         for path in self.selected_paths() {
             log::info!("file_browser: open with default '{}'", path.display());
-            self.pending_cmds.push(AppCommand::OpenArtifact {
+            self.pending_cmds.push(ViewCommand::OpenArtifact {
                 sender_pane_id: 0,
                 path: path.to_string_lossy().to_string(),
                 mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
@@ -2533,7 +2533,7 @@ impl FileBrowserApp {
                     .color(colors.text_dim),
             );
         }
-        if MediaKind::for_path(&entry.path).player_app_id().is_some() {
+        if MediaKind::for_path(&entry.path).player_plugin_id().is_some() {
             ui.add_space(style::SPACE_SM);
             ui.label(
                 egui::RichText::new("Press Enter to open with the existing Plexi media player.")
@@ -3172,7 +3172,7 @@ impl FileBrowserApp {
     }
 
     /// Read `show_hidden` from outside the module (cross-module host tests
-    /// reach `FileBrowserApp` through `AppRuntime::Builtin` + `as_any_mut`,
+    /// reach `FileBrowserView` through `ViewRuntime::Builtin` + `as_any_mut`,
     /// where the private `columns` field is unreachable).
     #[cfg(test)]
     pub(crate) fn show_hidden(&self) -> bool {
@@ -3187,7 +3187,7 @@ impl FileBrowserApp {
     }
 }
 
-impl App for FileBrowserApp {
+impl App for FileBrowserView {
     fn service_external(
         &mut self,
         wake: &std::sync::Arc<dyn crate::app::ui_mailbox::UiWake>,
@@ -3263,7 +3263,7 @@ impl App for FileBrowserApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         let colors = ctx.colors;
@@ -3775,7 +3775,7 @@ impl App for FileBrowserApp {
         }
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.pending_cmds)
     }
 
@@ -3843,7 +3843,7 @@ mod tests {
         }
     }
 
-    fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
+    fn run_handle_key(app: &mut FileBrowserView, events: Vec<Event>) -> bool {
         use crate::app::app_trait::KeyDisposition;
         let ctx = egui::Context::default();
         let modifiers = events
@@ -3867,16 +3867,16 @@ mod tests {
         consumed
     }
 
-    fn make_empty_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_empty_dir_app() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_populated_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_populated_dir_app() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("file.txt"), b"hi").expect("write");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
@@ -3928,7 +3928,7 @@ mod tests {
     fn browsing_never_queues_cd_request() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.take_pending_commands();
 
         app.navigate_into(dir.path().join("sub"));
@@ -3938,7 +3938,7 @@ mod tests {
         assert!(
             !cmds
                 .iter()
-                .any(|c| matches!(c, AppCommand::CdRequest { .. })),
+                .any(|c| matches!(c, ViewCommand::CdRequest { .. })),
             "browsing must not write cd into the linked terminal"
         );
         assert!(!app.should_close);
@@ -3955,7 +3955,7 @@ mod tests {
             .take_pending_commands()
             .into_iter()
             .find_map(|c| match c {
-                AppCommand::CdRequest { cwd, .. } => Some(cwd),
+                ViewCommand::CdRequest { cwd, .. } => Some(cwd),
                 _ => None,
             });
         assert_eq!(
@@ -3986,7 +3986,7 @@ mod tests {
         assert!(!app
             .take_pending_commands()
             .iter()
-            .any(|c| matches!(c, AppCommand::CdRequest { .. })));
+            .any(|c| matches!(c, ViewCommand::CdRequest { .. })));
     }
 
     #[test]
@@ -4191,27 +4191,27 @@ mod tests {
 
     // ── Enter / l / → open non-directory files (#138) ──────────────────────
 
-    fn make_file_only_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_file_only_dir_app() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("readme.txt"), b"hi").expect("write file");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_mixed_dir_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_mixed_dir_app() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("subdir")).expect("create subdir");
         std::fs::write(dir.path().join("notes.txt"), b"hi").expect("write file");
-        let app = FileBrowserApp::new(dir.path().to_path_buf());
+        let app = FileBrowserView::new(dir.path().to_path_buf());
         (app, dir)
     }
 
-    fn make_three_file_app() -> (FileBrowserApp, tempfile::TempDir) {
+    fn make_three_file_app() -> (FileBrowserView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("alpha.txt"), b"a").expect("write alpha");
         std::fs::write(dir.path().join("bravo.txt"), b"b").expect("write bravo");
         std::fs::write(dir.path().join("charlie.txt"), b"c").expect("write charlie");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.columns.sort = SortDescriptor {
             column: ColumnId::Name,
             direction: SortDirection::Asc,
@@ -4321,7 +4321,7 @@ mod tests {
         // for this run, and so it can be cleared afterwards.
         let name = format!("plexi-0786-trash-{}.txt", crate::platform::clock::now_nanos());
         fs::write(dir.path().join(&name), "x").unwrap();
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.select_path(&dir.path().join(&name));
 
         app.request_move_selected_to_trash();
@@ -4349,24 +4349,24 @@ mod tests {
         let mut harness = crate::testing::HostHarness::new();
         harness.app.open_builtin_app_pane(
             Box::new(app),
-            crate::app::permissions::AppPermissions::builtin(),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             Some("split_h"),
             None,
         );
-        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
             harness
                 .app
                 .windows
                 .iter_mut()
                 .flat_map(|w| w.panes.values_mut())
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
-                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
                 })
                 .unwrap()
         }
@@ -4427,7 +4427,7 @@ mod tests {
         std::fs::write(dir.path().join("bravo.png"), b"fake png bytes").expect("write bravo");
         std::fs::write(dir.path().join(".hidden.txt"), b"hidden").expect("write hidden");
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         assert!(app.error.is_none());
         assert_eq!(app.selected, 0);
 
@@ -4473,24 +4473,24 @@ mod tests {
         let mut harness = crate::testing::HostHarness::new();
         harness.app.open_builtin_app_pane(
             Box::new(app),
-            crate::app::permissions::AppPermissions::builtin(),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             Some("split_h"),
             None,
         );
-        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
             harness
                 .app
                 .windows
                 .iter_mut()
                 .flat_map(|w| w.panes.values_mut())
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
-                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
                 })
                 .unwrap()
         }
@@ -4565,24 +4565,24 @@ mod tests {
         let mut harness = crate::testing::HostHarness::new();
         harness.app.open_builtin_app_pane(
             Box::new(app),
-            crate::app::permissions::AppPermissions::builtin(),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             Some("split_h"),
             None,
         );
-        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserApp {
+        fn browser(harness: &mut crate::testing::HostHarness) -> &mut FileBrowserView {
             harness
                 .app
                 .windows
                 .iter_mut()
                 .flat_map(|w| w.panes.values_mut())
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
-                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
                 })
                 .unwrap()
         }
@@ -4678,12 +4678,12 @@ mod tests {
             context_id: ctx_b_id,
         };
         let pane_id = harness.app.host.alloc_pane_id();
-        let app_pane = crate::host::pane::AppPane {
+        let app_pane = crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
-            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app_b)),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(app_b)),
             workspace_root: dir_b.path().to_path_buf(),
-            permissions: crate::app::permissions::AppPermissions::builtin(),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
             manifest_id: "file-browser".to_string(),
             name: "Files".to_string(),
             pane_group: None,
@@ -4719,8 +4719,8 @@ mod tests {
                 .get_mut(&pane_id)
                 .and_then(|p| p.as_app_mut())
                 .and_then(|a| match &mut a.runtime {
-                    crate::host::pane::AppRuntime::Builtin(app) => {
-                        app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                    crate::host::pane::ViewRuntime::Builtin(app) => {
+                        app.as_any_mut().downcast_mut::<FileBrowserView>()
                     }
                     _ => None,
                 })
@@ -4736,8 +4736,8 @@ mod tests {
             .get_mut(&pane_id)
             .and_then(|p| p.as_app_mut())
             .and_then(|a| match &mut a.runtime {
-                crate::host::pane::AppRuntime::Builtin(app) => {
-                    app.as_any_mut().downcast_mut::<FileBrowserApp>()
+                crate::host::pane::ViewRuntime::Builtin(app) => {
+                    app.as_any_mut().downcast_mut::<FileBrowserView>()
                 }
                 _ => None,
             })
@@ -4754,7 +4754,7 @@ mod tests {
         std::fs::write(dir.path().join("cherry.txt"), b"cherry").unwrap();
         std::fs::write(dir.path().join("date.txt"), b"date").unwrap();
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         app.service_external(&wake);
@@ -4822,7 +4822,7 @@ mod tests {
         std::fs::create_dir(&deleted_sub).unwrap();
         std::fs::write(deleted_sub.join("file.txt"), b"hello").unwrap();
 
-        let mut app = FileBrowserApp::new(deleted_sub.clone());
+        let mut app = FileBrowserView::new(deleted_sub.clone());
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
         app.service_external(&wake);
@@ -4842,7 +4842,7 @@ mod tests {
 
         // Nonexistent path on startup
         let nonexistent = temp.path().join("does_not_exist");
-        let mut app2 = FileBrowserApp::new(nonexistent);
+        let mut app2 = FileBrowserView::new(nonexistent);
         assert!(app2.error.is_some());
         assert!(app2.entries.is_empty());
         let _ = app2.service_external(&wake);
@@ -4855,7 +4855,7 @@ mod tests {
         let mut harness = crate::testing::HostHarness::new();
         harness.app.open_builtin_app_pane(
             Box::new(app),
-            crate::app::permissions::AppPermissions::builtin(),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             Some("split_h"),
@@ -4874,11 +4874,11 @@ mod tests {
                 .iter_mut()
                 .flat_map(|w| w.panes.values_mut())
                 .find_map(|pane| {
-                    let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
+                    let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.as_app_mut()?.runtime
                     else {
                         return None;
                     };
-                    let b = app.as_any_mut().downcast_mut::<FileBrowserApp>()?;
+                    let b = app.as_any_mut().downcast_mut::<FileBrowserView>()?;
                     Some(b.selected)
                 })
                 .unwrap()
@@ -4887,8 +4887,8 @@ mod tests {
         harness.run_frames(1);
         assert_eq!(browser_selected(&mut harness), 0);
 
-        // Drive Down arrow via AppRequest::KeyPane (the socket IPC for `plexi pane key <id> down`)
-        harness.inject_ipc(crate::protocol::AppRequest::KeyPane {
+        // Drive Down arrow via HostRequest::KeyPane (the socket IPC for `plexi pane key <id> down`)
+        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
             pane_id,
             key: "down".into(),
             response_file: None,
@@ -4897,7 +4897,7 @@ mod tests {
         assert_eq!(browser_selected(&mut harness), 1);
 
         // Drive Up arrow via KeyPane
-        harness.inject_ipc(crate::protocol::AppRequest::KeyPane {
+        harness.inject_ipc(crate::protocol::HostRequest::KeyPane {
             pane_id,
             key: "up".into(),
             response_file: None,
@@ -4944,7 +4944,7 @@ mod tests {
     fn cli_key_string_enter_opens_selected_media_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("clip.mp4"), b"not a real video").expect("write");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         assert!(!app.entries[0].is_dir, "fixture must select the media file");
 
         let raw = crate::app::key_str_to_egui_raw_input("enter")
@@ -5161,7 +5161,7 @@ mod tests {
         app.columns.show_hidden = true;
 
         let state = app.serialize_state().expect("state");
-        let mut restored = FileBrowserApp::new(app.cwd.clone());
+        let mut restored = FileBrowserView::new(app.cwd.clone());
         restored.restore_state(&state);
 
         assert_eq!(restored.columns.sort.column, ColumnId::Size);
@@ -5208,7 +5208,7 @@ mod tests {
         std::fs::write(dir.path().join("visible.txt"), b"v").expect("write visible");
         std::fs::write(dir.path().join(".hidden"), b"h").expect("write hidden");
         std::fs::create_dir(dir.path().join(".config")).expect("create dot directory");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
 
         assert!(!app.columns.show_hidden, "hidden files are off by default");
         assert!(app.entries.iter().any(|e| e.name == "visible.txt"));
@@ -5271,7 +5271,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("aaa.txt"), b"a").expect("write a");
         std::fs::write(dir.path().join("bbb.txt"), b"b").expect("write b");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         app.columns.sort = SortDescriptor {
             column: ColumnId::Name,
             direction: SortDirection::Asc,
@@ -5376,7 +5376,7 @@ mod tests {
         assert!(app.header_height() > default_header_h);
 
         let state = app.serialize_state().expect("serialize");
-        let mut restored = FileBrowserApp::new(app.cwd.clone());
+        let mut restored = FileBrowserView::new(app.cwd.clone());
         restored.restore_state(&state);
         assert_eq!(restored.font_size, style::TEXT_HINT + 4.0);
 
@@ -5461,7 +5461,7 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert!(matches!(
             &cmds[0],
-            AppCommand::OpenArtifact {
+            ViewCommand::OpenArtifact {
                 path,
                 mode: crate::protocol::ArtifactOpenMode::RevealInFinder,
                 ..
@@ -5483,7 +5483,7 @@ mod tests {
         assert_eq!(cmds.len(), 1);
         assert!(matches!(
             &cmds[0],
-            AppCommand::OpenArtifact {
+            ViewCommand::OpenArtifact {
                 path,
                 mode: crate::protocol::ArtifactOpenMode::OpenWithDefault,
                 ..
@@ -5561,7 +5561,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let nested = dir.path().join("alpha").join("beta");
         std::fs::create_dir_all(&nested).expect("mkdir");
-        let segments = FileBrowserApp::breadcrumb_segments(&nested);
+        let segments = FileBrowserView::breadcrumb_segments(&nested);
         assert!(segments.len() >= 3);
         assert_eq!(segments.last().unwrap().0, "beta");
         assert_eq!(segments.last().unwrap().1, nested);
@@ -5610,7 +5610,7 @@ mod tests {
         std::fs::write(sub.join("alpha.txt"), b"hello").expect("write alpha");
         std::fs::write(dir.path().join("parent_file.txt"), b"parent").expect("write parent");
 
-        let mut app = FileBrowserApp::new(sub.clone());
+        let mut app = FileBrowserView::new(sub.clone());
         // Seed file operation clipboard to verify Cmd+V / Paste in search mode does NOT paste files.
         app.operation_clipboard = Some(FileOperationClipboard {
             operation: FileOperation::Copy,
@@ -5673,7 +5673,7 @@ mod tests {
         )
         .expect("write content_file");
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         let wake: std::sync::Arc<dyn crate::app::ui_mailbox::UiWake> =
             std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
 
@@ -5763,14 +5763,14 @@ mod tests {
         crate::ui::theme::setup_fonts(&ctx);
 
         for (w, h) in [(1100.0_f32, 720.0_f32), (640.0_f32, 520.0_f32)] {
-            let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+            let mut app = FileBrowserView::new(dir.path().to_path_buf());
             let raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))),
                 ..Default::default()
             };
             let _ = ctx.run_ui(raw, |ui| {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
-                    let render_ctx = AppRenderContext {
+                    let render_ctx = ViewRenderContext {
                         colors: &colors,
                         pane_id: 1,
                     };
@@ -5833,7 +5833,7 @@ mod tests {
         std::fs::write(&main_rs, b"fn main() {}\n").expect("write main.rs");
         std::fs::create_dir(&docs_dir).expect("mkdir docs");
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         // Select main.rs explicitly for selection-contextual phrases like "rename to main_v2.rs".
         let main_idx = app
             .entries
@@ -5945,7 +5945,7 @@ mod tests {
         assert_eq!(
             app.selected_entry().map(|e| &e.path),
             Some(&expected_path),
-            "created file must be selected in FileBrowserApp"
+            "created file must be selected in FileBrowserView"
         );
         assert_eq!(app.opened_files.last(), Some(&expected_path));
 
@@ -5953,7 +5953,7 @@ mod tests {
         assert_eq!(cmds.len(), 1, "CreateFile with open_in_editor must queue OpenArtifact");
         assert!(matches!(
             &cmds[0],
-            AppCommand::OpenArtifact {
+            ViewCommand::OpenArtifact {
                 path,
                 mode: crate::protocol::ArtifactOpenMode::OpenInPane,
                 ..
@@ -5967,7 +5967,7 @@ mod tests {
         std::fs::write(dir.path().join("visible.rs"), b"fn main() {}\n").expect("write visible");
         std::fs::write(dir.path().join(".env"), b"SECRET=1\n").expect("write hidden");
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         assert!(!app.columns.show_hidden);
 
         // Press `/` to open the action palette pre-filled with `/`.
@@ -6186,8 +6186,8 @@ mod tests {
 
         let mut h = crate::testing::HostHarness::new();
         h.app.open_builtin_app_pane(
-            Box::new(FileBrowserApp::new(dir.path().to_path_buf())),
-            crate::app::permissions::AppPermissions::builtin(),
+            Box::new(FileBrowserView::new(dir.path().to_path_buf())),
+            crate::app::permissions::PluginPermissions::builtin(),
             dir.path().to_path_buf(),
             None,
             None,
@@ -6239,10 +6239,10 @@ mod tests {
             .panes
             .values_mut()
             .find_map(|p| {
-                let crate::host::pane::AppRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
+                let crate::host::pane::ViewRuntime::Builtin(b) = &mut p.as_app_mut()?.runtime else {
                     return None;
                 };
-                b.as_any_mut().downcast_ref::<FileBrowserApp>()
+                b.as_any_mut().downcast_ref::<FileBrowserView>()
             })
             .map(|fb| fb.columns.show_hidden)
             .expect("file_browser runtime");
@@ -6278,7 +6278,7 @@ mod tests {
         std::fs::write(dir.path().join("alpha.rs"), b"fn alpha() {}\n").expect("write alpha");
         std::fs::write(dir.path().join("beta.txt"), b"beta content\n").expect("write beta");
 
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
         assert!(!app.in_search, "initial Explorer open must start in browsing mode");
 
         // 1. Initial UI pass renders the SearchBar affordance
@@ -6290,7 +6290,7 @@ mod tests {
             ..Default::default()
         };
         let _ = ctx.run_ui(raw, |ui| {
-            let render_ctx = AppRenderContext {
+            let render_ctx = ViewRenderContext {
                 pane_id: 100,
                 colors: &colors,
             };
@@ -6388,7 +6388,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("file.txt"), b"content").expect("write");
-        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        let mut app = FileBrowserView::new(dir.path().to_path_buf());
 
         // Enter search with query that has no matches
         run_handle_key(&mut app, vec![Event::Text("nonexistent_needle".to_string())]);
@@ -6415,7 +6415,7 @@ mod tests {
             ..Default::default()
         };
         let output = ctx.run_ui(raw, |ui| {
-            let render_ctx = AppRenderContext {
+            let render_ctx = ViewRenderContext {
                 pane_id: 200,
                 colors: &colors,
             };

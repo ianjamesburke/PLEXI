@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::app_trait::AppCommand;
+use crate::app::app_trait::ViewCommand;
 use crate::host::context::Window;
 use crate::testing::HostHarness;
 
@@ -310,7 +310,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
 
     assert_eq!(h.app.active_window, 0);
     h.app
-        .dispatch_notify_action_cmds(vec![AppCommand::DeliverNotifyAction {
+        .dispatch_notify_action_cmds(vec![ViewCommand::DeliverNotifyAction {
             pane_id: sender_id,
             notify_id: "n1".into(),
             action_label: "Go".into(),
@@ -1091,7 +1091,7 @@ fn disabled_notifications_never_play_a_cue() {
     );
 }
 
-/// Build the `AppRequest::Notify` a `plexi notify` invocation produces.
+/// Build the `HostRequest::Notify` a `plexi notify` invocation produces.
 /// `peer_pid` stands in for the host-established socket-peer identity
 /// (`None` reproduces an unresolvable/outside-pane caller). Internally
 /// expanded to the single-hop ancestry `resolve_socket_peer_pane` expects —
@@ -1102,8 +1102,8 @@ fn cli_notify_request(
     source_context_id: Option<u64>,
     source_pane_id: Option<u64>,
     peer_pid: Option<u32>,
-) -> crate::protocol::AppRequest {
-    crate::protocol::AppRequest::Notify {
+) -> crate::protocol::HostRequest {
+    crate::protocol::HostRequest::Notify {
         title: "CLI notify".into(),
         body: "body".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1224,7 +1224,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "sticky".into(),
         body: "body".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1260,7 +1260,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
     // A different real pane (its own genuine socket peer) claims to be the
     // owner via the wire fields — those claims must be ignored; only the
     // resolved `peer_pid` decides ownership, and it names a stranger.
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(owner_pane_id), // forged claim
@@ -1274,7 +1274,7 @@ fn cli_notification_timeout_and_sender_scoped_dismissal() {
         "foreign pane must not dismiss, even while claiming to be the owner"
     );
 
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: format!("cli:{owner_pane_id}:sticky"),
         source_context_id: Some(owner_ctx),
         source_pane_id: Some(foreign_pane_id), // forged claim, must be ignored
@@ -1303,7 +1303,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
     // nothing.
     let unresolvable_peer = std::process::id();
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,
@@ -1337,7 +1337,7 @@ fn unresolvable_peer_escalates_notify_and_blocks_dismiss() {
 
     let response_dir = tempfile::tempdir().expect("tempdir");
     let response_file = response_dir.path().join("dismiss-response");
-    h.inject_ipc(crate::protocol::AppRequest::DismissNotification {
+    h.inject_ipc(crate::protocol::HostRequest::DismissNotification {
         notify_id: "unresolvable-peer".into(),
         source_context_id: Some(real_context_id),
         source_pane_id: Some(424_242), // forged, irrelevant
@@ -1370,7 +1370,7 @@ fn forged_source_pane_is_ignored_in_favor_of_resolved_peer() {
     };
     assert_ne!(real_ctx, forged_ctx);
 
-    h.inject_ipc(crate::protocol::AppRequest::Notify {
+    h.inject_ipc(crate::protocol::HostRequest::Notify {
         title: "t".into(),
         body: "b".into(),
         kind: crate::protocol::NotifyKind::Message,

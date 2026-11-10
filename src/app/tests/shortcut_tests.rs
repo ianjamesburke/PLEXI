@@ -127,7 +127,7 @@ fn binding_table_is_populated() {
         let _ = match e.context {
             BindingContext::Global => 0,
             BindingContext::Normal => 1,
-            BindingContext::AppActive => 2,
+            BindingContext::ViewActive => 2,
         };
     }
 }
@@ -196,7 +196,7 @@ fn selection_chords_replace_tab_and_context_defaults() {
     for action in [
         Action::NextContext,
         Action::PrevContext,
-        Action::NavBackApp,
+        Action::NavBackView,
         Action::FocusHistoryForward,
     ] {
         assert!(!table.iter().any(|entry| entry.action == action));
@@ -212,7 +212,7 @@ fn selection_chords_replace_tab_and_context_defaults() {
     for action in [
         Action::NextContext,
         Action::PrevContext,
-        Action::NavBackApp,
+        Action::NavBackView,
         Action::FocusHistoryForward,
     ] {
         assert!(table

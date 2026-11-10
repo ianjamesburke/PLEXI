@@ -1,7 +1,7 @@
 //! Canvas Terminal Binding Primitives dispatch (#78).
 //!
 //! The primitives are routed by `host::wasm_pane::route_command` into
-//! `AppCommand` variants and end up here once the parent `PlexiApp` drains
+//! `ViewCommand` variants and end up here once the parent `PlexiApp` drains
 //! the deferred queue. Implementation lives in this module rather than
 //! `app/mod.rs` to keep the surface readable — the binding-primitive layer
 //! is conceptually one feature, not a scattering of unrelated cases.
@@ -292,7 +292,7 @@ impl PlexiApp {
             .and_then(|p| p.as_app())
             .map(|a| a.workspace_root.clone());
         // workspace_root is None for builtin apps (which run with trusted
-        // AppPermissions::builtin()) — they bypass the path check intentionally.
+        // PluginPermissions::builtin()) — they bypass the path check intentionally.
         // For process apps the root is always set; None here means the pane was
         // already removed (race between close and dispatch), so we allow through
         // rather than silently dropping a legitimate late-arriving command.
@@ -371,8 +371,8 @@ impl PlexiApp {
             return;
         }
         use crate::app::app_trait::App;
-        let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
-        let perms = crate::app::permissions::AppPermissions::builtin();
+        let app: Box<dyn App> = Box::new(crate::file_browser::FileBrowserView::new(cwd.clone()));
+        let perms = crate::app::permissions::PluginPermissions::builtin();
         self.open_builtin_app_pane(
             app,
             perms,
@@ -470,7 +470,7 @@ impl PlexiApp {
 
         // (c) builtin media players.
         if let Some(id) =
-            crate::file_browser::MediaKind::for_path(std::path::Path::new(path)).player_app_id()
+            crate::file_browser::MediaKind::for_path(std::path::Path::new(path)).player_plugin_id()
         {
             if self.launch_app_with_path(id, path) {
                 log::info!("open: '{path}' → builtin media player '{id}'");

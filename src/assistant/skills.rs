@@ -22,13 +22,13 @@ impl SkillSource {
 /// Skills compiled into the binary so a fresh install has them from first
 /// launch. Same SKILL.md format as on-disk skills; a user or workspace skill
 /// with the same name overrides a builtin.
-const BUILTIN_SKILLS: &[&str] = &[include_str!("builtin/build-plexi-app.md")];
+const BUILTIN_SKILLS: &[&str] = &[include_str!("builtin/build-plexi-plugin.md")];
 
 /// Name of the builtin app-build skill (frontmatter `name:` in
-/// `builtin/build-plexi-app.md`). Callers that need to special-case an
+/// `builtin/build-plexi-plugin.md`). Callers that need to special-case an
 /// app-build turn (e.g. injecting the SDK reference, raising the tool-call
 /// cap) match on this instead of repeating the literal.
-pub const APP_BUILD_SKILL_NAME: &str = "build-plexi-app";
+pub const APP_BUILD_SKILL_NAME: &str = "build-plexi-plugin";
 
 /// Generated, always-current SDK API reference (`tools/gen_sdk_docs.py` /
 /// `just gen-sdk-docs`, drift-checked by `just check-sdk-docs`). Injected into
@@ -148,7 +148,7 @@ impl SkillRegistry {
 const BUILD_VERBS: &[&str] = &["build", "make", "create", "write", "code"];
 const BUILD_NOUNS: &[&str] = &[
     "app",
-    "apps",
+    "plugins",
     "game",
     "games",
     "tool",
@@ -454,14 +454,14 @@ mod tests {
                 .matching_enabled("build me a small timer app", &[])
                 .unwrap()
                 .name,
-            "build-plexi-app"
+            "build-plexi-plugin"
         );
         assert_eq!(
             registry
                 .matching_enabled("can you make a tic tac toe game", &[])
                 .unwrap()
                 .name,
-            "build-plexi-app"
+            "build-plexi-plugin"
         );
     }
 
@@ -469,14 +469,14 @@ mod tests {
     fn workspace_skill_overrides_builtin_of_same_name() {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(workspace.join(".plexi/skills/build-plexi-app")).unwrap();
+        std::fs::create_dir_all(workspace.join(".plexi/skills/build-plexi-plugin")).unwrap();
         std::fs::write(
-            workspace.join(".plexi/skills/build-plexi-app/SKILL.md"),
-            "---\nname: build-plexi-app\ndescription: workspace override\n---\noverride body",
+            workspace.join(".plexi/skills/build-plexi-plugin/SKILL.md"),
+            "---\nname: build-plexi-plugin\ndescription: workspace override\n---\noverride body",
         )
         .unwrap();
         let registry = SkillRegistry::load(root.path(), &workspace);
-        let skill = registry.get("build-plexi-app").unwrap();
+        let skill = registry.get("build-plexi-plugin").unwrap();
         assert_eq!(skill.source, SkillSource::Workspace);
         assert_eq!(skill.instructions, "override body");
     }

@@ -17,8 +17,8 @@ use crate::broker::{
     ActorScope, ActorType, Decision, ExactBinding, GrantDuration, GrantRecord, GrantSource,
     ResourceScope, TargetType,
 };
-use crate::plexi_ai::tool_dispatch::{self, AppEventSender, DispatchScope, ToolCallResult, ToolDispatcher};
-use crate::protocol::{AiTool, AppRequest};
+use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, DispatchScope, ToolCallResult, ToolDispatcher};
+use crate::protocol::{AiTool, HostRequest};
 use crate::testing::HostHarness;
 
 fn play(rev: i64, op: &str, mv: &str, game: &str) -> serde_json::Value {
@@ -30,7 +30,7 @@ fn play(rev: i64, op: &str, mv: &str, game: &str) -> serde_json::Value {
     })
 }
 
-fn events_since(start: usize) -> Vec<crate::host::app_timeline::AppEventRecord> {
+fn events_since(start: usize) -> Vec<crate::host::app_timeline::PluginEventRecord> {
     let timeline = crate::host::app_timeline::global();
     let timeline = timeline.lock().unwrap();
     timeline.events().iter().skip(start).cloned().collect()
@@ -130,9 +130,9 @@ fn socket_call_pane(
     input: serde_json::Value,
 ) -> serde_json::Value {
     let reply = h.workspace_root().join(format!("socket-{}.json", uuid::Uuid::new_v4()));
-    let request = AppRequest::CallAppTool {
+    let request = HostRequest::CallPluginTool {
         wait_approved: false,
-        app_id: "chess".to_string(),
+        plugin_id: "chess".to_string(),
         tool: "chess.play".to_string(),
         input_json: input.to_string(),
         caller_pane_id: caller,
@@ -208,7 +208,7 @@ fn reply_is_terminal(reply: &Path) -> bool {
 fn human_e7e5(h: &mut HostHarness, pane: u64) {
     for key in ["up", "up", "up", "up", "up", "enter", "down", "down", "enter"] {
         let response = h.workspace_root().join(format!("key-{key}-{}.json", uuid::Uuid::new_v4()));
-        h.inject_ipc(AppRequest::KeyPane {
+        h.inject_ipc(HostRequest::KeyPane {
             pane_id: pane,
             key: key.to_string(),
             response_file: Some(response.to_string_lossy().to_string()),
@@ -615,14 +615,14 @@ fn assert_waiting_app_call(choice: ApprovalChoice) {
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: serde_json::json!({"type":"object"}),
         timeout_ms: Some(1000), read_only: false,
-    }], AppEventSender::Channel(tx), crate::host::scope::ScopeOrigin {
+    }], PluginEventSender::Channel(tx), crate::host::scope::ScopeOrigin {
         context_id, context_root: workspace.clone(), window_id: 1,
-        pane_id: target, app_id: Some("wait-probe".into()),
+        pane_id: target, plugin_id: Some("wait-probe".into()),
     });
     let reply = workspace.join("wait-reply.json");
     let input = r#"{"text":"Buy groceries"}"#;
-    let request: AppRequest = serde_json::from_value(serde_json::json!({
-        "type":"call_app_tool", "app_id":"wait-probe", "tool":"probe.add",
+    let request: HostRequest = serde_json::from_value(serde_json::json!({
+        "type":"call_plugin_tool", "plugin_id":"wait-probe", "tool":"probe.add",
         "input_json":input, "caller_pane_id":caller, "call_credential":credential,
         "peer_ancestry":[std::process::id()], "target_pane_id":target,
         "wait_approved":true, "response_file":reply,
@@ -700,13 +700,13 @@ fn all_dispatchers_require_monitor() {
             timeout_ms: Some(1_000),
             read_only: true,
         }],
-        AppEventSender::Channel(tx),
+        PluginEventSender::Channel(tx),
         crate::host::scope::ScopeOrigin {
             context_id,
             context_root: workspace.clone(),
             window_id: 1,
             pane_id: 910_101,
-            app_id: Some("probe".to_string()),
+            plugin_id: Some("probe".to_string()),
         },
     );
     // AgentHost::gated_dispatcher is private and builds this same constructor.
@@ -724,7 +724,7 @@ fn all_dispatchers_require_monitor() {
         actor_scope: ActorScope::User,
         trust_origin: "host".to_string(),
         workspace_root: workspace.clone(),
-        target_type: TargetType::AppConnector,
+        target_type: TargetType::PluginConnector,
         target_id: "probe.ping".to_string(),
         resource_scope: ResourceScope::Workspace,
         resource_id: None,
@@ -762,9 +762,9 @@ fn all_dispatchers_require_monitor() {
 
     let credential = monitor().issue_credential(Some(1), context_id, &workspace, "pane:1");
     let reply = h.workspace_root().join("app-call-blocked.json");
-    h.inject_ipc(AppRequest::CallAppTool {
+    h.inject_ipc(HostRequest::CallPluginTool {
         wait_approved: false,
-        app_id: "probe".to_string(),
+        plugin_id: "probe".to_string(),
         tool: "probe.ping".to_string(),
         input_json: args.to_string(),
         caller_pane_id: Some(1),
@@ -906,7 +906,7 @@ fn app_call_and_mcp_are_gated_and_audited() {
     assert_eq!(commits_for(start, "ungated-bc4"), 0);
     assert!(
         mon.audit_records().iter().any(|fact| fact.kind == "ask" && fact.actor == format!("pane:{pane}")),
-        "app call must write an ask audit row: {:?}",
+        "plugin call must write an ask audit row: {:?}",
         mon.audit_records()
     );
     assert!(
@@ -923,7 +923,7 @@ fn app_call_and_mcp_are_gated_and_audited() {
         "MCP must write an ask audit row: {:?}",
         mon.audit_records()
     );
-    log::info!("permission_gate: app call and MCP asked and audited");
+    log::info!("permission_gate: plugin call and MCP asked and audited");
 }
 
 #[test]
@@ -932,7 +932,7 @@ fn second_chess_pane_routes_by_instance() {
     isolate_tool_context(&mut h);
     let first = h.launch_repo_app("apps/chess", &[]);
     let again = h.launch_repo_app("apps/chess", &[]);
-    assert_eq!(again, first, "app open chess focuses the open board");
+    assert_eq!(again, first, "view open chess focuses the open board");
     assert_eq!(chess_panes(&h).len(), 1, "one chess pane per context");
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps/chess");
@@ -1075,7 +1075,7 @@ fn socket_and_synthetic_resolve_are_refused() {
         context_id: 1,
         package_id: "chess",
         instance_id: 1,
-        target_type: TargetType::AppConnector,
+        target_type: TargetType::PluginConnector,
     }) {
         Admission::Required { pending_request_id } => pending_request_id,
         Admission::Proceed { .. } => panic!("expected a pending ask, grant matched"),
@@ -1083,7 +1083,7 @@ fn socket_and_synthetic_resolve_are_refused() {
     };
 
     let resolve_path = workspace.join("resolve.json");
-    h.inject_ipc(AppRequest::ResolvePermissionRequest {
+    h.inject_ipc(HostRequest::ResolvePermissionRequest {
         pending_request_id: pending_id.clone(),
         choice: "always".to_string(),
         response_file: resolve_path.to_string_lossy().to_string(),
@@ -1097,7 +1097,7 @@ fn socket_and_synthetic_resolve_are_refused() {
     assert!(mon.show_pending(&pending_id).is_some(), "resolve leaves the pending");
 
     let key_path = workspace.join("key.json");
-    h.inject_ipc(AppRequest::KeyPane {
+    h.inject_ipc(HostRequest::KeyPane {
         pane_id: assistant,
         key: "enter".to_string(),
         response_file: Some(key_path.to_string_lossy().to_string()),
@@ -1122,7 +1122,7 @@ fn socket_and_synthetic_resolve_are_refused() {
         pending_request_id: pending_id.clone(),
     });
     let click_path = workspace.join("click.json");
-    h.inject_ipc(AppRequest::ClickPane {
+    h.inject_ipc(HostRequest::ClickPane {
         pane_id: assistant,
         x: 12.0,
         y: 8.0,
@@ -1170,12 +1170,12 @@ fn list_app_tools_snapshots_live_registry_for_context() {
         crate::plexi_ai::tool_dispatch::pane_has_registered_tools(pane)
     });
 
-    let query = |h: &mut HostHarness, app_id: Option<&str>, context_id: Option<u64>| -> serde_json::Value {
+    let query = |h: &mut HostHarness, plugin_id: Option<&str>, context_id: Option<u64>| -> serde_json::Value {
         let reply = h
             .workspace_root()
             .join(format!("app-tools-{}.json", uuid::Uuid::new_v4()));
-        let req = AppRequest::ListAppTools {
-            app_id: app_id.map(str::to_string),
+        let req = HostRequest::ListPluginTools {
+            plugin_id: plugin_id.map(str::to_string),
             context_id,
             caller_pane_id: Some(pane),
             caller_context_id: Some(ctx),
@@ -1203,7 +1203,7 @@ fn list_app_tools_snapshots_live_registry_for_context() {
         .find(|t| t["name"] == "chess.play")
         .expect("chess.play in live tool registry snapshot");
     assert_eq!(play["provider_name"], "chess.play");
-    assert_eq!(play["app_id"], "chess");
+    assert_eq!(play["plugin_id"], "chess");
     assert_eq!(play["pane_id"], pane);
     assert_eq!(play["context_id"], ctx);
     assert!(!play["description"].as_str().unwrap_or("").is_empty());
@@ -1238,7 +1238,7 @@ fn create_agent_approve_mints_persisted_pane_scoped_grant_and_retry_succeeds() {
             let reply = h
                 .workspace_root()
                 .join(format!("create-agent-{}.json", uuid::Uuid::new_v4()));
-            let req = AppRequest::AgentsApi {
+            let req = HostRequest::AgentsApi {
                 op: "create_agent".to_string(),
                 payload: serde_json::json!({
                     "workspace": h.workspace_root(),
@@ -1393,7 +1393,7 @@ fn human_pane_creates_agent_in_own_context_and_spawned_agent_is_narrowed_by_gran
         let reply = h
             .workspace_root()
             .join(format!("agents-api-{op}-{}.json", uuid::Uuid::new_v4()));
-        let req = AppRequest::AgentsApi {
+        let req = HostRequest::AgentsApi {
             op: op.to_string(),
             payload,
             response_file: reply.to_string_lossy().to_string(),
@@ -1566,7 +1566,7 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
         let reply = h
             .workspace_root()
             .join(format!("ctx-scope-{op}-{}.json", uuid::Uuid::new_v4()));
-        let req = AppRequest::AgentsApi {
+        let req = HostRequest::AgentsApi {
             op: op.to_string(),
             payload,
             response_file: reply.to_string_lossy().to_string(),
@@ -1637,7 +1637,7 @@ fn human_pane_has_no_authority_over_other_or_nested_context_secrets_and_grants()
             &format!("secret-get-0888-{}", uuid::Uuid::new_v4()),
             "json",
         ));
-        let req = AppRequest::PaneSecretGet {
+        let req = HostRequest::PaneSecretGet {
             name: secret_name.to_string(),
             global: false,
             workspace_root: Some(target_ws.clone()),
@@ -1769,7 +1769,7 @@ fn agent_spawned_pane_does_not_get_human_authority() {
         let reply = h
             .workspace_root()
             .join(format!("agent-child-agent-{}.json", uuid::Uuid::new_v4()));
-        let req = AppRequest::AgentsApi {
+        let req = HostRequest::AgentsApi {
             op: "create_agent".to_string(),
             payload: serde_json::json!({
                 "workspace": h.workspace_root(),

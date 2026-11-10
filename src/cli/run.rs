@@ -1,4 +1,4 @@
-use super::{is_executable, print_tip, PlexiCommands, UserCommandScope, APP_ID};
+use super::{is_executable, print_tip, PlexiCommands, UserCommandScope, PLUGIN_ID};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +36,8 @@ pub enum ParsedStep {
 
 const PLEXI_SUBCOMMANDS: &[&str] = &[
     "pane",
-    "app",
+    "plugin",
+    "view",
     "context",
     "workspace",
     "secret",
@@ -381,7 +382,7 @@ pub fn dispatch_cli_step(
     cwd: Option<&std::path::Path>,
     env_vars: &[(String, String)],
 ) -> i32 {
-    use crate::cli::args::{AppCmd, Cli, Commands, PaneCmd};
+    use crate::cli::args::{ViewCmd, Cli, Commands, PaneCmd};
     use clap::Parser;
 
     let parsed = match Cli::try_parse_from(argv) {
@@ -556,9 +557,9 @@ pub fn dispatch_cli_step(
             }
             _ => spawn_plexi_subcommand(argv, cwd, env_vars),
         },
-        Some(Commands::App {
+        Some(Commands::View {
             cmd:
-                AppCmd::Open {
+                ViewCmd::Open {
                     type_id,
                     mcp,
                     cli: cli_flag,
@@ -1012,7 +1013,7 @@ pub fn run_command_for_root_from_pane(
                 }
                 Some((ws_id, router)) => {
                     for key in &secret_keys {
-                        match resolve(&ws_id, APP_ID, key, &router, store) {
+                        match resolve(&ws_id, PLUGIN_ID, key, &router, store) {
                             ResolveOutcome::Found(value) => {
                                 resolved.push((key.to_string(), value));
                             }

@@ -5,7 +5,7 @@
 //! variable at spawn. A pane outside the directory does not. Changing cwd
 //! later does not change the environment.
 //!
-//! Agents and app tools do not receive the value unless a permission-gate
+//! Agents and plugin tools do not receive the value unless a permission-gate
 //! grant covers that actor, the secret name, and the folder. The audit record
 //! carries the name and the folder, never the value.
 

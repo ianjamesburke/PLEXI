@@ -38,7 +38,7 @@ impl QuitCoordinator {
     }
 }
 
-/// Process-local monotonic clock. Input reception is the app callback boundary,
+/// Process-local monotonic clock. Input reception is the plugin callback boundary,
 /// not physical input or compositor presentation. External observers measure
 /// those boundaries and actual process death using the logged PID.
 pub(crate) fn trace(phase: &str) {
@@ -643,7 +643,7 @@ mod tests {
         h.add_test_pane();
         h.app.workspace_dirty = true;
         h.app.last_workspace_save = Instant::now() - Duration::from_secs(2);
-        h.inject_ipc(crate::protocol::AppRequest::Shutdown);
+        h.inject_ipc(crate::protocol::HostRequest::Shutdown);
         h.hidden_frame(); // coordinator saves and hides, but does not exit yet
         let path = crate::workspace::workspace_path_in(h.profile_dir());
         assert!(path.exists());

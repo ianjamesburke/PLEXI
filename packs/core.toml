@@ -1,47 +1,47 @@
-schema_version = 1
+schema_version = 2
 reseed = "always"
 
-[[app]]
+[[plugin]]
 id      = "sudoku"
 source  = "local:sudoku"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "logs"
 source  = "local:logs"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "todo"
 source  = "local:todo"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "calc"
 source  = "local:calc"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "balls"
 source  = "local:balls"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "snake"
 source  = "local:snake"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "breakout"
 source  = "local:breakout"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "tetris"
 source  = "local:tetris"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "github-issues"
 source  = "local:github-issues"
 version = "bundled"

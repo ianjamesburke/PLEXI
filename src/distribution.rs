@@ -164,7 +164,7 @@ fn seed_profile_from(resources: &std::path::Path, profile: &std::path::Path) -> 
     )?;
     copy_tree(
         &resources.join("maintained-apps"),
-        &profile.join("apps"),
+        &profile.join("plugins"),
         true,
     )?;
     std::fs::write(stamp, env!("PLEXI_BUILD_ID"))

@@ -1,18 +1,24 @@
-schema_version = 1
+schema_version = 2
 
-[app]
+[launch]
+
+[plugin]
 id = "com.plexi.daw-engine-poc"
-type = "wasm"
 name = "DAW Engine"
-entry = "../../../target/wasm32-wasip1/release/daw_engine_poc.wasm"
 version = "0.1.0"
 description = "DAW POC. Keyboard-complete timeline / mixer / transport UI (stint 0516) over the plexi-daw-model edit model, rendered in real time and offline through one shared render path (stint 0515)."
 
-[app.capabilities]
+[plugin.capabilities]
 capabilities = ["audio.playback", "fs.pick"]
 
-[app.capabilities.wasm]
+[plugin.capabilities.wasm]
 required = ["state:read-write"]
 optional = []
 
-[launch]
+[runtime]
+kind = "wasm"
+entry = "../../../target/wasm32-wasip1/release/daw_engine_poc.wasm"
+
+[[contributes.views]]
+id = "com.plexi.daw-engine-poc.main"
+default = true

@@ -46,7 +46,7 @@ impl MediaKind {
 
     /// Manifest id of the in-app player for this media kind. `None`
     /// means "fall through to the system default opener".
-    pub(crate) fn player_app_id(self) -> Option<&'static str> {
+    pub(crate) fn player_plugin_id(self) -> Option<&'static str> {
         match self {
             Self::Image => Some("image-viewer"),
             Self::Video => Some("video-player"),
@@ -562,7 +562,7 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Image"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("image-viewer"),
                 "image routes to image-viewer app"
             );
@@ -579,7 +579,7 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Video"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("video-player"),
                 "video routes to video-player app"
             );
@@ -596,7 +596,7 @@ mod media_bridge_tests {
                 "extension {ext} should classify as Audio"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 Some("audio-player"),
                 "audio routes to audio-player app"
             );
@@ -619,7 +619,7 @@ mod media_bridge_tests {
                 "{path} should fall through to system default"
             );
             assert_eq!(
-                MediaKind::for_path(&p).player_app_id(),
+                MediaKind::for_path(&p).player_plugin_id(),
                 None,
                 "{path} should not route to an in-app player"
             );

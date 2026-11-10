@@ -15,26 +15,26 @@ agent report
 agent status
 ai
 ai doctor
-app
-app action
-app check
-app freeze
-app info
-app init
-app inspect
-app install
-app list
-app open
-app package
-app prune
-app render
-app state
-app state get
-app state set
-app test
-app uninstall
-app update
-app validate
+plugin
+pane action
+plugin check
+plugin freeze
+plugin info
+plugin init
+plugin inspect
+plugin install
+plugin list
+view open
+plugin package
+plugin prune
+view render
+plugin state
+plugin state get
+plugin state set
+plugin test
+plugin uninstall
+plugin update
+plugin validate
 completions
 config
 config check
@@ -175,11 +175,10 @@ debug session
 debug session list
 debug session show
 # app call: skill "Inspect apps and request human decisions" and the pi-plexi package
-app call
+plugin call
 # app tools: same callers as `app call`
-app tools
+plugin tools
 # app trust: the scene runner pre-approves raw WASM apps with it
-app trust
 # agent done: worker contract injected into every spawned session, GUI and palette included
 agent done
 # agent ask: same worker contract as `agent done`
@@ -194,3 +193,5 @@ agent call
 agent message
 # agent handoff: same callers as `agent call`
 agent handoff
+view
+view list

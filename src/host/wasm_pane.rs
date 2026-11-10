@@ -1,4 +1,4 @@
-// WasmPane — the pane-level driver around a `WasmApp`.
+// WasmPane — the pane-level driver around a `WasmView`.
 //
 // Implements the synchronous Elm effect loop: external input (keys, mouse,
 // resize, focus) is queued, `tick` fires due timers and drains the queue, and
@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::app::app_trait::KeyDisposition;
 use crate::app::permissions::{PermissionState, PermissionStore};
-use crate::host::app_timeline::{AppTimeline, EmittedEvent};
+use crate::host::app_timeline::{PluginTimeline, EmittedEvent};
 use crate::host::services::{
     default_picker_service, FilePickOutcome, FilePickRequest, HttpResponse as HostHttpResponse,
     NetService, PickerService, UreqNetService,
@@ -27,13 +27,13 @@ use crate::host::services::{
 use crate::media::audio::{start_output_stream, OutputSession};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, LiveAiBroker};
 use crate::protocol::{
-    parse_enum, AiMessage as ProtocolAiMessage, AppEventActor,
+    parse_enum, AiMessage as ProtocolAiMessage, PluginEventActor,
     EventStreamDecl as ProtocolEventStreamDecl, ModelTier, TriggerMode,
 };
 use crate::ui::theme::Colors;
 
 use super::wasm_app::bindings::plexi::platform::types::{
-    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, AppEventEvent, DeclareEventStreamsEffect,
+    AiQueryEffect, AiResponseEvent, AiStreamChunkEvent, PluginEventEvent, DeclareEventStreamsEffect,
     DeclareToolsEffect, EmitEventEffect, EventSubscriptionResultEvent,
     EventUnsubscriptionResultEvent, FilePickedEvent, FilePickerMode as WitFilePickerMode,
     FileReadEffect, FileWriteEffect, HttpFetchEffect, HttpResponse as WitHttpResponse,
@@ -43,7 +43,7 @@ use super::wasm_app::bindings::plexi::platform::types::{
 };
 use super::wasm_app::{
     Effect, InputEvent, KeyEvent, Modifiers, MouseButton, MouseEvent, Point, StateSnapshot,
-    SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmApp,
+    SurfaceEvent, SystemStats, UiNodeData, UiTree, WasmView,
 };
 use super::wasm_render::RenderResult;
 
@@ -74,13 +74,13 @@ pub enum WasmHostEffect {
         icon: Option<String>,
     },
     Spawn {
-        app_id: String,
+        plugin_id: String,
         layout: Option<String>,
         args: Vec<String>,
     },
     SubscribeEvents {
         request_id: String,
-        app_id: String,
+        plugin_id: String,
         event_names: Vec<String>,
         payload_mode: crate::protocol::PayloadMode,
         trigger_mode: crate::protocol::TriggerMode,
@@ -438,7 +438,7 @@ struct AudioOut {
 }
 
 pub struct WasmPane {
-    app: WasmApp,
+    app: WasmView,
     stats: Box<dyn SystemStatsSource>,
     queue: VecDeque<InputEvent>,
     timers: Vec<Timer>,
@@ -456,7 +456,7 @@ pub struct WasmPane {
     deferred_ai_queries: VecDeque<AiQueryEffect>,
     net: Arc<dyn NetService>,
     ai_broker: Arc<dyn AiBroker>,
-    app_timeline: Arc<Mutex<AppTimeline>>,
+    app_timeline: Arc<Mutex<PluginTimeline>>,
     pane_id: u64,
     /// Host-established context this app instance lives in (stint 0724 Phase
     /// D) — stamped onto every stream this pane declares/emits on. `0`
@@ -474,12 +474,12 @@ pub struct WasmPane {
     external_inputs: Arc<ArrayQueue<InputEvent>>,
     /// Current display scale, set by the live pane every frame. Surfaces
     /// allocate at physical resolution (`logical × ppp`); headless contexts
-    /// (tests, `plexi app render`) keep the 1.0 default.
+    /// (tests, `plexi view render`) keep the 1.0 default.
     pixels_per_point: f32,
 }
 
 impl WasmPane {
-    pub fn new(app: WasmApp, stats: Box<dyn SystemStatsSource>) -> Self {
+    pub fn new(app: WasmView, stats: Box<dyn SystemStatsSource>) -> Self {
         let (http_tx, http_rx) = mpsc::channel();
         let (picker_tx, picker_rx) = mpsc::channel();
         WasmPane {
@@ -568,7 +568,7 @@ impl WasmPane {
     }
 
     #[cfg(test)]
-    fn set_app_timeline(&mut self, app_timeline: Arc<Mutex<AppTimeline>>) {
+    fn set_app_timeline(&mut self, app_timeline: Arc<Mutex<PluginTimeline>>) {
         self.app_timeline = app_timeline;
     }
 
@@ -725,7 +725,7 @@ impl WasmPane {
         if remember {
             if let Some(store) = &mut self.permission_store {
                 store.set_wasm(
-                    self.app.app_id(),
+                    self.app.plugin_id(),
                     &self.permission_workspace_root,
                     &capability_id,
                     if granted {
@@ -736,8 +736,8 @@ impl WasmPane {
                 );
                 store.save();
                 log::info!(
-                    "wasm capability: remembered app_id={} capability={} granted={}",
-                    self.app.app_id(),
+                    "wasm capability: remembered plugin_id={} capability={} granted={}",
+                    self.app.plugin_id(),
                     capability_id,
                     granted
                 );
@@ -749,7 +749,7 @@ impl WasmPane {
             };
             crate::broker::gate::PermissionMonitor::for_profile(&crate::config::config_dir())
                 .grant_capability_id(
-                    self.app.app_id(),
+                    self.app.plugin_id(),
                     &self.permission_workspace_root,
                     &capability_id,
                     decision,
@@ -757,8 +757,8 @@ impl WasmPane {
                 );
         }
         log::info!(
-            "wasm capability: decision app_id={} capability={} granted={}",
-            self.app.app_id(),
+            "wasm capability: decision plugin_id={} capability={} granted={}",
+            self.app.plugin_id(),
             capability_id,
             granted
         );
@@ -770,7 +770,7 @@ impl WasmPane {
             .then_some(self.permission_workspace_root.as_path());
         crate::host::event_log::emit_scoped(
             crate::host::event_log::HostEvent::PermissionDecision {
-                app_id: self.app.app_id().to_string(),
+                plugin_id: self.app.plugin_id().to_string(),
                 capability: capability_id,
                 granted,
                 timestamp: crate::host::event_log::now_timestamp(),
@@ -1175,7 +1175,7 @@ impl WasmPane {
             Effect::Spawn(req) => self.queue_host_effect(
                 "spawn.app",
                 WasmHostEffect::Spawn {
-                    app_id: req.app_id,
+                    plugin_id: req.plugin_id,
                     layout: req.layout,
                     args: req.args,
                 },
@@ -1282,15 +1282,15 @@ impl WasmPane {
     ) {
         if self.has_session_grant(capability_id) {
             log::info!(
-                "wasm effect: app_id={} capability={} effect={effect:?}",
-                self.app.app_id(),
+                "wasm effect: plugin_id={} capability={} effect={effect:?}",
+                self.app.plugin_id(),
                 capability_id
             );
             self.pending_host_effects.push_back(effect);
         } else {
             log::info!(
-                "wasm effect: denied app_id={} capability={capability_id}",
-                self.app.app_id()
+                "wasm effect: denied plugin_id={} capability={capability_id}",
+                self.app.plugin_id()
             );
             self.queue
                 .push_back(denied(format!("capability '{capability_id}' is required")));
@@ -1299,8 +1299,8 @@ impl WasmPane {
 
     fn request_capability(&mut self, capability_id: String) {
         log::info!(
-            "wasm capability: request app_id={} capability={}",
-            self.app.app_id(),
+            "wasm capability: request plugin_id={} capability={}",
+            self.app.plugin_id(),
             capability_id
         );
         if self.session_grants.contains(&capability_id) {
@@ -1406,7 +1406,7 @@ impl WasmPane {
         };
         let broker = Arc::clone(&self.ai_broker);
         let tx = self.http_tx.clone();
-        let app_id = self.app.app_id().to_string();
+        let plugin_id = self.app.plugin_id().to_string();
         let request_id = req.request_id.clone();
         let messages = req
             .messages
@@ -1417,7 +1417,7 @@ impl WasmPane {
             })
             .collect::<Vec<_>>();
         std::thread::Builder::new()
-            .name(format!("wasm-ai-query-{app_id}-{request_id}"))
+            .name(format!("wasm-ai-query-{plugin_id}-{request_id}"))
             .spawn(move || {
                 let chunk_tx = tx.clone();
                 let chunk_request_id = request_id.clone();
@@ -1450,7 +1450,7 @@ impl WasmPane {
                 };
                 let response = broker.dispatch(
                     AiBrokerRequest {
-                        app_id,
+                        plugin_id,
                         model_mode: crate::plexi_ai::broker::ModelMode::from_wasm_tier(model_tier),
                         concrete_model: None,
                         reasoning_effort: None,
@@ -1500,7 +1500,7 @@ impl WasmPane {
         }
         self.app_timeline.lock().unwrap().declare_streams(
             self.context_id,
-            self.app.app_id(),
+            self.app.plugin_id(),
             streams,
         )
     }
@@ -1513,7 +1513,7 @@ impl WasmPane {
             ),
             None => None,
         };
-        let actor = parse_enum::<AppEventActor>("app event actor", &req.actor)?;
+        let actor = parse_enum::<PluginEventActor>("app event actor", &req.actor)?;
         let suggested_trigger = req
             .suggested_trigger
             .as_deref()
@@ -1537,7 +1537,7 @@ impl WasmPane {
         };
         let outcome = self.app_timeline.lock().unwrap().record_event(
             self.context_id,
-            self.app.app_id(),
+            self.app.plugin_id(),
             self.pane_id,
             emitted,
         )?;
@@ -1551,15 +1551,15 @@ impl WasmPane {
         match (payload_mode, trigger_mode) {
             (Ok(payload_mode), Ok(trigger_mode)) => {
                 log::info!(
-                    "wasm events: subscribe app_id={} publisher={} streams={:?}",
-                    self.app.app_id(),
-                    req.app_id,
+                    "wasm events: subscribe plugin_id={} publisher={} streams={:?}",
+                    self.app.plugin_id(),
+                    req.plugin_id,
                     req.event_names
                 );
                 self.pending_host_effects
                     .push_back(WasmHostEffect::SubscribeEvents {
                         request_id: req.request_id,
-                        app_id: req.app_id,
+                        plugin_id: req.plugin_id,
                         event_names: req.event_names,
                         payload_mode,
                         trigger_mode,
@@ -1580,8 +1580,8 @@ impl WasmPane {
 
     fn unsubscribe_event_streams(&mut self, req: UnsubscribeEventStreamsEffect) {
         log::info!(
-            "wasm events: unsubscribe app_id={} subscription={}",
-            self.app.app_id(),
+            "wasm events: unsubscribe plugin_id={} subscription={}",
+            self.app.plugin_id(),
             req.subscription_id
         );
         self.pending_host_effects
@@ -1617,8 +1617,8 @@ impl WasmPane {
         match parsed {
             Ok(tools) => {
                 log::info!(
-                    "wasm tools: app_id={} declared {} tool(s)",
-                    self.app.app_id(),
+                    "wasm tools: plugin_id={} declared {} tool(s)",
+                    self.app.plugin_id(),
                     tools.len()
                 );
                 self.pending_host_effects
@@ -1632,8 +1632,8 @@ impl WasmPane {
 
     fn tool_result(&mut self, req: ToolResultEffect) {
         log::info!(
-            "wasm tools: app_id={} completed call_id={}",
-            self.app.app_id(),
+            "wasm tools: plugin_id={} completed call_id={}",
+            self.app.plugin_id(),
             req.call_id
         );
         self.pending_host_effects
@@ -1846,12 +1846,12 @@ pub struct LiveWasmPane {
     /// 60 Hz, truncating each 16.666 ms step to 16 ms would bleed 40 ms of guest
     /// time per real second.
     sim_ns: Option<u64>,
-    /// Launch arguments (`plexi app open <path> -- <args>`), forwarded to the
+    /// Launch arguments (`plexi view open <path> -- <args>`), forwarded to the
     /// guest's `init` as its argv. Empty for palette/registry launches.
     launch_args: Vec<String>,
     /// Path to the `.wasm` component this pane was loaded from — kept for
     /// `launch_spec()` so a workspace restore (stint 0680) can relaunch the
-    /// exact same binary without going back through app-id registry lookup.
+    /// exact same binary without going back through plugin-id registry lookup.
     wasm_path: PathBuf,
 }
 
@@ -1890,8 +1890,8 @@ impl LiveWasmPane {
 
     /// Enough launch context to relaunch this exact WASM component through
     /// the normal open path on a workspace restore (stint 0680).
-    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
-        crate::workspace::SavedAppLaunch::Wasm {
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedViewLaunch {
+        crate::workspace::SavedViewLaunch::Wasm {
             wasm_path: self.wasm_path.clone(),
             args: self.launch_args.clone(),
         }
@@ -1982,7 +1982,7 @@ impl LiveWasmPane {
     }
 
     /// True while the app is alive (no fatal error, has not asked to close).
-    /// `AppRuntime::lifecycle` reads it to report running vs exited.
+    /// `ViewRuntime::lifecycle` reads it to report running vs exited.
     pub fn is_running(&self) -> bool {
         self.error.is_none() && !self.inner.wants_close()
     }
@@ -2045,7 +2045,7 @@ impl LiveWasmPane {
 
     pub(crate) fn queue_outbound_event(&mut self, event: crate::protocol::PlexiEvent) {
         let event = match event {
-            crate::protocol::PlexiEvent::AppEventsSubscribed {
+            crate::protocol::PlexiEvent::PluginEventsSubscribed {
                 request_id,
                 subscription_id,
                 error,
@@ -2054,7 +2054,7 @@ impl LiveWasmPane {
                 subscription_id,
                 error,
             }),
-            crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+            crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
                 request_id,
                 removed,
                 error,
@@ -2063,9 +2063,9 @@ impl LiveWasmPane {
                 removed,
                 error,
             }),
-            crate::protocol::PlexiEvent::AppEvent {
+            crate::protocol::PlexiEvent::PluginEvent {
                 subscription_id,
-                app_id,
+                plugin_id,
                 event,
                 event_id,
                 resource_id,
@@ -2074,9 +2074,9 @@ impl LiveWasmPane {
                 payload,
                 state_ref,
                 created_at,
-            } => InputEvent::AppEvent(AppEventEvent {
+            } => InputEvent::PluginEvent(PluginEventEvent {
                 subscription_id,
-                app_id,
+                plugin_id,
                 event,
                 event_id,
                 resource_id,
@@ -2147,7 +2147,7 @@ impl LiveWasmPane {
         self.inner.has_pending_inputs()
     }
 
-    /// Deliver `plexi app action` to the guest and refresh the cached semantic
+    /// Deliver `plexi pane action` to the guest and refresh the cached semantic
     /// tree immediately so pane-state callers observe the resulting view.
     pub fn dispatch_ui_action(&mut self, handler_id: impl Into<String>) -> Result<(), String> {
         if self.pending_init.is_some() {
@@ -2502,10 +2502,10 @@ impl LiveWasmPane {
         for event in input.events() {
             match event {
                 egui::Event::Key { key, modifiers, .. } => {
-                    // Bare Escape is reserved for the host CloseApp binding
-                    // (keys.rs, `BindingContext::AppActive`). Reporting it
+                    // Bare Escape is reserved for the host CloseView binding
+                    // (keys.rs, `BindingContext::ViewActive`). Reporting it
                     // consumed claims Escape out of the frame's input buffer
-                    // before `poll_actions` can fire CloseApp, so the focused
+                    // before `poll_actions` can fire CloseView, so the focused
                     // WASM pane never closes on Escape. Skip it — never forward
                     // to the guest, never count toward `consumed`. Cmd+Escape
                     // (context zoom-out) is already dropped by
@@ -2551,7 +2551,7 @@ impl LiveWasmPane {
     }
 
     /// Forward the one bare Escape that released a declarative TextInput.
-    /// Ordinary `handle_key` continues to reserve Escape for host CloseApp.
+    /// Ordinary `handle_key` continues to reserve Escape for host CloseView.
     pub fn handle_text_input_escape(
         &mut self,
         input: &crate::app::input_router::PlexiInput,
@@ -2705,7 +2705,7 @@ mod tests {
     };
     use super::*;
     use crate::host::services::HttpResponse as HostHttpResponse;
-    use crate::host::wasm_app::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmApp};
+    use crate::host::wasm_app::{KeyEvent, Modifiers, StateSnapshot, StateStore, WasmView};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2737,13 +2737,13 @@ mod tests {
     }
 
     fn pane(cpu: f32) -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("sysmon-pane", &fixture(), StateStore::ephemeral())
             .expect("load");
         WasmPane::new(app, Box::new(FakeStats { cpu }))
     }
 
     fn counter_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run(
+        let app = WasmView::load_ephemeral_run(
             "counter-pane",
             &counter_fixture(),
             StateStore::ephemeral(),
@@ -2755,7 +2755,7 @@ mod tests {
     /// Stint 0724 Phase D 2/2: `WasmPane::set_context_id` — always called
     /// right after `set_pane_id` from the pane-placement closure in
     /// `pane_ops/create.rs` — must stamp the owning `Scope::Pane` onto this
-    /// instance's typed-pipe registry (`WasmApp`'s `HostCtx.pipes`), matching
+    /// instance's typed-pipe registry (`WasmView`'s `HostCtx.pipes`), matching
     /// the SAME pane_id/context_id the placement closure assigned. This is
     /// the one owner-scope test the sub-phase requires: it proves the field
     /// is populated and correct at creation, without inventing a cross-pane
@@ -2903,7 +2903,7 @@ mod tests {
         );
         p.exec(
             Effect::Spawn(SpawnEffect {
-                app_id: "com.plexi.counter".to_string(),
+                plugin_id: "com.plexi.counter".to_string(),
                 layout: Some("split_h".to_string()),
                 args: vec!["--demo".to_string()],
             }),
@@ -2918,7 +2918,7 @@ mod tests {
                     icon: None,
                 },
                 WasmHostEffect::Spawn {
-                    app_id: "com.plexi.counter".to_string(),
+                    plugin_id: "com.plexi.counter".to_string(),
                     layout: Some("split_h".to_string()),
                     args: vec!["--demo".to_string()],
                 },
@@ -3827,7 +3827,7 @@ mod tests {
     fn app_events_declare_and_emit_into_timeline() {
         let mut p = pane(0.0);
         p.set_pane_id(44);
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         p.set_app_timeline(Arc::clone(&timeline));
 
         p.exec(declare_stream("move.played"), 0);
@@ -3853,7 +3853,7 @@ mod tests {
     #[test]
     fn app_event_emit_without_declaration_returns_error() {
         let mut p = pane(0.0);
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         p.set_app_timeline(Arc::clone(&timeline));
 
         p.exec(emit_event("move.played"), 0);
@@ -3872,7 +3872,7 @@ mod tests {
         p.exec(
             Effect::SubscribeEventStreams(SubscribeEventStreamsEffect {
                 request_id: "subscribe-1".to_string(),
-                app_id: "python-notes".to_string(),
+                plugin_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
                 payload_mode: "full".to_string(),
                 trigger_mode: "conversation".to_string(),
@@ -3884,7 +3884,7 @@ mod tests {
             p.take_host_effects(),
             vec![WasmHostEffect::SubscribeEvents {
                 request_id: "subscribe-1".to_string(),
-                app_id: "python-notes".to_string(),
+                plugin_id: "python-notes".to_string(),
                 event_names: vec!["note.saved".to_string()],
                 payload_mode: crate::protocol::PayloadMode::Full,
                 trigger_mode: crate::protocol::TriggerMode::Conversation,
@@ -3917,9 +3917,9 @@ mod tests {
             vec![],
             PathBuf::from("/tmp/test.wasm"),
         );
-        live.queue_outbound_event(crate::protocol::PlexiEvent::AppEvent {
+        live.queue_outbound_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
-            app_id: "python-notes".to_string(),
+            plugin_id: "python-notes".to_string(),
             event: "note.saved".to_string(),
             event_id: 9,
             resource_id: "note-1".to_string(),
@@ -3930,12 +3930,12 @@ mod tests {
             created_at: "2026-07-13T00:00:00Z".to_string(),
         });
 
-        let event = live.inner.queue.pop_front().expect("queued AppEvent");
-        let InputEvent::AppEvent(event) = event else {
-            panic!("expected AppEvent, got {event:?}");
+        let event = live.inner.queue.pop_front().expect("queued PluginEvent");
+        let InputEvent::PluginEvent(event) = event else {
+            panic!("expected PluginEvent, got {event:?}");
         };
         assert_eq!(event.subscription_id, "sub-1");
-        assert_eq!(event.app_id, "python-notes");
+        assert_eq!(event.plugin_id, "python-notes");
         assert_eq!(event.event, "note.saved");
         assert_eq!(event.payload_json.as_deref(), Some(r#"{"title":"Hello"}"#));
     }
@@ -4063,7 +4063,7 @@ mod tests {
     }
 
     fn pong_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("pong", &pong_fixture(), StateStore::ephemeral())
             .expect("load pong (gpu device required)");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
@@ -4381,9 +4381,9 @@ mod tests {
         );
     }
 
-    /// Stint 0430: bare Escape is reserved for the host CloseApp binding
-    /// (keys.rs, `BindingContext::AppActive`). A focused WASM pane must report
-    /// `Passthrough` for it so `poll_actions` can fire CloseApp; before the fix
+    /// Stint 0430: bare Escape is reserved for the host CloseView binding
+    /// (keys.rs, `BindingContext::ViewActive`). A focused WASM pane must report
+    /// `Passthrough` for it so `poll_actions` can fire CloseView; before the fix
     /// `handle_key` reported `Consumed` for every key event, claiming Escape out
     /// of the frame buffer and starving the close. Normal keys stay `Consumed`.
     #[test]
@@ -4415,7 +4415,7 @@ mod tests {
                 egui_key(egui::Key::Escape, true, false, egui::Modifiers::NONE)
             ),
             KeyDisposition::Passthrough,
-            "bare Escape must pass through so the host CloseApp binding fires"
+            "bare Escape must pass through so the host CloseView binding fires"
         );
         assert_eq!(
             disposition(
@@ -4478,7 +4478,7 @@ mod tests {
     }
 
     fn daw_pane() -> WasmPane {
-        let app = WasmApp::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
+        let app = WasmView::load_ephemeral_run("daw", &daw_fixture(), StateStore::ephemeral())
             .expect("load daw-engine");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }
@@ -4648,7 +4648,7 @@ mod tests {
 
     fn jukebox_pane() -> WasmPane {
         let app =
-            WasmApp::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
+            WasmView::load_ephemeral_run("jukebox", &jukebox_fixture(), StateStore::ephemeral())
                 .expect("load jukebox");
         WasmPane::new(app, Box::new(FakeStats { cpu: 0.0 }))
     }

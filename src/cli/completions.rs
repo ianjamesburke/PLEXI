@@ -1,4 +1,4 @@
-/// Output completion candidates for `plexi app open <prefix>`.
+/// Output completion candidates for `plexi view open <prefix>`.
 ///
 /// Called by the hidden `_complete-open` subcommand. Outputs one candidate
 /// per line, ready for shell consumption.
@@ -27,13 +27,13 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
             }
         }
         "app:" | "app" => {
-            for name in crate::app::registry::installed_app_ids() {
+            for name in crate::app::registry::installed_plugin_ids() {
                 println!("app:{name}");
             }
         }
         _ => {
             // All categories: bare app IDs + prefixed variants
-            for name in crate::app::registry::installed_app_ids() {
+            for name in crate::app::registry::installed_plugin_ids() {
                 println!("{name}");
             }
             // CLI names
@@ -122,7 +122,7 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     }
 }
 
-/// Inject a dynamic completion function for `plexi app open <TAB>` into the
+/// Inject a dynamic completion function for `plexi view open <TAB>` into the
 /// zsh completion script. Replaces the static `type_id` spec with a call to
 /// the hidden `_complete-open` subcommand, which enumerates app IDs, CLI
 /// registry names, MCP registry names, and cached descriptors at runtime.

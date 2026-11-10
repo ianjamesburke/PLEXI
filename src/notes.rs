@@ -271,7 +271,7 @@ pub(crate) fn fuzzy_match(query: &str, haystack: &str) -> bool {
 // ─── Notes tiers ─────────────────────────────────────────────────────────────
 //
 // Notes are user data, so they use the two-tier `StateScope` model from
-// `crate::host::state_scope` — the same one app state uses, and the reason this
+// `crate::host::state_scope` — the same one plugin state uses, and the reason this
 // module owns no path arithmetic of its own beyond locating tiers:
 //
 //   global   →  ~/.plexi/notes/

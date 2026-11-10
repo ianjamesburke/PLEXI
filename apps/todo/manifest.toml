@@ -1,24 +1,28 @@
-schema_version = 1
-
-[app]
-id = "todo"
-type = "app"
-name = "Todo"
-version = "0.1.0"
-description = "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly."
-entry = "todo.py"
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "todo.py"
 
 [state]
 scopes = ["context"]
 format = "markdown"
 
-[app.capabilities]
-capabilities = []
-
 [marketplace]
 visibility = "public"
 price = "free"
 publisher = "plexi"
+
+[plugin]
+id = "todo"
+name = "Todo"
+version = "0.1.0"
+description = "Context-scoped todo list, backed by a markdown checklist file a human or agent can edit directly."
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "todo.main"
+default = true

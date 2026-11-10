@@ -1,6 +1,6 @@
 //! Host Assistant — Phase 1 of `docs/assistant-host-app.md`.
 //!
-//! The Assistant is a first-party host app: a `Pane::App(AppRuntime::Builtin)`
+//! The Assistant is a first-party host app: a `Pane::App(ViewRuntime::Builtin)`
 //! pane, not a PGAP process. It is split into pure state (`model`), slash
 //! command parsing (`commands`), disk persistence (`store`), and egui
 //! rendering (`render`); this module is the pane shell that wires those to
@@ -26,14 +26,14 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::agent::{AgentDefinition, AgentRegistry, AgentSource};
-use crate::app::app_trait::AppCommand;
-use crate::app::app_trait::{App, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::ViewCommand;
+use crate::app::app_trait::{App, ViewRenderContext, KeyDisposition};
 use crate::protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
 };
-use crate::host::app_timeline::AppTimeline;
+use crate::host::app_timeline::PluginTimeline;
 use crate::platform::text;
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ReasoningEffort};
 use crate::plexi_ai::turn_loop::TurnDelta;
@@ -649,7 +649,7 @@ impl AiBroker for ScriptedToolBroker {
 }
 
 /// The host Assistant pane: model + store + broker + grant wiring.
-pub struct AssistantApp {
+pub struct AssistantView {
     pub(crate) model: AssistantModel,
     store: AssistantStore,
     broker: Arc<dyn AiBroker>,
@@ -669,7 +669,7 @@ pub struct AssistantApp {
     /// Crate-visible so `HostHarness` can seed an outbound command and prove the
     /// host still drains it on a hidden (logic-only) pass — the seam
     /// `assistant_mut` already exists for (stint 0688).
-    pub(crate) pending_commands: Vec<AppCommand>,
+    pub(crate) pending_commands: Vec<ViewCommand>,
     settings_loader: SettingsLoader,
     session_overrides: SessionOverrides,
     settings: AssistantSettings,
@@ -714,7 +714,7 @@ pub struct AssistantApp {
     /// wait for a second gate.
     prepared_host_calls: Arc<Mutex<HashMap<String, ToolCallResult>>>,
     /// Shared app event timeline (production: the global instance).
-    timeline: Arc<Mutex<AppTimeline>>,
+    timeline: Arc<Mutex<PluginTimeline>>,
     /// Live event-stream subscriptions: `(target_id, subscription_id)` where
     /// `target_id` is `"<app>::<event>"`.
     live_subs: Vec<(String, String)>,
@@ -754,7 +754,7 @@ struct PendingSubscribe {
     reply: SyncSender<ToolCallResult>,
 }
 
-impl AssistantApp {
+impl AssistantView {
     /// Open the Assistant for a workspace: resume the persisted active
     /// conversation of `context_id` (the host context this pane lives in),
     /// or create a fresh one. `profile_dir` is the channel config dir —
@@ -780,7 +780,7 @@ impl AssistantApp {
         workspace_root: PathBuf,
         broker: Arc<dyn AiBroker>,
         profile_dir: &Path,
-        timeline: Arc<Mutex<AppTimeline>>,
+        timeline: Arc<Mutex<PluginTimeline>>,
         context_id: u64,
     ) -> Self {
         let store = AssistantStore::new(&workspace_root, context_id);
@@ -907,7 +907,7 @@ impl AssistantApp {
         // shared timeline (close drops the pane without unsubscribing) —
         // clear them before re-registering, or every reopen duplicates each
         // delivery. Stale queued deliveries are dropped with them; the model
-        // can read current app state instead of replaying history.
+        // can read current plugin state instead of replaying history.
         app.timeline
             .lock()
             .unwrap()
@@ -928,7 +928,7 @@ impl AssistantApp {
             .filter(|r| {
                 r.actor_type == ActorType::Agent
                     && r.actor_id == ASSISTANT_ACTOR_ID
-                    && r.target_type == TargetType::AppEventStream
+                    && r.target_type == TargetType::PluginEventStream
                     && r.decision == Decision::Allow
             })
             .map(|r| r.target_id.clone())
@@ -1015,7 +1015,7 @@ impl AssistantApp {
                 } => self.start_turn(conversation_id, turn_id, prompt, client, kind),
                 AssistantEffect::SessionWrite { .. } => self.session_write(),
                 AssistantEffect::ListTools => self.cmd_list_tools(),
-                AssistantEffect::ListApps => self.cmd_list_apps(),
+                AssistantEffect::ListPlugins => self.cmd_list_apps(),
                 AssistantEffect::ListSkills => self.cmd_list_skills(),
                 AssistantEffect::ShowContext => self.cmd_show_context(),
                 AssistantEffect::ShowHooks => self.cmd_show_hooks(),
@@ -1169,7 +1169,7 @@ impl AssistantApp {
     fn tool_decision(&self, tool: &AiTool) -> Decision {
         self.decide(
             tool,
-            TargetType::AppConnector,
+            TargetType::PluginConnector,
             &Self::connector_target(&tool.name),
         )
     }
@@ -1548,8 +1548,8 @@ impl AssistantApp {
             },
             AiTool {
                 name: HOST_TOOL_BUILD_RUN.into(),
-                description: "Run an app-authoring command (`plexi app init` \
-                    or `plexi app check`) on the embedded build surface — no \
+                description: "Run an app-authoring command (`plexi plugin init` \
+                    or `plexi plugin check`) on the embedded build surface — no \
                     terminal pane, output returned directly as \
                     {exit_code, stdout, stderr}. Pass args after `plexi`, \
                     e.g. [\"app\", \"init\", \"my-game\"] or \
@@ -1746,7 +1746,7 @@ impl AssistantApp {
                     &summarize_input(input_json),
                 ));
             }
-            self.pending_commands.push(AppCommand::AssistantHostTool {
+            self.pending_commands.push(ViewCommand::AssistantHostTool {
                 name: tool.to_string(),
                 input_json: input_json.to_string(),
                 origin_pane_id: 0,
@@ -1981,16 +1981,16 @@ impl AssistantApp {
             system.push_str(&skill.instructions);
             if is_app_build_turn {
                 // Placement is knowable host-side; telling the model up front
-                // saves the guaranteed-failed `app init` probe (stint 0465).
+                // saves the guaranteed-failed `plugin init` probe (stint 0465).
                 let placement =
                     match crate::app::registry::resolve_workspace_root(&self.workspace_root) {
                         Some(root) => format!(
                             "\n\nApp placement: this session has a Plexi workspace at {} — \
-                         `app init <name>` with no flag creates a hot-reloading workspace app.",
+                         `plugin init <name>` with no flag creates a hot-reloading workspace app.",
                             root.display()
                         ),
                         None => "\n\nApp placement: no Plexi workspace exists in this session's \
-                             directory — pass --global to `app init` on the first call."
+                             directory — pass --global to `plugin init` on the first call."
                             .to_string(),
                     };
                 log::info!(
@@ -2021,7 +2021,7 @@ impl AssistantApp {
             None => agent.kind,
         };
         let request = AiBrokerRequest {
-            app_id: "assistant".to_string(),
+            plugin_id: "assistant".to_string(),
             model_mode: match tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
             concrete_model,
             reasoning_effort: effort,
@@ -2153,7 +2153,7 @@ impl AssistantApp {
     }
 
     /// Per-frame pump: tool-flow events, live stream deltas, finished turns,
-    /// and queued app-event deliveries.
+    /// and queued plugin-event deliveries.
     fn pump_turn_io(&mut self) {
         self.adopt_folder_secret_sheet();
         self.pump_isolated_turns();
@@ -2321,7 +2321,7 @@ impl AssistantApp {
                 d.actor_id == self_id || d.caused_by.as_deref() == Some(self_id.as_str());
             let line = format!(
                 "⚡ {}: {} — {}{}",
-                d.app_id,
+                d.plugin_id,
                 d.event,
                 d.summary.as_deref().unwrap_or("(no summary)"),
                 d.payload
@@ -2333,7 +2333,7 @@ impl AssistantApp {
                 "assistant: delivery {} of '{}' from '{}'{}",
                 d.delivery_id,
                 d.event,
-                d.app_id,
+                d.plugin_id,
                 if self_caused {
                     " is self-caused — recorded, no turn"
                 } else {
@@ -2374,7 +2374,7 @@ impl AssistantApp {
         log::info!("assistant: auto-starting turn for {line_count} delivered event(s)");
         let _ = self.audit.append(&AuditEvent::now(&self.audit_actor(), 
             "auto_turn",
-            "app_events",
+            "plugin_events",
             "ok",
             &format!("{line_count} event line(s)"),
         ));
@@ -2613,7 +2613,7 @@ impl AssistantApp {
                     self.record_grant_with_decision(
                         ASSISTANT_ACTOR_ID,
                         ActorScope::BuiltIn,
-                        TargetType::AppEventStream,
+                        TargetType::PluginEventStream,
                         &target,
                         GrantDuration::Always,
                         GrantSource::User,
@@ -2632,7 +2632,7 @@ impl AssistantApp {
             }
         };
         let before = self.durable_grant_ids();
-        self.record_assistant_grant(TargetType::AppEventStream, &target, duration, source);
+        self.record_assistant_grant(TargetType::PluginEventStream, &target, duration, source);
         if choice == PermissionChoice::AllowAlways {
             if let Err(error) = self.save_durable_grants(&before) {
                 return ToolCallResult::err(error);
@@ -2681,7 +2681,7 @@ impl AssistantApp {
             self.record_grant_with_decision(
                 ASSISTANT_ACTOR_ID,
                 ActorScope::BuiltIn,
-                TargetType::AppEventStream,
+                TargetType::PluginEventStream,
                 &target,
                 GrantDuration::Always,
                 GrantSource::User,
@@ -2698,7 +2698,7 @@ impl AssistantApp {
             PermissionChoice::AllowOnce => "allow_once",
             PermissionChoice::AllowSession => {
                 self.record_assistant_grant(
-                    TargetType::AppEventStream,
+                    TargetType::PluginEventStream,
                     &target,
                     GrantDuration::Session,
                     GrantSource::Session,
@@ -2865,7 +2865,7 @@ impl AssistantApp {
             .workspace_root
             .canonicalize()
             .unwrap_or_else(|_| self.workspace_root.clone());
-        if target_type == TargetType::AppEventStream {
+        if target_type == TargetType::PluginEventStream {
             let session_id = if duration == GrantDuration::Session {
                 Some(self.monitor.session_id().to_string())
             } else {
@@ -3848,12 +3848,12 @@ impl AssistantApp {
                 .to_string()
         } else {
             let mut out = String::new();
-            for (app_id, mut tools) in apps {
+            for (plugin_id, mut tools) in apps {
                 tools.sort_by(|a, b| a.name.cmp(&b.name));
                 let ro_count = tools.iter().filter(|t| t.read_only).count();
                 let rw_count = tools.len() - ro_count;
                 out.push_str(&format!(
-                    "{app_id} — {} tool(s) ({ro_count} read-only, {rw_count} mutating)\n",
+                    "{plugin_id} — {} tool(s) ({ro_count} read-only, {rw_count} mutating)\n",
                     tools.len()
                 ));
                 for tool in &tools {
@@ -3882,11 +3882,11 @@ impl AssistantApp {
             .iter()
             .filter(|r| {
                 r.actor_type == ActorType::Agent
-                    && ((r.target_type == TargetType::AppConnector
+                    && ((r.target_type == TargetType::PluginConnector
                         && r.actor_id == connector_actor_id)
                         || (r.target_type == TargetType::HostTool
                             && r.actor_id == connector_actor_id)
-                        || (r.target_type == TargetType::AppEventStream
+                        || (r.target_type == TargetType::PluginEventStream
                             && r.actor_id == ASSISTANT_ACTOR_ID))
             })
             .map(|r| GrantRow {
@@ -4573,7 +4573,7 @@ fn nonempty_tag(value: Option<String>) -> Option<String> {
     })
 }
 
-impl App for AssistantApp {
+impl App for AssistantView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -4678,7 +4678,7 @@ impl App for AssistantApp {
         }))
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -4698,8 +4698,8 @@ impl App for AssistantApp {
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         // The model/agent picker and permissions manager own Escape while
         // open: this runs before `poll_actions`, which binds plain Escape to
-        // `CloseApp` when the assistant's app surface is focused
-        // (`src/host/keys.rs` `AppActive` context). Without claiming it here
+        // `CloseView` when the assistant's app surface is focused
+        // (`src/host/keys.rs` `ViewActive` context). Without claiming it here
         // first, Escape falls through and destroys the pane instead of just
         // closing the overlay — the same precedent `dispatch_app_key_events`
         // already documents for file-browser search-mode Escape. Returning
@@ -4718,7 +4718,7 @@ impl App for AssistantApp {
         }
         // The permission sheet also owns Escape while open — same rationale
         // as the overlay case above: resolve it as a deny here so `Escape`
-        // never falls through to `CloseApp`, and leave Tab/arrows/Enter in
+        // never falls through to `CloseView`, and leave Tab/arrows/Enter in
         // the buffer for `render.rs`'s `handle_permission_keys` to consume.
         if self.model.pending_permission.is_some() {
             if input.key_pressed(egui::Key::Escape) {
@@ -4756,7 +4756,7 @@ impl App for AssistantApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.pump_turn_io();
@@ -4779,7 +4779,7 @@ impl App for AssistantApp {
             Some(ComposerEvent::Permission(choice)) => self.resolve_permission(choice),
             Some(ComposerEvent::ReviewPermissions) => {
                 log::info!("assistant: review permissions opens the permissions pane");
-                self.pending_commands.push(AppCommand::SpawnApp {
+                self.pending_commands.push(ViewCommand::SpawnView {
                     type_id: "permissions".to_string(),
                     layout: Some("split_v".to_string()),
                     args: Vec::new(),
@@ -4825,7 +4825,7 @@ mod tests {
     /// A `ScopeOrigin` for a tool provider pane in `context_id` — stint 0724
     /// Phase C. Every field but `context_id`/`pane_id` is a deterministic
     /// placeholder never inspected by `evaluate_reach`. `test_app` always
-    /// constructs its `AssistantApp` with `context_id = 1` (see `test_app`
+    /// constructs its `AssistantView` with `context_id = 1` (see `test_app`
     /// below), so registering a provider with `context_id = 1` is what makes
     /// it reachable from the assistant under test.
     fn test_scope_origin(context_id: u64, pane_id: u64) -> crate::host::scope::ScopeOrigin {
@@ -4834,7 +4834,7 @@ mod tests {
             context_root: PathBuf::from(format!("/test-ctx-root-{context_id}")),
             window_id: context_id,
             pane_id,
-            app_id: None,
+            plugin_id: None,
         }
     }
 
@@ -4896,8 +4896,8 @@ mod tests {
     }
 
     /// Assistant whose grants + audit live in the (temp) workspace dir.
-    fn test_app(ws: &Path) -> AssistantApp {
-        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, 1)
+    fn test_app(ws: &Path) -> AssistantView {
+        AssistantView::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, 1)
     }
 
     /// Like `test_app` but with an explicit `context_id`. The global tool
@@ -4912,11 +4912,11 @@ mod tests {
     /// sheet that never appears because the tool got withheld. Pass a value
     /// unique to the test (its own pane id is a convenient, already-unique
     /// choice).
-    fn test_app_with_context(ws: &Path, context_id: u64) -> AssistantApp {
-        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, context_id)
+    fn test_app_with_context(ws: &Path, context_id: u64) -> AssistantView {
+        AssistantView::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, context_id)
     }
 
-    fn wait_for_turn(app: &mut AssistantApp) {
+    fn wait_for_turn(app: &mut AssistantView) {
         let start = std::time::Instant::now();
         while app.model.streaming.in_flight {
             app.pump_turn_io();
@@ -4939,7 +4939,7 @@ mod tests {
     fn app_build_prompt_missed_by_general_matcher_still_gets_sdk_context_and_raised_cap() {
         let ws = tempfile::tempdir().unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
+        let mut app = AssistantView::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
 
         app.model.composer = "Build me a tiny counter app with plus and minus buttons".to_string();
         let effects = app.model.submit();
@@ -5105,7 +5105,7 @@ enabled = ["allowed.tool"]
         )
         .unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 9199);
+        let mut app = AssistantView::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 9199);
         register_echo_provider(9199, &["allowed.tool", "denied.tool"], 9199);
 
         app.model.composer = "/agent writer".to_string();
@@ -5209,7 +5209,7 @@ enabled = ["allowed.tool"]
         app.cmd_create_agent("writer");
         app.cmd_switch_agent("writer");
         app.record_connector_grant(
-            TargetType::AppConnector,
+            TargetType::PluginConnector,
             "app.docs.write",
             GrantDuration::Session,
             GrantSource::Session,
@@ -5293,7 +5293,7 @@ enabled = ["allowed.tool"]
             9200,
             "csv".to_string(),
             vec![ro_tool, rw_tool],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(9200, 9200),
         );
         // No grants seeded — read-only tool must be auto-allowed; mutating
@@ -5328,7 +5328,7 @@ enabled = ["allowed.tool"]
                 timeout_ms: None,
                 read_only: true,
             }],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(9205, 9205),
         );
         // Explicit deny must still win even though the tool is read-only.
@@ -5366,7 +5366,7 @@ enabled = ["allowed.tool"]
                 timeout_ms: None,
                 read_only: true,
             }],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(9206, 9206),
         );
 
@@ -5410,7 +5410,7 @@ enabled = ["allowed.tool"]
                     read_only: false,
                 },
             ],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(9207, 9207),
         );
         seed_grant(&mut app, "app.csv.write_cell", Decision::Allow);
@@ -5476,7 +5476,7 @@ enabled = ["allowed.tool"]
                     read_only: false,
                 },
             ],
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(9201, 9201),
         );
         app.model.composer = "/apps".to_string();
@@ -5662,7 +5662,7 @@ enabled = ["allowed.tool"]
     // ── Phase 2: connector gating + permission round trips ────────────────────
 
     use super::model::ToolStatus;
-    use crate::plexi_ai::tool_dispatch::{self, AppEventSender, ToolCallResult};
+    use crate::plexi_ai::tool_dispatch::{self, PluginEventSender, ToolCallResult};
 
     /// Register tools in the global registry with a responder thread that
     /// answers every `ToolCall` event with `{"ok": true}`. `context_id` must
@@ -5685,7 +5685,7 @@ enabled = ["allowed.tool"]
             pane_id,
             "test-app".to_string(),
             tools,
-            AppEventSender::Channel(tx),
+            PluginEventSender::Channel(tx),
             test_scope_origin(context_id, pane_id),
         );
         std::thread::spawn(move || {
@@ -5705,7 +5705,7 @@ enabled = ["allowed.tool"]
     }
 
     /// Persist a grant for the active connector agent directly into the store.
-    fn seed_grant(app: &mut AssistantApp, target: &str, decision: Decision) {
+    fn seed_grant(app: &mut AssistantView, target: &str, decision: Decision) {
         let (actor_id, actor_scope) = app.connector_actor();
         let workspace_root = app
             .workspace_root
@@ -5716,7 +5716,7 @@ enabled = ["allowed.tool"]
             actor_id,
             actor_scope,
             workspace_root: Some(workspace_root),
-            target_type: TargetType::AppConnector,
+            target_type: TargetType::PluginConnector,
             target_id: target.to_string(),
             resource_scope: ResourceScope::Workspace,
             resource_id: None,
@@ -5729,7 +5729,7 @@ enabled = ["allowed.tool"]
         });
     }
 
-    fn pump_until(app: &mut AssistantApp, what: &str, cond: impl Fn(&AssistantApp) -> bool) {
+    fn pump_until(app: &mut AssistantView, what: &str, cond: impl Fn(&AssistantView) -> bool) {
         let start = std::time::Instant::now();
         while !cond(app) {
             app.pump_turn_io();
@@ -6145,17 +6145,17 @@ enabled = ["allowed.tool"]
 
     // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
 
-    use crate::protocol::{AppEventActor, EventStreamDecl};
+    use crate::protocol::{PluginEventActor, EventStreamDecl};
     use crate::host::app_timeline::EmittedEvent;
 
     /// Matches the `context_id` `test_app_with_timeline` constructs its
-    /// `AssistantApp` with, so the assistant's subscriptions (viewer
+    /// `AssistantView` with, so the assistant's subscriptions (viewer
     /// context) line up with these fixtures' declared/emitted streams
     /// (owner context) by default.
     const TEST_CTX: u64 = 1;
 
-    fn chess_timeline() -> Arc<Mutex<AppTimeline>> {
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+    fn chess_timeline() -> Arc<Mutex<PluginTimeline>> {
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         timeline
             .lock()
             .unwrap()
@@ -6172,8 +6172,8 @@ enabled = ["allowed.tool"]
         timeline
     }
 
-    fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
-        AssistantApp::new_with_timeline(
+    fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<PluginTimeline>>) -> AssistantView {
+        AssistantView::new_with_timeline(
             ws.to_path_buf(),
             MockBroker::ok("echo: ok"),
             ws,
@@ -6183,8 +6183,8 @@ enabled = ["allowed.tool"]
     }
 
     fn emit_move(
-        timeline: &Arc<Mutex<AppTimeline>>,
-        actor: AppEventActor,
+        timeline: &Arc<Mutex<PluginTimeline>>,
+        actor: PluginEventActor,
         actor_id: Option<&str>,
         caused_by: Option<&str>,
     ) -> usize {
@@ -6216,7 +6216,7 @@ enabled = ["allowed.tool"]
             .deliveries_queued
     }
 
-    fn event_rows(app: &AssistantApp) -> usize {
+    fn event_rows(app: &AssistantView) -> usize {
         app.model
             .turns
             .iter()
@@ -6233,7 +6233,7 @@ enabled = ["allowed.tool"]
             let mut first = test_app_with_timeline(ws.path(), timeline.clone());
             assert!(first.live_subs.is_empty(), "no grant yet = no subscription");
             first.record_assistant_grant(
-                TargetType::AppEventStream,
+                TargetType::PluginEventStream,
                 "chess::move.played",
                 GrantDuration::Always,
                 GrantSource::User,
@@ -6242,13 +6242,13 @@ enabled = ["allowed.tool"]
         }
         assert!(ws.path().join("grants.toml").is_file());
 
-        // Restart: a fresh AssistantApp over the same store resubscribes.
+        // Restart: a fresh AssistantView over the same store resubscribes.
         let mut app = test_app_with_timeline(ws.path(), timeline.clone());
         assert_eq!(app.live_subs.len(), 1, "persisted grant must resubscribe");
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
 
         // A user-actor event lands as a visible row and auto-starts a turn.
-        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 1);
         // Observe dispatch before pumping outcomes: the mock broker can finish
         // within one pump_turn_io call, legitimately clearing in_flight.
         app.pump_deliveries();
@@ -6300,7 +6300,7 @@ enabled = ["allowed.tool"]
         }
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
         // An event lands while no pane is open: queued against the leaked sub.
-        emit_move(&timeline, AppEventActor::User, None, None);
+        emit_move(&timeline, PluginEventActor::User, None, None);
         assert_eq!(timeline.lock().unwrap().pending_delivery_count(), 1);
 
         // Reopen: leaked subscription + stale delivery are cleared, exactly
@@ -6315,7 +6315,7 @@ enabled = ["allowed.tool"]
         );
 
         // A fresh event is delivered exactly once.
-        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 1);
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "one event row, not duplicates");
     }
@@ -6336,7 +6336,7 @@ enabled = ["allowed.tool"]
         let record = &subs[0];
         assert_eq!(record.subscriber_type, ActorType::Agent);
         assert_eq!(record.subscriber_id, ASSISTANT_ACTOR_ID);
-        assert_eq!(record.app_id, "chess");
+        assert_eq!(record.plugin_id, "chess");
         assert_eq!(record.event_names, vec!["move.played".to_string()]);
         assert_eq!(
             record.subscriber_context_id, TEST_CTX,
@@ -6352,7 +6352,7 @@ enabled = ["allowed.tool"]
             .iter()
             .find(|r| r.event_names.is_empty())
             .expect("`*` subscribe must record an all-streams subscription");
-        assert_eq!(star.app_id, "chess");
+        assert_eq!(star.plugin_id, "chess");
         assert_eq!(star.subscriber_id, ASSISTANT_ACTOR_ID);
     }
 
@@ -6366,7 +6366,7 @@ enabled = ["allowed.tool"]
         // The assistant as the event actor: row, no turn.
         emit_move(
             &timeline,
-            AppEventActor::Agent,
+            PluginEventActor::Agent,
             Some("agent:assistant"),
             None,
         );
@@ -6378,7 +6378,7 @@ enabled = ["allowed.tool"]
         );
 
         // App-emitted event caused by the assistant's tool call: row, no turn.
-        emit_move(&timeline, AppEventActor::App, None, Some("agent:assistant"));
+        emit_move(&timeline, PluginEventActor::App, None, Some("agent:assistant"));
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 2);
         assert!(
@@ -6397,7 +6397,7 @@ enabled = ["allowed.tool"]
 
         // Simulate an in-flight turn; the event must queue, not dispatch.
         app.model.streaming.in_flight = true;
-        emit_move(&timeline, AppEventActor::User, None, None);
+        emit_move(&timeline, PluginEventActor::User, None, None);
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "row appended even while in flight");
         assert_eq!(app.queued_event_lines.len(), 1);
@@ -6462,7 +6462,7 @@ enabled = ["allowed.tool"]
         }
 
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantApp::new(
+        let mut app = AssistantView::new(
             ws.path().to_path_buf(),
             Arc::new(InterruptibleBroker {
                 dispatched: AtomicUsize::new(0),
@@ -6567,7 +6567,7 @@ enabled = ["allowed.tool"]
                 .iter()
                 .find(|r| r.target_id == "chess::move.played")
                 .expect("allow-always must persist the stream grant");
-            assert_eq!(record.target_type, TargetType::AppEventStream);
+            assert_eq!(record.target_type, TargetType::PluginEventStream);
             assert_eq!(record.duration, GrantDuration::Always);
         }
         assert!(ws.path().join("grants.toml").is_file());
@@ -6575,7 +6575,7 @@ enabled = ["allowed.tool"]
         assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
 
         // Deliveries now flow and trigger turns.
-        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 1);
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1);
         wait_for_turn(&mut app);
@@ -6598,12 +6598,12 @@ enabled = ["allowed.tool"]
             .grants()
             .records()
             .iter()
-            .all(|r| r.target_type != TargetType::AppEventStream));
+            .all(|r| r.target_type != TargetType::PluginEventStream));
         assert!(app.live_subs.is_empty());
         assert!(timeline.lock().unwrap().subscriptions().is_empty());
 
         // No further deliveries reach the assistant.
-        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 0);
+        assert_eq!(emit_move(&timeline, PluginEventActor::User, None, None), 0);
         app.pump_turn_io();
         assert_eq!(event_rows(&app), 1, "revoked stream must deliver nothing");
     }
@@ -6765,14 +6765,14 @@ enabled = ["allowed.tool"]
     fn rename_persists_session_name() {
         let ws = tempfile::tempdir().unwrap();
         let mut app =
-            AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
+            AssistantView::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(app.model.session_name, None);
         app.on_pane_renamed("My Session");
         assert_eq!(app.model.session_name.as_deref(), Some("My Session"));
         // Reopen: name persists.
         drop(app);
         let reopened =
-            AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
+            AssistantView::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path(), 1);
         assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
     }
 
@@ -6794,7 +6794,7 @@ enabled = ["allowed.tool"]
     #[test]
     fn error_turn_appends_error_row() {
         let ws = tempfile::tempdir().unwrap();
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::error(), ws.path(), 1);
+        let mut app = AssistantView::new(ws.path().to_path_buf(), MockBroker::error(), ws.path(), 1);
         app.model.composer = "trigger error".to_string();
         let effects = app.model.submit();
         app.execute_effects(effects);
@@ -7051,7 +7051,7 @@ enabled = ["allowed.tool"]
         let commands = App::take_pending_commands(&mut app);
         assert!(matches!(
             commands.as_slice(),
-            [AppCommand::AssistantHostTool { name, .. }] if name == HOST_TOOL_PANES_LIST
+            [ViewCommand::AssistantHostTool { name, .. }] if name == HOST_TOOL_PANES_LIST
         ));
     }
 
@@ -7071,7 +7071,7 @@ enabled = ["allowed.tool"]
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
         let _ = egui_ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                let render_ctx = AppRenderContext {
+                let render_ctx = ViewRenderContext {
                     colors: &colors,
                     pane_id: 1,
                 };
@@ -7105,7 +7105,7 @@ enabled = ["allowed.tool"]
         )
         .unwrap();
         let broker = Arc::new(CapturingBroker::default());
-        let mut app = AssistantApp::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
+        let mut app = AssistantView::new(ws.path().to_path_buf(), broker.clone(), ws.path(), 1);
         app.model.composer = "/release /Users/ian/project".to_string();
         let effects = app.model.submit();
         assert!(matches!(

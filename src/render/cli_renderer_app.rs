@@ -5,11 +5,11 @@
 //! crawl), renders a navigable command list and per-command form, and executes
 //! the assembled command in a linked terminal pane.
 
-use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
+use crate::app::app_trait::{App, ViewCommand, ViewRenderContext, KeyDisposition};
 use crate::app::canvas_bindings::quote_for_shell;
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor, ROOT_COMMAND_NAME};
 use crate::ui::{
-    app_chrome::AppChrome,
+    app_chrome::ViewChrome,
     button::{self, ButtonKind},
     hints::{HintBar, HintGroup},
     style,
@@ -53,7 +53,7 @@ enum View {
     Form,
 }
 
-pub struct CliRendererApp {
+pub struct CliRendererView {
     descriptor: Option<PlexiDescriptor>,
     view: View,
     /// Breadcrumb path into nested commands (each entry is a command name).
@@ -76,8 +76,8 @@ pub struct CliRendererApp {
     /// "still connecting" state so the renderer surfaces a visible error instead
     /// of a stuck "(connecting terminal…)" label (#2246).
     terminal_link_failed: bool,
-    /// Pending AppCommands to drain each frame.
-    pending_commands: Vec<AppCommand>,
+    /// Pending ViewCommands to drain each frame.
+    pending_commands: Vec<ViewCommand>,
     /// Last command string that was run (shown as a hint).
     last_run: String,
     /// Fully assembled command selected before its linked terminal was ready.
@@ -101,25 +101,25 @@ pub struct CliRendererApp {
     pub(crate) last_footer_chip_rects: Vec<egui::Rect>,
 }
 
-impl CliRendererApp {
+impl CliRendererView {
     pub fn new(descriptor_path: String) -> Self {
         let (descriptor, view) = match std::fs::read_to_string(&descriptor_path) {
             Ok(json) => match serde_json::from_str::<PlexiDescriptor>(&json) {
                 Ok(d) => {
                     log::info!(
-                        "CliRendererApp: loaded descriptor for '{}' v{}",
+                        "CliRendererView: loaded descriptor for '{}' v{}",
                         d.name,
                         d.version
                     );
                     (Some(d), View::Loading)
                 }
                 Err(e) => {
-                    log::warn!("CliRendererApp: bad JSON in {descriptor_path}: {e}");
+                    log::warn!("CliRendererView: bad JSON in {descriptor_path}: {e}");
                     (None, View::Error(format!("Invalid descriptor JSON: {e}")))
                 }
             },
             Err(e) => {
-                log::warn!("CliRendererApp: cannot read {descriptor_path}: {e}");
+                log::warn!("CliRendererView: cannot read {descriptor_path}: {e}");
                 (
                     None,
                     View::Error(format!("Cannot read {descriptor_path}: {e}")),
@@ -132,7 +132,7 @@ impl CliRendererApp {
 
     /// Open an already resolved descriptor without a temporary file.
     pub fn from_descriptor(descriptor: PlexiDescriptor) -> Self {
-        log::info!("CliRendererApp: UI upcycle opened '{}'", descriptor.name);
+        log::info!("CliRendererView: UI upcycle opened '{}'", descriptor.name);
         Self::with_descriptor(Some(descriptor), View::Loading, String::new())
     }
 
@@ -327,20 +327,20 @@ impl CliRendererApp {
     /// link becomes ready.
     fn execute_command(&mut self, cmd: String) -> bool {
         if self.terminal_pane_id == 0 {
-            log::warn!("CliRendererApp: no linked terminal, cannot run");
+            log::warn!("CliRendererView: no linked terminal, cannot run");
             return false;
         }
         if cmd.is_empty() {
             return false;
         }
         self.last_run = cmd.clone();
-        self.pending_commands.push(AppCommand::RunInLinkedTerminal {
+        self.pending_commands.push(ViewCommand::RunInLinkedTerminal {
             sender_pane_id: 0, // host fills this
             terminal_pane_id: self.terminal_pane_id,
             command: cmd.clone(),
             echo: true,
         });
-        log::info!("CliRendererApp: queued run command_chars={}", cmd.chars().count());
+        log::info!("CliRendererView: queued run command_chars={}", cmd.chars().count());
         true
     }
 
@@ -350,7 +350,7 @@ impl CliRendererApp {
         }
         self.terminal_requested = true;
         self.pending_commands
-            .push(AppCommand::RequestLinkedTerminal {
+            .push(ViewCommand::RequestLinkedTerminal {
                 sender_pane_id: 0, // host fills
                 request_id: self.terminal_request_id.clone(),
                 cwd: None,
@@ -358,7 +358,7 @@ impl CliRendererApp {
                 // Stack the output terminal under the form, not beside it.
                 place_below: true,
             });
-        log::info!("CliRendererApp: requested linked terminal");
+        log::info!("CliRendererView: requested linked terminal");
     }
 
     // ── Rendering helpers ────────────────────────────────────────────────────
@@ -404,9 +404,9 @@ impl CliRendererApp {
         };
         let has_path = !self.cmd_path.is_empty();
 
-        // Shared AppBar header
+        // Shared SurfaceHeader header
         let header_rect =
-            AppChrome::new(colors).paint_app_bar(ui, &title, top_desc.as_deref().unwrap_or(""));
+            ViewChrome::new(colors).paint_app_bar(ui, &title, top_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -504,9 +504,9 @@ impl CliRendererApp {
         let flags: Vec<ArgSpec> = cmd.flags.clone();
         let has_fields = !args.is_empty() || !flags.is_empty();
 
-        // Shared AppBar header
+        // Shared SurfaceHeader header
         let header_rect =
-            AppChrome::new(colors).paint_app_bar(ui, &title, cmd_desc.as_deref().unwrap_or(""));
+            ViewChrome::new(colors).paint_app_bar(ui, &title, cmd_desc.as_deref().unwrap_or(""));
         #[cfg(test)]
         {
             self.last_header_rect = Some(header_rect);
@@ -634,7 +634,7 @@ impl CliRendererApp {
     }
 }
 
-impl Drop for CliRendererApp {
+impl Drop for CliRendererView {
     /// Delete the per-pane temp descriptor on close (#2246). Guarded to the
     /// host-minted `$TMPDIR/plexi-descriptor-*.json` pattern so a caller-supplied
     /// or test-fixture path is never touched.
@@ -648,12 +648,12 @@ impl Drop for CliRendererApp {
         if in_temp_dir && is_descriptor {
             match std::fs::remove_file(path) {
                 Ok(()) => log::info!(
-                    "CliRendererApp: cleaned up temp descriptor {}",
+                    "CliRendererView: cleaned up temp descriptor {}",
                     self.descriptor_path
                 ),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => log::warn!(
-                    "CliRendererApp: failed to remove temp descriptor {}: {e}",
+                    "CliRendererView: failed to remove temp descriptor {}: {e}",
                     self.descriptor_path
                 ),
             }
@@ -663,7 +663,7 @@ impl Drop for CliRendererApp {
 
 // ── App trait ─────────────────────────────────────────────────────────────────
 
-impl App for CliRendererApp {
+impl App for CliRendererView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -743,7 +743,7 @@ impl App for CliRendererApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         // Request terminal on first render
@@ -803,7 +803,7 @@ impl App for CliRendererApp {
         false
     }
 
-    fn take_pending_commands(&mut self) -> Vec<AppCommand> {
+    fn take_pending_commands(&mut self) -> Vec<ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -821,13 +821,13 @@ impl App for CliRendererApp {
                     // terminal — surface it instead of a stuck "connecting" state.
                     self.terminal_link_failed = true;
                     log::warn!(
-                        "CliRendererApp: linked terminal request {request_id} returned pane id 0 \
+                        "CliRendererView: linked terminal request {request_id} returned pane id 0 \
                          — terminal link failed"
                     );
                 } else {
                     self.terminal_link_failed = false;
                     log::info!(
-                        "CliRendererApp: linked terminal ready, pane_id={}",
+                        "CliRendererView: linked terminal ready, pane_id={}",
                         terminal_pane_id
                     );
                     if let Some(command) = self.pending_auto_run.take() {
@@ -884,11 +884,11 @@ mod tests {
         ]
     }"#;
 
-    fn app_from_fixture() -> (CliRendererApp, tempfile::TempDir) {
+    fn app_from_fixture() -> (CliRendererView, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("descriptor.json");
         std::fs::write(&path, FIXTURE).expect("write fixture");
-        let app = CliRendererApp::new(path.to_string_lossy().into_owned());
+        let app = CliRendererView::new(path.to_string_lossy().into_owned());
         (app, dir)
     }
 
@@ -941,7 +941,7 @@ mod tests {
         assert!(
             app.take_pending_commands().iter().any(|command| matches!(
                 command,
-                AppCommand::RunInLinkedTerminal {
+                ViewCommand::RunInLinkedTerminal {
                     terminal_pane_id: 5,
                     command,
                     ..
@@ -977,7 +977,7 @@ mod tests {
         assert!(
             app.take_pending_commands().iter().any(|command| matches!(
                 command,
-                AppCommand::RunInLinkedTerminal {
+                ViewCommand::RunInLinkedTerminal {
                     terminal_pane_id: 5,
                     command,
                     ..
@@ -1034,7 +1034,7 @@ mod tests {
                 None,
             )
             .expect("shipped descriptor");
-            let mut app = CliRendererApp::from_descriptor(descriptor);
+            let mut app = CliRendererView::from_descriptor(descriptor);
             app.view = View::List;
             app.terminal_pane_id = 42;
             for segment in *path {
@@ -1058,7 +1058,7 @@ mod tests {
             app.field_values.insert((*field).into(), (*value).into());
             press_key(&mut app, egui::Key::Enter, egui::Modifiers::NONE);
             assert!(app.take_pending_commands().iter().any(|command| matches!(command,
-                AppCommand::RunInLinkedTerminal { terminal_pane_id: 42, command, .. } if command == expected
+                ViewCommand::RunInLinkedTerminal { terminal_pane_id: 42, command, .. } if command == expected
             )), "{binary}");
             press_key(&mut app, egui::Key::Escape, egui::Modifiers::NONE);
             assert_eq!(app.view, View::List);
@@ -1092,7 +1092,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            let mut app = CliRendererApp::from_descriptor(descriptor);
+            let mut app = CliRendererView::from_descriptor(descriptor);
             app.view = View::List;
             app.terminal_pane_id = 42;
             for segment in path {
@@ -1112,7 +1112,7 @@ mod tests {
                 .take_pending_commands()
                 .into_iter()
                 .find_map(|c| match c {
-                    AppCommand::RunInLinkedTerminal { command, .. } => Some(command),
+                    ViewCommand::RunInLinkedTerminal { command, .. } => Some(command),
                     _ => None,
                 })
                 .unwrap();
@@ -1214,10 +1214,10 @@ mod tests {
         // exists once the app's fonts are installed.
         crate::ui::theme::setup_fonts(&ctx);
 
-        let render_once = |app: &mut CliRendererApp| {
+        let render_once = |app: &mut CliRendererView| {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
-                    let rctx = AppRenderContext {
+                    let rctx = ViewRenderContext {
                         colors: &colors,
                         pane_id: 1,
                     };
@@ -1231,7 +1231,7 @@ mod tests {
         assert_eq!(app.view, View::List);
         assert!(
             app.last_header_rect.is_some(),
-            "list view must render shared AppChrome header"
+            "list view must render shared ViewChrome header"
         );
         assert!(
             app.last_footer_chip_rects.len() >= 3,
@@ -1243,7 +1243,7 @@ mod tests {
         assert_eq!(app.view, View::Form);
         assert!(
             app.last_header_rect.is_some(),
-            "form view must render shared AppChrome header"
+            "form view must render shared ViewChrome header"
         );
         assert_eq!(
             app.last_footer_chip_rects.len(),
@@ -1254,7 +1254,7 @@ mod tests {
 
     /// Drive `handle_key` with a single key event through a real egui frame.
     fn press_key(
-        app: &mut CliRendererApp,
+        app: &mut CliRendererView,
         key: egui::Key,
         modifiers: egui::Modifiers,
     ) -> KeyDisposition {
@@ -1297,7 +1297,7 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(
                 c,
-                AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
+                ViewCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
             )),
             "plain Enter should queue a RunInLinkedTerminal for the greet command"
         );
@@ -1311,13 +1311,13 @@ mod tests {
         app.field_values.insert("name".into(), "Ada".into());
 
         // Mount the form once so its first field takes real egui focus, as it
-        // does when `app open --cli` first shows a command form.
+        // does when `view open --cli` first shows a command form.
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let ctx = egui::Context::default();
         crate::ui::theme::setup_fonts(&ctx);
         let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                let rctx = AppRenderContext {
+                let rctx = ViewRenderContext {
                     colors: &colors,
                     pane_id: 1,
                 };
@@ -1365,7 +1365,7 @@ mod tests {
         assert!(
             app.take_pending_commands().iter().any(|command| matches!(
                 command,
-                AppCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
+                ViewCommand::RunInLinkedTerminal { command, .. } if command.contains("greet")
             )),
             "focused bare Enter should queue the CLI form command, not reach TextEdit"
         );
@@ -1413,7 +1413,7 @@ mod tests {
         let placed_below = cmds.iter().any(|c| {
             matches!(
                 c,
-                AppCommand::RequestLinkedTerminal { place_below, .. } if *place_below
+                ViewCommand::RequestLinkedTerminal { place_below, .. } if *place_below
             )
         });
         assert!(
@@ -1424,7 +1424,7 @@ mod tests {
 
     #[test]
     fn bad_descriptor_path_yields_error_view() {
-        let app = CliRendererApp::new("/nonexistent/descriptor/path.json".into());
+        let app = CliRendererView::new("/nonexistent/descriptor/path.json".into());
         assert!(matches!(app.view, View::Error(_)));
         assert!(app.descriptor.is_none());
     }
@@ -1438,7 +1438,7 @@ mod tests {
         std::fs::write(&path, FIXTURE).expect("write temp descriptor");
         assert!(path.exists());
         {
-            let _app = CliRendererApp::new(path.to_string_lossy().into_owned());
+            let _app = CliRendererView::new(path.to_string_lossy().into_owned());
         }
         assert!(
             !path.exists(),

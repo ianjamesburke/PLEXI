@@ -26,7 +26,7 @@ def _init_scoped(proc, *, scopes=None, states=None, state=None):
         "workspace_root": "/tmp",
         "capabilities": [],
         "feature_flags": [],
-        "protocol": "pgap/3",
+        "protocol": "pgap/4",
         "width": 640.0,
         "height": 360.0,
     }

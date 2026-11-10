@@ -39,6 +39,7 @@ pub(crate) mod pane_status;
 pub(crate) mod pane_wait;
 pub mod permissions;
 pub mod plexi_descriptor;
+pub(crate) mod plugin_migration;
 pub(crate) mod python_env;
 pub(crate) mod quit;
 pub mod registry;
@@ -240,7 +241,7 @@ pub struct PlexiApp {
     /// (stint 0731).
     pub(crate) drag_window_last_seen: Option<std::time::Instant>,
     /// Screenshot requests (`plexi host screenshot`) awaiting the viewport
-    /// capture that `AppRequest::Screenshot` triggered (stint 0461).
+    /// capture that `HostRequest::Screenshot` triggered (stint 0461).
     pub(crate) pending_screenshots: Vec<crate::app::screenshot::PendingScreenshot>,
     /// Banner buttons drawn last frame. `assistant permission list` publishes them.
     pub(crate) approval_buttons: Vec<ApprovalButton>,
@@ -321,8 +322,8 @@ pub struct PlexiApp {
     pub(crate) drag_context: Option<usize>,
     /// Whether the "Parked (N)" section in the sidebar is expanded.
     pub(crate) parked_section_expanded: bool,
-    /// Per-canonical-root `AppRegistry` cache (stint 0724 Phase B). Replaces
-    /// the old single active-context-following `AppRegistry` — every context
+    /// Per-canonical-root `PluginRegistry` cache (stint 0724 Phase B). Replaces
+    /// the old single active-context-following `PluginRegistry` — every context
     /// resolves against its OWN root's view, never whichever context was last
     /// active. See `crate::app::registry_views` for the invalidation rules.
     pub(crate) registries: crate::app::registry_views::RegistryViews,
@@ -502,7 +503,7 @@ pub struct PlexiApp {
     /// opted-in via manifest `[app] watch = true` (workspace-local only).
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
     /// `reload_pane` call which relaunches the WASM runtime inside the
-    /// existing `AppPane` envelope.
+    /// existing `ViewPane` envelope.
     pub(crate) hot_reload: crate::host::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: ui_mailbox::MailboxReceiver<crate::host::hot_reload::ReloadRequest>,
     /// App state file watcher (stint 0644). Watches each file-backed app
@@ -526,7 +527,7 @@ pub struct PlexiApp {
     pub(crate) registry_watchers: HashMap<
         std::path::PathBuf,
         (
-            crate::app::registry_watcher::AppRegistryWatcher,
+            crate::app::registry_watcher::PluginRegistryWatcher,
             ui_mailbox::MailboxReceiver<()>,
         ),
     >,
@@ -585,13 +586,13 @@ pub struct PlexiApp {
     pub(crate) update_available: Option<String>,
     pub(crate) update_quit_pending: bool,
     pub(crate) update_confirm_prompt: bool,
-    /// Set by `AppRequest::Shutdown` (`plexi host stop`'s clean-shutdown
+    /// Set by `HostRequest::Shutdown` (`plexi host stop`'s clean-shutdown
     /// path). Consumed at the top of the next frame in `update_preamble`,
     /// which sends `ViewportCommand::Close`. Mirrors `update_quit_pending`.
     pub(crate) shutdown_requested: bool,
-    /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
+    /// Receiver for HostRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
-    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::protocol::AppRequest>,
+    pane_ipc_rx: ui_mailbox::MailboxReceiver<crate::protocol::HostRequest>,
     /// Host-owned event subscription core shared by the CLI NDJSON transport and
     /// the host MCP server. Resolves subscriber identity, runs the broker check,
     /// and records subscriptions in the global timeline.
@@ -614,7 +615,7 @@ pub struct PlexiApp {
     /// App-runtime subscriptions waiting for the shared broker to answer.
     /// Immediate Allow/Deny replies and deferred consent replies use the same
     /// channel so Python and Rust WASM receive an identical result event.
-    pending_app_subscription_replies: Vec<PendingAppSubscriptionReply>,
+    pending_app_subscription_replies: Vec<PendingPluginSubscriptionReply>,
     /// Raw `.wasm` path launches waiting for explicit link-time import review.
     pub(crate) pending_raw_wasm_launches: std::collections::VecDeque<PendingRawWasmLaunch>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
@@ -635,12 +636,12 @@ pub struct PlexiApp {
     /// dispatched on the first frame where `input_captured_by_overlay()` is false.
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
-    pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::AppCommand>,
+    pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::ViewCommand>,
     /// Host agent runtime (Phase C, docs/prm/agent-platform.md). Loaded from
     /// the active workspace's `agents/` dir; ticked once per frame in
     /// `update()` to consume agent event deliveries and finished turns.
     pub(crate) agent_host: crate::agent::AgentHost,
-    /// Pending `AppRequest::ClickPane` injections (stint 0398), keyed by
+    /// Pending `HostRequest::ClickPane` injections (stint 0398), keyed by
     /// target pane. Taken and consumed once per frame by whichever render
     /// path actually paints that pane (tiled or zoomed) — see
     /// `crate::host::pane::PendingPaneClick`.
@@ -652,7 +653,7 @@ pub struct PlexiApp {
     /// acknowledged and then discarded before the widget sees it.
     pub(crate) pending_pane_inputs: HashMap<crate::spatial::tiling::PaneId, Vec<egui::RawInput>>,
     /// Per-frame drag samples for canvas/process/WASM panes queued by
-    /// `AppRequest::DragPane` (stint 0510). One sample is promoted into
+    /// `HostRequest::DragPane` (stint 0510). One sample is promoted into
     /// `pending_pane_clicks` per rendered frame so the target pane sees
     /// press → move… → release across consecutive real frames, resolved
     /// against each frame's live canvas rect.
@@ -661,7 +662,7 @@ pub struct PlexiApp {
         std::collections::VecDeque<crate::host::pane::PendingPaneClick>,
     >,
     /// Per-frame pointer batches for builtin (egui-widget) panes queued by
-    /// `AppRequest::DragPane`. Unlike `pending_pane_inputs` — whose batches
+    /// `HostRequest::DragPane`. Unlike `pending_pane_inputs` — whose batches
     /// all merge into one frame — exactly one batch is merged per visible
     /// frame, so egui observes a genuine multi-frame press/move/release
     /// trajectory and resolves real drag state on whatever widget owns the
@@ -700,7 +701,7 @@ impl Drop for SheetButtonFrame {
     }
 }
 
-struct PendingAppSubscriptionReply {
+struct PendingPluginSubscriptionReply {
     pane_id: u64,
     request_id: String,
     receiver: std::sync::mpsc::Receiver<crate::host::event_subscriptions::HostSubscribeReply>,
@@ -731,7 +732,7 @@ pub(crate) fn configure_native_semantics(ctx: &egui::Context) {
 const PEER_IDENTITY_ACK: &[u8] = &[0x06]; // ASCII ACK
 
 /// Handle one newline-delimited JSON line from the notify socket: parse the
-/// `AppRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
+/// `HostRequest` and queue it on the pane-IPC mailbox (which owns the UI wake).
 ///
 /// `peer_ancestry` is the host-established ancestor-pid chain of the process
 /// on the other end of this connection, captured once per connection in
@@ -761,7 +762,7 @@ impl SocketAckWriter for std::io::Sink {}
 #[cfg(test)]
 pub(crate) fn handle_socket_line(
     line: &str,
-    mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
+    mailbox: &ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
@@ -777,7 +778,7 @@ pub(crate) fn handle_socket_line(
 pub(crate) fn handle_socket_line_in(
     profile: &std::path::Path,
     line: &str,
-    mailbox: &ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
+    mailbox: &ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
     peer_ancestry: Option<&[u32]>,
     ack_writer: &mut impl SocketAckWriter,
 ) {
@@ -794,45 +795,45 @@ pub(crate) fn handle_socket_line_in(
             return;
         }
     }
-    match serde_json::from_str::<crate::protocol::AppRequest>(line) {
+    match serde_json::from_str::<crate::protocol::HostRequest>(line) {
         Ok(mut cmd) => {
             // Fire-and-forget wakes can disconnect before peer lookup. Keep
             // missing-identity diagnostics for requests that use identity.
-            if peer_ancestry.is_none() && !matches!(cmd, crate::protocol::AppRequest::Wake) {
+            if peer_ancestry.is_none() && !matches!(cmd, crate::protocol::HostRequest::Wake) {
                 log::warn!("pane_ipc: request arrived without a verified socket peer identity");
             }
             let needs_identity_ack = matches!(
                 cmd,
-                crate::protocol::AppRequest::Notify { .. }
-                    | crate::protocol::AppRequest::DismissNotification { .. }
+                crate::protocol::HostRequest::Notify { .. }
+                    | crate::protocol::HostRequest::DismissNotification { .. }
             );
             match &mut cmd {
-                crate::protocol::AppRequest::Notify { peer_pid: p, .. }
-                | crate::protocol::AppRequest::DismissNotification { peer_pid: p, .. } => {
+                crate::protocol::HostRequest::Notify { peer_pid: p, .. }
+                | crate::protocol::HostRequest::DismissNotification { peer_pid: p, .. } => {
                     *p = peer_ancestry.map(<[u32]>::to_vec);
                 }
-                crate::protocol::AppRequest::AgentCall {
+                crate::protocol::HostRequest::AgentCall {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::AgentMessage {
+                | crate::protocol::HostRequest::AgentMessage {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::CallAppTool {
+                | crate::protocol::HostRequest::CallPluginTool {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::ListAppTools {
+                | crate::protocol::HostRequest::ListPluginTools {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::PaneSecretGet {
+                | crate::protocol::HostRequest::PaneSecretGet {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::PaneSecretList {
+                | crate::protocol::HostRequest::PaneSecretList {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::NeedsYouApi {
+                | crate::protocol::HostRequest::NeedsYouApi {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::ResourceLease {
+                | crate::protocol::HostRequest::ResourceLease {
                     peer_ancestry: p, ..
                 } => {
                     // Overwrite any client-supplied ancestry. A missing capture
@@ -840,37 +841,37 @@ pub(crate) fn handle_socket_line_in(
                     *p = peer_ancestry.unwrap_or(&[]).to_vec();
                     log::info!("pane_ipc: stamped peer ancestry ({} pid(s))", p.len());
                 }
-                crate::protocol::AppRequest::SpawnPane {
+                crate::protocol::HostRequest::SpawnPane {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::SetAgentState {
+                | crate::protocol::HostRequest::SetAgentState {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::AgentDone {
+                | crate::protocol::HostRequest::AgentDone {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::AgentAsk {
+                | crate::protocol::HostRequest::AgentAsk {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::Permissions {
+                | crate::protocol::HostRequest::Permissions {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::CallerContext {
+                | crate::protocol::HostRequest::CallerContext {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::AgentSpawn {
+                | crate::protocol::HostRequest::AgentSpawn {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::AgentWait {
+                | crate::protocol::HostRequest::AgentWait {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::PaneMessageSend {
+                | crate::protocol::HostRequest::PaneMessageSend {
                     peer_ancestry: p, ..
                 }
-                | crate::protocol::AppRequest::SendToPane {
+                | crate::protocol::HostRequest::SendToPane {
                     peer_ancestry: p, ..
                 } => {
-                    // Same rule as CallAppTool: the wire value is never the
+                    // Same rule as CallPluginTool: the wire value is never the
                     // caller's identity. None when this process has no peer
                     // capture (tests that enqueue the request directly).
                     *p = peer_ancestry.map(<[u32]>::to_vec);
@@ -879,7 +880,7 @@ pub(crate) fn handle_socket_line_in(
                         p.as_ref().map(|pids| pids.len()).unwrap_or(0)
                     );
                 }
-                crate::protocol::AppRequest::AgentsApi { payload, .. } => {
+                crate::protocol::HostRequest::AgentsApi { payload, .. } => {
                     if let Some(obj) = payload.as_object_mut() {
                         match peer_ancestry {
                             Some(pids) if !pids.is_empty() => {
@@ -925,7 +926,7 @@ pub(crate) fn handle_socket_line_in(
                 if let Some(reply_stream) = ack_writer.clone_reply_stream() {
                     crate::rpc::ReplyRegistry::register(token.clone(), reply_stream);
                 } else if ack_writer.requires_reply_stream()
-                    && matches!(cmd, crate::protocol::AppRequest::SendToPane { .. })
+                    && matches!(cmd, crate::protocol::HostRequest::SendToPane { .. })
                 {
                     log::warn!("pane_ipc: refusing pane send without a retained reply stream");
                     if let Err(error) = ack_writer.write_all(br#"{"error":"could not retain the reply connection; pane send was not dispatched","error_code":"reply_connection_unavailable"}"#) {
@@ -969,7 +970,7 @@ fn read_socket_frame(reader: &mut impl std::io::BufRead) -> std::io::Result<Opti
 }
 
 fn spawn_socket_listener(
-    mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
+    mailbox: ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
@@ -1036,15 +1037,15 @@ fn spawn_socket_listener(
     });
 }
 
-/// Per-connection handler. Most connections are one-shot `AppRequest` lines.
+/// Per-connection handler. Most connections are one-shot `HostRequest` lines.
 /// Event-bus control messages (`events_subscribe`, `events_list`,
-/// `events_declare`, `events_emit`) are intercepted before `AppRequest` parsing
+/// `events_declare`, `events_emit`) are intercepted before `HostRequest` parsing
 /// because they keep the socket open and stream NDJSON back — a transport the
 /// normal request/response-file path does not support.
 fn handle_socket_connection(
     trace_profile: &std::path::Path,
     stream: crate::platform::ipc::IpcStream,
-    mailbox: ui_mailbox::UiMailbox<crate::protocol::AppRequest>,
+    mailbox: ui_mailbox::UiMailbox<crate::protocol::HostRequest>,
     subscribe_mailbox: ui_mailbox::UiMailbox<
         crate::host::event_subscriptions::HostSubscribeRequest,
     >,
@@ -1085,7 +1086,7 @@ fn handle_socket_connection(
         return;
     }
     // Intercept event-stream control messages. These share the `type`-tagged
-    // JSON shape but are not `AppRequest` variants, so anything else falls
+    // JSON shape but are not `HostRequest` variants, so anything else falls
     // through to the normal one-shot path.
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&first) {
         match val.get("type").and_then(|t| t.as_str()) {
@@ -1121,7 +1122,7 @@ fn handle_socket_connection(
             _ => {}
         }
     }
-    // Normal path: first line plus any remaining lines as AppRequests.
+    // Normal path: first line plus any remaining lines as HostRequests.
     handle_socket_line_in(
         trace_profile,
         &first,
@@ -1263,9 +1264,9 @@ fn resolve_socket_peer_pid(_stream: &crate::platform::ipc::IpcStream) -> Option<
     None
 }
 
-/// Answer `events_list`: write the declared `(context_id, app_id, stream)`
+/// Answer `events_list`: write the declared `(context_id, plugin_id, stream)`
 /// triples and close. Pure discovery — no grant check, no identity, no
-/// streaming. Context-qualified since stint 0724 Phase D: the same `app_id`
+/// streaming. Context-qualified since stint 0724 Phase D: the same `plugin_id`
 /// may declare different streams/schemas in different contexts.
 fn handle_events_list(mut write_half: crate::platform::ipc::IpcStream, val: &serde_json::Value) {
     use std::io::Write;
@@ -1282,7 +1283,7 @@ fn handle_events_list(mut write_half: crate::platform::ipc::IpcStream, val: &ser
         let arr: Vec<serde_json::Value> = streams
             .iter()
             .map(|(context_id, a, s)| {
-                serde_json::json!({"context_id": context_id, "app_id": a, "stream": s})
+                serde_json::json!({"context_id": context_id, "plugin_id": a, "stream": s})
             })
             .collect();
         let _ = writeln!(
@@ -1293,8 +1294,8 @@ fn handle_events_list(mut write_half: crate::platform::ipc::IpcStream, val: &ser
     } else if streams.is_empty() {
         let _ = writeln!(write_half, "No event streams declared by running apps.");
     } else {
-        for (context_id, app_id, stream) in &streams {
-            let _ = writeln!(write_half, "{context_id}  {app_id}  {stream}");
+        for (context_id, plugin_id, stream) in &streams {
+            let _ = writeln!(write_half, "{context_id}  {plugin_id}  {stream}");
         }
     }
     let _ = write_half.flush();
@@ -1325,9 +1326,9 @@ fn handle_events_publish(
         let _ = w.flush();
     };
 
-    let app_id = val["app_id"].as_str().unwrap_or_default().to_string();
-    if app_id.trim().is_empty() {
-        reply_err(write_half, "missing required field: app_id".to_string());
+    let plugin_id = val["plugin_id"].as_str().unwrap_or_default().to_string();
+    if plugin_id.trim().is_empty() {
+        reply_err(write_half, "missing required field: plugin_id".to_string());
         return;
     }
     let from_pane_id = val["from_pane_id"].as_u64();
@@ -1350,7 +1351,7 @@ fn handle_events_publish(
             let emitted = crate::host::app_timeline::EmittedEvent {
                 event: val["event"].as_str().unwrap_or_default().to_string(),
                 actor: serde_json::from_value(val["actor"].clone())
-                    .unwrap_or(crate::protocol::AppEventActor::Agent),
+                    .unwrap_or(crate::protocol::PluginEventActor::Agent),
                 // Host-stamped by the UI thread from the pane identity.
                 actor_id: None,
                 caused_by: None,
@@ -1385,7 +1386,7 @@ fn handle_events_publish(
 
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<HostPublishReply>(1);
     let req = HostPublishRequest {
-        app_id: app_id.clone(),
+        plugin_id: plugin_id.clone(),
         action,
         from_pane_id,
         subscriber_override: None,
@@ -1415,11 +1416,11 @@ fn handle_events_publish(
     };
     let line = match reply {
         HostPublishReply::Ok { detail, event_id } => {
-            log::info!("events: publish to '{app_id}' ok — {detail}");
+            log::info!("events: publish to '{plugin_id}' ok — {detail}");
             serde_json::json!({"type": "ok", "detail": detail, "event_id": event_id})
         }
         HostPublishReply::Err { message } => {
-            log::info!("events: publish to '{app_id}' rejected — {message}");
+            log::info!("events: publish to '{plugin_id}' rejected — {message}");
             serde_json::json!({"type": "error", "message": message})
         }
     };
@@ -1439,7 +1440,7 @@ fn start_registry_watchers_for(
 ) -> HashMap<
     std::path::PathBuf,
     (
-        crate::app::registry_watcher::AppRegistryWatcher,
+        crate::app::registry_watcher::PluginRegistryWatcher,
         ui_mailbox::MailboxReceiver<()>,
     ),
 > {
@@ -1931,7 +1932,7 @@ impl PlexiApp {
 
         let agent_host =
             crate::agent::AgentHost::production(config.ai.clone(), config.resolved_model_modes());
-        // Standing ruling: a context root must gitignore its app_states dir
+        // Standing ruling: a context root must gitignore its plugin_states dir
         // (personal local data, never committed). Guarded so constructing a
         // Context never creates directories as a side effect.
         if default_root.is_dir() {
@@ -2438,7 +2439,7 @@ impl PlexiApp {
             .router
             .position(|c| c.context_id == context_id)
             .map(|idx| self.router.get(idx).root.clone())?;
-        let app_id = window
+        let plugin_id = window
             .panes
             .get(&pane_id)
             .and_then(crate::host::pane::Pane::as_app)
@@ -2448,7 +2449,7 @@ impl PlexiApp {
             context_root,
             window_id: window.window_id,
             pane_id,
-            app_id,
+            plugin_id,
         })
     }
 
@@ -2493,7 +2494,7 @@ impl PlexiApp {
     /// context's root moving, a context or pane being removed, a package
     /// being installed/replaced, or a watched source reporting a new
     /// generation. Phase A (stint 0724) wired the plumbing; Phase B gives it
-    /// its first two real consumers — `registries` (the per-root `AppRegistry`
+    /// its first two real consumers — `registries` (the per-root `PluginRegistry`
     /// cache) and, for `ContextRootChanged`, every live app pane in the
     /// affected context, not just the ones in the currently-rendered window.
     /// Later phases (connector tools, the event bus, notifications) add
@@ -2619,7 +2620,7 @@ impl PlexiApp {
             log::warn!("wasm effect: source pane {pane_id} is no longer an app");
             return;
         };
-        if let crate::host::pane::AppRuntime::Wasm(wasm) = &mut app.runtime {
+        if let crate::host::pane::ViewRuntime::Wasm(wasm) = &mut app.runtime {
             wasm.complete_host_effect(event);
         } else {
             log::warn!("wasm effect: source pane {pane_id} is no longer a WASM app");
@@ -2674,14 +2675,14 @@ impl PlexiApp {
                 log::info!(
                     "app events: deliver subscription={} publisher={} stream={} to pane={pane_id}",
                     delivery.subscription_id,
-                    delivery.app_id,
+                    delivery.plugin_id,
                     delivery.event
                 );
                 self.queue_event_to_app_pane_anywhere(
                     pane_id,
-                    crate::protocol::PlexiEvent::AppEvent {
+                    crate::protocol::PlexiEvent::PluginEvent {
                         subscription_id: delivery.subscription_id,
-                        app_id: delivery.app_id,
+                        plugin_id: delivery.plugin_id,
                         event: delivery.event,
                         event_id: delivery.event_id,
                         resource_id: delivery.resource_id,
@@ -2701,13 +2702,13 @@ impl PlexiApp {
         &mut self,
         pane_id: u64,
         request_id: String,
-        publisher_app_id: String,
+        publisher_plugin_id: String,
         event_names: Vec<String>,
         payload_mode: crate::protocol::PayloadMode,
         trigger_mode: crate::protocol::TriggerMode,
         resource_id: Option<String>,
     ) {
-        let Some((subscriber_app_id, workspace_root)) = self.windows.iter().find_map(|window| {
+        let Some((subscriber_plugin_id, workspace_root)) = self.windows.iter().find_map(|window| {
             window.panes.get(&pane_id).and_then(|pane| {
                 pane.as_app()
                     .map(|app| (app.manifest_id.clone(), app.workspace_root.clone()))
@@ -2726,7 +2727,7 @@ impl PlexiApp {
             .map(|origin| origin.context_id);
         let (reply, receiver) = std::sync::mpsc::sync_channel(1);
         let request = crate::host::event_subscriptions::HostSubscribeRequest {
-            publisher_app_id,
+            publisher_plugin_id,
             event_names,
             payload_mode,
             trigger_mode,
@@ -2734,7 +2735,7 @@ impl PlexiApp {
             from_pane_id: Some(pane_id),
             subscriber_override: Some(crate::host::event_subscriptions::app_subscriber_id(pane_id)),
             subscriber_type_override: Some(crate::broker::ActorType::App),
-            broker_actor_override: Some(subscriber_app_id),
+            broker_actor_override: Some(subscriber_plugin_id),
             workspace_root_override: Some(workspace_root),
             context_id_override: context_id,
             // This request never travels over the raw event-bus socket — the
@@ -2750,7 +2751,7 @@ impl PlexiApp {
             self.pending_event_consents.push_back(consent);
         }
         self.pending_app_subscription_replies
-            .push(PendingAppSubscriptionReply {
+            .push(PendingPluginSubscriptionReply {
                 pane_id,
                 request_id,
                 receiver,
@@ -2766,13 +2767,13 @@ impl PlexiApp {
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Ok {
                     subscription_id,
                     ..
-                }) => Some(crate::protocol::PlexiEvent::AppEventsSubscribed {
+                }) => Some(crate::protocol::PlexiEvent::PluginEventsSubscribed {
                     request_id: pending.request_id.clone(),
                     subscription_id: Some(subscription_id),
                     error: None,
                 }),
                 Ok(crate::host::event_subscriptions::HostSubscribeReply::Err { message }) => {
-                    Some(crate::protocol::PlexiEvent::AppEventsSubscribed {
+                    Some(crate::protocol::PlexiEvent::PluginEventsSubscribed {
                         request_id: pending.request_id.clone(),
                         subscription_id: None,
                         error: Some(message),
@@ -2848,7 +2849,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::HostRequest>) {
         Self::new_for_test_with_config(ctx, frame_tick, config::PlexiConfig::default())
     }
 
@@ -2860,7 +2861,7 @@ impl PlexiApp {
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
         config: config::PlexiConfig,
-    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::AppRequest>) {
+    ) -> (Self, ui_mailbox::UiMailbox<crate::protocol::HostRequest>) {
         let core_only = config.core_only.unwrap_or(false);
         let key_bindings = crate::host::keys::build_key_bindings_with_user_keys(
             config.keybindings.as_ref(),
@@ -2884,7 +2885,7 @@ impl PlexiApp {
         let permission_store_dir = scratch.path().join("permissions");
         std::fs::create_dir_all(&path).expect("create isolated test workspace");
         std::fs::create_dir_all(&permission_store_dir).expect("create test permission store");
-        // Standing ruling: a context root must gitignore its app_states dir.
+        // Standing ruling: a context root must gitignore its plugin_states dir.
         if path.is_dir() {
             if let Err(error) = crate::workspace::secrets::ensure_app_state_gitignore(&path) {
                 log::warn!(
@@ -2894,7 +2895,7 @@ impl PlexiApp {
             }
         }
         let (pane_ipc_tx, pane_ipc_rx) =
-            ui_mailbox::UiMailbox::<crate::protocol::AppRequest>::channel(
+            ui_mailbox::UiMailbox::<crate::protocol::HostRequest>::channel(
                 std::sync::Arc::clone(&ui_wake),
                 "pane_ipc",
             );
@@ -3141,12 +3142,12 @@ impl PlexiApp {
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
-        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
-            permissions: crate::app::permissions::AppPermissions::builtin(),
-            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                crate::file_browser::FileBrowserApp::new(cwd.clone()),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserView::new(cwd.clone()),
             )),
             workspace_root: cwd,
             manifest_id: "test".to_string(),
@@ -3193,12 +3194,12 @@ impl PlexiApp {
     ) -> (egui_tiles::TileId, u64) {
         let pane_id = self.host.alloc_pane_id();
         let cwd = std::path::PathBuf::from("/tmp");
-        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+        let pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::ViewPane {
             pip_status: None,
             id: pane_id,
-            permissions: crate::app::permissions::AppPermissions::builtin(),
-            runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                crate::file_browser::FileBrowserApp::new(cwd.clone()),
+            permissions: crate::app::permissions::PluginPermissions::builtin(),
+            runtime: crate::host::pane::ViewRuntime::Builtin(Box::new(
+                crate::file_browser::FileBrowserView::new(cwd.clone()),
             )),
             workspace_root: cwd,
             manifest_id: manifest_id.to_string(),
@@ -3437,23 +3438,23 @@ impl PlexiApp {
 /// owns keyboard input. Safe commands (ShowNotification, pipes, queries) always
 /// dispatch immediately. Unsafe commands (layout/terminal mutations, focus changes)
 /// are held in `overlay_held_cmds` and released on the next modal-free frame.
-fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
-    use crate::app::app_trait::AppCommand;
+fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::ViewCommand) -> bool {
+    use crate::app::app_trait::ViewCommand;
     match cmd {
-        AppCommand::WasmHostEffect { effect, .. } => {
+        ViewCommand::WasmHostEffect { effect, .. } => {
             matches!(effect, crate::host::wasm_pane::WasmHostEffect::Spawn { .. })
         }
-        AppCommand::SpawnApp { .. }
-        | AppCommand::SpawnPane { .. }
-        | AppCommand::RequestLinkedTerminal { .. }
-        | AppCommand::RunInLinkedTerminal { .. }
-        | AppCommand::InsertPathToken { .. }
-        | AppCommand::OpenArtifact { .. } => true,
-        AppCommand::AssistantHostTool { name, .. } => !matches!(
+        ViewCommand::SpawnView { .. }
+        | ViewCommand::SpawnPane { .. }
+        | ViewCommand::RequestLinkedTerminal { .. }
+        | ViewCommand::RunInLinkedTerminal { .. }
+        | ViewCommand::InsertPathToken { .. }
+        | ViewCommand::OpenArtifact { .. } => true,
+        ViewCommand::AssistantHostTool { name, .. } => !matches!(
             name.as_str(),
             "host.panes.list" | "host.panes.state" | "host.introspect"
         ),
-        AppCommand::DeliverNotifyAction { host_action, .. } => host_action
+        ViewCommand::DeliverNotifyAction { host_action, .. } => host_action
             .as_deref()
             .map(|a| a.starts_with("pane_focus:"))
             .unwrap_or(false),
@@ -3461,18 +3462,18 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
     }
 }
 
-fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static str {
-    use crate::app::app_trait::AppCommand;
+fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::ViewCommand) -> &'static str {
+    use crate::app::app_trait::ViewCommand;
     match cmd {
-        AppCommand::WasmHostEffect { .. } => "WasmHostEffect",
-        AppCommand::SpawnApp { .. } => "SpawnApp",
-        AppCommand::SpawnPane { .. } => "SpawnPane",
-        AppCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
-        AppCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
-        AppCommand::InsertPathToken { .. } => "InsertPathToken",
-        AppCommand::OpenArtifact { .. } => "OpenArtifact",
-        AppCommand::AssistantHostTool { .. } => "AssistantHostTool",
-        AppCommand::DeliverNotifyAction { .. } => "DeliverNotifyAction(pane_focus)",
+        ViewCommand::WasmHostEffect { .. } => "WasmHostEffect",
+        ViewCommand::SpawnView { .. } => "SpawnView",
+        ViewCommand::SpawnPane { .. } => "SpawnPane",
+        ViewCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
+        ViewCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
+        ViewCommand::InsertPathToken { .. } => "InsertPathToken",
+        ViewCommand::OpenArtifact { .. } => "OpenArtifact",
+        ViewCommand::AssistantHostTool { .. } => "AssistantHostTool",
+        ViewCommand::DeliverNotifyAction { .. } => "DeliverNotifyAction(pane_focus)",
         _ => "unknown",
     }
 }
@@ -3777,7 +3778,7 @@ impl eframe::App for PlexiApp {
             &self.ui_phase,
             crate::platform::logging::UiPhase::EventDeliveries,
         );
-        crate::platform::logging::time_drain("deliver_app_event_subscriptions", || {
+        crate::platform::logging::time_drain("deliver_plugin_event_subscriptions", || {
             self.deliver_app_event_subscriptions()
         });
 
@@ -3813,13 +3814,13 @@ impl eframe::App for PlexiApp {
         // and raise notifications on their own schedule, with no dependence on
         // being painted. This drain lived in `ui` until stint 0688, so an
         // occluded host executed no app command at all (see
-        // `service_app_commands`). It runs last in `logic` because the services
+        // `service_view_commands`). It runs last in `logic` because the services
         // above may queue work an app command then consumes on this same pass.
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
-            crate::platform::logging::UiPhase::AppCommands,
+            crate::platform::logging::UiPhase::ViewCommands,
         );
-        crate::platform::logging::time_drain("service_app_commands", || {
+        crate::platform::logging::time_drain("service_view_commands", || {
             self.service_app_commands(ctx)
         });
         self.resolve_auto_context_names();
@@ -3925,7 +3926,7 @@ impl eframe::App for PlexiApp {
                 self.claimed_host_key_releases.insert(binding.1);
             }
         }
-        let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
+        let mut early_modal_cmds: Vec<crate::app::app_trait::ViewCommand> = Vec::new();
         let mut overlay_key_disposition = if modal_focus_open {
             // Ownership-transfer (stint 0240): take this frame's input-intent
             // events out of `ctx` once, hand them to the top `FocusKind`
@@ -4009,7 +4010,7 @@ impl eframe::App for PlexiApp {
             &mut router_input,
             filtered_bindings.as_deref().unwrap_or(&self.binding_table),
             &mut self.claimed_host_key_releases,
-            /* app_active */ false,
+            /* view_active */ false,
             keyboard_capture_active,
             overlay_open,
             self.show_shortcuts,
@@ -4088,7 +4089,7 @@ impl eframe::App for PlexiApp {
             router_input.give_back(ctx);
         }
         // Stint 0688: app-command servicing moved to `App::logic` — see
-        // `service_app_commands`. Only the modal-render follow-up stays here,
+        // `service_view_commands`. Only the modal-render follow-up stays here,
         // because `early_modal_cmds` is produced by this pass's overlay draw.
         self.sync_app_cwd();
 
@@ -4178,9 +4179,9 @@ impl eframe::App for PlexiApp {
         // fire; all other shortcuts are suppressed when an overlay holds focus via
         // the early-return guard in `keys::poll_actions`.
         //
-        // AppActive bindings are intentionally polled after app dispatch.
+        // ViewActive bindings are intentionally polled after app dispatch.
         // Focused TextInputs and apps own bare Escape first; the dispatch gate
-        // removes it when it exits a field so CloseApp cannot fire in the same
+        // removes it when it exits a field so CloseView cannot fire in the same
         // frame. Global and Normal host chords were already removed above.
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
         poll_actions_result.extend(keys::poll_actions(
@@ -4338,7 +4339,7 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                Action::NavBackApp => {
+                Action::NavBackView => {
                     if !self.try_nav_back_focused() {
                         self.step_focus_history_back();
                     }
@@ -4513,7 +4514,7 @@ impl eframe::App for PlexiApp {
                 Action::ScrollDown => {
                     self.scroll_focused_pane(-3);
                 }
-                Action::CloseApp => {
+                Action::CloseView => {
                     self.close_focused_app();
                 }
                 Action::NextBlockedAgent => {
@@ -4551,7 +4552,7 @@ impl eframe::App for PlexiApp {
                 Action::ZoomIn => {
                     self.wrap_selection_or_zoom_in();
                 }
-                Action::ForceReloadApp => {
+                Action::ForceReloadView => {
                     self.force_reload_focused_app();
                 }
                 Action::NewPageRight => {
@@ -4812,7 +4813,7 @@ impl PlexiApp {
                         t.font_size
                     );
                 } else if let Some(a) = pane.as_app_mut() {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut a.runtime {
                         app.adjust_font_size(delta);
                         log::info!(
                             "pane font size: pane_id={pane_id} builtin app delta={delta}"
@@ -4834,7 +4835,7 @@ impl PlexiApp {
                         t.font_size
                     );
                 } else if let Some(a) = pane.as_app_mut() {
-                    if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(app) = &mut a.runtime {
                         app.reset_font_size();
                         log::info!("pane font size reset: pane_id={pane_id} builtin app");
                     }
@@ -5418,7 +5419,7 @@ pub(crate) fn key_str_to_egui_raw_input(key: &str) -> Option<egui::RawInput> {
 /// must exercise the app's real keyboard path so live validation observes
 /// production behavior.
 fn drive_native_pane_key(
-    runtime: &mut crate::host::pane::AppRuntime,
+    runtime: &mut crate::host::pane::ViewRuntime,
     key: &str,
 ) -> Result<app_trait::KeyDisposition, String> {
     let raw = key_str_to_egui_raw_input(key)
@@ -5437,10 +5438,10 @@ fn drive_native_pane_key(
 }
 
 /// Register the directed pipe on the target's own local pipe registry so a
-/// runtime that maintains one (`AppRuntime::Wasm` and `AppRuntime::Python`)
+/// runtime that maintains one (`ViewRuntime::Wasm` and `ViewRuntime::Python`)
 /// reports `has_pipe_reader` true for it on the reverse-send path (stint 0742).
 ///
-/// Builtin apps (`AppRuntime::Builtin`) have no per-pane `TypedPipeRegistry`
+/// Builtin apps (`ViewRuntime::Builtin`) have no per-pane `TypedPipeRegistry`
 /// and return `false`; `OpenDirectedPipe` still proceeds for them because the
 /// duplex data plane is host-mediated via `directed_pipes` +
 /// `queue_outbound_event`.
@@ -5453,7 +5454,7 @@ fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id:
         && app_pane.runtime.has_pipe_reader(pipe_id);
     if registered {
         log::info!(
-            "register_directed_pipe_on_target: registered directed pipe '{pipe_id}' on target pane {} (app_id={}, runtime={runtime_kind})",
+            "register_directed_pipe_on_target: registered directed pipe '{pipe_id}' on target pane {} (plugin_id={}, runtime={runtime_kind})",
             app_pane.id,
             app_pane.manifest_id
         );
@@ -5587,7 +5588,7 @@ pub(crate) fn restore_workspace(
             };
             let mut pane_entry: Option<Pane> = None;
             if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::App) {
-                let Some(app_type) = &saved_pane.app_id else {
+                let Some(app_type) = &saved_pane.plugin_id else {
                     continue;
                 };
                 let app_cwd = saved_pane.cwd.clone();
@@ -5614,7 +5615,7 @@ pub(crate) fn restore_workspace(
                         collaborators.colors,
                         collaborators.profile_dir,
                     ) {
-                        Ok(crate::pane_ops::RestoredAppPane {
+                        Ok(crate::pane_ops::RestoredViewPane {
                             pane,
                             state_paths,
                             hot_reload_dir,
@@ -5628,14 +5629,14 @@ pub(crate) fn restore_workspace(
                                 collaborators.state_watch.watch(saved_pane.id, &state_paths);
                             }
                             log::info!(
-                                "workspace_restore: pane {} (app_id={app_type}) relaunched as its own app",
+                                "workspace_restore: pane {} (plugin_id={app_type}) relaunched as its own app",
                                 saved_pane.id
                             );
                             pane_entry = Some(pane);
                         }
                         Err(reason) => {
                             log::info!(
-                                "workspace_restore: pane {} (app_id={app_type}) failed to relaunch: {reason} — rendering launch-failed pane",
+                                "workspace_restore: pane {} (plugin_id={app_type}) failed to relaunch: {reason} — rendering launch-failed pane",
                                 saved_pane.id
                             );
                             pane_entry = Some(crate::pane_ops::restore_launch_failed_pane(
@@ -5651,7 +5652,7 @@ pub(crate) fn restore_workspace(
                         app_type,
                         saved_pane.id,
                         app_cwd.clone(),
-                        saved_pane.app_state.as_ref(),
+                        saved_pane.plugin_state.as_ref(),
                     );
                     // The Assistant is a builtin needing a broker + profile
                     // dir, so the broker-free factory can't build it. Build
@@ -5684,7 +5685,7 @@ pub(crate) fn restore_workspace(
                         );
                     }
                 } else {
-                    // Pre-0680 save of a Python/WASM app pane: `app_id`
+                    // Pre-0680 save of a Python/WASM app pane: `plugin_id`
                     // holds the runtime kind, not a manifest id, and
                     // there is no launch context to relaunch from.
                     log::info!(
@@ -5696,7 +5697,7 @@ pub(crate) fn restore_workspace(
                         saved_pane.id,
                         app_cwd.clone(),
                         format!(
-                            "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); reopen the app with `plexi app open <id>`"
+                            "app pane saved before Plexi recorded app identity (runtime kind only: {app_type}); reopen the app with `plexi view open <id>`"
                         ),
                     ));
                 }

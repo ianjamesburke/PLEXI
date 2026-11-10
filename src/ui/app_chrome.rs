@@ -9,7 +9,7 @@ const APP_BAR_TITLE_SIZE: f32 = style::TEXT_TITLE;
 const APP_BAR_SINGLE_BAND_H: f32 = 34.0;
 const APP_BAR_DOUBLE_BAND_H: f32 = 48.0;
 
-pub(crate) struct AppChrome<'a> {
+pub(crate) struct ViewChrome<'a> {
     colors: &'a Colors,
 }
 
@@ -22,7 +22,7 @@ pub(crate) struct TextLabelStyle {
     pub wrap: bool,
 }
 
-impl<'a> AppChrome<'a> {
+impl<'a> ViewChrome<'a> {
     pub(crate) fn new(colors: &'a Colors) -> Self {
         Self { colors }
     }
@@ -74,7 +74,7 @@ impl<'a> AppChrome<'a> {
         );
         let mut painter = ui.painter().clone();
         painter.set_opacity(1.0);
-        let capture = super::layout_report::Capture::begin(&painter, "app_bar");
+        let capture = super::layout_report::Capture::begin(&painter, "surface_header");
         painter.rect_filled(full_rect, 0.0, self.toolbar_fill());
 
         let text_x = full_rect.min.x + style::SPACE_MD;
@@ -148,7 +148,7 @@ impl<'a> AppChrome<'a> {
         color: Color32,
     ) {
         let Ok(lane) = super::bounded::allocate(painter.clip_rect(), 0.0, 0.0, &[]) else {
-            log::info!("ui: insufficient app-bar text space");
+            log::info!("ui: insufficient surface-header text space");
             return;
         };
         let galley = super::text::elided_galley(
@@ -213,7 +213,7 @@ mod adoption_tests {
             ));
             let capture =
                 crate::ui::layout_report::Capture::begin(ui.painter(), "adoption-fixture");
-            let rect = AppChrome::new(&colors).paint_app_bar(
+            let rect = ViewChrome::new(&colors).paint_app_bar(
                 ui,
                 "A deliberately long application title with an important suffix",
                 "/a/very/long/unbroken/subtitle/identifier/0123456789abcdef",

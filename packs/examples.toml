@@ -1,32 +1,32 @@
-schema_version = 1
+schema_version = 2
 reseed = "once"
 
-[[app]]
+[[plugin]]
 id      = "wikipedia"
 source  = "local:wikipedia"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "snake"
 source  = "local:snake"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "tetris"
 source  = "local:tetris"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "coding-agent"
 source  = "local:coding-agent"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "research-agent"
 source  = "local:research-agent"
 version = "bundled"
 
-[[app]]
+[[plugin]]
 id      = "writing-agent"
 source  = "local:writing-agent"
 version = "bundled"

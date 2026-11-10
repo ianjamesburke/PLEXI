@@ -19,9 +19,9 @@
 //! may actually do:
 //!
 //! - **Event subscriptions** always require a persisted user `Allow` grant on
-//!   `app_event_stream:<app_id>::<event>`. A denied/ungranted subscription
+//!   `plugin_event_stream:<plugin_id>::<event>`. A denied/ungranted subscription
 //!   means the agent never sees the events.
-//! - **App tools** are gated per turn on `app_connector:app.<tool_name>`.
+//! - **App tools** are gated per turn on `plugin_connector:app.<tool_name>`.
 //!   The agent's `[permissions]` posture participates at the actor tiers, so
 //!   read-only tools in `allow = [...]` work without a user grant, while
 //!   `ask = [...]` tools need an explicit user grant record. Non-allowed
@@ -40,7 +40,7 @@ use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantStore, PermissionPosture,
     PermissionRequest, TargetType,
 };
-use crate::host::app_timeline::{AppTimeline, EventDelivery};
+use crate::host::app_timeline::{PluginTimeline, EventDelivery};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, ConcreteModelRoute, ReasoningEffort};
 use crate::plexi_ai::tool_dispatch::ToolDispatcher;
 use crate::protocol::{parse_enum, AiMessage, ModelTier, PayloadMode, TriggerMode};
@@ -1160,7 +1160,7 @@ pub struct AgentHost {
     pub agents: Vec<AgentRuntime>,
     pub grant_store: GrantStore,
     pub monitor: std::sync::Arc<crate::broker::gate::PermissionMonitor>,
-    timeline: Arc<Mutex<AppTimeline>>,
+    timeline: Arc<Mutex<PluginTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
     /// The active host context this `AgentHost` last reloaded for — stint
@@ -1173,7 +1173,7 @@ pub struct AgentHost {
     /// NOTE: `AgentHost` itself remains a single active-context singleton
     /// (like `workspace_root`) — reloaded wholesale on every context
     /// transition rather than keyed per-context the way `RegistryViews`
-    /// (Phase B) is. This mirrors the pre-Phase-B `AppRegistry` bug class for
+    /// (Phase B) is. This mirrors the pre-Phase-B `PluginRegistry` bug class for
     /// agents specifically; fixing it is out of scope for Phase C and is
     /// flagged for a future stint.
     context_id: u64,
@@ -1191,7 +1191,7 @@ impl AgentHost {
     /// shared timeline, and the live AI broker.
     pub fn new(
         grant_store: GrantStore,
-        timeline: Arc<Mutex<AppTimeline>>,
+        timeline: Arc<Mutex<PluginTimeline>>,
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
     ) -> Self {
@@ -1262,7 +1262,7 @@ impl AgentHost {
 
     /// Attach an agent: register it as an `ActorType::Agent` actor and create
     /// broker-gated subscriptions for its requested event streams. Every
-    /// event target (`app_event_stream:<app>::<event>`) must evaluate to a
+    /// event target (`plugin_event_stream:<app>::<event>`) must evaluate to a
     /// persisted user `Allow`; anything else (including posture-only allows)
     /// is refused — subscriptions always need an explicit user grant. The
     /// agent is attached either way; without subscriptions it sees nothing.
@@ -1302,7 +1302,7 @@ impl AgentHost {
                     subscription_id: subscription_id.clone(),
                     subscriber_type: ActorType::Agent,
                     subscriber_id: def.id.clone(),
-                    app_id: sub.app.clone(),
+                    plugin_id: sub.app.clone(),
                     event_names: sub.events.clone(),
                     payload_mode: sub.payload,
                     trigger_mode: sub.trigger,
@@ -1405,7 +1405,7 @@ impl AgentHost {
             }
             let line = format!(
                 "[{}] {} {}{}",
-                d.app_id,
+                d.plugin_id,
                 d.event,
                 d.summary.as_deref().unwrap_or("(no summary)"),
                 d.payload
@@ -1436,7 +1436,7 @@ impl AgentHost {
     }
 
     /// Build the broker-gated tool snapshot for an agent: tools visible in
-    /// this workspace whose `app_connector:app.<tool_name>` target evaluates
+    /// this workspace whose `plugin_connector:app.<tool_name>` target evaluates
     /// to `Allow` for the agent (user grants + the agent's posture tiers).
     fn gated_dispatcher(&self, agent: &AgentRuntime) -> ToolDispatcher {
         // Discovery does not authorize. Posture deny still hides a tool;
@@ -1444,7 +1444,7 @@ impl AgentHost {
         let mut dispatcher = ToolDispatcher::from_registry(
             crate::plexi_ai::tool_dispatch::DispatchScope {
                 caller_pane_id: 0,
-                caller_app_id: format!("agent:{}", agent.def.id),
+                caller_plugin_id: format!("agent:{}", agent.def.id),
                 actor_type: ActorType::Agent,
                 actor_scope: ActorScope::User,
                 workspace_root: self.workspace_root.clone(),
@@ -1461,7 +1461,7 @@ impl AgentHost {
                 let req = PermissionRequest::new(
                     ActorType::Agent,
                     &agent.def.id,
-                    TargetType::AppConnector,
+                    TargetType::PluginConnector,
                     &tool.name,
                     Some(&self.workspace_root),
                 );
@@ -1510,7 +1510,7 @@ impl AgentHost {
         });
 
         let request = AiBrokerRequest {
-            app_id: format!("agent:{}", agent.def.id),
+            plugin_id: format!("agent:{}", agent.def.id),
             model_mode: match agent.def.default_tier { ModelTier::High => crate::plexi_ai::broker::ModelMode::Slow, ModelTier::Low | ModelTier::Medium => crate::plexi_ai::broker::ModelMode::Fast },
             concrete_model: agent
                 .def
@@ -1600,7 +1600,7 @@ impl AgentHost {
     pub fn inert() -> Self {
         Self::new(
             GrantStore::default(),
-            Arc::new(Mutex::new(AppTimeline::default())),
+            Arc::new(Mutex::new(PluginTimeline::default())),
             Arc::new(InertAiBroker),
             std::env::temp_dir(),
         )
@@ -1609,7 +1609,7 @@ impl AgentHost {
     /// Test constructor: isolated timeline + injected broker, no disk I/O.
     #[cfg(test)]
     pub fn new_for_test(
-        timeline: Arc<Mutex<AppTimeline>>,
+        timeline: Arc<Mutex<PluginTimeline>>,
         ai_broker: Arc<dyn AiBroker>,
         workspace_root: PathBuf,
     ) -> Self {
@@ -1630,7 +1630,7 @@ impl AiBroker for InertAiBroker {
     ) -> crate::plexi_ai::broker::AiBrokerResponse {
         log::warn!(
             "agent: InertAiBroker dispatch for '{}' — no AI broker in this context",
-            request.app_id
+            request.plugin_id
         );
         crate::plexi_ai::broker::AiBrokerResponse::err("no AI broker in this context")
     }
@@ -1847,7 +1847,7 @@ default = "ask"
             harness.terminal_backend(terminal).enable_input_tap();
             harness.app.dispatch_run_in_linked_terminal(sender, terminal, SENTINEL.to_string(), true);
             assert_eq!(harness.terminal_backend(terminal).take_input_tap(), format!("{SENTINEL}\n").as_bytes());
-            harness.app.handle_pane_ipc_request(crate::protocol::AppRequest::SendToPane {
+            harness.app.handle_pane_ipc_request(crate::protocol::HostRequest::SendToPane {
                 generated_operation_id: false,
                 pane_id: terminal, text: SENTINEL.to_string(), submit: false, paste: false,
                 response_file: None, operation_id: None, peer_ancestry: None,
@@ -2055,7 +2055,7 @@ default_tier = "low"
         std::fs::write(agent_dir.join("AGENT.md"), "You are a chess opponent.").unwrap();
         std::fs::write(agent_dir.join("settings.toml"), SETTINGS).unwrap();
 
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         // Host built with NO workspace — the boot-before-workspace case.
         let mut host = AgentHost::new_for_test(
             timeline.clone(),
@@ -2112,7 +2112,7 @@ default_tier = "low"
 
         let profile = tempfile::tempdir().unwrap();
         let ws = tempfile::tempdir().unwrap();
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         let mut host = AgentHost::new_for_test(
             timeline,
             Arc::new(InertAiBroker),
@@ -2177,22 +2177,22 @@ default_tier = "low"
     #[test]
     fn self_caused_deliveries_do_not_trigger_turns() {
         use crate::host::app_timeline::EventDelivery;
-        use crate::protocol::AppEventActor;
+        use crate::protocol::PluginEventActor;
 
-        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        let timeline = Arc::new(Mutex::new(PluginTimeline::default()));
         let mut host =
             AgentHost::new_for_test(timeline, Arc::new(InertAiBroker), std::env::temp_dir());
         host.attach(AgentDefinition::parse("prose", SETTINGS).unwrap());
         assert_eq!(host.agents[0].in_flight, 0);
 
-        let delivery = |id: u64, actor: AppEventActor, actor_id: &str, caused_by: Option<&str>| {
+        let delivery = |id: u64, actor: PluginEventActor, actor_id: &str, caused_by: Option<&str>| {
             EventDelivery {
                 delivery_id: id,
                 subscription_id: "sub-1".to_string(),
                 subscriber_type: ActorType::Agent,
                 subscriber_id: "chess-opponent".to_string(),
                 trigger_mode: TriggerMode::Conversation,
-                app_id: "chess".to_string(),
+                plugin_id: "chess".to_string(),
                 event: "turn.ready".to_string(),
                 event_id: id,
                 resource_id: "game-1".to_string(),
@@ -2211,7 +2211,7 @@ default_tier = "low"
             0,
             vec![delivery(
                 1,
-                AppEventActor::Agent,
+                PluginEventActor::Agent,
                 "agent:chess-opponent",
                 None,
             )],
@@ -2223,7 +2223,7 @@ default_tier = "low"
             0,
             vec![delivery(
                 2,
-                AppEventActor::App,
+                PluginEventActor::App,
                 "chess",
                 Some("agent:chess-opponent"),
             )],
@@ -2237,7 +2237,7 @@ default_tier = "low"
         assert_eq!(host.agents[0].transcript.len(), 2);
 
         // A user-caused event triggers a turn.
-        host.handle_deliveries(0, vec![delivery(3, AppEventActor::User, "chess", None)]);
+        host.handle_deliveries(0, vec![delivery(3, PluginEventActor::User, "chess", None)]);
         assert_eq!(host.agents[0].in_flight, 1, "user event must trigger");
     }
 

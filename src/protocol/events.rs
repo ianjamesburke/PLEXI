@@ -8,10 +8,10 @@ use std::path::PathBuf;
 pub enum PlexiEvent {
     /// Sent exactly once on startup. App must reply with DrawCommand::Ready.
     Init {
-        /// Protocol version string, e.g. "pgap/3". App must refuse unknown versions.
+        /// Protocol version string, e.g. "pgap/4". App must refuse unknown versions.
         protocol: String,
         /// Stable identifier for this app instance, e.g. "audio-recorder".
-        app_id: String,
+        plugin_id: String,
         /// The workspace root this app was launched from.
         /// Hard invariant: all SecretGet calls are scoped to this directory.
         workspace_root: PathBuf,
@@ -32,12 +32,12 @@ pub enum PlexiEvent {
         /// Empty map ⇒ app falls back to its built-in dark constants.
         #[serde(default)]
         theme: std::collections::HashMap<String, String>,
-        /// Launch arguments passed via `plexi app open <id> -- <args>` or
+        /// Launch arguments passed via `plexi view open <id> -- <args>` or
         /// programmatic SpawnPane. Also forwarded as subprocess argv for
         /// backward compatibility. Empty when no args were provided.
         #[serde(default)]
         args: Vec<String>,
-        /// Pre-seeded app state for headless rendering (--state flag).
+        /// Pre-seeded plugin state for headless rendering (--state flag).
         /// When present, the SDK populates self.state before calling on_init.
         /// Omitted in live (non-headless) Init events.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +107,7 @@ pub enum PlexiEvent {
     },
     /// User submitted a command via the command bar.
     Command { text: String },
-    /// Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.
+    /// Semantic action dispatched by `plexi pane action <pane_id> <action> [args...]`.
     /// Apps receive this in `on_event` and dispatch on `action` name.
     /// `args` is empty when no extra arguments were provided.
     Action {
@@ -167,8 +167,8 @@ pub enum PlexiEvent {
         /// Updated role → #rrggbb map. Same roles as the Init `theme` field.
         colors: std::collections::HashMap<String, String>,
     },
-    /// Confirmation that a SpawnApp request succeeded.
-    AppSpawned {
+    /// Confirmation that a SpawnView request succeeded.
+    ViewOpened {
         /// The pane_id of the newly spawned app pane.
         pane_id: u64,
         type_id: String,
@@ -185,7 +185,7 @@ pub enum PlexiEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
-    /// Response to `AppRequest::QueryContextState` (#1518).
+    /// Response to `HostRequest::QueryContextState` (#1518).
     ContextStateResponse {
         state: crate::host::context_state::ContextState,
     },
@@ -200,7 +200,7 @@ pub enum PlexiEvent {
         dropped_frames: u64,
     },
     /// Drop a JSON payload into the app's `on_inject` hook.
-    /// Sent at startup with persisted app state (workspace if available, else global).
+    /// Sent at startup with persisted plugin state (workspace if available, else global).
     /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
     /// A state scope's backing file changed outside the app's own persist
@@ -487,7 +487,7 @@ pub enum PlexiEvent {
     // ── Undo rollback (src/host/app_timeline.rs, Phase B) ─────────────
     /// Host asks the app whether `resource_id` is still at
     /// `expected_revision` before rolling back a checkpoint. The app must
-    /// answer with `AppRequest::RollbackVerifyResult` carrying its current
+    /// answer with `HostRequest::RollbackVerifyResult` carrying its current
     /// revision; rollback only proceeds on an exact match.
     RollbackVerify {
         checkpoint_id: String,
@@ -504,9 +504,9 @@ pub enum PlexiEvent {
         rollback_token: String,
     },
 
-    /// Response to `AppRequest::SubscribeAppEvents`. Exactly one of
+    /// Response to `HostRequest::SubscribePluginEvents`. Exactly one of
     /// `subscription_id` / `error` is set.
-    AppEventsSubscribed {
+    PluginEventsSubscribed {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subscription_id: Option<String>,
@@ -514,7 +514,7 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::DeclareEventStreams`.
+    /// Response to `HostRequest::DeclareEventStreams`.
     DeclareEventStreamsResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         streams: Option<Vec<String>>,
@@ -522,7 +522,7 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::EmitEvent`.
+    /// Response to `HostRequest::EmitEvent`.
     EmitEventResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sequence: Option<u64>,
@@ -530,8 +530,8 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
 
-    /// Response to `AppRequest::UnsubscribeAppEvents`.
-    AppEventsUnsubscribed {
+    /// Response to `HostRequest::UnsubscribePluginEvents`.
+    PluginEventsUnsubscribed {
         request_id: String,
         removed: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -542,10 +542,10 @@ pub enum PlexiEvent {
     /// beyond the event identity is shaped by the subscription's
     /// `payload_mode`; `trigger_mode` tells the subscriber (Phase C: the
     /// agent runtime) how it is allowed to react.
-    AppEvent {
+    PluginEvent {
         subscription_id: String,
         /// Publisher app id.
-        app_id: String,
+        plugin_id: String,
         /// Stream name, e.g. `"move.played"`.
         event: String,
         /// Host-assigned timeline id of the underlying event.
@@ -562,7 +562,7 @@ pub enum PlexiEvent {
         created_at: String,
     },
 
-    /// Response to `AppRequest::ListUndoCheckpoints`: undo checkpoints,
+    /// Response to `HostRequest::ListUndoCheckpoints`: undo checkpoints,
     /// newest first, serialized with the spec's checkpoint metadata fields
     /// plus `status` (`active | verifying | rolled_back | conflict`).
     UndoCheckpoints {
@@ -588,8 +588,8 @@ mod tests {
     #[test]
     fn init_event_serializes_pane_dimensions() {
         let event = PlexiEvent::Init {
-            protocol: "pgap/3".to_string(),
-            app_id: "test".to_string(),
+            protocol: "pgap/4".to_string(),
+            plugin_id: "test".to_string(),
             workspace_root: std::path::PathBuf::from("/tmp"),
             capabilities: vec![],
             feature_flags: vec![],
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn init_event_deserializes_without_dimensions() {
-        let json = r#"{"type":"init","protocol":"pgap/3","app_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
+        let json = r#"{"type":"init","protocol":"pgap/4","plugin_id":"test","workspace_root":"/tmp","capabilities":[],"feature_flags":[]}"#;
         let event: PlexiEvent = serde_json::from_str(json).unwrap();
         match event {
             PlexiEvent::Init { width, height, .. } => {

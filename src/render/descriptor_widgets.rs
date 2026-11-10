@@ -151,7 +151,7 @@ fn render_field(
                             resp.id,
                         );
                         took_focus = true;
-                        log::info!("CliRendererApp: auto-focused field '{}'", arg.name);
+                        log::info!("CliRendererView: auto-focused field '{}'", arg.name);
                     }
                 }
             }

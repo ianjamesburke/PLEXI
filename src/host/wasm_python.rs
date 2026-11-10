@@ -26,10 +26,10 @@ use wasmtime_wasi::cli::{IsTerminal, StdinStream, StdoutStream};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
-use crate::app::registry::{AppManifest, RuntimeExecution};
+use crate::app::registry::{PluginManifest, RuntimeExecution};
 
 use super::wasm_app::bindings::plexi::platform::types::{
-    AppBarNode, BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine,
+    SurfaceHeaderNode, BadgeColor, ButtonNode, ButtonStyle, CanvasCircle, CanvasCommand, CanvasLine,
     CanvasNode, CanvasRect, CanvasText, Color, ColumnNode, FooterKeyEntry, FooterKeysNode,
     IndexedNode, ListNode, PaddingNode, PinnedEdge, PinnedNode, ProgressBarNode, RowNode,
     ScrollNode, SpaceNode, SpinnerNode, TextInputNode, TextNode, UiNodeData, UiTree,
@@ -41,7 +41,7 @@ use super::wasm_app::bindings::plexi::platform::types::{
 };
 use super::wasm_app::Alignment;
 #[cfg(test)]
-use super::wasm_app::{Effect, Grants, StateStore, WasmApp};
+use super::wasm_app::{Effect, Grants, StateStore, WasmView};
 use super::wasm_frame::repaint_delay_until;
 
 struct InputState {
@@ -554,19 +554,19 @@ pub enum WasmPythonError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("read persisted app state at {path}: {source}")]
+    #[error("read persisted plugin state at {path}: {source}")]
     #[cfg(test)]
     ReadState {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("parse persisted app state at {path}: {source}")]
+    #[error("parse persisted plugin state at {path}: {source}")]
     #[cfg(test)]
     ParseState {
         path: PathBuf,
         source: serde_json::Error,
     },
-    #[error("persisted app state at {path} must be a JSON object, got {found}")]
+    #[error("persisted plugin state at {path} must be a JSON object, got {found}")]
     #[cfg(test)]
     StateNotObject { path: PathBuf, found: &'static str },
     #[error("invalid [state] declaration: {0}")]
@@ -583,8 +583,8 @@ pub enum WasmPythonError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonLaunchConfig {
-    pub app_id: String,
-    pub app_dir: PathBuf,
+    pub plugin_id: String,
+    pub plugin_dir: PathBuf,
     pub entry: PathBuf,
     pub module_name: String,
     pub launch_args: Vec<String>,
@@ -609,15 +609,15 @@ pub struct PythonLaunchConfig {
 }
 
 impl PythonLaunchConfig {
-    pub fn from_manifest_file(app_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
-        let manifest_path = app_dir.join("manifest.toml");
+    pub fn from_manifest_file(plugin_dir: &Path) -> Result<Option<Self>, WasmPythonError> {
+        let manifest_path = plugin_dir.join("manifest.toml");
         let raw = std::fs::read_to_string(&manifest_path).map_err(|source| {
             WasmPythonError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
             }
         })?;
-        let manifest: AppManifest =
+        let manifest: PluginManifest =
             toml::from_str(&raw).map_err(|source| WasmPythonError::ParseManifest {
                 path: manifest_path,
                 source: Box::new(source),
@@ -636,11 +636,11 @@ impl PythonLaunchConfig {
             .state_format()
             .map_err(WasmPythonError::StateScopes)?;
 
-        let entry = manifest.app.entry;
+        let entry = manifest.plugin.entry;
         if !(entry.ends_with(".py") || entry.ends_with(".pyc")) {
             return Err(WasmPythonError::InvalidEntry { entry });
         }
-        let entry_path = app_dir.join(&entry);
+        let entry_path = plugin_dir.join(&entry);
         if !entry_path.is_file() {
             return Err(WasmPythonError::MissingEntry { path: entry_path });
         }
@@ -651,21 +651,21 @@ impl PythonLaunchConfig {
             .to_string();
 
         Ok(Some(Self {
-            app_id: manifest.app.id,
-            app_dir: app_dir.to_path_buf(),
+            plugin_id: manifest.plugin.id,
+            plugin_dir: plugin_dir.to_path_buf(),
             entry: entry_path,
             module_name,
             launch_args: Vec::new(),
-            workspace_root: app_dir.to_path_buf(),
-            capabilities: manifest.app.capabilities.capabilities,
-            allowed_hosts: manifest.app.capabilities.allowed_hosts,
+            workspace_root: plugin_dir.to_path_buf(),
+            capabilities: manifest.plugin.capabilities.capabilities,
+            allowed_hosts: manifest.plugin.capabilities.allowed_hosts,
             theme: crate::ui::theme::colors_from_config(
-                &crate::config::PlexiConfig::load_with_workspace(Some(app_dir)),
+                &crate::config::PlexiConfig::load_with_workspace(Some(plugin_dir)),
             )
             .to_theme_map(),
             state_scopes,
             state_format,
-            context_root: app_dir.to_path_buf(),
+            context_root: plugin_dir.to_path_buf(),
         }))
     }
 }
@@ -689,7 +689,7 @@ fn python_init_payload(
         .collect();
     json!({
         "type": "init",
-        "app_id": config.app_id,
+        "plugin_id": config.plugin_id,
         "workspace_root": config.workspace_root,
         "capabilities": config.capabilities,
         "feature_flags": ["keyed_tree_delta"],
@@ -753,20 +753,20 @@ impl WasmPythonRuntime {
         let thread_stdin = stdin.clone();
         let thread_stdout = stdout.clone();
         let thread_stderr = stderr.clone();
-        let app_dir = config.app_dir.clone();
+        let plugin_dir = config.plugin_dir.clone();
         let entry_name = config
             .entry
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| WasmPythonError::RuntimeStart("Python entry is not UTF-8".to_string()))?
             .to_string();
-        let app_id = config.app_id.clone();
+        let plugin_id = config.plugin_id.clone();
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_started = Arc::clone(&started);
-        let thread_app_id = app_id.clone();
+        let thread_plugin_id = plugin_id.clone();
 
         let thread = std::thread::Builder::new()
-            .name(format!("plexi-python-wasm-{app_id}"))
+            .name(format!("plexi-python-wasm-{plugin_id}"))
             .spawn(move || {
                 let compile_begin = std::time::Instant::now();
                 let (engine, module) = cached_cpython_module(&bundle)?;
@@ -796,7 +796,7 @@ impl WasmPythonRuntime {
                     .map_err(|e| e.to_string())?
                     .preopened_dir(&sdk, "/sdk", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?
-                    .preopened_dir(&app_dir, "/app", DirPerms::READ, FilePerms::READ)
+                    .preopened_dir(&plugin_dir, "/app", DirPerms::READ, FilePerms::READ)
                     .map_err(|e| e.to_string())?;
                 let mut store = Store::new(&engine, builder.build_p1());
                 let instance = linker
@@ -806,7 +806,7 @@ impl WasmPythonRuntime {
                     .get_typed_func::<(), ()>(&mut store, "_start")
                     .map_err(|e| e.to_string())?;
                 log::info!(
-                    "app::{thread_app_id}: CPython WASM guest entering _start \
+                    "app::{thread_plugin_id}: CPython WASM guest entering _start \
                      (module compiled in {compiled_in:?}, instantiated in {:?})",
                     compile_begin.elapsed() - compiled_in
                 );
@@ -814,7 +814,7 @@ impl WasmPythonRuntime {
                 start.call(&mut store, ()).map_err(|e| e.to_string())
             })
             .map_err(|e| WasmPythonError::RuntimeStart(e.to_string()))?;
-        log::info!("app::{app_id}: CPython WASM runtime started with read-only SDK and app mounts");
+        log::info!("app::{plugin_id}: CPython WASM runtime started with read-only SDK and app mounts");
         Ok(Self {
             stdin,
             stdout,
@@ -892,7 +892,7 @@ const HEADLESS_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// compile of the CPython WASI module, plus any wait behind another caller's
 /// compile on the process-global module cache. Generous on purpose — this
 /// bound exists only so a wedged compile reports a diagnosable error instead
-/// of hanging `plexi app check` forever; it is not a performance assertion.
+/// of hanging `plexi plugin check` forever; it is not a performance assertion.
 const HEADLESS_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// What a headless poll should do next once the guest has been found alive.
@@ -944,7 +944,7 @@ impl HeadlessDeadline {
 
 /// One-shot headless run of a CPython-in-WASM app through the exact same
 /// runtime the live host uses (`WasmPythonRuntime` running
-/// `plexi_sdk._v3_process`) — for `plexi app check` / `plexi app render`.
+/// `plexi_sdk._v3_process`) — for `plexi plugin check` / `plexi view render`.
 /// Boots, waits for `ready`, sends one `render`, and returns the decoded
 /// `UiTree`. Unlike the deleted native-subprocess checker, there is no
 /// separate wire protocol to drift from what the live host executes.
@@ -1161,7 +1161,7 @@ pub struct LivePythonPane {
     presence: PanePresence,
     config: PythonLaunchConfig,
     runtime: WasmPythonRuntime,
-    app_id: String,
+    plugin_id: String,
     title: Option<String>,
     tree: Option<Arc<PythonUiTree>>,
     /// Monotonic generation of `tree`. Bumped on every swap (commit, reset) so
@@ -1255,7 +1255,7 @@ pub struct LivePythonPane {
     /// per-pane, live for the pane's lifetime (deliberately kept across
     /// hot-reload `relaunch`), and are never persisted.
     granted_fs_roots: Vec<PathBuf>,
-    pending_commands: Vec<crate::app::app_trait::AppCommand>,
+    pending_commands: Vec<crate::app::app_trait::ViewCommand>,
     /// Stint 0426: `ui()`'s caller (`tiling.rs`/`render.rs`) removes a queued
     /// `PendingPaneClick` from `PlexiApp::pending_pane_clicks` *before*
     /// calling `ui()`, so this is the pane's only chance to consume it. `ui()`
@@ -1388,7 +1388,7 @@ struct PythonOutputDecoder {
 impl PythonOutputDecoder {
     fn spawn(
         runtime: &WasmPythonRuntime,
-        app_id: String,
+        plugin_id: String,
         repaint: RepaintHook,
         wake_schedule: WakeSchedule,
     ) -> Self {
@@ -1399,12 +1399,12 @@ impl PythonOutputDecoder {
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let thread_queued = queued.clone();
         let thread = std::thread::Builder::new()
-            .name(format!("plexi-python-decode-{app_id}"))
+            .name(format!("plexi-python-decode-{plugin_id}"))
             .spawn(move || {
                 decode_loop(
                     thread_stdout,
                     stdin,
-                    app_id,
+                    plugin_id,
                     tx,
                     repaint,
                     thread_queued,
@@ -1453,7 +1453,7 @@ impl Drop for PythonOutputDecoder {
 fn decode_loop(
     stdout: DrainableOutput,
     stdin: AppendableStdin,
-    app_id: String,
+    plugin_id: String,
     tx: std::sync::mpsc::Sender<DecodedOutput>,
     repaint: RepaintHook,
     queued: Arc<std::sync::atomic::AtomicUsize>,
@@ -1518,13 +1518,13 @@ fn decode_loop(
                             if !awaiting_full {
                                 awaiting_full = true;
                                 log::warn!(
-                                    "app::{app_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
+                                    "app::{plugin_id}: tree delta could not be applied ({reason}); requesting full-tree resync"
                                 );
                                 if let Err(error) =
                                     stdin.push_json_line(&json!({"type": "request_full_tree"}))
                                 {
                                     log::error!(
-                                        "app::{app_id}: failed to request full-tree resync: {error}"
+                                        "app::{plugin_id}: failed to request full-tree resync: {error}"
                                     );
                                 }
                             }
@@ -1919,7 +1919,7 @@ fn ensure_python_state_gitignore(config: &PythonLaunchConfig) {
     {
         log::warn!(
             "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-            config.app_id,
+            config.plugin_id,
             config.workspace_root.display()
         );
     }
@@ -1984,7 +1984,7 @@ pub(crate) fn decode_state_file(
 /// exists but fails to decode sets `error` and leaves `values` empty; the
 /// caller decides whether to keep previously-known values.
 fn read_python_state_file(
-    app_id: &str,
+    plugin_id: &str,
     scope: crate::host::state_scope::StateScope,
     path: &Path,
     format: crate::host::state_scope::StateFormat,
@@ -1997,7 +1997,7 @@ fn read_python_state_file(
                 log::info!(
                     "{}",
                     format_python_state_load_trace(
-                        app_id,
+                        plugin_id,
                         scope,
                         format,
                         path,
@@ -2012,7 +2012,7 @@ fn read_python_state_file(
             }
             Err(error) => {
                 log::error!(
-                    "app::{app_id}: state {} is unreadable ({error}) — state is NOT reset; \
+                    "app::{plugin_id}: state {} is unreadable ({error}) — state is NOT reset; \
                      persists are blocked until the file is fixed",
                     path.display()
                 );
@@ -2026,13 +2026,13 @@ fn read_python_state_file(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             log::info!(
                 "{}",
-                format_python_state_load_trace(app_id, scope, format, path, None)
+                format_python_state_load_trace(plugin_id, scope, format, path, None)
             );
             ScopeState::default()
         }
         Err(error) => {
             let message = format!("read state {}: {error}", path.display());
-            log::error!("app::{app_id}: {message} — state is NOT reset");
+            log::error!("app::{plugin_id}: {message} — state is NOT reset");
             ScopeState {
                 values: serde_json::Map::new(),
                 digest,
@@ -2043,7 +2043,7 @@ fn read_python_state_file(
 }
 
 fn format_python_state_load_trace(
-    app_id: &str,
+    plugin_id: &str,
     scope: crate::host::state_scope::StateScope,
     format: crate::host::state_scope::StateFormat,
     path: &Path,
@@ -2051,13 +2051,13 @@ fn format_python_state_load_trace(
 ) -> String {
     match hit {
         Some((bytes, keys)) => format!(
-            "app::{app_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
+            "app::{plugin_id}: loaded state scope={} format={} bytes={bytes} keys={keys} from {}",
             scope.as_str(),
             format.as_str(),
             path.display()
         ),
         None => format!(
-            "app::{app_id}: no state found for scope={} format={} at {} (fallback=none)",
+            "app::{plugin_id}: no state found for scope={} format={} at {} (fallback=none)",
             scope.as_str(),
             format.as_str(),
             path.display()
@@ -2066,7 +2066,7 @@ fn format_python_state_load_trace(
 }
 
 fn format_python_state_persist_trace(
-    app_id: &str,
+    plugin_id: &str,
     scope: crate::host::state_scope::StateScope,
     format: crate::host::state_scope::StateFormat,
     path: &Path,
@@ -2074,7 +2074,7 @@ fn format_python_state_persist_trace(
     replaced: bool,
 ) -> String {
     format!(
-        "app::{app_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
+        "app::{plugin_id}: persisted state scope={} format={} bytes={bytes} replaced={replaced} to {}",
         scope.as_str(),
         format.as_str(),
         path.display()
@@ -2107,7 +2107,7 @@ fn load_python_state(
         .unwrap_or(crate::host::state_scope::StateScope::Global);
     let path = crate::host::state_scope::state_file(
         scope,
-        &config.app_id,
+        &config.plugin_id,
         config.state_format,
         &config.context_root,
     )
@@ -2118,7 +2118,7 @@ fn load_python_state(
             log::info!(
                 "{}",
                 format_python_state_load_trace(
-                    &config.app_id,
+                    &config.plugin_id,
                     scope,
                     config.state_format,
                     &path,
@@ -2131,7 +2131,7 @@ fn load_python_state(
             log::info!(
                 "{}",
                 format_python_state_load_trace(
-                    &config.app_id,
+                    &config.plugin_id,
                     scope,
                     config.state_format,
                     &path,
@@ -2201,12 +2201,12 @@ fn load_python_states(
         .map(|&scope| {
             let state = match crate::host::state_scope::state_file(
                 scope,
-                &config.app_id,
+                &config.plugin_id,
                 config.state_format,
                 &config.context_root,
             ) {
                 Ok(path) => read_python_state_file(
-                    &config.app_id,
+                    &config.plugin_id,
                     scope,
                     &path,
                     config.state_format,
@@ -2214,7 +2214,7 @@ fn load_python_states(
                 Err(error) => {
                     log::error!(
                         "app::{}: cannot resolve state path for scope {}: {error}",
-                        config.app_id,
+                        config.plugin_id,
                         scope.as_str()
                     );
                     ScopeState {
@@ -2256,7 +2256,7 @@ struct McpHeldLine {
 }
 
 fn pump_mcp_inbound(
-    app_id: &str,
+    plugin_id: &str,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
     stdin: &AppendableStdin,
     connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
@@ -2296,11 +2296,11 @@ fn pump_mcp_inbound(
                 }
                 LowWaterArm::WrongInput { token } => {
                     log::error!(
-                        "app::{app_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
+                        "app::{plugin_id}: guest stdin rejected foreign low-water token {token:?}; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2310,7 +2310,7 @@ fn pump_mcp_inbound(
                 }
                 LowWaterArm::Closed => {
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2321,11 +2321,11 @@ fn pump_mcp_inbound(
                 LowWaterArm::BelowThreshold => break,
                 LowWaterArm::IdentityExhausted => {
                     log::error!(
-                        "app::{app_id}: guest stdin low-water identity space exhausted; closing stdin"
+                        "app::{plugin_id}: guest stdin low-water identity space exhausted; closing stdin"
                     );
                     stdin.close();
                     drop_undeliverable_mcp_backlog(
-                        app_id,
+                        plugin_id,
                         rx,
                         connections,
                         Some((pending.server_id, pending.line)),
@@ -2336,7 +2336,7 @@ fn pump_mcp_inbound(
             }
         }
         match deliver_mcp_line(
-            app_id,
+            plugin_id,
             pending.server_id,
             pending.line,
             rx,
@@ -2367,7 +2367,7 @@ enum McpDelivery {
 /// down, one latched error), never a per-line error. Other push failures
 /// (malformed JSON, hard cap) drop only this line, loudly.
 fn deliver_mcp_line(
-    app_id: &str,
+    plugin_id: &str,
     server_id: String,
     line: crate::host::mcp_client::McpLine,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
@@ -2391,13 +2391,13 @@ fn deliver_mcp_line(
         Ok(()) => {
             if let crate::host::mcp_client::McpLine::Closed(reason) = &line {
                 connections.remove(&server_id);
-                log::info!("app::{app_id}: mcp server {server_id} closed: {reason}");
+                log::info!("app::{plugin_id}: mcp server {server_id} closed: {reason}");
             }
             McpDelivery::Delivered
         }
         Err(WasmPythonError::StdinClosed) => {
             drop_undeliverable_mcp_backlog(
-                app_id,
+                plugin_id,
                 rx,
                 connections,
                 Some((server_id, line)),
@@ -2406,7 +2406,7 @@ fn deliver_mcp_line(
             McpDelivery::GuestGone
         }
         Err(error) => {
-            log::error!("app::{app_id}: deliver MCP line to guest failed — dropped: {error}");
+            log::error!("app::{plugin_id}: deliver MCP line to guest failed — dropped: {error}");
             McpDelivery::Delivered
         }
     }
@@ -2420,7 +2420,7 @@ fn deliver_mcp_line(
 /// latched pane-level error — latched, never per line, so a teardown racing
 /// a flooding server cannot turn its output into log growth.
 fn drop_undeliverable_mcp_backlog(
-    app_id: &str,
+    plugin_id: &str,
     rx: &std::sync::mpsc::Receiver<(String, crate::host::mcp_client::McpLine)>,
     connections: &mut HashMap<String, crate::host::mcp_client::McpConnection>,
     in_hand: Option<(String, crate::host::mcp_client::McpLine)>,
@@ -2432,7 +2432,7 @@ fn drop_undeliverable_mcp_backlog(
         dropped += 1;
         if let crate::host::mcp_client::McpLine::Closed(reason) = &l {
             connections.remove(&sid);
-            log::info!("app::{app_id}: mcp server {sid} closed: {reason}");
+            log::info!("app::{plugin_id}: mcp server {sid} closed: {reason}");
         }
         next = rx.try_recv().ok();
     }
@@ -2440,7 +2440,7 @@ fn drop_undeliverable_mcp_backlog(
     if !*closed_logged {
         *closed_logged = true;
         log::error!(
-            "app::{app_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
+            "app::{plugin_id}: guest stdin closed — dropped {dropped} undeliverable MCP line(s)"
         );
     }
 }
@@ -2506,13 +2506,13 @@ impl LivePythonPane {
         if let Err(error) = self.runtime.send(event) {
             log::error!(
                 "app::{}: send to CPython runtime failed: {error}",
-                self.app_id
+                self.plugin_id
             );
         }
     }
 
     pub fn launch(config: PythonLaunchConfig) -> Result<Self, WasmPythonError> {
-        let app_id = config.app_id.clone();
+        let plugin_id = config.plugin_id.clone();
         let persisted_states = load_python_states(&config);
         let context_root = config.context_root.clone();
         let (http_tx, http_rx) = std::sync::mpsc::channel();
@@ -2523,7 +2523,7 @@ impl LivePythonPane {
         let wake_schedule: WakeSchedule = Arc::new(Mutex::new(WakeScheduleState::default()));
         let decoder = PythonOutputDecoder::spawn(
             &runtime,
-            app_id.clone(),
+            plugin_id.clone(),
             repaint.clone(),
             wake_schedule.clone(),
         );
@@ -2545,7 +2545,7 @@ impl LivePythonPane {
             presence: PanePresence::default(),
             runtime,
             config,
-            app_id,
+            plugin_id,
             title: None,
             tree: None,
             tree_seq: 0,
@@ -2624,14 +2624,14 @@ impl LivePythonPane {
             Ok(()) | Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => {
                 log::info!(
                     "app::{}: registered directed pipe '{pipe_id}' on Python runtime",
-                    self.app_id
+                    self.plugin_id
                 );
                 true
             }
             Err(error) => {
                 log::warn!(
                     "app::{}: failed to register directed pipe '{pipe_id}' on Python runtime: {error}",
-                    self.app_id
+                    self.plugin_id
                 );
                 false
             }
@@ -2649,7 +2649,7 @@ impl LivePythonPane {
         if self.context_root != root {
             log::info!(
                 "app::{}: context root changed {} -> {} — state scope resolution follows",
-                self.app_id,
+                self.plugin_id,
                 self.context_root.display(),
                 root.display()
             );
@@ -2675,7 +2675,7 @@ impl LivePythonPane {
         if pending_click.is_some() {
             log::info!(
                 "app::{}: pending pane click/node-click entering render (carried={})",
-                self.app_id,
+                self.plugin_id,
                 self.pending_click_carry.is_none()
             );
         }
@@ -2687,7 +2687,7 @@ impl LivePythonPane {
                 // silently swallowing the click forever.
                 log::error!(
                     "app::{}: dropping pending pane click — pane is in a fatal error state: {error}",
-                    self.app_id
+                    self.plugin_id
                 );
             }
             ui.colored_label(colors.danger, error);
@@ -2699,7 +2699,7 @@ impl LivePythonPane {
                 if pending_click.is_some() {
                     log::info!(
                         "app::{}: deferring pending pane click — viewport not yet valid",
-                        self.app_id
+                        self.plugin_id
                     );
                     self.pending_click_carry = pending_click;
                 }
@@ -2716,7 +2716,7 @@ impl LivePythonPane {
                 if pending_click.is_some() {
                     log::error!(
                         "app::{}: dropping pending pane click — init send failed",
-                        self.app_id
+                        self.plugin_id
                     );
                 }
                 return;
@@ -2761,7 +2761,7 @@ impl LivePythonPane {
             if pending_click.is_some() {
                 log::info!(
                     "app::{}: deferring pending pane click — pane not yet ready (subprocess startup or hot-reload relaunch)",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
             }
@@ -2782,7 +2782,7 @@ impl LivePythonPane {
                 if pending_click.is_some() {
                     log::error!(
                         "app::{}: dropping pending pane click — render request send failed: {error}",
-                        self.app_id
+                        self.plugin_id
                     );
                 }
                 return;
@@ -2806,7 +2806,7 @@ impl LivePythonPane {
             for action in result.actions {
                 log::info!(
                     "app::{}: emitted UI action at Python host boundary handler={action}",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.send_to_runtime(&json!({"type": "ui_action", "handler_id": action}));
             }
@@ -2828,7 +2828,7 @@ impl LivePythonPane {
             if pending_click.is_some() {
                 log::info!(
                     "app::{}: deferring pending pane click — no committed tree yet",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.pending_click_carry = pending_click;
             }
@@ -2884,7 +2884,7 @@ impl LivePythonPane {
             // window becomes a permanent row of this pane's own telemetry.
             log::debug!(
                 "app::{}: CPython-WASM perf paint_fps={fps:.1} guest_fps={guest_fps:.1} avg_host_ms={avg_host_ms:.2} avg_roundtrip_ms={avg_roundtrip_ms:.2} json_ms={:.2} tree_ms={:.2} ui_ms={:.2} canvas_ms={:.2} stdout_kib={:.1} suppressed_wakes={suppressed_wakes}",
-                self.app_id,
+                self.plugin_id,
                 self.perf_json_decode.as_secs_f64() * 1000.0,
                 self.perf_tree_decode.as_secs_f64() * 1000.0,
                 self.perf_ui_render.as_secs_f64() * 1000.0,
@@ -2959,7 +2959,7 @@ impl LivePythonPane {
                 self.mcp_backpressured = true;
                 log::warn!(
                     "app::{}: MCP inbound backpressure engaged — guest stdin has {} bytes unread; further server output waits in the bounded queue and the server's own pipe",
-                    self.app_id,
+                    self.plugin_id,
                     self.runtime.stdin.buffered_bytes()
                 );
             }
@@ -2967,7 +2967,7 @@ impl LivePythonPane {
             self.mcp_backpressured = false;
             log::info!(
                 "app::{}: MCP inbound backpressure released",
-                self.app_id
+                self.plugin_id
             );
         }
     }
@@ -2982,7 +2982,7 @@ impl LivePythonPane {
             }));
         }
         let mcp_backlogged = pump_mcp_inbound(
-            &self.app_id,
+            &self.plugin_id,
             &self.mcp_rx,
             &self.runtime.stdin,
             &mut self.mcp_connections,
@@ -2998,7 +2998,7 @@ impl LivePythonPane {
                     if granted.is_empty() {
                         log::error!(
                             "app::{}: file pick {request_id}: no picked path could be granted; cancelling",
-                            self.app_id
+                            self.plugin_id
                         );
                         self.queue_outbound_event(
                             crate::protocol::PlexiEvent::FilePickCancelled { request_id },
@@ -3015,7 +3015,7 @@ impl LivePythonPane {
                     }
                 }
                 crate::host::services::FilePickOutcome::Cancelled => {
-                    log::info!("app::{}: file pick {request_id} cancelled", self.app_id);
+                    log::info!("app::{}: file pick {request_id} cancelled", self.plugin_id);
                     self.queue_outbound_event(
                         crate::protocol::PlexiEvent::FilePickCancelled { request_id },
                     );
@@ -3050,12 +3050,12 @@ impl LivePythonPane {
                     self.handle_message(value);
                 }
                 Ok(DecodedOutput::DecodeError(error)) => {
-                    log::error!("app::{}: decode CPython WASM message: {error}", self.app_id);
+                    log::error!("app::{}: decode CPython WASM message: {error}", self.plugin_id);
                     self.error = Some(error);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::error!("app::{}: CPython WASM decoder thread ended", self.app_id);
+                    log::error!("app::{}: CPython WASM decoder thread ended", self.plugin_id);
                     break;
                 }
             }
@@ -3087,24 +3087,24 @@ impl LivePythonPane {
         match record.kind {
             GuestStderrKind::BenignWasiStartup => log::debug!(
                 "app::{} CPython WASM stderr (benign WASI startup noise): {}",
-                self.app_id,
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackException => log::error!(
                 "app::{} CPython WASM stderr exception: {}",
-                self.app_id,
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::TracebackExceptionDetail => log::error!(
                 "app::{} CPython WASM stderr exception (cont): {}",
-                self.app_id,
+                self.plugin_id,
                 record.line
             ),
             GuestStderrKind::Payload
             | GuestStderrKind::TracebackHeader
             | GuestStderrKind::TracebackFrame
             | GuestStderrKind::TracebackChainSeparator => {
-                log::error!("app::{} CPython WASM stderr: {}", self.app_id, record.line)
+                log::error!("app::{} CPython WASM stderr: {}", self.plugin_id, record.line)
             }
         }
     }
@@ -3122,7 +3122,7 @@ impl LivePythonPane {
         let message_type = bridge_message_type(&message);
         log::debug!(
             "app::{}: CPython WASM message type={}",
-            self.app_id,
+            self.plugin_id,
             message_type.unwrap_or("<missing>")
         );
         // Permission polls arrive every second from the Permissions app.
@@ -3141,7 +3141,7 @@ impl LivePythonPane {
                 self.frame_scheduler
                     .request_render_at(std::time::Instant::now());
                 self.reset_perf_window();
-                log::info!("app::{}: CPython WASM bridge ready", self.app_id);
+                log::info!("app::{}: CPython WASM bridge ready", self.plugin_id);
             }
             Some("set_title") => {
                 self.title = message
@@ -3207,13 +3207,13 @@ impl LivePythonPane {
                 } else {
                     log::warn!(
                         "app::{}: CPython WASM completed unknown frame {:?}",
-                        self.app_id,
+                        self.plugin_id,
                         completed_frame
                     );
                 }
             }
             Some("close") | Some("close_self") => self.wants_close = true,
-            Some("save_app_state") => {
+            Some("save_plugin_state") => {
                 self.save_state(message.get("scope"), message.get("payload"))
             }
             Some("file_read") => self.handle_file_read(&message),
@@ -3233,7 +3233,7 @@ impl LivePythonPane {
                     .get("message")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                log::log!(level, "app::{}: {}", self.app_id, text);
+                log::log!(level, "app::{}: {}", self.plugin_id, text);
             }
             Some("status_summary") => {}
             _ => {
@@ -3243,13 +3243,13 @@ impl LivePythonPane {
                         if !self.has_capability(capability) {
                             log::info!(
                                 "app::{}: {} denied: missing capability {capability}",
-                                self.app_id,
+                                self.plugin_id,
                                 message_type.unwrap_or("<missing>")
                             );
                             return;
                         }
                     }
-                    if let crate::app::app_trait::AppCommand::OpenDirectedPipe {
+                    if let crate::app::app_trait::ViewCommand::OpenDirectedPipe {
                         ref pipe_id, ..
                     } = command
                     {
@@ -3260,7 +3260,7 @@ impl LivePythonPane {
                     Ok(None) => self.warn_unhandled_cpython_message(&message),
                     Err(error) => log::warn!(
                         "app::{}: rejected CPython WASM message: {error}",
-                        self.app_id
+                        self.plugin_id
                     ),
                 }
             }
@@ -3294,7 +3294,7 @@ impl LivePythonPane {
         if request_id.is_empty() {
             log::error!(
                 "app::{}: open_file_picker missing request_id; cancelling",
-                self.app_id
+                self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
@@ -3304,7 +3304,7 @@ impl LivePythonPane {
         if !self.has_capability("fs.pick") {
             log::info!(
                 "app::{}: open_file_picker {request_id} denied: missing capability fs.pick",
-                self.app_id
+                self.plugin_id
             );
             self.queue_outbound_event(crate::protocol::PlexiEvent::FilePickCancelled {
                 request_id,
@@ -3333,7 +3333,7 @@ impl LivePythonPane {
                 Err(error) => {
                     log::error!(
                         "app::{}: open_file_picker {request_id}: invalid mode {value}: {error}; cancelling",
-                        self.app_id
+                        self.plugin_id
                     );
                     self.queue_outbound_event(
                         crate::protocol::PlexiEvent::FilePickCancelled { request_id },
@@ -3344,7 +3344,7 @@ impl LivePythonPane {
         };
         log::info!(
             "app::{}: open_file_picker {request_id} mode={mode:?} multiple={multiple} filter={filter:?}",
-            self.app_id
+            self.plugin_id
         );
         let picker = Arc::clone(&self.picker);
         let tx = self.picker_tx.clone();
@@ -3370,7 +3370,7 @@ impl LivePythonPane {
                 Ok(resolved) => {
                     log::info!(
                         "app::{}: fs grant registered for picked path {}",
-                        self.app_id,
+                        self.plugin_id,
                         resolved.display()
                     );
                     self.granted_fs_roots.push(resolved.clone());
@@ -3379,7 +3379,7 @@ impl LivePythonPane {
                 Err(error) => {
                     log::error!(
                         "app::{}: picked path {} not granted: {error}",
-                        self.app_id,
+                        self.plugin_id,
                         path.display()
                     );
                 }
@@ -3420,7 +3420,7 @@ impl LivePythonPane {
             Ok(bytes) => {
                 log::info!(
                     "app::{}: file_read {:?} -> {} bytes",
-                    self.app_id,
+                    self.plugin_id,
                     message.get("path").and_then(Value::as_str).unwrap_or("?"),
                     bytes.len()
                 );
@@ -3444,7 +3444,7 @@ impl LivePythonPane {
                     decode_file_write_content(message).and_then(|bytes| {
                         log::info!(
                             "app::{}: file_write {} ({} bytes, binary={})",
-                            self.app_id,
+                            self.plugin_id,
                             path.display(),
                             bytes.len(),
                             message.get("content_b64").is_some()
@@ -3493,7 +3493,7 @@ impl LivePythonPane {
             }),
         };
         if let Err(error) = self.runtime.send(&response) {
-            log::error!("app::{}: send host_log_result: {error}", self.app_id);
+            log::error!("app::{}: send host_log_result: {error}", self.plugin_id);
         }
     }
 
@@ -3506,7 +3506,7 @@ impl LivePythonPane {
         let entries = Self::permission_entries();
         log::debug!(
             "app::{}: permission inventory count={} status={status}",
-            self.app_id,
+            self.plugin_id,
             entries.len()
         );
         if let Err(error) = self.runtime.send(&json!({
@@ -3515,7 +3515,7 @@ impl LivePythonPane {
             "notice": notice,
             "status": status,
         })) {
-            log::error!("app::{}: send permission_inventory: {error}", self.app_id);
+            log::error!("app::{}: send permission_inventory: {error}", self.plugin_id);
         }
     }
 
@@ -3524,7 +3524,7 @@ impl LivePythonPane {
             self.announced_permission_read = true;
             log::info!(
                 "app::{}: serving read_permission_decisions",
-                self.app_id
+                self.plugin_id
             );
         }
         self.send_permission_inventory("", "list");
@@ -3541,14 +3541,14 @@ impl LivePythonPane {
         if !due {
             log::debug!(
                 "app::{}: repeated unhandled CPython WASM message: {message}",
-                self.app_id
+                self.plugin_id
             );
             return;
         }
         self.unhandled_warned_at.insert(key, now);
         log::warn!(
             "app::{}: unhandled CPython WASM message: {message}",
-            self.app_id
+            self.plugin_id
         );
     }
 
@@ -3565,12 +3565,12 @@ impl LivePythonPane {
             action,
             &crate::broker::gate::PermissionCaller {
                 human: true,
-                actor_id: format!("app:{}", self.app_id),
+                actor_id: format!("app:{}", self.plugin_id),
             },
         );
         log::info!(
             "app::{}: permission {action} id={id} human=true",
-            self.app_id
+            self.plugin_id
         );
         let (notice, status) = match &outcome {
             crate::broker::gate::PermissionMutation::Applied { entry_id } => {
@@ -3661,13 +3661,13 @@ impl LivePythonPane {
             .to_string();
         log::info!(
             "app::{}: mcp_connect request_id={request_id} server_id={server_id}",
-            self.app_id
+            self.plugin_id
         );
 
         let fail = |pane: &mut Self, error: String| {
             log::warn!(
                 "app::{}: mcp_connect failed server_id={server_id}: {error}",
-                pane.app_id
+                pane.plugin_id
             );
             pane.send_to_runtime(&json!({
                 "type": "mcp_connected",
@@ -3688,7 +3688,7 @@ impl LivePythonPane {
         if !crate::release::feature_enabled(crate::release::ReleaseFeature::McpClient) {
             log::info!(
                 "app::{}: mcp_connect blocked server_id={server_id} gate=McpClient",
-                self.app_id
+                self.plugin_id
             );
             fail(
                 self,
@@ -3749,7 +3749,7 @@ impl LivePythonPane {
             wake,
         ) {
             Ok(connection) => {
-                log::info!("app::{}: mcp connected server_id={server_id}", self.app_id);
+                log::info!("app::{}: mcp connected server_id={server_id}", self.plugin_id);
                 self.mcp_connections.insert(server_id.clone(), connection);
                 self.send_to_runtime(&json!({
                     "type": "mcp_connected",
@@ -3778,7 +3778,7 @@ impl LivePythonPane {
             Some(Value::String(text)) => text.clone(),
             Some(value) => value.to_string(),
             None => {
-                log::warn!("app::{}: mcp_send missing 'message'", self.app_id);
+                log::warn!("app::{}: mcp_send missing 'message'", self.plugin_id);
                 self.send_to_runtime(&json!({
                     "type": "mcp_closed",
                     "server_id": server_id,
@@ -3788,7 +3788,7 @@ impl LivePythonPane {
             }
         };
         let Some(connection) = self.mcp_connections.get_mut(&server_id) else {
-            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.app_id);
+            log::warn!("app::{}: mcp_send to unopened server {server_id}", self.plugin_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
@@ -3797,7 +3797,7 @@ impl LivePythonPane {
             return;
         };
         if let Err(e) = connection.send(&payload) {
-            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.app_id);
+            log::warn!("app::{}: mcp_send failed server={server_id}: {e}", self.plugin_id);
             self.mcp_connections.remove(&server_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
@@ -3814,7 +3814,7 @@ impl LivePythonPane {
             .unwrap_or_default()
             .to_string();
         if self.mcp_connections.remove(&server_id).is_some() {
-            log::info!("app::{}: mcp disconnect server_id={server_id}", self.app_id);
+            log::info!("app::{}: mcp disconnect server_id={server_id}", self.plugin_id);
             self.send_to_runtime(&json!({
                 "type": "mcp_closed",
                 "server_id": server_id,
@@ -3823,7 +3823,7 @@ impl LivePythonPane {
         } else {
             log::info!(
                 "app::{}: mcp disconnect of unopened server_id={server_id} ignored",
-                self.app_id
+                self.plugin_id
             );
         }
     }
@@ -3831,8 +3831,8 @@ impl LivePythonPane {
     fn cli_identity(&self) -> crate::host::cli_ops::service::PaneIdentity {
         let (pane_id, context_id) = self.pane_owner.unwrap_or((0, 0));
         crate::host::cli_ops::service::PaneIdentity {
-            app_id: self.app_id.clone(),
-            app_dir: self.config.app_dir.clone(),
+            plugin_id: self.plugin_id.clone(),
+            plugin_dir: self.config.plugin_dir.clone(),
             workspace_root: self.config.workspace_root.clone(),
             pane_id,
             context_id,
@@ -3968,11 +3968,11 @@ impl LivePythonPane {
                 })
                 .collect(),
         );
-        if self.app_id == "permissions" {
+        if self.plugin_id == "permissions" {
             let entries = Self::permission_entries();
             log::info!(
                 "app::{}: seeded permission inventory count={}",
-                self.app_id,
+                self.plugin_id,
                 entries.len()
             );
             if let Some(scope) = states
@@ -4005,10 +4005,10 @@ impl LivePythonPane {
         self.initialized = true;
         self.viewport_size = Some(size);
         log::info!(
-            "app::{}: sending Python init size={}x{}", self.app_id, size.0, size.1
+            "app::{}: sending Python init size={}x{}", self.plugin_id, size.0, size.1
         );
         if let Err(error) = self.runtime.send(&json!({
-            "type": "init", "app_id": self.app_id,
+            "type": "init", "plugin_id": self.plugin_id,
             "workspace_root": self.config.workspace_root,
             "capabilities": self.config.capabilities,
             "feature_flags": ["keyed_tree_delta"],
@@ -4018,7 +4018,7 @@ impl LivePythonPane {
             "args": self.config.launch_args,
             "size": [size.0, size.1]
         })) {
-            log::error!("app::{}: Python init send failed: {error}", self.app_id);
+            log::error!("app::{}: Python init send failed: {error}", self.plugin_id);
             self.error = Some(error.to_string());
         }
     }
@@ -4055,12 +4055,12 @@ impl LivePythonPane {
             if let Err(error) = self.runtime.send(&json!({ "type": kind })) {
                 log::error!(
                     "app::{}: pane {pane_id} {kind} send failed: {error}",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.error = Some(error.to_string());
                 return;
             }
-            log::info!("app::{}: pane {pane_id} delivered {kind}", self.app_id);
+            log::info!("app::{}: pane {pane_id} delivered {kind}", self.plugin_id);
         }
         self.presence = target;
     }
@@ -4075,7 +4075,7 @@ impl LivePythonPane {
             .filter_map(|&scope| {
                 match crate::host::state_scope::state_file(
                     scope,
-                    &self.app_id,
+                    &self.plugin_id,
                     self.config.state_format,
                     &self.context_root,
                 ) {
@@ -4083,7 +4083,7 @@ impl LivePythonPane {
                     Err(error) => {
                         log::error!(
                             "app::{}: cannot resolve state path for scope {}: {error}",
-                            self.app_id,
+                            self.plugin_id,
                             scope.as_str()
                         );
                         None
@@ -4097,9 +4097,9 @@ impl LivePythonPane {
     /// open path on a workspace restore (stint 0680). Deliberately omits
     /// granted capabilities — those live in `PermissionStore`, re-derived at
     /// restore time from the manifest, never persisted into the workspace.
-    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedAppLaunch {
-        crate::workspace::SavedAppLaunch::Python {
-            app_dir: self.config.app_dir.clone(),
+    pub(crate) fn launch_spec(&self) -> crate::workspace::SavedViewLaunch {
+        crate::workspace::SavedViewLaunch::Python {
+            plugin_dir: self.config.plugin_dir.clone(),
             args: self.config.launch_args.clone(),
         }
     }
@@ -4135,14 +4135,14 @@ impl LivePythonPane {
         if !self.config.state_scopes.contains(&scope) {
             log::warn!(
                 "app::{}: external state change for undeclared scope '{}' ignored",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
         let path = match crate::host::state_scope::state_file(
             scope,
-            &self.app_id,
+            &self.plugin_id,
             self.config.state_format,
             &self.context_root,
         ) {
@@ -4150,7 +4150,7 @@ impl LivePythonPane {
             Err(error) => {
                 log::error!(
                     "app::{}: cannot resolve state path for scope {}: {error}",
-                    self.app_id,
+                    self.plugin_id,
                     scope.as_str()
                 );
                 return;
@@ -4164,13 +4164,13 @@ impl LivePythonPane {
             log::debug!(
                 "app::{}: external state notification for scope {} matches cached identity — \
                  self-write echo, ignoring",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
         let fresh = read_python_state_file(
-            &self.app_id,
+            &self.plugin_id,
             scope,
             &path,
             self.config.state_format,
@@ -4180,7 +4180,7 @@ impl LivePythonPane {
                 log::info!(
                     "app::{}: state scope={} changed on disk ({}) — replacing in-memory state \
                      and notifying app",
-                    self.app_id,
+                    self.plugin_id,
                     scope.as_str(),
                     path.display()
                 );
@@ -4192,7 +4192,7 @@ impl LivePythonPane {
                 log::error!(
                     "app::{}: external change to state scope={} ({}) is unreadable: {error} — \
                      keeping previous values; persists blocked until the file is fixed",
-                    self.app_id,
+                    self.plugin_id,
                     scope.as_str(),
                     path.display()
                 );
@@ -4218,8 +4218,8 @@ impl LivePythonPane {
                 Ok(scope) => scope,
                 Err(error) => {
                     log::error!(
-                        "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                        self.app_id
+                        "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                        self.plugin_id
                     );
                     return;
                 }
@@ -4227,9 +4227,9 @@ impl LivePythonPane {
         };
         if !self.config.state_scopes.contains(&scope) {
             log::error!(
-                "app::{}: save_app_state rejected — scope '{}' is not declared in \
+                "app::{}: save_plugin_state rejected — scope '{}' is not declared in \
                  [state] scopes {:?}; state NOT persisted",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str(),
                 self.scope_names()
             );
@@ -4241,24 +4241,24 @@ impl LivePythonPane {
             .and_then(|state| state.error.as_ref())
         {
             log::error!(
-                "app::{}: save_app_state refused — scope '{}' has an unresolved file error \
+                "app::{}: save_plugin_state refused — scope '{}' has an unresolved file error \
                  ({error}); fix the file on disk, a successful re-read clears this",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str()
             );
             return;
         }
         let path = match crate::host::state_scope::state_file(
             scope,
-            &self.app_id,
+            &self.plugin_id,
             self.config.state_format,
             &self.context_root,
         ) {
             Ok(path) => path,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                    self.app_id
+                    "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    self.plugin_id
                 );
                 return;
             }
@@ -4273,12 +4273,12 @@ impl LivePythonPane {
             log::info!(
                 "app::{}: state scope={} ({}) changed on disk since this instance last synced \
                  — reloading instead of overwriting; persist dropped, app notified",
-                self.app_id,
+                self.plugin_id,
                 scope.as_str(),
                 path.display()
             );
             let fresh = read_python_state_file(
-                &self.app_id,
+                &self.plugin_id,
                 scope,
                 &path,
                 self.config.state_format,
@@ -4294,8 +4294,8 @@ impl LivePythonPane {
             Ok(bytes) => bytes,
             Err(error) => {
                 log::error!(
-                    "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                    self.app_id
+                    "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                    self.plugin_id
                 );
                 return;
             }
@@ -4303,12 +4303,12 @@ impl LivePythonPane {
         if let Err(error) = crate::host::state_scope::assert_within_scope(
             &path,
             scope,
-            crate::host::state_scope::UserDataKind::AppStates,
+            crate::host::state_scope::UserDataKind::PluginStates,
             &self.context_root,
         ) {
             log::error!(
-                "app::{}: save_app_state rejected — {error}; state NOT persisted",
-                self.app_id
+                "app::{}: save_plugin_state rejected — {error}; state NOT persisted",
+                self.plugin_id
             );
             return;
         }
@@ -4320,7 +4320,7 @@ impl LivePythonPane {
             {
                 log::warn!(
                     "app::{}: could not ensure {}/.plexi/.gitignore covers app_states/: {error}",
-                    self.app_id,
+                    self.plugin_id,
                     self.context_root.display()
                 );
             }
@@ -4340,7 +4340,7 @@ impl LivePythonPane {
                 log::info!(
                     "{}",
                     format_python_state_persist_trace(
-                        &self.app_id,
+                        &self.plugin_id,
                         scope,
                         self.config.state_format,
                         &path,
@@ -4351,7 +4351,7 @@ impl LivePythonPane {
             }
             Err(error) => log::error!(
                 "app::{}: write state {}: {error}",
-                self.app_id,
+                self.plugin_id,
                 path.display()
             ),
         }
@@ -4411,7 +4411,7 @@ impl LivePythonPane {
             for event in &events {
                 log::info!(
                     "app::{}: received key at Python host boundary key={} pressed={}",
-                    self.app_id,
+                    self.plugin_id,
                     event["key"].as_str().unwrap_or("<missing>"),
                     event["pressed"].as_bool().unwrap_or(false),
                 );
@@ -4422,7 +4422,7 @@ impl LivePythonPane {
             })) {
                 log::error!(
                     "app::{}: send key events to CPython WASM: {error}",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.error = Some(error.to_string());
             }
@@ -4445,7 +4445,7 @@ impl LivePythonPane {
                 if let Err(error) = self.runtime.send(&value) {
                     log::error!(
                         "app::{}: queue host event to Python runtime: {error}",
-                        self.app_id
+                        self.plugin_id
                     );
                     self.error = Some(error.to_string());
                     return Err(OutboundEventError::Send(error.to_string()));
@@ -4454,7 +4454,7 @@ impl LivePythonPane {
             Err(error) => {
                 log::error!(
                     "app::{}: serialize host event for Python runtime: {error}",
-                    self.app_id
+                    self.plugin_id
                 );
                 self.error = Some(error.to_string());
                 return Err(OutboundEventError::Encode(error.to_string()));
@@ -4466,7 +4466,7 @@ impl LivePythonPane {
     pub(crate) fn tool_event_sender(&self) -> crate::host::wasm_python::AppendableStdin {
         self.runtime.stdin.clone()
     }
-    pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::AppCommand> {
+    pub fn take_pending_commands(&mut self) -> Vec<crate::app::app_trait::ViewCommand> {
         std::mem::take(&mut self.pending_commands)
     }
 
@@ -4521,7 +4521,7 @@ impl LivePythonPane {
                         Ok(()) => self.drain_runtime(),
                         Err(error) => {
                             log::error!(
-                                "app::{}: background render send failed: {error}", self.app_id
+                                "app::{}: background render send failed: {error}", self.plugin_id
                             );
                             self.error = Some(error.to_string());
                         }
@@ -4533,7 +4533,7 @@ impl LivePythonPane {
         if produced > 0 {
             log::info!(
                 "app::{}: serviced {produced} command(s) off screen — pane is not rendering",
-                self.app_id
+                self.plugin_id
             );
         }
     }
@@ -4560,7 +4560,7 @@ impl LivePythonPane {
                         .is_some()))
     }
     pub fn display_name(&self) -> String {
-        self.title.clone().unwrap_or_else(|| self.app_id.clone())
+        self.title.clone().unwrap_or_else(|| self.plugin_id.clone())
     }
 
     pub(crate) fn semantic_state(&self) -> crate::host::pane::SemanticPaneState {
@@ -4594,7 +4594,7 @@ impl LivePythonPane {
             let exception = exception.to_string();
             log::info!(
                 "app::{}: guest entered failed state: {exception}",
-                self.app_id
+                self.plugin_id
             );
             self.error = Some(exception);
         }
@@ -4633,7 +4633,7 @@ impl LivePythonPane {
             WakeScheduleState::default();
         self.decoder = PythonOutputDecoder::spawn(
             &runtime,
-            self.app_id.clone(),
+            self.plugin_id.clone(),
             self.repaint.clone(),
             self.wake_schedule.clone(),
         );
@@ -4676,11 +4676,11 @@ impl LivePythonPane {
             // click, matching the same policy as the other drop points above.
             log::error!(
                 "app::{}: dropping pending pane click across hot-reload relaunch (target={:?}) — the tree it targeted no longer exists",
-                self.app_id,
+                self.plugin_id,
                 dropped.target
             );
         }
-        log::info!("app::{}: relaunched CPython WASM runtime", self.app_id);
+        log::info!("app::{}: relaunched CPython WASM runtime", self.plugin_id);
         Ok(())
     }
 }
@@ -4978,7 +4978,7 @@ fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
                 // Command chords are host input, never guest input. This matches
                 // the WASM runtime and remains a defense-in-depth guard if host
                 // routing order changes. Bare Escape is also reserved for the host
-                // CloseApp binding; forwarding it would let `handle_key` claim it.
+                // CloseView binding; forwarding it would let `handle_key` claim it.
                 if modifiers.command || *key == egui::Key::Escape {
                     continue;
                 }
@@ -5015,7 +5015,7 @@ fn python_key_events(events: &[egui::Event]) -> Vec<Value> {
 
 /// Encode only a physical, unmodified Escape press for the TextInput
 /// focus-loss handoff. Keeping this separate from [`python_key_events`] makes
-/// the host CloseApp reservation the normal bridge contract.
+/// the host CloseView reservation the normal bridge contract.
 fn python_text_input_escape_events(events: &[egui::Event]) -> Vec<Value> {
     events
         .iter()
@@ -5137,7 +5137,7 @@ fn decode_file_write_content(message: &Value) -> Result<Vec<u8>, String> {
 
 /// Default tail window for a `read_host_log` request: the last 256 KiB. Bounded
 /// so a multi-megabyte channel log never crosses the JSON bridge whole; the
-/// logs app renders far fewer lines than this holds.
+/// logs view renders far fewer lines than this holds.
 const DEFAULT_HOST_LOG_TAIL_BYTES: usize = 256 * 1024;
 
 /// Read the tail of the host channel log for the capability-gated
@@ -5175,18 +5175,18 @@ fn read_host_log_tail(path: &Path, max_bytes: usize) -> Result<String, String> {
 /// this bridge command. `None` = ungated. Python grants are manifest membership
 /// (`LivePythonPane::has_capability`), not WIT session prompts (#2641).
 fn required_capability_for_python_app_command(
-    command: &crate::app::app_trait::AppCommand,
+    command: &crate::app::app_trait::ViewCommand,
 ) -> Option<&'static str> {
-    use crate::app::app_trait::AppCommand;
+    use crate::app::app_trait::ViewCommand;
     use crate::app::permissions::Capability;
     match command {
-        AppCommand::SpawnApp { .. } => Some(Capability::SpawnApp.as_str()),
-        AppCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
-        AppCommand::ForwardPaneRequest {
-            request: crate::protocol::AppRequest::FocusPane { .. },
+        ViewCommand::SpawnView { .. } => Some(Capability::SpawnView.as_str()),
+        ViewCommand::SpawnPane { .. } => Some(Capability::PanesSpawn.as_str()),
+        ViewCommand::ForwardPaneRequest {
+            request: crate::protocol::HostRequest::FocusPane { .. },
         } => Some(Capability::PanesControl.as_str()),
         // Raw WASM capability string, not a `Capability` variant (same literal as WIT).
-        AppCommand::ShowNotification { .. } => Some("notify"),
+        ViewCommand::ShowNotification { .. } => Some("notify"),
         _ => None,
     }
 }
@@ -5197,8 +5197,8 @@ fn manifest_declares(capabilities: &[String], capability: &str) -> bool {
     capabilities.iter().any(|item| item == capability)
 }
 
-fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app::app_trait::AppCommand>, String> {
-    use crate::app::app_trait::AppCommand;
+fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app::app_trait::ViewCommand>, String> {
+    use crate::app::app_trait::ViewCommand;
     let text = |key: &str| {
         message
             .get(key)
@@ -5224,11 +5224,11 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
     let command = (|| match message_type {
         "expose_tools" => serde_json::from_value(message.get("tools")?.clone())
             .ok()
-            .map(|tools| AppCommand::ExposeTools {
+            .map(|tools| ViewCommand::ExposeTools {
                 tools,
                 pane_id: None,
             }),
-        "tool_result" => Some(AppCommand::ToolResult {
+        "tool_result" => Some(ViewCommand::ToolResult {
             call_id: text("call_id"),
             output_json: message
                 .get("output_json")
@@ -5260,8 +5260,8 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
-            Some(AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::DeclareEventStreams { streams },
+            Some(ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::DeclareEventStreams { streams },
                 pane_id: None,
             })
         }
@@ -5282,8 +5282,8 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                 .map(serde_json::from_str)
                 .transpose()
                 .ok()?;
-            Some(AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::EmitEvent {
+            Some(ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::EmitEvent {
                     event: text("event"),
                     actor,
                     actor_id: message
@@ -5330,10 +5330,10 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                 pane_id: None,
             })
         }
-        "subscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::protocol::AppRequest::SubscribeAppEvents {
+        "subscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
+            request: crate::protocol::HostRequest::SubscribePluginEvents {
                 request_id: text("request_id"),
-                app_id: text("app_id"),
+                plugin_id: text("plugin_id"),
                 event_names: message
                     .get("event_names")
                     .and_then(Value::as_array)
@@ -5354,43 +5354,43 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
             },
             pane_id: None,
         }),
-        "unsubscribe_event_streams" => Some(AppCommand::AppEventRequest {
-            request: crate::protocol::AppRequest::UnsubscribeAppEvents {
+        "unsubscribe_event_streams" => Some(ViewCommand::PluginEventRequest {
+            request: crate::protocol::HostRequest::UnsubscribePluginEvents {
                 request_id: text("request_id"),
                 subscription_id: text("subscription_id"),
             },
             pane_id: None,
         }),
-        "spawn_app" => Some(AppCommand::SpawnApp {
-            type_id: text("app_id"),
+        "spawn_view" => Some(ViewCommand::SpawnView {
+            type_id: text("plugin_id"),
             layout: message
                 .get("layout")
                 .and_then(Value::as_str)
                 .map(str::to_string),
             args: Vec::new(),
         }),
-        "spawn_pane" => Some(AppCommand::SpawnPane {
-            type_id: text("app_id"),
+        "spawn_pane" => Some(ViewCommand::SpawnPane {
+            type_id: text("plugin_id"),
             layout: text("layout"),
             args: Vec::new(),
             from_pane_id: None,
             request_id: None,
             target_context: None,
         }),
-        "focus_pane" => Some(AppCommand::ForwardPaneRequest {
-            request: crate::protocol::AppRequest::FocusPane {
+        "focus_pane" => Some(ViewCommand::ForwardPaneRequest {
+            request: crate::protocol::HostRequest::FocusPane {
                 pane_id: message
                     .get("pane_id")
                     .and_then(Value::as_u64)
                     .unwrap_or_default(),
             },
         }),
-        "pipe_send" => Some(AppCommand::DeliverPipeMessage {
+        "pipe_send" => Some(ViewCommand::DeliverPipeMessage {
             sender_pane_id: 0,
             pipe_id: text("pipe_id"),
             payload: message.get("payload").cloned().unwrap_or(Value::Null),
         }),
-        "pipe_open_directed" => Some(AppCommand::OpenDirectedPipe {
+        "pipe_open_directed" => Some(ViewCommand::OpenDirectedPipe {
             sender_pane_id: 0,
             pipe_id: text("pipe_id"),
             target_pane_id: message
@@ -5398,11 +5398,11 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                 .and_then(Value::as_u64)
                 .unwrap_or_default(),
         }),
-        "run_update" => Some(AppCommand::DeliverRunUpdate {
+        "run_update" => Some(ViewCommand::DeliverRunUpdate {
             originator_type_id: text("originator_type_id"),
             event: crate::protocol::PlexiEvent::Resume,
         }),
-        "show_notification" => Some(AppCommand::ShowNotification {
+        "show_notification" => Some(ViewCommand::ShowNotification {
             notify_id: text("notify_id"),
             sender_pane_id: 0,
             source_context_id: 0,
@@ -5420,7 +5420,7 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
             timeout_secs: None,
             on_dismiss: None,
         }),
-        "insert_path_token" => Some(AppCommand::InsertPathToken {
+        "insert_path_token" => Some(ViewCommand::InsertPathToken {
             sender_pane_id: 0,
             terminal_pane_id: message
                 .get("terminal_pane_id")
@@ -5429,7 +5429,7 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
             path: text("path"),
             mode: crate::protocol::PathTokenMode::Append,
         }),
-        "command_preview" => Some(AppCommand::RequestCommandPreview {
+        "command_preview" => Some(ViewCommand::RequestCommandPreview {
             sender_pane_id: 0,
             request_id: text("request_id"),
             terminal_pane_id: message
@@ -5438,7 +5438,7 @@ fn app_command_from_python_message(message: &Value) -> Result<Option<crate::app:
                 .unwrap_or_default(),
             command: text("command"),
         }),
-        "query_context_state" => Some(AppCommand::QueryContextState {
+        "query_context_state" => Some(ViewCommand::QueryContextState {
             sender_pane_id: 0,
             context_id: message
                 .get("context_id")
@@ -5580,9 +5580,9 @@ pub fn probe_cpython_shim_component(path: &Path) -> Result<(), WasmPythonError> 
 
 #[cfg(test)]
 fn probe_lifecycle_component(path: &Path, expected_view_text: &str) -> Result<(), WasmPythonError> {
-    let grants = WasmApp::inspect_required_grants(path)
+    let grants = WasmView::inspect_required_grants(path)
         .map_err(|source| classify_component_load_error(path, source))?;
-    let mut app = WasmApp::load_with_grants(
+    let mut app = WasmView::load_with_grants(
         "python-shim-probe",
         path,
         StateStore::ephemeral(),
@@ -5964,7 +5964,7 @@ struct NativePythonLifecycleOutput {
 #[cfg(test)]
 fn run_native_python_lifecycle_probe(
     sdk_dir: &Path,
-    app_dir: &Path,
+    plugin_dir: &Path,
     module_name: &str,
     init_arg: &Value,
     update_arg: &Value,
@@ -5974,16 +5974,16 @@ fn run_native_python_lifecycle_probe(
 import json
 import sys
 
-sdk_dir, app_dir, module_name, init_arg, update_arg, view_arg = sys.argv[1:]
+sdk_dir, plugin_dir, module_name, init_arg, update_arg, view_arg = sys.argv[1:]
 sys.path.insert(0, sdk_dir)
-sys.path.insert(0, app_dir)
+sys.path.insert(0, plugin_dir)
 
 import plexi_sdk._v3_state as v3_state
-from plexi_sdk._adapter import call_lifecycle, load_app
+from plexi_sdk._adapter import call_lifecycle, load_plugin
 
 v3_state._host_log = lambda level, msg: None
 
-load_app(module_name)
+load_plugin(module_name)
 print(json.dumps({
     "init": call_lifecycle("init", init_arg),
     "update": call_lifecycle("update", update_arg),
@@ -5994,7 +5994,7 @@ print(json.dumps({
         .arg("-c")
         .arg(script)
         .arg(sdk_dir)
-        .arg(app_dir)
+        .arg(plugin_dir)
         .arg(module_name)
         .arg(init_arg.to_string())
         .arg(update_arg.to_string())
@@ -6175,7 +6175,7 @@ fn decode_node_data(value: &Value) -> Result<UiNodeData, WasmPythonError> {
                     .unwrap_or("start"),
             )?,
         })),
-        "AppBar" | "app_bar" | "app-bar" => Ok(UiNodeData::AppBar(AppBarNode {
+        "SurfaceHeader" | "surface_header" | "surface-header" => Ok(UiNodeData::SurfaceHeader(SurfaceHeaderNode {
             title: required_string(value, "title")?,
             subtitle: value
                 .get("subtitle")
@@ -6771,10 +6771,10 @@ mod tests {
         stdin.arm_low_water_wake(LowWaterArmRequest::Fresh { threshold, wake })
     }
 
-    fn state_test_config(workspace_root: &Path, app_id: &str) -> PythonLaunchConfig {
+    fn state_test_config(workspace_root: &Path, plugin_id: &str) -> PythonLaunchConfig {
         PythonLaunchConfig {
-            app_id: app_id.to_string(),
-            app_dir: workspace_root.to_path_buf(),
+            plugin_id: plugin_id.to_string(),
+            plugin_dir: workspace_root.to_path_buf(),
             entry: workspace_root.join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -6808,7 +6808,7 @@ mod tests {
             .unwrap_or(crate::host::state_scope::StateScope::Global);
         crate::host::state_scope::state_file(
             scope,
-            &config.app_id,
+            &config.plugin_id,
             config.state_format,
             &config.context_root,
         )
@@ -6824,12 +6824,12 @@ mod tests {
                 .and_then(|command| required_capability_for_python_app_command(&command))
         };
         assert_eq!(
-            required(serde_json::json!({"type": "spawn_app", "app_id": "x"})),
+            required(serde_json::json!({"type": "spawn_view", "plugin_id": "x"})),
             Some("spawn.app")
         );
         assert_eq!(
             required(
-                serde_json::json!({"type": "spawn_pane", "app_id": "x", "layout": "split_h"})
+                serde_json::json!({"type": "spawn_pane", "plugin_id": "x", "layout": "split_h"})
             ),
             Some("panes.spawn")
         );
@@ -6859,7 +6859,7 @@ mod tests {
         let supported = app_command_from_python_message(&serde_json::json!({
             "type": "show_notification", "title": "Saved", "body": "Done"
         })).expect("message-only notification is supported").expect("message decodes");
-        assert!(matches!(supported, crate::app::app_trait::AppCommand::ShowNotification {
+        assert!(matches!(supported, crate::app::app_trait::ViewCommand::ShowNotification {
             kind: crate::protocol::NotifyKind::Message, options, image_inline: None, ..
         } if options.is_empty()));
         let error = match app_command_from_python_message(&serde_json::json!({
@@ -7015,26 +7015,23 @@ mod tests {
         /// only `context` scope resolves against; the manifest-omitted
         /// default is `global` (home-dir-relative, root-independent) and
         /// would make every address assertion here vacuous.
-        fn write_python_app(parent: &Path, app_id: &str) -> PathBuf {
-            let app_dir = parent.join(app_id);
-            std::fs::create_dir_all(&app_dir).expect("app dir");
+        fn write_python_app(parent: &Path, plugin_id: &str) -> PathBuf {
+            let plugin_dir = parent.join(plugin_id);
+            std::fs::create_dir_all(&plugin_dir).expect("app dir");
             std::fs::write(
-                app_dir.join("manifest.toml"),
+                plugin_dir.join("manifest.toml"),
                 format!(
-                    "schema_version = 1\n\n[app]\nid = \"{app_id}\"\ntype = \"app\"\n\
-                     name = \"{app_id}\"\nversion = \"0.0.1\"\nentry = \"main.py\"\n\
-                     \n[runtime]\npython_compat = true\n\
-                     \n[state]\nscopes = [\"context\"]\n"
+                    "schema_version = 2\n\n[runtime]\npython_compat = true\nkind = \"python\"\nentry = \"main.py\"\n\n[state]\nscopes = [\"context\"]\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"{plugin_id}\"\nversion = \"0.0.1\"\n\n[[contributes.views]]\nid = \"{plugin_id}.main\"\ndefault = true\n"
                 ),
             )
             .expect("write manifest");
             std::fs::write(
-                app_dir.join("main.py"),
+                plugin_dir.join("main.py"),
                 "def init(size, args): return []\ndef update(event): return []\n\
                  def view(): return None\n",
             )
             .expect("write entry");
-            app_dir
+            plugin_dir
         }
 
         /// The address the *running* instance writes to, read off its own
@@ -7047,7 +7044,7 @@ mod tests {
                 .and_then(crate::host::pane::Pane::as_app)
                 .expect("the launched pane is an app pane");
             match &pane.runtime {
-                crate::host::pane::AppRuntime::Python(live) => python_state_path_for_config(&live.config),
+                crate::host::pane::ViewRuntime::Python(live) => python_state_path_for_config(&live.config),
                 other => panic!("expected a CPython-WASM runtime, got {}", other.type_id()),
             }
         }
@@ -7078,12 +7075,12 @@ mod tests {
             harness
                 .app
                 .set_context_root(root.path().to_path_buf(), Some(context_id));
-            let app_dir = write_python_app(root.path(), "todo");
+            let plugin_dir = write_python_app(root.path(), "todo");
 
             let pane_id = harness
                 .app
                 .launch_app_by_path_with_layout_no_review_modal(
-                    &app_dir.to_string_lossy(),
+                    &plugin_dir.to_string_lossy(),
                     None,
                     Some(root.path().to_path_buf()),
                     &[],
@@ -7114,7 +7111,7 @@ mod tests {
                 .clone();
 
             assert_eq!(
-                record.app_id.as_deref(),
+                record.plugin_id.as_deref(),
                 Some(manifest_id.as_str()),
                 "the saved record must name the real app, not the runtime kind"
             );
@@ -7127,14 +7124,14 @@ mod tests {
                 .launch
                 .clone()
                 .expect("a Python app pane records launch context");
-            let crate::workspace::SavedAppLaunch::Python {
-                app_dir: recorded_dir,
+            let crate::workspace::SavedViewLaunch::Python {
+                plugin_dir: recorded_dir,
                 args,
             } = &launch
             else {
                 panic!("expected a Python launch spec, got {launch:?}");
             };
-            assert_eq!(recorded_dir, &app_dir, "launch context must name the real app_dir");
+            assert_eq!(recorded_dir, &plugin_dir, "launch context must name the real plugin_dir");
             assert!(args.is_empty());
 
             // Drop the first harness and boot a fresh HostHarness from the same
@@ -7150,7 +7147,7 @@ mod tests {
             assert_eq!(restored_pane.manifest_id, manifest_id);
             assert!(matches!(
                 restored_pane.runtime,
-                crate::host::pane::AppRuntime::Python(_)
+                crate::host::pane::ViewRuntime::Python(_)
             ));
             let restored_address = live_state_address(&restored_harness, pane_id);
             assert_eq!(
@@ -7178,11 +7175,11 @@ mod tests {
 
             // The launch root is the context root — what `resolve_new_pane_cwd`
             // yields for an app the registry has no workspace root for.
-            let app_dir = write_python_app(root_a.path(), "todo");
+            let plugin_dir = write_python_app(root_a.path(), "todo");
             let pane_id = harness
                 .app
                 .launch_app_by_path_with_layout_no_review_modal(
-                    &app_dir.to_string_lossy(),
+                    &plugin_dir.to_string_lossy(),
                     None,
                     Some(root_a.path().to_path_buf()),
                     &[],
@@ -7622,7 +7619,7 @@ mod tests {
         );
 
         let backlogged = pump_mcp_inbound(
-            &pane.app_id,
+            &pane.plugin_id,
             &pane.mcp_rx,
             &pane.runtime.stdin,
             &mut pane.mcp_connections,
@@ -8830,7 +8827,7 @@ mod tests {
         assert_eq!(events[1]["pressed"], false);
     }
 
-    /// Bare Escape drives CloseApp, and every command chord belongs to the host.
+    /// Bare Escape drives CloseView, and every command chord belongs to the host.
     /// Python and component-WASM apps must enforce the same boundary.
     #[test]
     fn python_key_events_reserves_all_command_chords_for_the_host() {
@@ -8843,7 +8840,7 @@ mod tests {
         }];
         assert!(
             python_key_events(&bare_escape).is_empty(),
-            "bare Escape must not reach the guest — it drives host CloseApp"
+            "bare Escape must not reach the guest — it drives host CloseView"
         );
 
         let cmd_escape = [egui::Event::Key {
@@ -8901,9 +8898,9 @@ mod tests {
 
     #[test]
     fn python_host_event_wire_delivers_cross_runtime_app_events() {
-        let wire = encode_python_host_event(crate::protocol::PlexiEvent::AppEvent {
+        let wire = encode_python_host_event(crate::protocol::PlexiEvent::PluginEvent {
             subscription_id: "sub-1".to_string(),
-            app_id: "wasm-counter".to_string(),
+            plugin_id: "wasm-counter".to_string(),
             event: "count.changed".to_string(),
             event_id: 7,
             resource_id: "counter-1".to_string(),
@@ -8915,8 +8912,8 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(wire["type"], "app_event");
-        assert_eq!(wire["app_id"], "wasm-counter");
+        assert_eq!(wire["type"], "plugin_event");
+        assert_eq!(wire["plugin_id"], "wasm-counter");
         assert_eq!(wire["event"], "count.changed");
         assert_eq!(wire["payload"]["count"], 2);
     }
@@ -8926,7 +8923,7 @@ mod tests {
         let subscribe = app_command_from_python_message(&json!({
             "type": "subscribe_event_streams",
             "request_id": "subscribe-1",
-            "app_id": "wasm-counter",
+            "plugin_id": "wasm-counter",
             "event_names": ["count.changed"],
             "payload_mode": "full",
             "trigger_mode": "conversation",
@@ -8936,16 +8933,16 @@ mod tests {
         .expect("subscribe command");
         assert!(matches!(
             subscribe,
-            crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::SubscribeAppEvents {
+            crate::app::app_trait::ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::SubscribePluginEvents {
                     request_id,
-                    app_id,
+                    plugin_id,
                     event_names,
                     ..
                 },
                 ..
             } if request_id == "subscribe-1"
-                && app_id == "wasm-counter"
+                && plugin_id == "wasm-counter"
                 && event_names == vec!["count.changed".to_string()]
         ));
 
@@ -8963,8 +8960,8 @@ mod tests {
         .expect("emit command");
         assert!(matches!(
             emit,
-            crate::app::app_trait::AppCommand::AppEventRequest {
-                request: crate::protocol::AppRequest::EmitEvent {
+            crate::app::app_trait::ViewCommand::PluginEventRequest {
+                request: crate::protocol::HostRequest::EmitEvent {
                     event,
                     payload: Some(payload),
                     ..
@@ -9280,8 +9277,8 @@ mod tests {
         let root_a = tempdir().expect("root a");
         let root_b = tempdir().expect("root b");
         let config = PythonLaunchConfig {
-            app_id: "test.state-scope".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.state-scope".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -9302,7 +9299,7 @@ mod tests {
         let mut pane = LivePythonPane::launch(config).expect("launch pane");
 
         // Context-scoped persist lands inside the launching context root and
-        // ensures the app_states gitignore so the state cannot be committed.
+        // ensures the plugin_states gitignore so the state cannot be committed.
         pane.save_state(Some(&json!("context")), Some(&json!({"k": 1})));
         let file_a = root_a
             .path()
@@ -9338,8 +9335,8 @@ mod tests {
         // a silent fallback to another scope's file.
         let undeclared_root = tempdir().expect("undeclared root");
         let global_only = PythonLaunchConfig {
-            app_id: "test.global-only".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.global-only".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -9368,23 +9365,23 @@ mod tests {
     /// Shared scaffolding for the file-backed state tests (stint 0644):
     /// a trivial app + a context-scoped launch config against a fresh root.
     fn file_state_config(
-        app_dir: &Path,
-        app_id: &str,
+        plugin_dir: &Path,
+        plugin_id: &str,
         context_root: &Path,
         format: crate::host::state_scope::StateFormat,
     ) -> PythonLaunchConfig {
         std::fs::write(
-            app_dir.join("main.py"),
+            plugin_dir.join("main.py"),
             "def init(size, args): return []\ndef update(event): return []\ndef view():\n    from plexi_sdk.ui import Text\n    return Text('x')\n",
         )
         .expect("write app");
         PythonLaunchConfig {
-            app_id: app_id.to_string(),
-            app_dir: app_dir.to_path_buf(),
-            entry: app_dir.join("main.py"),
+            plugin_id: plugin_id.to_string(),
+            plugin_dir: plugin_dir.to_path_buf(),
+            entry: plugin_dir.join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
-            workspace_root: app_dir.to_path_buf(),
+            workspace_root: plugin_dir.to_path_buf(),
             capabilities: Vec::new(),
             allowed_hosts: Vec::new(),
             state_scopes: vec![crate::host::state_scope::StateScope::Context],
@@ -9395,9 +9392,9 @@ mod tests {
         }
     }
 
-    fn context_state_file(root: &Path, app_id: &str, ext: &str) -> PathBuf {
+    fn context_state_file(root: &Path, plugin_id: &str, ext: &str) -> PathBuf {
         root.join(".plexi/app_states")
-            .join(format!("{app_id}.{ext}"))
+            .join(format!("{plugin_id}.{ext}"))
     }
 
     #[test]
@@ -9829,8 +9826,8 @@ mod tests {
         )
         .expect("write app");
         let config = PythonLaunchConfig {
-            app_id: "test.wasm-python".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.wasm-python".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -9895,7 +9892,7 @@ mod tests {
     /// this the test never renders again, standing in for a pane that scrolled
     /// off screen, moved to an inactive context, or sits under an occluded
     /// window.
-    fn visible_pass(runtime: &mut crate::host::pane::AppRuntime, colors: &crate::ui::theme::Colors) {
+    fn visible_pass(runtime: &mut crate::host::pane::ViewRuntime, colors: &crate::ui::theme::Colors) {
         let ctx = egui::Context::default();
         let _ = ctx.run_ui(
             egui::RawInput {
@@ -9909,7 +9906,7 @@ mod tests {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     runtime.ui(
                         ui,
-                        &crate::app::app_trait::AppRenderContext {
+                        &crate::app::app_trait::ViewRenderContext {
                             colors,
                             pane_id: 1,
                         },
@@ -9955,8 +9952,8 @@ mod tests {
         )
         .expect("write app");
         let config = PythonLaunchConfig {
-            app_id: "test.tool-offscreen".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.tool-offscreen".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -9972,7 +9969,7 @@ mod tests {
             context_root: app.path().to_path_buf(),
         };
         let colors = crate::ui::theme::colors_from_config(&crate::config::PlexiConfig::default());
-        let mut runtime = crate::host::pane::AppRuntime::Python(Box::new(
+        let mut runtime = crate::host::pane::ViewRuntime::Python(Box::new(
             LivePythonPane::launch(config).expect("launch CPython WASM"),
         ));
 
@@ -9986,14 +9983,14 @@ mod tests {
             exposed = runtime
                 .take_pending_commands()
                 .iter()
-                .any(|cmd| matches!(cmd, crate::app::app_trait::AppCommand::ExposeTools { .. }));
+                .any(|cmd| matches!(cmd, crate::app::app_trait::ViewCommand::ExposeTools { .. }));
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(exposed, "app never exposed its tools on a visible pass");
 
         // Now the pane goes off screen. `tool_dispatch` still reaches the
         // guest — it writes to stdin, which is independent of rendering.
-        let crate::host::pane::AppRuntime::Python(pane) = &runtime else {
+        let crate::host::pane::ViewRuntime::Python(pane) = &runtime else {
             panic!("python runtime");
         };
         pane.tool_event_sender()
@@ -10016,7 +10013,7 @@ mod tests {
             }
             result = runtime.take_pending_commands().into_iter().find_map(|cmd| {
                 match cmd {
-                    crate::app::app_trait::AppCommand::ToolResult {
+                    crate::app::app_trait::ViewCommand::ToolResult {
                         call_id,
                         output_json,
                         ..
@@ -10045,8 +10042,8 @@ mod tests {
         )
         .expect("write app");
         let config = PythonLaunchConfig {
-            app_id: "test.broken-guest".to_string(),
-            app_dir: app.path().to_path_buf(),
+            plugin_id: "test.broken-guest".to_string(),
+            plugin_dir: app.path().to_path_buf(),
             entry: app.path().join("main.py"),
             module_name: "main".to_string(),
             launch_args: Vec::new(),
@@ -10186,17 +10183,22 @@ mod tests {
         std::fs::write(
             dir.path().join("manifest.toml"),
             r#"
-schema_version = 1
-
-[app]
-id = "hello-py"
-type = "app"
-name = "Hello Python"
-entry = "main.py"
-version = "0.1.0"
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "main.py"
+
+
+[plugin]
+id = "hello-py"
+name = "Hello Python"
+version = "0.1.0"
+
+[[contributes.views]]
+id = "hello-py.main"
+default = true
 "#,
         )
         .expect("manifest");
@@ -10207,7 +10209,7 @@ python_compat = true
             .expect("python compat config");
 
         assert_eq!(config.module_name, "main");
-        assert_eq!(config.app_id, "hello-py");
+        assert_eq!(config.plugin_id, "hello-py");
     }
 
     #[test]
@@ -10220,18 +10222,23 @@ python_compat = true
         std::fs::write(
             dir.path().join("manifest.toml"),
             r#"
-schema_version = 1
-
-[app]
-id = "cloud-py"
-type = "app"
-name = "Cloud Python"
-entry = "main.py"
-version = "0.1.0"
+schema_version = 2
 
 [runtime]
 python_compat = true
 execution = "cloud"
+kind = "python"
+entry = "main.py"
+
+
+[plugin]
+id = "cloud-py"
+name = "Cloud Python"
+version = "0.1.0"
+
+[[contributes.views]]
+id = "cloud-py.main"
+default = true
 "#,
         )
         .expect("manifest");
@@ -10394,7 +10401,7 @@ execution = "cloud"
 
     #[test]
     fn python_shim_fixture_executes_lifecycle_json_bridge() {
-        let mut app = WasmApp::load_with_grants(
+        let mut app = WasmView::load_with_grants(
             "python-shim-test",
             &python_shim_fixture(),
             StateStore::ephemeral(),
@@ -11199,7 +11206,7 @@ execution = "cloud"
     fn native_python_bridge_runs_calc_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let app_dir = root.join("apps/calc");
+        let plugin_dir = root.join("apps/calc");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -11216,7 +11223,7 @@ execution = "cloud"
 
         let output = run_native_python_lifecycle_probe(
             &sdk_dir,
-            &app_dir,
+            &plugin_dir,
             "calc",
             &init_bridge_arg(&snapshot, (320.0, 240.0), &[]),
             &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
@@ -11239,7 +11246,7 @@ execution = "cloud"
         assert!(view
             .nodes
             .iter()
-            .any(|node| matches!(&node.data, UiNodeData::AppBar(bar) if bar.title == "Calculator")));
+            .any(|node| matches!(&node.data, UiNodeData::SurfaceHeader(bar) if bar.title == "Calculator")));
 
         // Calc declares its connector tools on init; the bridge must carry the
         // whole set across with schemas re-serialized into the WIT string fields.
@@ -11308,7 +11315,7 @@ execution = "cloud"
     fn native_python_bridge_runs_stats_lifecycle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let sdk_dir = root.join("sdk/python");
-        let app_dir = root.join("apps/stats");
+        let plugin_dir = root.join("apps/stats");
         let snapshot = StateSnapshot {
             entries: Vec::new(),
         };
@@ -11316,7 +11323,7 @@ execution = "cloud"
 
         let output = run_native_python_lifecycle_probe(
             &sdk_dir,
-            &app_dir,
+            &plugin_dir,
             "stats",
             &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
             &update_bridge_arg(&snapshot, &update_event).expect("update arg"),
@@ -11347,7 +11354,7 @@ execution = "cloud"
         };
         let output = run_native_python_lifecycle_probe(
             &root.join("sdk/python"),
-            &root.join("apps").join(app_name),
+            &root.join("plugins").join(app_name),
             module_name,
             &init_bridge_arg(&snapshot, (480.0, 320.0), &[]),
             &update_bridge_arg(&snapshot, &InputEvent::TimerFired(1)).expect("update arg"),
@@ -11360,12 +11367,12 @@ execution = "cloud"
 
     #[test]
     fn native_python_bridge_decodes_kraken_view() {
-        // Stint 0389: `AppBar` decodes to its own live `UiNodeData::AppBar`
+        // Stint 0389: `SurfaceHeader` decodes to its own live `UiNodeData::SurfaceHeader`
         // node now, not a downgraded `Text` node containing the title.
         let view = native_python_app_view("kraken", "main");
 
         assert!(view.nodes.iter().any(
-            |node| matches!(&node.data, UiNodeData::AppBar(bar) if bar.title.contains("Kraken"))
+            |node| matches!(&node.data, UiNodeData::SurfaceHeader(bar) if bar.title.contains("Kraken"))
         ));
     }
 

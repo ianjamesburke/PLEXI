@@ -331,7 +331,7 @@ fn query_ready_status(socket_path: &Path, profile_dir: &Path, deadline: Instant)
         return None;
     }
     let response_file = crate::rpc::response_file_in(profile_dir, "host-status", "json");
-    let request = crate::protocol::AppRequest::ListPanes {
+    let request = crate::protocol::HostRequest::ListPanes {
         response_file: response_file.clone(),
         context_id: None,
     };
@@ -650,7 +650,7 @@ pub fn host_start_cli(
 }
 
 /// `plexi host stop` — clean shutdown request over `notify.sock` first
-/// (`AppRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
+/// (`HostRequest::Shutdown`), falling back to `kill -TERM <pid>` (pid via
 /// `lsof -t`) if the socket doesn't confirm exit within a short timeout.
 /// Detach the spawned host from this terminal so closing the terminal — or
 /// Ctrl-C in it — does not take the host down with it.
@@ -1015,7 +1015,7 @@ fn host_stop_cli_in(profile: &Path, channel: Option<String>) -> i32 {
 
     match IpcStream::connect(&socket_path) {
         Ok(mut stream) => {
-            let payload = serde_json::to_string(&crate::protocol::AppRequest::Shutdown)
+            let payload = serde_json::to_string(&crate::protocol::HostRequest::Shutdown)
                 .unwrap_or_else(|_| "{\"type\":\"shutdown\"}".to_string());
             match stream.write_all(format!("{payload}\n").as_bytes()) {
                 Ok(()) => {
@@ -1236,7 +1236,7 @@ pub(crate) fn running_build_info() -> Option<serde_json::Value> {
     let profile = host_config_dir(channel.as_deref());
     let socket = ipc::endpoint_in(&profile);
     let response_file = crate::rpc::response_file_in(&profile, "host-build", "json");
-    let request = crate::protocol::AppRequest::GetBuildInfo { response_file: response_file.clone() };
+    let request = crate::protocol::HostRequest::GetBuildInfo { response_file: response_file.clone() };
     let line = serde_json::to_string(&request).ok()?;
     super::send_line_to_socket(&socket, format!("{line}\n").as_bytes(), crate::rpc::DEFAULT_TIMEOUT).ok()?;
     let content = crate::rpc::poll_string(&response_file, Some(crate::rpc::DEFAULT_TIMEOUT)).ok()?;
@@ -1370,7 +1370,7 @@ pub fn host_status_cli(json: bool) -> i32 {
 }
 
 /// `plexi host log --source <tool> <message>` — write one info-level marker
-/// line into the running host's channel log via `AppRequest::LogMarker`.
+/// line into the running host's channel log via `HostRequest::LogMarker`.
 ///
 /// Like every `host` subcommand it talks to the channel's `notify.sock`
 /// directly (derived from the running binary's own channel, see the module

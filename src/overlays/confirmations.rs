@@ -97,7 +97,7 @@ impl PlexiApp {
                 .get_mut(&pane_id)
                 .and_then(|pane| pane.as_app_mut())
             {
-                if let crate::host::pane::AppRuntime::Wasm(runtime) = &mut app.runtime {
+                if let crate::host::pane::ViewRuntime::Wasm(runtime) = &mut app.runtime {
                     runtime.draw_capability_modal(ctx, &self.colors);
                 }
             }
@@ -370,7 +370,7 @@ impl PlexiApp {
         .show(ctx, &colors, |ui| {
             crate::ui::typography::caption(
                 ui,
-                format!("{} requests host imports:", review.app_id),
+                format!("{} requests host imports:", review.plugin_id),
                 &colors,
             );
             for capability in &review.missing_capabilities {
@@ -392,7 +392,7 @@ impl PlexiApp {
             );
             for capability in &review.missing_capabilities {
                 store.set_wasm(
-                    &review.app_id,
+                    &review.plugin_id,
                     &review.workspace_root,
                     capability,
                     crate::app::permissions::PermissionState::Green,
@@ -404,7 +404,7 @@ impl PlexiApp {
             );
             for capability in &review.missing_capabilities {
                 monitor.grant_capability_id(
-                    &review.app_id,
+                    &review.plugin_id,
                     &review.workspace_root,
                     capability,
                     crate::broker::Decision::Allow,
@@ -412,28 +412,28 @@ impl PlexiApp {
                 );
             }
             log::info!(
-                "raw_wasm_review: approved {} imports for app_id={} path={}",
+                "raw_wasm_review: approved {} imports for plugin_id={} path={}",
                 review.missing_capabilities.len(),
-                review.app_id,
+                review.plugin_id,
                 review.wasm_path.display()
             );
             if let Err(err) = self.open_wasm_app_pane(
-                &review.app_id,
+                &review.plugin_id,
                 &review.wasm_path,
                 review.workspace_root,
                 review.launch_args,
             ) {
                 log::warn!(
-                    "raw_wasm_review: approved launch failed for app_id={} path={}: {err}",
-                    review.app_id,
+                    "raw_wasm_review: approved launch failed for plugin_id={} path={}: {err}",
+                    review.plugin_id,
                     review.wasm_path.display()
                 );
             }
         } else if response.dismissed || response.selected == Some("deny") {
             if let Some(review) = self.pending_raw_wasm_launches.pop_front() {
                 log::info!(
-                    "raw_wasm_review: denied app_id={} path={}",
-                    review.app_id,
+                    "raw_wasm_review: denied plugin_id={} path={}",
+                    review.plugin_id,
                     review.wasm_path.display()
                 );
             }

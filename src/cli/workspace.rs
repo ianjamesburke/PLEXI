@@ -48,9 +48,9 @@ pub fn workspace_init() -> i32 {
             println!("  workspace id: {}", cfg.id);
             println!("  channel dir:  {channel_dir}/");
             println!("  router:       {channel_dir}/secrets.toml (fallback = true)");
-            println!("  apps:         {channel_dir}/apps.toml (declare app dependencies here)");
+            println!("  apps:         {channel_dir}/plugins.toml (declare app dependencies here)");
             println!("  commands:     {channel_dir}/commands.toml (run commands with: plexi run)");
-            print_tip(&format!("declare app dependencies in {channel_dir}/apps.toml, then run `plexi app install`."));
+            print_tip(&format!("declare app dependencies in {channel_dir}/plugins.toml, then run `plexi plugin install`."));
             0
         }
         Err(e) => {

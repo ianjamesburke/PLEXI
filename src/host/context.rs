@@ -121,7 +121,7 @@ pub struct Context {
     /// The single directory this context is anchored to. Non-optional: every
     /// context is anchored somewhere (creation defaults to the creating
     /// pane's cwd, or home). New panes in this context open here, context
-    /// scoped app state resolves against it, and `plexi context set-root`
+    /// scoped plugin state resolves against it, and `plexi context set-root`
     /// rewrites it.
     pub root: PathBuf,
     /// Optional description — ambient intent for what you're doing in this context.

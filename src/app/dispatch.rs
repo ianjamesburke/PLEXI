@@ -1,6 +1,6 @@
 //! App command dispatch — keyboard routing + command drain from app panes.
 
-use crate::app::app_trait::AppCommand;
+use crate::app::app_trait::ViewCommand;
 use crate::app::notifications::PendingNotification;
 
 use super::{
@@ -15,7 +15,7 @@ pub(crate) fn native_wasm_notification_contract_error(icon: Option<&str>) -> Opt
 impl PlexiApp {
     /// Feed keyboard input to the focused app pane. Keys only go to the
     /// focused pane (that's the whole point of focus). Command drain
-    /// happens separately via [`drain_all_app_commands`] so background
+    /// happens separately via [`drain_all_view_commands`] so background
     /// apps can surface notifications and other commands while the
     /// focused pane is something else (or while a modal holds focus).
     pub(super) fn dispatch_app_key_events(
@@ -160,7 +160,7 @@ impl PlexiApp {
         }
         // Egui releases a TextInput's focus before this dispatch. On the
         // physical Escape that did so, hand only that bare key to the app via
-        // its dedicated bridge path, then consume it before CloseApp sees it.
+        // its dedicated bridge path, then consume it before CloseView sees it.
         // Normal `handle_key` remains Escape-reserving for every other case.
         let text_input_escape: Vec<egui::Event> = input
             .events()
@@ -186,7 +186,7 @@ impl PlexiApp {
             let disposition = app_pane.runtime.handle_text_input_escape(&synthetic);
             input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             log::info!(
-                "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseApp suppressed"
+                "app_keys: pane {pane_id} Escape left focused TextInput — dedicated delivery disposition={disposition:?}, CloseView suppressed"
             );
             return;
         }
@@ -195,7 +195,7 @@ impl PlexiApp {
         // zoomed reaches `handle_key` without un-zooming (stint 0898). If the
         // app consumed the key, also claim Escape/ArrowUp out of the buffer so
         // `poll_actions` (which takes the same buffer later this frame) can't
-        // re-fire CloseApp for keys the app already handled — e.g. Escape
+        // re-fire CloseView for keys the app already handled — e.g. Escape
         // exiting search mode in the file browser rather than closing the
         // pane, or ArrowUp recalling a prior message in the assistant.
         let disposition = app_pane.runtime.handle_key(input);
@@ -262,9 +262,9 @@ impl PlexiApp {
     /// True when any pane or parked background app needing a headless tick
     /// (a non-active context always; the active context too when
     /// `window_hidden`, per the same reasoning as
-    /// [`Self::drain_all_app_commands`]) has pending background work. Drives
+    /// [`Self::drain_all_view_commands`]) has pending background work. Drives
     /// the bounded 100ms wake loop in `update()` — this MUST use the same
-    /// predicate as the tick gate in [`Self::drain_all_app_commands`],
+    /// predicate as the tick gate in [`Self::drain_all_view_commands`],
     /// otherwise work could be marked pending without a frame ever being
     /// scheduled to drain it (#2021).
     pub(crate) fn background_processes_need_wake(&self, window_hidden: bool) -> bool {
@@ -319,7 +319,7 @@ impl PlexiApp {
         // (minimized or fully occluded) — the active context's own panes
         // then get no `ui()` pass either, so they need the same headless
         // tick as a non-active context (stint 0759; see
-        // `drain_all_app_commands`).
+        // `drain_all_view_commands`).
         let window_hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
         // Drain every app pane's pending_commands every frame — including
         // while a modal holds focus. Background apps emitting notifications
@@ -328,7 +328,7 @@ impl PlexiApp {
         let fresh_cmds = self.drain_all_app_commands(window_hidden);
         if self.background_processes_need_wake(window_hidden) {
             crate::platform::frame_diag::note(
-                crate::platform::frame_diag::RepaintCause::AppIdlePoll,
+                crate::platform::frame_diag::RepaintCause::ViewIdlePoll,
             );
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -350,7 +350,7 @@ impl PlexiApp {
 
         // Handle deferred app commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
-            use crate::app::app_trait::AppCommand;
+            use crate::app::app_trait::ViewCommand;
             // Hold overlay-unsafe side effects (layout/terminal mutations, focus changes)
             // while a modal owns input. Safe commands (ShowNotification, pipes, queries)
             // dispatch immediately. Released on the next modal-free frame.
@@ -364,7 +364,7 @@ impl PlexiApp {
                 continue;
             }
             match cmd {
-                AppCommand::WasmHostEffect { pane_id, effect } => {
+                ViewCommand::WasmHostEffect { pane_id, effect } => {
                     use crate::host::wasm_app::InputEvent;
                     use crate::host::wasm_pane::WasmHostEffect;
 
@@ -429,24 +429,24 @@ impl PlexiApp {
                             }
                         }
                         WasmHostEffect::Spawn {
-                            app_id,
+                            plugin_id,
                             layout,
                             args,
                         } => {
                             let predicted_pane_id = self.host.next_pane_id();
                             let result = self
-                                .launch_app_by_id_with_layout(&app_id, layout, &args, None)
+                                .launch_app_by_id_with_layout(&plugin_id, layout, &args, None)
                                 .map(|existing| existing.unwrap_or(predicted_pane_id))
                                 .map_err(|error| error.to_string());
                             log::info!(
-                                "wasm effect: spawn pane_id={pane_id} app_id={app_id} ok={}",
+                                "wasm effect: spawn pane_id={pane_id} plugin_id={plugin_id} ok={}",
                                 result.is_ok()
                             );
                             Some(InputEvent::SpawnResult(result))
                         }
                         WasmHostEffect::SubscribeEvents {
                             request_id,
-                            app_id,
+                            plugin_id,
                             event_names,
                             payload_mode,
                             trigger_mode,
@@ -455,7 +455,7 @@ impl PlexiApp {
                             self.begin_app_event_subscription(
                                 pane_id,
                                 request_id,
-                                app_id,
+                                plugin_id,
                                 event_names,
                                 payload_mode,
                                 trigger_mode,
@@ -498,11 +498,11 @@ impl PlexiApp {
                                     })
                                 })
                             });
-                            if let (Some((app_id, sender)), Some(origin)) =
+                            if let (Some((plugin_id, sender)), Some(origin)) =
                                 (provider, self.origin_for_pane(pane_id))
                             {
                                 crate::plexi_ai::tool_dispatch::register(
-                                    pane_id, app_id, tools, sender, origin,
+                                    pane_id, plugin_id, tools, sender, origin,
                                 );
                                 Some(InputEvent::DeclareToolsResult(Ok(names)))
                             } else {
@@ -533,7 +533,7 @@ impl PlexiApp {
                         self.complete_wasm_host_effect(pane_id, event);
                     }
                 }
-                AppCommand::ExposeTools {
+                ViewCommand::ExposeTools {
                     tools,
                     pane_id: Some(pane_id),
                 } => {
@@ -546,11 +546,11 @@ impl PlexiApp {
                             })
                         })
                     });
-                    if let (Some((app_id, sender)), Some(origin)) =
+                    if let (Some((plugin_id, sender)), Some(origin)) =
                         (provider, self.origin_for_pane(pane_id))
                     {
                         crate::plexi_ai::tool_dispatch::register(
-                            pane_id, app_id, tools, sender, origin,
+                            pane_id, plugin_id, tools, sender, origin,
                         );
                     } else {
                         log::warn!(
@@ -558,10 +558,10 @@ impl PlexiApp {
                         );
                     }
                 }
-                AppCommand::ExposeTools { pane_id: None, .. } => {
+                ViewCommand::ExposeTools { pane_id: None, .. } => {
                     log::warn!("tool_dispatch: ExposeTools missing source pane")
                 }
-                AppCommand::ToolResult {
+                ViewCommand::ToolResult {
                     call_id,
                     output_json,
                     error,
@@ -575,18 +575,18 @@ impl PlexiApp {
                         pending_request_id: None,
                     },
                 ),
-                AppCommand::AppEventRequest {
+                ViewCommand::PluginEventRequest {
                     request,
                     pane_id: Some(pane_id),
                 } => {
-                    let app_id = self.windows.iter().find_map(|window| {
+                    let plugin_id = self.windows.iter().find_map(|window| {
                         window
                             .panes
                             .get(&pane_id)
                             .and_then(|pane| pane.as_app())
                             .map(|app| app.manifest_id.clone())
                     });
-                    let Some(app_id) = app_id else {
+                    let Some(plugin_id) = plugin_id else {
                         log::warn!("app events: source pane {pane_id} is closed");
                         continue;
                     };
@@ -603,11 +603,11 @@ impl PlexiApp {
                         continue;
                     };
                     let response = match request {
-                        crate::protocol::AppRequest::DeclareEventStreams { streams } => {
+                        crate::protocol::HostRequest::DeclareEventStreams { streams } => {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .declare_streams(context_id, &app_id, streams)
+                                .declare_streams(context_id, &plugin_id, streams)
                             {
                                 Ok(streams) => {
                                     crate::protocol::PlexiEvent::DeclareEventStreamsResult {
@@ -623,7 +623,7 @@ impl PlexiApp {
                                 }
                             }
                         }
-                        crate::protocol::AppRequest::EmitEvent {
+                        crate::protocol::HostRequest::EmitEvent {
                             event,
                             actor,
                             actor_id,
@@ -658,7 +658,7 @@ impl PlexiApp {
                             match crate::host::app_timeline::global()
                                 .lock()
                                 .unwrap()
-                                .record_event(context_id, &app_id, pane_id, emitted)
+                                .record_event(context_id, &plugin_id, pane_id, emitted)
                             {
                                 Ok(outcome) => crate::protocol::PlexiEvent::EmitEventResult {
                                     sequence: Some(outcome.event_id),
@@ -670,9 +670,9 @@ impl PlexiApp {
                                 },
                             }
                         }
-                        crate::protocol::AppRequest::SubscribeAppEvents {
+                        crate::protocol::HostRequest::SubscribePluginEvents {
                             request_id,
-                            app_id: publisher_app_id,
+                            plugin_id: publisher_plugin_id,
                             event_names,
                             payload_mode,
                             trigger_mode,
@@ -681,7 +681,7 @@ impl PlexiApp {
                             self.begin_app_event_subscription(
                                 pane_id,
                                 request_id,
-                                publisher_app_id,
+                                publisher_plugin_id,
                                 event_names,
                                 payload_mode,
                                 trigger_mode,
@@ -689,7 +689,7 @@ impl PlexiApp {
                             );
                             continue;
                         }
-                        crate::protocol::AppRequest::UnsubscribeAppEvents {
+                        crate::protocol::HostRequest::UnsubscribePluginEvents {
                             request_id,
                             subscription_id,
                         } => {
@@ -703,14 +703,14 @@ impl PlexiApp {
                                 );
                             match result {
                                 Ok(removed) => {
-                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
                                         request_id,
                                         removed,
                                         error: None,
                                     }
                                 }
                                 Err(error) => {
-                                    crate::protocol::PlexiEvent::AppEventsUnsubscribed {
+                                    crate::protocol::PlexiEvent::PluginEventsUnsubscribed {
                                         request_id,
                                         removed: false,
                                         error: Some(error),
@@ -725,10 +725,10 @@ impl PlexiApp {
                     };
                     self.queue_event_to_app_pane_anywhere(pane_id, response);
                 }
-                AppCommand::AppEventRequest { pane_id: None, .. } => {
+                ViewCommand::PluginEventRequest { pane_id: None, .. } => {
                     log::warn!("app events: request missing source pane")
                 }
-                AppCommand::AssistantHostTool {
+                ViewCommand::AssistantHostTool {
                     name,
                     input_json,
                     origin_pane_id,
@@ -756,7 +756,7 @@ impl PlexiApp {
                 // (stint 0013/0014). routing.rs already checked panes.read /
                 // panes.control; execute it through the same handler CLI
                 // requests take over PLEXI_SOCKET.
-                AppCommand::Fleet(action) => {
+                ViewCommand::Fleet(action) => {
                     match action {
                         crate::app::agents_app::FleetAction::Seen(id) => self.mark_agent_seen(id),
                         crate::app::agents_app::FleetAction::Dismiss(id) => {
@@ -779,10 +779,10 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::ForwardPaneRequest { request } => {
+                ViewCommand::ForwardPaneRequest { request } => {
                     self.handle_pane_ipc_request(request);
                 }
-                AppCommand::SpawnApp {
+                ViewCommand::SpawnView {
                     type_id,
                     layout,
                     args,
@@ -813,7 +813,7 @@ impl PlexiApp {
                             // Fail loud: never swallow a launch failure or confirm
                             // a spawn that did not happen (#2283).
                             log::warn!(
-                                "SpawnApp: launch of '{type_id}' failed — {e}; not confirming AppSpawned"
+                                "SpawnView: launch of '{type_id}' failed — {e}; not confirming ViewOpened"
                             );
                             continue;
                         }
@@ -823,7 +823,7 @@ impl PlexiApp {
                     if let Some(req_pane_id) = requesting_pane_id {
                         let active = self.active_window;
                         if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
-                            let event = crate::protocol::PlexiEvent::AppSpawned {
+                            let event = crate::protocol::PlexiEvent::ViewOpened {
                                 pane_id: new_pane_id,
                                 type_id: type_id.clone(),
                             };
@@ -833,7 +833,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::SpawnPane {
+                ViewCommand::SpawnPane {
                     type_id,
                     layout,
                     args,
@@ -1088,7 +1088,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::CdRequest {
+                ViewCommand::CdRequest {
                     cwd,
                     sender_pane_id,
                 } => {
@@ -1147,7 +1147,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::ShowNotification {
+                ViewCommand::ShowNotification {
                     notify_id,
                     sender_pane_id,
                     source_context_id,
@@ -1212,7 +1212,7 @@ impl PlexiApp {
                     );
                     }
                 }
-                AppCommand::DeliverNotifyAction {
+                ViewCommand::DeliverNotifyAction {
                     pane_id,
                     notify_id,
                     action_label,
@@ -1229,7 +1229,7 @@ impl PlexiApp {
                         host_action,
                     );
                 }
-                AppCommand::DeliverPipeMessage {
+                ViewCommand::DeliverPipeMessage {
                     sender_pane_id,
                     pipe_id,
                     payload,
@@ -1290,7 +1290,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::OpenDirectedPipe {
+                ViewCommand::OpenDirectedPipe {
                     sender_pane_id,
                     pipe_id,
                     target_pane_id,
@@ -1404,7 +1404,7 @@ impl PlexiApp {
                         ),
                     }
                 }
-                AppCommand::RequestLinkedTerminal {
+                ViewCommand::RequestLinkedTerminal {
                     sender_pane_id,
                     request_id,
                     cwd,
@@ -1418,7 +1418,7 @@ impl PlexiApp {
                         place_below,
                     );
                 }
-                AppCommand::RunInLinkedTerminal {
+                ViewCommand::RunInLinkedTerminal {
                     sender_pane_id,
                     terminal_pane_id,
                     command,
@@ -1431,7 +1431,7 @@ impl PlexiApp {
                         echo,
                     );
                 }
-                AppCommand::InsertPathToken {
+                ViewCommand::InsertPathToken {
                     sender_pane_id,
                     terminal_pane_id,
                     path,
@@ -1439,7 +1439,7 @@ impl PlexiApp {
                 } => {
                     self.dispatch_insert_path_token(sender_pane_id, terminal_pane_id, path, mode);
                 }
-                AppCommand::RequestCommandPreview {
+                ViewCommand::RequestCommandPreview {
                     sender_pane_id,
                     request_id,
                     terminal_pane_id,
@@ -1452,14 +1452,14 @@ impl PlexiApp {
                         command,
                     );
                 }
-                AppCommand::OpenArtifact {
+                ViewCommand::OpenArtifact {
                     sender_pane_id,
                     path,
                     mode,
                 } => {
                     self.dispatch_open_artifact(sender_pane_id, path, mode);
                 }
-                AppCommand::QueryContextState {
+                ViewCommand::QueryContextState {
                     sender_pane_id,
                     context_id,
                 } => {
@@ -1516,7 +1516,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                AppCommand::DeliverRunUpdate {
+                ViewCommand::DeliverRunUpdate {
                     originator_type_id,
                     event,
                 } => {
@@ -1566,14 +1566,14 @@ impl PlexiApp {
     /// runs for *any* pane this frame — including the active context's own.
     /// The active context is then treated as non-active for tick purposes
     /// too, so its panes still get the headless tick (stint 0759).
-    pub(super) fn drain_all_app_commands(&mut self, window_hidden: bool) -> Vec<AppCommand> {
+    pub(super) fn drain_all_app_commands(&mut self, window_hidden: bool) -> Vec<ViewCommand> {
         // Collect (context_id, pane_id, type_id, commands) per pane. We capture
         // context_id (stable u64) and type_id here because the manifest-declared
         // notification scope is looked up from the registry by type_id, and we
         // can't hold a mutable borrow on contexts + a shared borrow on the
         // registry at the same time during the match below.
         let active = self.active_window;
-        let mut per_pane: Vec<(u64, u64, String, Vec<AppCommand>)> = Vec::new();
+        let mut per_pane: Vec<(u64, u64, String, Vec<ViewCommand>)> = Vec::new();
         for (ctx_idx, context) in self.windows.iter_mut().enumerate() {
             let context_id = context.context_id;
             // Panes that are not in the tile tree never receive `ui()`, even
@@ -1623,7 +1623,7 @@ impl PlexiApp {
         // instead of context panes. Without this, timers stop and notifications
         // never fire the moment the pane is closed.
         // Collect (type_id, park_context_idx, commands) for each parked app.
-        let parked: Vec<(String, u64, Vec<AppCommand>)> = self
+        let parked: Vec<(String, u64, Vec<ViewCommand>)> = self
             .background_apps
             .iter_mut()
             .map(|(type_id, (park_context_id, app))| {
@@ -1650,7 +1650,7 @@ impl PlexiApp {
                 // Commands that require a live pane context are silently
                 // dropped when the app is parked — the app has no tile to
                 // target and no context to route through.
-                let AppCommand::ShowNotification { title, .. } = &cmd else {
+                let ViewCommand::ShowNotification { title, .. } = &cmd else {
                     continue;
                 };
                 log::info!(
@@ -1682,29 +1682,29 @@ impl PlexiApp {
                 .default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
-                    AppCommand::WasmHostEffect { effect, .. } => {
-                        deferred.push(AppCommand::WasmHostEffect { pane_id, effect });
+                    ViewCommand::WasmHostEffect { effect, .. } => {
+                        deferred.push(ViewCommand::WasmHostEffect { pane_id, effect });
                     }
-                    AppCommand::ExposeTools { tools, .. } => {
-                        deferred.push(AppCommand::ExposeTools {
+                    ViewCommand::ExposeTools { tools, .. } => {
+                        deferred.push(ViewCommand::ExposeTools {
                             tools,
                             pane_id: Some(pane_id),
                         });
                     }
-                    AppCommand::Fleet(_) | AppCommand::ToolResult { .. } => deferred.push(cmd),
-                    AppCommand::AppEventRequest { request, .. } => {
-                        deferred.push(AppCommand::AppEventRequest {
+                    ViewCommand::Fleet(_) | ViewCommand::ToolResult { .. } => deferred.push(cmd),
+                    ViewCommand::PluginEventRequest { request, .. } => {
+                        deferred.push(ViewCommand::PluginEventRequest {
                             request,
                             pane_id: Some(pane_id),
                         });
                     }
-                    AppCommand::AssistantHostTool {
+                    ViewCommand::AssistantHostTool {
                         name,
                         input_json,
                         reply,
                         ..
                     } => {
-                        deferred.push(AppCommand::AssistantHostTool {
+                        deferred.push(ViewCommand::AssistantHostTool {
                             name,
                             input_json,
                             origin_pane_id: pane_id,
@@ -1712,20 +1712,20 @@ impl PlexiApp {
                             reply,
                         });
                     }
-                    AppCommand::SpawnApp { .. }
-                    | AppCommand::SpawnPane { .. }
-                    | AppCommand::ForwardPaneRequest { .. }
-                    | AppCommand::DeliverRunUpdate { .. }
-                    | AppCommand::InsertPathToken { .. }
-                    | AppCommand::RequestCommandPreview { .. }
-                    | AppCommand::QueryContextState { .. } => deferred.push(cmd),
+                    ViewCommand::SpawnView { .. }
+                    | ViewCommand::SpawnPane { .. }
+                    | ViewCommand::ForwardPaneRequest { .. }
+                    | ViewCommand::DeliverRunUpdate { .. }
+                    | ViewCommand::InsertPathToken { .. }
+                    | ViewCommand::RequestCommandPreview { .. }
+                    | ViewCommand::QueryContextState { .. } => deferred.push(cmd),
                     // The file browser (and every other builtin) emits
                     // `sender_pane_id: 0` because it does not know its pane id.
                     // Stamp the real id here so `open_text_file_in_split` anchors
                     // the editor on the requesting pane instead of logging
                     // "anchor pane 0 not found".
-                    AppCommand::OpenArtifact { path, mode, .. } => {
-                        deferred.push(AppCommand::OpenArtifact {
+                    ViewCommand::OpenArtifact { path, mode, .. } => {
+                        deferred.push(ViewCommand::OpenArtifact {
                             sender_pane_id: pane_id,
                             path,
                             mode,
@@ -1739,21 +1739,21 @@ impl PlexiApp {
                     // pane 0 (stint 0724 Phase D 2/2 — required for the
                     // directed-pipe reachability check to see a real caller
                     // at all, not just cosmetic).
-                    AppCommand::DeliverPipeMessage {
+                    ViewCommand::DeliverPipeMessage {
                         pipe_id, payload, ..
                     } => {
-                        deferred.push(AppCommand::DeliverPipeMessage {
+                        deferred.push(ViewCommand::DeliverPipeMessage {
                             sender_pane_id: pane_id,
                             pipe_id,
                             payload,
                         });
                     }
-                    AppCommand::OpenDirectedPipe {
+                    ViewCommand::OpenDirectedPipe {
                         pipe_id,
                         target_pane_id,
                         ..
                     } => {
-                        deferred.push(AppCommand::OpenDirectedPipe {
+                        deferred.push(ViewCommand::OpenDirectedPipe {
                             sender_pane_id: pane_id,
                             pipe_id,
                             target_pane_id,
@@ -1761,14 +1761,14 @@ impl PlexiApp {
                     }
                     // Builtin apps emit sender_pane_id=0; rewrite to
                     // the real pane_id so the host can route the response.
-                    AppCommand::RequestLinkedTerminal {
+                    ViewCommand::RequestLinkedTerminal {
                         request_id,
                         cwd,
                         label,
                         place_below,
                         ..
                     } => {
-                        deferred.push(AppCommand::RequestLinkedTerminal {
+                        deferred.push(ViewCommand::RequestLinkedTerminal {
                             sender_pane_id: pane_id,
                             request_id,
                             cwd,
@@ -1776,26 +1776,26 @@ impl PlexiApp {
                             place_below,
                         });
                     }
-                    AppCommand::RunInLinkedTerminal {
+                    ViewCommand::RunInLinkedTerminal {
                         terminal_pane_id,
                         command,
                         echo,
                         ..
                     } => {
-                        deferred.push(AppCommand::RunInLinkedTerminal {
+                        deferred.push(ViewCommand::RunInLinkedTerminal {
                             sender_pane_id: pane_id,
                             terminal_pane_id,
                             command,
                             echo,
                         });
                     }
-                    AppCommand::CdRequest { cwd, .. } => {
-                        deferred.push(AppCommand::CdRequest {
+                    ViewCommand::CdRequest { cwd, .. } => {
+                        deferred.push(ViewCommand::CdRequest {
                             cwd,
                             sender_pane_id: pane_id,
                         });
                     }
-                    AppCommand::ShowNotification { .. } => {
+                    ViewCommand::ShowNotification { .. } => {
                         deferred.push(stamp_notification_origin(
                             cmd,
                             pane_id,
@@ -1803,7 +1803,7 @@ impl PlexiApp {
                             resolved_scope,
                         ));
                     }
-                    AppCommand::DeliverNotifyAction { .. } => deferred.push(cmd),
+                    ViewCommand::DeliverNotifyAction { .. } => deferred.push(cmd),
                 }
             }
         }
@@ -1813,19 +1813,19 @@ impl PlexiApp {
 }
 
 /// Stamp a drained `ShowNotification` with the origin the host resolved for
-/// it. The two drain paths in `drain_all_app_commands` differ only in which
+/// it. The two drain paths in `drain_all_view_commands` differ only in which
 /// sender pane and context they stamp — a parked background app has no live
 /// pane and routes to its park context, a live pane stamps itself — so the
 /// field-by-field rebuild lives here once. Any other command passes through
 /// untouched.
 fn stamp_notification_origin(
-    cmd: AppCommand,
+    cmd: ViewCommand,
     sender_pane_id: u64,
     source_context_id: u64,
     scope: crate::protocol::NotifyScope,
-) -> AppCommand {
+) -> ViewCommand {
     match cmd {
-        AppCommand::ShowNotification {
+        ViewCommand::ShowNotification {
             notify_id,
             title,
             body,
@@ -1838,7 +1838,7 @@ fn stamp_notification_origin(
             timeout_secs,
             on_dismiss,
             ..
-        } => AppCommand::ShowNotification {
+        } => ViewCommand::ShowNotification {
             notify_id,
             sender_pane_id,
             source_context_id,

@@ -14,4 +14,4 @@ package = "plexi:app"
 
 [package.metadata.component.target]
 path = "wit"
-world = "plexi-app"
+world = "plexi-plugin"

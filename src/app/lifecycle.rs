@@ -159,7 +159,7 @@ impl PlexiApp {
             // `plexi.pane::lifecycle` stream across a sub-context boundary, bind the
             // subscription to the child pane's context and grant a session-scoped
             // allow so Tier 1 escalation (`Worker -> Master`) does not prompt the human.
-            if req.publisher_app_id == crate::host::pane_lifecycle::PUBLISHER {
+            if req.publisher_plugin_id == crate::host::pane_lifecycle::PUBLISHER {
                 if let (Some(caller_id), Some(target_pane_id)) = (
                     req.from_pane_id,
                     req.resource_id.as_deref().and_then(|s| s.parse::<u64>().ok()),
@@ -309,13 +309,13 @@ impl PlexiApp {
         );
     }
 
-    /// Handle a single pane-IPC `AppRequest`. Shared by the socket drain above
-    /// and the PGAP forwarding path (`AppCommand::ForwardPaneRequest`, stint
+    /// Handle a single pane-IPC `HostRequest`. Shared by the socket drain above
+    /// and the PGAP forwarding path (`ViewCommand::ForwardPaneRequest`, stint
     /// 0013/0014) so capability-gated app requests take the identical host
     /// code path as CLI requests arriving over PLEXI_SOCKET.
-    pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::AppRequest) {
+    pub(crate) fn handle_pane_ipc_request(&mut self, cmd: crate::protocol::HostRequest) {
         match &cmd {
-            crate::protocol::AppRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop, status_for, client, kind } => {
+            crate::protocol::HostRequest::SubmitAssistantTurn { text, request_id, response_file, pane_id, context_id, conversation_id, join_desktop, status_for, client, kind } => {
                 if pane_id.is_none() {
                     let _ = self.ensure_headless_assistant(*context_id);
                 }
@@ -338,7 +338,7 @@ impl PlexiApp {
                 else if !submitted { write_json_response(response_file, serde_json::json!({"request_id": request_id, "state":"failed", "error":"assistant_pane_not_found"}),
                     ); }
             }
-            crate::protocol::AppRequest::CommandView { op, payload, response_file } => {
+            crate::protocol::HostRequest::CommandView { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=command_view op={op}");
                 let workspace = payload.get("workspace").and_then(|v| v.as_str()).map(std::path::PathBuf::from)
                     .or_else(crate::config::active_workspace_root)
@@ -357,7 +357,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::AppRequest::AssistantHostTool { name, input_json, response_file } => {
+            crate::protocol::HostRequest::AssistantHostTool { name, input_json, response_file } => {
                 log::info!("assistant_host_tool: ipc name={name}");
                 let result = self.dispatch_assistant_host_tool(name, input_json);
                 let body = if let Some(error) = result.error.as_deref() {
@@ -377,7 +377,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, body);
             }
-            crate::protocol::AppRequest::ResourceLease { op, name, max, holder_pid, peer_ancestry, response_file } => {
+            crate::protocol::HostRequest::ResourceLease { op, name, max, holder_pid, peer_ancestry, response_file } => {
                 if !peer_ancestry.contains(holder_pid) || *holder_pid <= 1 {
                     write_json_response(response_file, serde_json::json!({"error": "holder must be a verified caller ancestor", "error_code": "permission_denied"}));
                 } else {
@@ -398,16 +398,16 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::ListPermissionRequests { response_file } => {
+            crate::protocol::HostRequest::ListPermissionRequests { response_file } => {
                 self.observe_permissions("list", None, None, response_file);
             }
-            crate::protocol::AppRequest::ShowPermissionRequest { pending_request_id, response_file } => {
+            crate::protocol::HostRequest::ShowPermissionRequest { pending_request_id, response_file } => {
                 self.observe_permissions("show", Some(pending_request_id), None, response_file);
             }
-            crate::protocol::AppRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
+            crate::protocol::HostRequest::ResolvePermissionRequest { pending_request_id, choice, response_file } => {
                 self.observe_permissions("resolve", Some(pending_request_id), Some(choice), response_file);
             }
-            crate::protocol::AppRequest::Permissions {
+            crate::protocol::HostRequest::Permissions {
                 op,
                 id,
                 pane_id,
@@ -427,7 +427,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::AppRequest::CallerContext {
+            crate::protocol::HostRequest::CallerContext {
                 peer_ancestry,
                 response_file,
             } => {
@@ -445,13 +445,13 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::ListNeedsYou { response_file } => {
+            crate::protocol::HostRequest::ListNeedsYou { response_file } => {
                 self.observe_needs_you("list", None, None, response_file);
             }
-            crate::protocol::AppRequest::ResolveNeedsYou { id, approve, response_file } => {
+            crate::protocol::HostRequest::ResolveNeedsYou { id, approve, response_file } => {
                 self.observe_needs_you("resolve", Some(id), Some(*approve), response_file);
             }
-            crate::protocol::AppRequest::NeedsYouApi {
+            crate::protocol::HostRequest::NeedsYouApi {
                 op,
                 payload,
                 peer_ancestry,
@@ -459,14 +459,14 @@ impl PlexiApp {
             } => {
                 self.handle_needs_you_api(op, payload, peer_ancestry, response_file);
             }
-            crate::protocol::AppRequest::PaneSecretList {
+            crate::protocol::HostRequest::PaneSecretList {
                 context,
                 peer_ancestry,
                 response_file,
             } => {
                 self.serve_secret_list(context, peer_ancestry, response_file);
             }
-            crate::protocol::AppRequest::PaneSecretGet {
+            crate::protocol::HostRequest::PaneSecretGet {
                 name,
                 global,
                 workspace_root,
@@ -481,7 +481,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::AppRequest::AgentsApi { op, payload, response_file } => {
+            crate::protocol::HostRequest::AgentsApi { op, payload, response_file } => {
                 log::info!("pane_ipc: kind=agents_api op={op}");
                 let mut payload = payload.clone();
                 if let Some(obj) = payload.as_object_mut() {
@@ -553,7 +553,7 @@ impl PlexiApp {
                 }
                 crate::rpc::write_json_response(response_file, value);
             }
-            crate::protocol::AppRequest::SetPaneTitle { pane_id, name } => {
+            crate::protocol::HostRequest::SetPaneTitle { pane_id, name } => {
                 log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                 let mut found = false;
                 for win in &mut self.windows {
@@ -600,7 +600,7 @@ impl PlexiApp {
                     log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                 }
             }
-            crate::protocol::AppRequest::LogMarker {
+            crate::protocol::HostRequest::LogMarker {
                 source,
                 message,
                 response_file,
@@ -614,14 +614,14 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"ok": true}));
                 }
             }
-            crate::protocol::AppRequest::GetBuildInfo { response_file } => {
+            crate::protocol::HostRequest::GetBuildInfo { response_file } => {
                 log::info!("host: reporting running build identity {}", env!("PLEXI_BUILD_ID"));
                 let mut value = crate::distribution::build_info();
                 value["pid"] = serde_json::json!(std::process::id());
                 value["core_only"] = serde_json::json!(self.config.core_only.unwrap_or(false));
                 write_json_response(response_file, value);
             }
-            crate::protocol::AppRequest::ListPanes {
+            crate::protocol::HostRequest::ListPanes {
                 response_file,
                 context_id: filter_context_id,
             } => {
@@ -756,7 +756,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::ListContexts { response_file } => {
+            crate::protocol::HostRequest::ListContexts { response_file } => {
                 log::info!(
                     "pane_ipc: kind=list_contexts response_file={:?}",
                     response_file
@@ -780,7 +780,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::GetPaneInfo {
+            crate::protocol::HostRequest::GetPaneInfo {
                 pane_id,
                 response_file,
             } => {
@@ -913,7 +913,7 @@ impl PlexiApp {
                     write_response(response_file, json_str.as_bytes());
                 }
             }
-            crate::protocol::AppRequest::GetPreviousPaneInfo {
+            crate::protocol::HostRequest::GetPreviousPaneInfo {
                 response_file,
                 steps,
             } => {
@@ -993,7 +993,7 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::SlotWrite {
+            crate::protocol::HostRequest::SlotWrite {
                 pane_id,
                 slot_name,
                 content,
@@ -1020,7 +1020,7 @@ impl PlexiApp {
                     Err(msg) => slot_error(response_file, msg),
                 }
             }
-            crate::protocol::AppRequest::SlotWait {
+            crate::protocol::HostRequest::SlotWait {
                 pane_id,
                 slot_name,
                 pattern,
@@ -1109,7 +1109,7 @@ impl PlexiApp {
                         expires_at,
                     });
             }
-            crate::protocol::AppRequest::PaneMessageSend {
+            crate::protocol::HostRequest::PaneMessageSend {
                 pane_id,
                 payload,
                 submit,
@@ -1187,7 +1187,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::PaneMessageRecv {
+            crate::protocol::HostRequest::PaneMessageRecv {
                 pane_id,
                 wait,
                 timeout_secs,
@@ -1239,7 +1239,7 @@ impl PlexiApp {
                         expires_at,
                     });
             }
-            crate::protocol::AppRequest::PaneResultSchemaSet {
+            crate::protocol::HostRequest::PaneResultSchemaSet {
                 pane_id,
                 schema,
                 response_file,
@@ -1292,7 +1292,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::PaneResultWrite {
+            crate::protocol::HostRequest::PaneResultWrite {
                 pane_id,
                 payload,
                 response_file,
@@ -1352,7 +1352,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::PaneResultRead {
+            crate::protocol::HostRequest::PaneResultRead {
                 pane_id,
                 wait,
                 timeout_secs,
@@ -1451,7 +1451,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::AppRequest::SlotRead {
+            crate::protocol::HostRequest::SlotRead {
                 pane_id,
                 slot_name,
                 response_file,
@@ -1488,7 +1488,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::SlotList {
+            crate::protocol::HostRequest::SlotList {
                 pane_id,
                 response_file,
             } => {
@@ -1509,7 +1509,7 @@ impl PlexiApp {
                     None => slot_error(response_file, format!("pane {pane_id} not found")),
                 }
             }
-            crate::protocol::AppRequest::SlotDelete {
+            crate::protocol::HostRequest::SlotDelete {
                 pane_id,
                 slot_name,
                 response_file,
@@ -1574,7 +1574,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::WorkspaceCleanSlots {
+            crate::protocol::HostRequest::WorkspaceCleanSlots {
                 dry_run,
                 response_file,
             } => {
@@ -1667,7 +1667,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::ContextRename { context_id, name, response_file } => {
+            crate::protocol::HostRequest::ContextRename { context_id, name, response_file } => {
                 let reply = match self.router.position(|c| c.context_id == *context_id) {
                     Some(idx) => {
                         serde_json::json!({"ok":true, "name":self.rename_context(idx, name)})
@@ -1676,14 +1676,14 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::AppRequest::ContextClose { context_id, response_file } => {
+            crate::protocol::HostRequest::ContextClose { context_id, response_file } => {
                 let reply = match self.close_context_action(*context_id) {
                     Ok(pending) => serde_json::json!({"ok":true, "pending_confirmation":pending}),
                     Err(error) => serde_json::json!({"error":error}),
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::AppRequest::ContextPark { context_id, parked, response_file } => {
+            crate::protocol::HostRequest::ContextPark { context_id, parked, response_file } => {
                 let reply = match self.router.position(|c| c.context_id == *context_id) {
                     Some(idx) => {
                         if *parked { self.park_context(idx); } else { self.unpark_context(idx); }
@@ -1693,7 +1693,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::AppRequest::PaneVisibility { pane_id, hidden, response_file } => {
+            crate::protocol::HostRequest::PaneVisibility { pane_id, hidden, response_file } => {
                 log::info!("pane_visibility: pane_id={pane_id} hidden={hidden}");
                 let reply = match self.set_pane_hidden(*pane_id, *hidden) {
                     Ok(()) => {
@@ -1703,7 +1703,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, reply);
             }
-            crate::protocol::AppRequest::PaneZoom { pane_id, response_file } => {
+            crate::protocol::HostRequest::PaneZoom { pane_id, response_file } => {
                 if self.fleet_focused_pane() == Some(*pane_id) || self.pane_navigate(*pane_id) {
                     self.toggle_pane_zoom();
                     write_json_response(response_file, serde_json::json!({"ok":true}));
@@ -1711,7 +1711,7 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"error":format!("pane {pane_id} not found")}));
                 }
             }
-            crate::protocol::AppRequest::PaneSwap { pane_id, direction, response_file } => {
+            crate::protocol::HostRequest::PaneSwap { pane_id, direction, response_file } => {
                 use crate::host::keys::Direction;
                 let dir = match direction.as_str() {
                     "left" => Some(Direction::Left), "right" => Some(Direction::Right),
@@ -1728,7 +1728,7 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"error":"direction must be left, right, up, or down"}));
                 }
             }
-            crate::protocol::AppRequest::WorkspaceSnapshot { response_file } => {
+            crate::protocol::HostRequest::WorkspaceSnapshot { response_file } => {
                 let context_id = self.router.active().context_id;
                 // Focus and visibility can change while the host is occluded. Refresh
                 // the snapshot from the last rendered tile rects without waiting for UI.
@@ -1779,23 +1779,23 @@ impl PlexiApp {
                 log::info!("workspace_snapshot: context={context_id} available={}", reply.get("error").is_none());
                 write_json_response(response_file, reply);
             }
-            crate::protocol::AppRequest::ReloadConfig { response_file } => {
+            crate::protocol::HostRequest::ReloadConfig { response_file } => {
                 log::info!("config_reload: CLI requested reload");
                 self.reload_config();
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
-            crate::protocol::AppRequest::FocusHistory { forward, response_file } => {
+            crate::protocol::HostRequest::FocusHistory { forward, response_file } => {
                 log::info!("focus_history: forward={forward}");
                 if *forward { self.step_focus_history_forward(); } else { self.step_focus_history_back(); }
                 write_json_response(response_file, serde_json::json!({"ok":true}));
             }
-            crate::protocol::AppRequest::FocusPane { pane_id } => {
+            crate::protocol::HostRequest::FocusPane { pane_id } => {
                 log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                 if !self.pane_navigate(*pane_id) {
                     log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
                 }
             }
-            crate::protocol::AppRequest::ClosePane {
+            crate::protocol::HostRequest::ClosePane {
                 pane_id,
                 response_file,
             } => {
@@ -1827,7 +1827,7 @@ impl PlexiApp {
                     self.close_pane_by_id(*pane_id);
                 }
             }
-            crate::protocol::AppRequest::SpawnPane { response_file, .. } => {
+            crate::protocol::HostRequest::SpawnPane { response_file, .. } => {
                 let spec = match crate::app::launch_spec::PaneLaunchSpec::from_spawn_pane(&cmd) {
                     Ok(spec) => spec,
                     Err(msg) => {
@@ -1877,7 +1877,7 @@ impl PlexiApp {
                 // Snapshot Explorer's caller directory before any focus redirect.
                 // An explicit --cwd retains precedence; other app policies are unchanged.
                 if cwd_override.is_none()
-                    && matches!(&spec.target, crate::app::launch_spec::PaneLaunchTarget::AppId(id) if id == "file_browser")
+                    && matches!(&spec.target, crate::app::launch_spec::PaneLaunchTarget::PluginId(id) if id == "file_browser")
                 {
                     if let Some(caller) = spec.from_pane_id {
                         if let Some((window, _)) = self.find_pane_in_any_window(caller) {
@@ -2162,7 +2162,7 @@ impl PlexiApp {
                         self.active_window = active;
                         self.restore_window_focused_pane(target_win, orig_focused_in_target);
                     }
-                } else if let crate::app::launch_spec::PaneLaunchTarget::AppId(type_id) =
+                } else if let crate::app::launch_spec::PaneLaunchTarget::PluginId(type_id) =
                     &spec.target
                 {
                     let target = (|| -> Result<usize, String> {
@@ -2225,7 +2225,7 @@ impl PlexiApp {
                             .placement_for(type_id),
                     );
                     let launched = self.launch_app_by_id_with_layout_at(
-                        crate::pane_ops::create::IdAppLaunchOptions {
+                        crate::pane_ops::create::IdViewLaunchOptions {
                             target_win,
                             bypass_on_launch: false,
                             follow_file_browser_cwd: file_browser_follow_caller,
@@ -2318,7 +2318,7 @@ impl PlexiApp {
                 }
                 self.reply_spawn_pane(&spec, response_pane_id, &launch_result);
             }
-            crate::protocol::AppRequest::SendToPane {
+            crate::protocol::HostRequest::SendToPane {
                 pane_id,
                 text,
                 operation_id,
@@ -2743,7 +2743,7 @@ impl PlexiApp {
                     write_response(rf, json.as_bytes());
                 }
             }
-            crate::protocol::AppRequest::PaneHeartbeat {
+            crate::protocol::HostRequest::PaneHeartbeat {
                 pane_id,
                 every_ms,
                 text,
@@ -2800,7 +2800,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::AppRequest::KeyPane {
+            crate::protocol::HostRequest::KeyPane {
                 pane_id,
                 key,
                 response_file,
@@ -2853,7 +2853,7 @@ impl PlexiApp {
                             // Escape parity with a live keypress (stint 0460):
                             // a replayed raw Escape lands mid-frame, after the
                             // dispatch gate already ran, so it would fall
-                            // through to the AppActive CloseApp binding and
+                            // through to the ViewActive CloseView binding and
                             // destroy the pane. Deliver it to the app's
                             // handle_key instead — the assistant interrupts
                             // its in-flight turn — and never replay it raw.
@@ -2861,7 +2861,7 @@ impl PlexiApp {
                             match super::drive_native_pane_key(&mut app_pane.runtime, key) {
                                 Ok(disposition) => {
                                     log::info!(
-                                        "pane_ipc: key_pane: pane {pane_id} Escape delivered to app (text surface focused, CloseApp suppressed, result={disposition:?})"
+                                        "pane_ipc: key_pane: pane {pane_id} Escape delivered to app (text surface focused, CloseView suppressed, result={disposition:?})"
                                     );
                                     Ok(serde_json::json!({
                                         "ok": true,
@@ -2939,7 +2939,7 @@ impl PlexiApp {
                 }
                 }
             }
-            crate::protocol::AppRequest::DropFile {
+            crate::protocol::HostRequest::DropFile {
                 pane_id,
                 path_or_url,
                 response_file,
@@ -2978,7 +2978,7 @@ impl PlexiApp {
                 write_json_response(response_file, json);
                 self.ctx.request_repaint();
             }
-            crate::protocol::AppRequest::ClickPane {
+            crate::protocol::HostRequest::ClickPane {
                 pane_id,
                 x,
                 y,
@@ -3017,7 +3017,7 @@ impl PlexiApp {
                         .get(pane_id)
                         .and_then(crate::host::pane::Pane::as_app)
                         .map(|app_pane| {
-                            matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_))
+                            matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_))
                         })
                     else {
                         return Err(format!(
@@ -3105,7 +3105,7 @@ impl PlexiApp {
                 }
                 }
             }
-            crate::protocol::AppRequest::ClickPaneNode {
+            crate::protocol::HostRequest::ClickPaneNode {
                 pane_id,
                 node_id,
                 button,
@@ -3165,7 +3165,7 @@ impl PlexiApp {
                     write_response(rf, json.as_bytes());
                 }
             }
-            crate::protocol::AppRequest::DragPane {
+            crate::protocol::HostRequest::DragPane {
                 pane_id,
                 from,
                 from_node,
@@ -3198,7 +3198,7 @@ impl PlexiApp {
                         ));
                     };
                     let is_builtin =
-                        matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_));
+                        matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_));
                     // Resolve each endpoint to an absolute screen position:
                     // pane-pixel coordinates directly, or a semantic node's
                     // cached bounds center. Nodes without recorded bounds
@@ -3320,7 +3320,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::CapturePane {
+            crate::protocol::HostRequest::CapturePane {
                 pane_id,
                 lines,
                 response_file,
@@ -3447,7 +3447,7 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::PaneStatus {
+            crate::protocol::HostRequest::PaneStatus {
                 pane_id,
                 response_file,
             } => {
@@ -3495,7 +3495,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, json);
             }
-            crate::protocol::AppRequest::Screenshot {
+            crate::protocol::HostRequest::Screenshot {
                 pane_id,
                 output_path,
                 response_file,
@@ -3526,7 +3526,7 @@ impl PlexiApp {
                     self.ctx.request_repaint_of(egui::ViewportId::ROOT);
                 }
             }
-            crate::protocol::AppRequest::HostKey { key, response_file } => {
+            crate::protocol::HostRequest::HostKey { key, response_file } => {
                 log::info!(
                     "pane_ipc: kind=host_key key={key:?} key_chars={}",
                     key.chars().count()
@@ -3552,7 +3552,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::GetPaneState {
+            crate::protocol::HostRequest::GetPaneState {
                 pane_id,
                 response_file,
                 stale_after_secs,
@@ -3569,7 +3569,7 @@ impl PlexiApp {
                     Some(pane) => {
                         let liveness = crate::host::pane_liveness::compute(pane, *stale_after_secs);
                         let mut response = if let Some(app_pane) = pane.as_app() {
-                            if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
+                            if matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
                                 // Core pane inspection needs the rendered tree even when
                                 // experimental eager accessibility capture is off. This
                                 // enables internal capture, not the native OS adapter.
@@ -3581,7 +3581,7 @@ impl PlexiApp {
                                 .frame_json()
                                 .unwrap_or(serde_json::Value::Array(vec![]));
                             let semantic = app_pane.semantic_state();
-                            let app_state = app_pane.runtime.semantic_details();
+                            let plugin_state = app_pane.runtime.semantic_details();
                             let (lifecycle, guest_error) = app_pane.runtime.lifecycle();
                             log::info!(
                                 "pane_ipc: get_pane_state: pane_id={pane_id} lifecycle={lifecycle} runtime={} schema_version={} node_count={}",
@@ -3603,7 +3603,7 @@ impl PlexiApp {
                                 "failure": guest_error.map(|error| serde_json::json!({ "error": error })),
                                 "frame": frame,
                                 "semantic": semantic,
-                                "app_state": app_state,
+                                "app_state": plugin_state,
                             })
                         } else if let Some(term) = pane.as_terminal() {
                             let title = term.name.clone().unwrap_or_else(|| "terminal".to_string());
@@ -3631,14 +3631,14 @@ impl PlexiApp {
                 };
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::SendAppAction {
+            crate::protocol::HostRequest::SendPaneAction {
                 pane_id,
                 action,
                 args,
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} argc={}", args.len()
+                    "pane_ipc: kind=send_pane_action pane_id={pane_id} action={action:?} argc={}", args.len()
                 );
                 let approval_verb = {
                     let name = action.to_ascii_lowercase();
@@ -3693,7 +3693,7 @@ impl PlexiApp {
                     .find_map(|win| win.panes.get_mut(pane_id))
                 {
                     None => {
-                        log::warn!("pane_ipc: send_app_action: pane_id={pane_id} not found");
+                        log::warn!("pane_ipc: send_pane_action: pane_id={pane_id} not found");
                         Err(format!("pane {pane_id} not found"))
                     }
                     Some(pane) => {
@@ -3703,7 +3703,7 @@ impl PlexiApp {
                                 .send_app_action(action.clone(), args.clone())
                         } else {
                             log::warn!(
-                                "pane_ipc: send_app_action: pane_id={pane_id} is not an app pane"
+                                "pane_ipc: send_pane_action: pane_id={pane_id} is not an app pane"
                             );
                             Err(format!("pane {pane_id} is not an app pane"))
                         }
@@ -3718,8 +3718,8 @@ impl PlexiApp {
                 }
                 }
             }
-            crate::protocol::AppRequest::CallAppTool {
-                app_id,
+            crate::protocol::HostRequest::CallPluginTool {
+                plugin_id,
                 tool,
                 input_json,
                 caller_pane_id,
@@ -3730,7 +3730,7 @@ impl PlexiApp {
                 wait_approved,
             } => {
                 self.call_app_tool(
-                    app_id.clone(),
+                    plugin_id.clone(),
                     tool.clone(),
                     input_json.clone(),
                     *caller_pane_id,
@@ -3741,8 +3741,8 @@ impl PlexiApp {
                     *wait_approved,
                 );
             }
-            crate::protocol::AppRequest::ListAppTools {
-                app_id,
+            crate::protocol::HostRequest::ListPluginTools {
+                plugin_id,
                 context_id,
                 caller_pane_id,
                 caller_context_id,
@@ -3750,7 +3750,7 @@ impl PlexiApp {
                 response_file,
             } => {
                 self.list_app_tools(
-                    app_id.as_deref(),
+                    plugin_id.as_deref(),
                     *context_id,
                     *caller_pane_id,
                     *caller_context_id,
@@ -3758,7 +3758,7 @@ impl PlexiApp {
                     response_file,
                 );
             }
-            crate::protocol::AppRequest::SetAgentState {
+            crate::protocol::HostRequest::SetAgentState {
                 pane_id,
                 state,
                 agent,
@@ -4070,7 +4070,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::AppRequest::SetPipStatus { pane_id, status } => {
+            crate::protocol::HostRequest::SetPipStatus { pane_id, status } => {
                 log::info!("pane_ipc: kind=set_pip_status pane_id={pane_id} status={status:?}");
                 let mut found = false;
                 for win in &mut self.windows {
@@ -4087,7 +4087,7 @@ impl PlexiApp {
                     );
                 }
             }
-            crate::protocol::AppRequest::GetAgentStates { response_file } => {
+            crate::protocol::HostRequest::GetAgentStates { response_file } => {
                 log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
                 let states: Vec<crate::protocol::PaneAgentState> = self
                     .windows
@@ -4098,7 +4098,7 @@ impl PlexiApp {
                 let json_str = serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                 write_response(response_file, json_str.as_bytes());
             }
-            crate::protocol::AppRequest::Notify {
+            crate::protocol::HostRequest::Notify {
                 notify_id,
                 title,
                 body,
@@ -4243,7 +4243,7 @@ impl PlexiApp {
                 );
                 }
             }
-            crate::protocol::AppRequest::DismissNotification {
+            crate::protocol::HostRequest::DismissNotification {
                 notify_id,
                 source_context_id,
                 source_pane_id,
@@ -4293,7 +4293,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::CreateContext {
+            crate::protocol::HostRequest::CreateContext {
                 root,
                 name,
                 parent_name,
@@ -4472,7 +4472,7 @@ impl PlexiApp {
                 }
                 self.mark_workspace_dirty();
             }
-            crate::protocol::AppRequest::CreateSubContext {
+            crate::protocol::HostRequest::CreateSubContext {
                 name,
                 root,
                 parent_context_id,
@@ -4601,7 +4601,7 @@ impl PlexiApp {
                 }
                 self.mark_workspace_dirty();
             }
-            crate::protocol::AppRequest::FocusContext {
+            crate::protocol::HostRequest::FocusContext {
                 root,
                 response_file,
             } => {
@@ -4618,7 +4618,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::AppRequest::SetContextRoot {
+            crate::protocol::HostRequest::SetContextRoot {
                 root,
                 context_id,
                 response_file,
@@ -4644,7 +4644,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::AppRequest::SetContextDescription {
+            crate::protocol::HostRequest::SetContextDescription {
                 description,
                 context_id,
                 response_file,
@@ -4668,7 +4668,7 @@ impl PlexiApp {
                     write_json_response(file, reply);
                 }
             }
-            crate::protocol::AppRequest::ZoomIntoContext {
+            crate::protocol::HostRequest::ZoomIntoContext {
                 context_id,
                 response_file,
             } => {
@@ -4699,43 +4699,43 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::ZoomOutOfContext => {
+            crate::protocol::HostRequest::ZoomOutOfContext => {
                 log::info!(
                     "pane_ipc: kind=zoom_out_of_context depth={}",
                     self.router.current_depth()
                 );
                 self.zoom_out_of_context();
             }
-            crate::protocol::AppRequest::PushPaneToSubcontext { name, pane_id } => {
+            crate::protocol::HostRequest::PushPaneToSubcontext { name, pane_id } => {
                 log::info!(
                     "pane_ipc: kind=push_pane_to_subcontext name={name:?} pane_id={pane_id:?}"
                 );
                 self.push_pane_to_subcontext(name.clone(), *pane_id);
             }
-            crate::protocol::AppRequest::ListPermissions { response_file } => {
+            crate::protocol::HostRequest::ListPermissions { response_file } => {
                 log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
                 self.handle_list_permissions(response_file);
             }
-            crate::protocol::AppRequest::SetPermission {
-                app_id,
+            crate::protocol::HostRequest::SetPermission {
+                plugin_id,
                 workspace,
                 capability,
                 state,
                 response_file,
             } => {
                 log::info!(
-                    "pane_ipc: kind=set_permission app_id={app_id} workspace={workspace:?} \
+                    "pane_ipc: kind=set_permission plugin_id={plugin_id} workspace={workspace:?} \
                      capability={capability} state={state} response_file={response_file:?}"
                 );
                 self.handle_set_permission(
-                    app_id,
+                    plugin_id,
                     workspace.as_deref(),
                     capability,
                     state,
                     response_file,
                 );
             }
-            crate::protocol::AppRequest::AgentCall { role, task, parent_pane_id, call_credential, peer_ancestry, cwd, worktree, asynchronous, handoff, response_file } => {
+            crate::protocol::HostRequest::AgentCall { role, task, parent_pane_id, call_credential, peer_ancestry, cwd, worktree, asynchronous, handoff, response_file } => {
                 let result = self.start_agent_tool_call(crate::app::agent_tools::AgentCallRequest {
                     role, task, parent_pane_id: *parent_pane_id,
                     credential: call_credential.as_deref(), peer_ancestry,
@@ -4747,7 +4747,7 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
                 }
             }
-            crate::protocol::AppRequest::AgentMessage { pane_id, text, parent_pane_id, call_credential, peer_ancestry, wait, response_file } => {
+            crate::protocol::HostRequest::AgentMessage { pane_id, text, parent_pane_id, call_credential, peer_ancestry, wait, response_file } => {
                 let result = self.send_agent_tool_message(
                     *pane_id, text, crate::app::agent_tools::AgentCaller {
                         pane_id: *parent_pane_id, credential: call_credential.as_deref(), peer_ancestry,
@@ -4758,7 +4758,7 @@ impl PlexiApp {
                     write_json_response(response_file, serde_json::json!({"ok":false,"error":error}));
                 }
             }
-            crate::protocol::AppRequest::AgentSpawn {
+            crate::protocol::HostRequest::AgentSpawn {
                 role,
                 harness,
                 command,
@@ -4843,7 +4843,7 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, payload);
             }
-            crate::protocol::AppRequest::AgentWait {
+            crate::protocol::HostRequest::AgentWait {
                 pane_ids,
                 timeout_secs,
                 response_file,
@@ -4854,7 +4854,7 @@ impl PlexiApp {
                 );
                 self.handle_agent_wait(pane_ids.clone(), *timeout_secs, response_file.clone());
             }
-            crate::protocol::AppRequest::AgentDone {
+            crate::protocol::HostRequest::AgentDone {
                 pane_id,
                 result,
                 summary,
@@ -5129,7 +5129,7 @@ impl PlexiApp {
                     }
                 }
             }
-            crate::protocol::AppRequest::AgentNext { response_file } => {
+            crate::protocol::HostRequest::AgentNext { response_file } => {
                 let pane_id = self.next_blocked_agent();
                 let view = self.agents_view(crate::protocol::FleetFilter::All);
                 let row = pane_id.and_then(|id| {
@@ -5149,11 +5149,11 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::AgentFleet { filter, response_file } => {
+            crate::protocol::HostRequest::AgentFleet { filter, response_file } => {
                 log::info!("agents: fleet query filter={filter:?}");
                 write_json_response(response_file, serde_json::json!(self.agents_view(*filter)));
             }
-            crate::protocol::AppRequest::AgentFleetDismiss {
+            crate::protocol::HostRequest::AgentFleetDismiss {
                 target,
                 all_failed,
                 response_file,
@@ -5167,7 +5167,7 @@ impl PlexiApp {
                     }),
                 );
             }
-            crate::protocol::AppRequest::AgentAsk {
+            crate::protocol::HostRequest::AgentAsk {
                 pane_id,
                 question,
                 peer_ancestry,
@@ -5274,7 +5274,7 @@ impl PlexiApp {
                     write_json_response(response_file, payload);
                 }
             }
-            crate::protocol::AppRequest::AgentReopen {
+            crate::protocol::HostRequest::AgentReopen {
                 query,
                 subcontext,
                 response_file,
@@ -5373,13 +5373,13 @@ impl PlexiApp {
                 };
                 write_json_response(response_file, payload);
             }
-            crate::protocol::AppRequest::Wake => {
+            crate::protocol::HostRequest::Wake => {
                 // A wake may arrive just after the throttled idle poll. Drain
                 // here, in this logic pass, without waiting for another event.
                 log::info!("pane_ipc: kind=wake draining queued spawns");
                 self.drain_spawn_queue();
             }
-            crate::protocol::AppRequest::Shutdown => {
+            crate::protocol::HostRequest::Shutdown => {
                 // Sent by `plexi host stop` over a direct notify.sock
                 // connection. This handler has no `egui::Context`, so it
                 // cannot send ViewportCommand::Close directly — it sets a
@@ -5508,7 +5508,7 @@ impl PlexiApp {
     }
 
     /// `ListPermissions` host handler (stint 0017). Writes the permission
-    /// inventory JSON documented on the `AppRequest::ListPermissions` variant:
+    /// inventory JSON documented on the `HostRequest::ListPermissions` variant:
     /// one row per stored `permissions.toml` entry (`stored: true`) plus one
     /// row per live granted/blocked capability of a running app that has no
     /// stored entry (`stored: false`), and the list of running app ids.
@@ -5519,10 +5519,10 @@ impl PlexiApp {
         let store = PermissionStore::load_or_default(&self.permission_store_dir);
         let mut rows: Vec<serde_json::Value> = Vec::new();
         let mut stored_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (app_id, workspace, cap, state) in store.iter_entries() {
-            stored_keys.insert(format!("{app_id}::{workspace}::{}", cap.as_str()));
+        for (plugin_id, workspace, cap, state) in store.iter_entries() {
+            stored_keys.insert(format!("{plugin_id}::{workspace}::{}", cap.as_str()));
             rows.push(serde_json::json!({
-                "app_id": app_id,
+                "plugin_id": plugin_id,
                 "workspace": workspace,
                 "capability": cap.as_str(),
                 "state": state.as_str(),
@@ -5555,7 +5555,7 @@ impl PlexiApp {
                         continue; // already covered by a stored row
                     }
                     rows.push(serde_json::json!({
-                        "app_id": app_pane.manifest_id,
+                        "plugin_id": app_pane.manifest_id,
                         "workspace": workspace,
                         "capability": cap.as_str(),
                         "state": state,
@@ -5577,12 +5577,12 @@ impl PlexiApp {
 
     /// `SetPermission` host handler (stint 0017). Persists the new state to
     /// `permissions.toml` and live-updates every running app instance with a
-    /// matching (app_id, workspace) so a revocation takes effect on the app's
+    /// matching (plugin_id, workspace) so a revocation takes effect on the app's
     /// next request. Unknown capability/state strings fail closed with an
     /// error reply; a missing workspace fails unless the app is running.
     fn handle_set_permission(
         &mut self,
-        app_id: &str,
+        plugin_id: &str,
         workspace: Option<&str>,
         capability: &str,
         state: &str,
@@ -5605,25 +5605,25 @@ impl PlexiApp {
                             let Pane::App(app_pane) = pane else {
                                 return None;
                             };
-                            (app_pane.manifest_id == app_id)
+                            (app_pane.manifest_id == plugin_id)
                                 .then(|| app_pane.workspace_root.clone())
                         })
                     })
                     .ok_or_else(|| {
                         format!(
-                            "workspace required: app '{app_id}' is not running; \
+                            "workspace required: app '{plugin_id}' is not running; \
                              pass workspace explicitly"
                         )
                     })?,
             };
 
             let mut store = PermissionStore::load_or_default(&self.permission_store_dir);
-            store.set(app_id, &ws, cap, new_state);
+            store.set(plugin_id, &ws, cap, new_state);
             store.save();
 
             crate::broker::gate::PermissionMonitor::for_profile(&self.permission_store_dir)
                 .grant_app_capability(
-                    app_id,
+                    plugin_id,
                     &ws,
                     cap,
                     crate::broker::Decision::from_permission_state(new_state),
@@ -5634,7 +5634,7 @@ impl PlexiApp {
             for win in &mut self.windows {
                 for pane in win.panes.values_mut() {
                     let Pane::App(app_pane) = pane else { continue };
-                    if app_pane.manifest_id != app_id {
+                    if app_pane.manifest_id != plugin_id {
                         continue;
                     }
                     let proc_ws = app_pane
@@ -5659,7 +5659,7 @@ impl PlexiApp {
                         }
                     }
                     log::info!(
-                        "pane_ipc: set_permission: live-updated '{app_id}' pane {} — {} → {}",
+                        "pane_ipc: set_permission: live-updated '{plugin_id}' pane {} — {} → {}",
                         app_pane.id,
                         cap.as_str(),
                         new_state.as_str()
@@ -6144,7 +6144,7 @@ impl PlexiApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            let request = crate::protocol::AppRequest::SpawnPane {
+            let request = crate::protocol::HostRequest::SpawnPane {
                 type_id,
                 layout: val["layout"].as_str().map(str::to_string),
                 args,
@@ -6211,7 +6211,7 @@ impl PlexiApp {
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
                 if let Some(app) = pane.as_app_mut() {
-                    if let crate::host::pane::AppRuntime::Python(python) = &mut app.runtime {
+                    if let crate::host::pane::ViewRuntime::Python(python) = &mut app.runtime {
                         python.service_external_io(ctx);
                     }
                 }

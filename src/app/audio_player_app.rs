@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::app::app_trait::{App, AppRenderContext};
+use crate::app::app_trait::{App, ViewRenderContext};
 use crate::media::audio::{PlaybackRequest, PlaybackSession};
 use crate::ui::{
-    app_chrome::AppChrome,
+    app_chrome::ViewChrome,
     button::{self, ButtonKind},
     style,
 };
 
-pub struct AudioPlayerApp {
+pub struct AudioPlayerView {
     path: PathBuf,
     session: Option<PlaybackSession>,
     duration_ms: Option<u64>,
@@ -19,10 +19,10 @@ pub struct AudioPlayerApp {
     error: Option<String>,
 }
 
-impl AudioPlayerApp {
+impl AudioPlayerView {
     pub fn new(path: PathBuf) -> Self {
         log::info!(
-            "AudioPlayerApp: launch app_id=audio-player path={}",
+            "AudioPlayerView: launch plugin_id=audio-player path={}",
             path.display()
         );
         let duration_ms = crate::media::audio::source_duration_ms(&path.to_string_lossy());
@@ -60,7 +60,7 @@ impl AudioPlayerApp {
             }
             Err(err) => {
                 let msg = format!("Unable to play audio: {err}");
-                log::warn!("AudioPlayerApp: {} path={}", msg, self.path.display());
+                log::warn!("AudioPlayerView: {} path={}", msg, self.path.display());
                 self.error = Some(msg);
                 false
             }
@@ -100,7 +100,7 @@ impl AudioPlayerApp {
     }
 }
 
-impl App for AudioPlayerApp {
+impl App for AudioPlayerView {
     #[cfg(test)]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -117,7 +117,7 @@ impl App for AudioPlayerApp {
     fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &AppRenderContext<'_>,
+        ctx: &ViewRenderContext<'_>,
         _pending_click: Option<crate::host::pane::PendingPaneClick>,
     ) {
         self.sync_position();
@@ -125,7 +125,7 @@ impl App for AudioPlayerApp {
             ui.ctx().request_repaint();
         }
         let colors = ctx.colors;
-        AppChrome::new(colors).paint_app_bar(ui, &self.filename(), "Audio Player");
+        ViewChrome::new(colors).paint_app_bar(ui, &self.filename(), "Audio Player");
 
         ui.add_space(style::SPACE_MD);
         ui.horizontal(|ui| {

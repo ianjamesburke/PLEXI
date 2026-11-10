@@ -252,7 +252,7 @@ mod list_tests {
 
     fn request(h: &mut HostHarness, context: &str, claimed_pid: u32, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-list-test", "json");
-        let request = crate::protocol::AppRequest::PaneSecretList {
+        let request = crate::protocol::HostRequest::PaneSecretList {
             context: context.into(), peer_ancestry: vec![claimed_pid], response_file: response_file.clone(),
         };
         let line = serde_json::to_string(&request).unwrap();
@@ -314,7 +314,7 @@ mod list_tests {
 
     fn secret_get_request(h: &mut HostHarness, name: &str, peer: &[u32]) -> serde_json::Value {
         let response_file = crate::rpc::response_file("secret-get", "json");
-        let request = crate::protocol::AppRequest::PaneSecretGet {
+        let request = crate::protocol::HostRequest::PaneSecretGet {
             name: name.into(),
             global: false,
             workspace_root: Some(h.workspace_root()),
@@ -479,7 +479,7 @@ mod list_tests {
 
         // `pane send` from a denied worker is refused before reaching the target pane.
         let send_resp = crate::rpc::response_file("pane-send-denied", "json");
-        let send_req = crate::protocol::AppRequest::SendToPane {
+        let send_req = crate::protocol::HostRequest::SendToPane {
             pane_id: target_pane,
             text: "echo hi".into(),
             submit: false,
@@ -599,7 +599,7 @@ mod list_tests {
         //    (Decision::Ask) instead of bypassing the gate: a worker with no
         //    snapshotted posture is still agent-owned, not human-owned.
         let send_resp = crate::rpc::response_file("pane-send-fallback", "json");
-        let send_req = crate::protocol::AppRequest::SendToPane {
+        let send_req = crate::protocol::HostRequest::SendToPane {
             pane_id: target_pane,
             text: "fallback message".into(),
             submit: false,
@@ -658,7 +658,7 @@ mod list_tests {
         );
 
         let send_resp = crate::rpc::response_file("pane-send-human", "json");
-        let send_req = crate::protocol::AppRequest::SendToPane {
+        let send_req = crate::protocol::HostRequest::SendToPane {
             pane_id: human_pane,
             text: "human message".into(),
             submit: false,

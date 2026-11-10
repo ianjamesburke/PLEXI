@@ -2,7 +2,7 @@
 //!
 //! `EventSink` is the only production field right now; fs/secrets/net/spawn
 //! trait seams live in the app runtimes (`host::wasm_python`, `host::wasm_app`)
-//! and `app_registry` until HostModel owns their routing.
+//! and `plugin_registry` until HostModel owns their routing.
 
 use crate::host::effect::HostEffect;
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ impl FileEventSink {
         let mut sink = Self { path, writer };
         // Startup heartbeat so the post-install smoke test can assert the
         // sink opened the file for write (non-empty file means the wiring
-        // is live, even before the first AppRequest fires).
+        // is live, even before the first HostRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
             let now = crate::platform::clock::now_secs();

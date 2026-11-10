@@ -1,6 +1,6 @@
 //! Live description of this build. The Assistant's `host.introspect` tool and
-//! `plexi app info` both read from here. Nothing in this module is a maintained
-//! help document: command names come from the clap tree, app tools from the
+//! `plexi plugin info` both read from here. Nothing in this module is a maintained
+//! help document: command names come from the clap tree, plugin tools from the
 //! installed app's source, panes and permission rows from the caller.
 
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::path::Path;
 /// A tool exposed by a running app pane. Merged onto the declared list.
 #[derive(Debug, Clone)]
 pub struct LiveTool {
-    pub app_id: String,
+    pub plugin_id: String,
     pub pane_id: u64,
     pub name: String,
     pub description: String,
@@ -31,7 +31,7 @@ struct DeclaredTool {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-struct InstalledApp {
+struct InstalledPlugin {
     id: String,
     name: String,
     description: String,
@@ -47,7 +47,7 @@ pub fn permission_undo_text() -> String {
         "permissions reset",
         "permissions revoke",
         "permissions allow",
-        "app open",
+        "view open",
         "needs-you list",
     ];
     let tree = cli_tree();
@@ -92,7 +92,7 @@ fn ungrounded_citations(answer: &str, evidence: &str) -> Vec<String> {
 /// top-level commands; nested commands appear when a query names them.
 pub fn assemble(
     query: Option<&str>,
-    apps_dir: &Path,
+    plugins_dir: &Path,
     panes: &[serde_json::Value],
     permissions: &[serde_json::Value],
     live_tools: &[LiveTool],
@@ -112,10 +112,10 @@ pub fn assemble(
             })
             .collect::<Vec<_>>(),
     };
-    let mut apps = installed_apps(apps_dir);
+    let mut apps = installed_apps(plugins_dir);
     merge_live(&mut apps, live_tools);
     if let Some(query) = query {
-        if !contains_query("apps", query) {
+        if !contains_query("plugins", query) {
             apps.retain(|app| app_matches(app, query));
         }
     }
@@ -125,16 +125,16 @@ pub fn assemble(
         "ok": true,
         "query": query,
         "cli": cli,
-        "apps": apps,
+        "plugins": apps,
         "panes": panes,
         "permissions": permissions,
     })
 }
 
-/// Tools declared with `@tools.tool` under `app_dir`.
-pub fn declared_tools(app_dir: &Path) -> Vec<(String, String)> {
+/// Tools declared with `@tools.tool` under `plugin_dir`.
+pub fn declared_tools(plugin_dir: &Path) -> Vec<(String, String)> {
     let mut tools = Vec::new();
-    walk_py(app_dir, &mut tools);
+    walk_py(plugin_dir, &mut tools);
     tools
         .into_iter()
         .map(|tool| (tool.name, tool.description))
@@ -185,14 +185,14 @@ fn visible_args(cmd: &clap::Command) -> Vec<String> {
         .collect()
 }
 
-fn installed_apps(apps_dir: &Path) -> Vec<InstalledApp> {
+fn installed_apps(plugins_dir: &Path) -> Vec<InstalledPlugin> {
     let mut apps = Vec::new();
-    let entries = match std::fs::read_dir(apps_dir) {
+    let entries = match std::fs::read_dir(plugins_dir) {
         Ok(entries) => entries,
         Err(error) => {
             log::info!(
                 "introspect: no installed apps at {}: {error}",
-                apps_dir.display()
+                plugins_dir.display()
             );
             return apps;
         }
@@ -206,7 +206,7 @@ fn installed_apps(apps_dir: &Path) -> Vec<InstalledApp> {
         let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
             continue;
         };
-        let Ok(manifest) = toml::from_str::<crate::app::registry::AppManifest>(&raw) else {
+        let Ok(manifest) = toml::from_str::<crate::app::registry::PluginManifest>(&raw) else {
             log::info!(
                 "introspect: skipping unreadable manifest {}",
                 manifest_path.display()
@@ -215,10 +215,10 @@ fn installed_apps(apps_dir: &Path) -> Vec<InstalledApp> {
         };
         let mut tools = Vec::new();
         walk_py(&path, &mut tools);
-        apps.push(InstalledApp {
-            id: manifest.app.id,
-            name: manifest.app.name,
-            description: manifest.app.description,
+        apps.push(InstalledPlugin {
+            id: manifest.plugin.id,
+            name: manifest.plugin.name,
+            description: manifest.plugin.description,
             tools,
         });
     }
@@ -226,17 +226,17 @@ fn installed_apps(apps_dir: &Path) -> Vec<InstalledApp> {
     apps
 }
 
-fn merge_live(apps: &mut Vec<InstalledApp>, live_tools: &[LiveTool]) {
+fn merge_live(apps: &mut Vec<InstalledPlugin>, live_tools: &[LiveTool]) {
     for tool in live_tools {
-        if !apps.iter().any(|app| app.id == tool.app_id) {
-            apps.push(InstalledApp {
-                id: tool.app_id.clone(),
-                name: tool.app_id.clone(),
+        if !apps.iter().any(|app| app.id == tool.plugin_id) {
+            apps.push(InstalledPlugin {
+                id: tool.plugin_id.clone(),
+                name: tool.plugin_id.clone(),
                 description: String::new(),
                 tools: Vec::new(),
             });
         }
-        let Some(app) = apps.iter_mut().find(|app| app.id == tool.app_id) else {
+        let Some(app) = apps.iter_mut().find(|app| app.id == tool.plugin_id) else {
             continue;
         };
         if let Some(existing) = app.tools.iter_mut().find(|row| row.name == tool.name) {
@@ -353,7 +353,7 @@ fn strings_before_options(body: &str) -> (String, String) {
     (name, description)
 }
 
-fn app_matches(app: &InstalledApp, query: &str) -> bool {
+fn app_matches(app: &InstalledPlugin, query: &str) -> bool {
     contains_query(&app.id, query)
         || contains_query(&app.name, query)
         || contains_query(&app.description, query)
@@ -412,15 +412,21 @@ mod tests {
         std::fs::write(
             app.join("manifest.toml"),
             r#"
-schema_version = 1
+schema_version = 2
 
-[app]
+[plugin]
 id = "widget"
 name = "Widget"
-entry = "main.py"
-type = "app"
 version = "0.1.0"
 description = "A newly installed widget."
+
+[runtime]
+kind = "python"
+entry = "main.py"
+
+[[contributes.views]]
+id = "widget.main"
+default = true
 "#,
         )
         .unwrap();
@@ -442,7 +448,7 @@ def _ping():
             "id": 4,
             "type": "app",
             "title": "Permissions",
-            "app_id": "permissions"
+            "plugin_id": "permissions"
         })];
         let permissions = vec![serde_json::json!({
             "id": "grant-deny",

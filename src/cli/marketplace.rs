@@ -23,9 +23,9 @@ fn client() -> RegistryClient {
     )
 }
 
-/// `plexi app browse` — list every public app in the hosted catalog.
+/// `plexi plugin browse` — list every public app in the hosted catalog.
 pub fn app_browse_cli() -> i32 {
-    log::info!("marketplace: app browse");
+    log::info!("marketplace: plugin browse");
     let index = match client().fetch_index() {
         Ok(i) => i,
         Err(e) => {
@@ -40,13 +40,13 @@ pub fn app_browse_cli() -> i32 {
     }
     println!("{} public app(s) in the marketplace:\n", listed.len());
     print_entry_table(&listed);
-    crate::cli::print_tip("install one with `plexi app install <id>`.");
+    crate::cli::print_tip("install one with `plexi plugin install <id>`.");
     0
 }
 
-/// `plexi app search <query>` — substring search over the public catalog.
+/// `plexi plugin search <query>` — substring search over the public catalog.
 pub fn app_search_cli(query: &str) -> i32 {
-    log::info!("marketplace: app search query={query:?}");
+    log::info!("marketplace: plugin search query={query:?}");
     let index = match client().fetch_index() {
         Ok(i) => i,
         Err(e) => {
@@ -61,7 +61,7 @@ pub fn app_search_cli(query: &str) -> i32 {
     }
     println!("{} match(es) for '{query}':\n", hits.len());
     print_entry_table(&hits);
-    crate::cli::print_tip("install one with `plexi app install <id>`.");
+    crate::cli::print_tip("install one with `plexi plugin install <id>`.");
     0
 }
 
@@ -119,13 +119,13 @@ pub enum InstallPlan {
 /// checkout), and the server gates the paid artifact download on the account's
 /// purchase row. Free apps install from the CDN artifact, or from a declared
 /// source spec for github-hosted catalog entries.
-pub fn plan_install(app_id: &str) -> InstallPlan {
+pub fn plan_install(plugin_id: &str) -> InstallPlan {
     let cli = client();
-    let entry = match cli.fetch_entry(app_id) {
+    let entry = match cli.fetch_entry(plugin_id) {
         Ok(e) => e,
         Err(RegistryError::NotFound(_)) => return InstallPlan::NotFound,
         Err(e) => {
-            log::warn!("marketplace: catalog unreachable for '{app_id}': {e}");
+            log::warn!("marketplace: catalog unreachable for '{plugin_id}': {e}");
             return InstallPlan::Unreachable;
         }
     };
@@ -153,7 +153,7 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
     // bare CLI install of a paid app with a clear pointer. Free apps proceed.
     if !entry.price.is_free() {
         log::info!(
-            "marketplace: bare install of paid app '{app_id}' blocked (buy via marketplace)"
+            "marketplace: bare install of paid app '{plugin_id}' blocked (buy via marketplace)"
         );
         eprintln!(
             "error: '{}' is a paid app ({}). Buy it through the marketplace — open the app in \
@@ -193,13 +193,13 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
         return InstallPlan::Source(source);
     }
     eprintln!(
-        "error: catalog entry '{app_id}' has neither a package artifact nor a source — \
+        "error: catalog entry '{plugin_id}' has neither a package artifact nor a source — \
          the registry entry is malformed"
     );
     InstallPlan::Blocked
 }
 
-/// `plexi app publish [<path>]` — validate, package, and submit an app to the
+/// `plexi plugin publish [<path>]` — validate, package, and submit an app to the
 /// hosted marketplace. Replaces the old print-only stub.
 ///
 /// Always does the real local work: reads `[marketplace]`, validates the dir,
@@ -209,8 +209,8 @@ pub fn plan_install(app_id: &str) -> InstallPlan {
 /// artifact is, then exits 0. This is the honest "last mile not wired" boundary,
 /// not a silent no-op.
 pub fn app_publish_cli(path: &str) -> i32 {
-    log::info!("marketplace: app publish path={path}");
-    let app_dir = match Path::new(path).canonicalize() {
+    log::info!("marketplace: plugin publish path={path}");
+    let plugin_dir = match Path::new(path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: could not resolve {path}: {e}");
@@ -219,14 +219,14 @@ pub fn app_publish_cli(path: &str) -> i32 {
     };
 
     // Read the marketplace manifest section (publisher/visibility/price).
-    let marketplace = match read_marketplace_manifest(&app_dir) {
+    let marketplace = match read_marketplace_manifest(&plugin_dir) {
         Ok(m) => m,
         Err(code) => return code,
     };
 
     // Validate the directory (fail-closed) — this is the same gate publish
     // review will run server-side.
-    let report = match package::validate_dir(&app_dir) {
+    let report = match package::validate_dir(&plugin_dir) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: validation failed — refusing to publish: {e}");
@@ -235,7 +235,7 @@ pub fn app_publish_cli(path: &str) -> i32 {
     };
 
     // Build the distributable artifact and checksum it.
-    let artifact = match package::build_package(&app_dir, None) {
+    let artifact = match package::build_package(&plugin_dir, None) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: could not build package: {e}");
@@ -308,8 +308,8 @@ pub fn app_publish_cli(path: &str) -> i32 {
 
 /// Read and validate the `[marketplace]` manifest section for publishing.
 /// Returns the section, or an exit code on a publish-blocking problem.
-fn read_marketplace_manifest(app_dir: &Path) -> Result<MarketplaceManifest, i32> {
-    let manifest_path = app_dir.join("manifest.toml");
+fn read_marketplace_manifest(plugin_dir: &Path) -> Result<MarketplaceManifest, i32> {
+    let manifest_path = plugin_dir.join("manifest.toml");
     let text = match std::fs::read_to_string(&manifest_path) {
         Ok(t) => t,
         Err(e) => {
@@ -317,7 +317,7 @@ fn read_marketplace_manifest(app_dir: &Path) -> Result<MarketplaceManifest, i32>
             return Err(1);
         }
     };
-    let manifest: crate::app::registry::AppManifest = match toml::from_str(&text) {
+    let manifest: crate::app::registry::PluginManifest = match toml::from_str(&text) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("error: manifest.toml parse failed: {e}");

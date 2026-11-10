@@ -4,20 +4,20 @@ pub fn list_cli() -> i32 {
         return 0;
     }
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app::registry::AppRegistry::load_with_global(
+    let registry = crate::app::registry::PluginRegistry::load_with_global(
         &cwd,
-        &crate::app::registry::apps_dir(),
+        &crate::app::registry::plugins_dir(),
     );
     let installed = registry.list();
     if installed.is_empty() {
         println!("no apps installed");
-        println!("install one with: plexi app install <source>[@ref]");
+        println!("install one with: plexi plugin install <source>[@ref]");
         return 0;
     }
     // Read versions directly from the global apps dir for the source-of-truth
     // version field — the registry only carries `manifest.version` at load time.
     let global_versions =
-        crate::cli::install_host::installed_versions(&crate::app::registry::apps_dir());
+        crate::cli::install_host::installed_versions(&crate::app::registry::plugins_dir());
     let workspace_root = crate::app::registry::resolve_workspace_root(&cwd);
     let core_ids = crate::cli::install_host::core_pack_ids();
     let example_ids = crate::cli::install_host::examples_pack_ids();
@@ -49,14 +49,14 @@ pub fn list_cli() -> i32 {
         );
         match app.source {
             crate::app::registry::RegistrySource::Global => globals.push(row),
-            crate::app::registry::RegistrySource::LocalApp
+            crate::app::registry::RegistrySource::LocalPlugin
             | crate::app::registry::RegistrySource::LocalAgent => workspace.push(row),
         }
     }
     if !globals.is_empty() {
         println!(
             "Global apps ({})",
-            crate::app::registry::apps_dir().display()
+            crate::app::registry::plugins_dir().display()
         );
         for (id, name, version, badge) in &globals {
             if badge.is_empty() {
@@ -82,10 +82,10 @@ pub fn list_cli() -> i32 {
     0
 }
 
-/// `plexi app freeze <path>` — write a `pack.toml` snapshot of installed apps to `path`.
+/// `plexi plugin freeze <path>` — write a `pack.toml` snapshot of installed apps to `path`.
 /// See `crate::cli::install_host::export_pack` for the source-spec inference rules.
 pub fn freeze_cli(dest_path: &str) -> i32 {
-    let target_root = crate::app::registry::apps_dir();
+    let target_root = crate::app::registry::plugins_dir();
     let dest = std::path::PathBuf::from(dest_path);
     match crate::cli::install_host::export_pack(&target_root, &dest) {
         Ok(n) => {

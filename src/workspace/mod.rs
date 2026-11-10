@@ -57,16 +57,17 @@ pub struct SavedPane {
     pub cwd: PathBuf,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub app_id: Option<String>,
-    #[serde(default)]
-    pub app_state: Option<serde_json::Value>,
+    // Disk names are permanent user-data addresses, independent of public API vocabulary.
+    #[serde(default, rename = "app_id")]
+    pub plugin_id: Option<String>,
+    #[serde(default, rename = "app_state")]
+    pub plugin_state: Option<serde_json::Value>,
     #[serde(default)]
     pub hidden: bool,
     #[serde(default)]
     pub heartbeat: Option<SavedPaneHeartbeat>,
-    /// `AppRuntime::type_id()` at save time (`"python-wasm"` / `"wasm"` /
-    /// a builtin's own type id). Distinct from `app_id`, which is the app's
+    /// `ViewRuntime::type_id()` at save time (`"python-wasm"` / `"wasm"` /
+    /// a builtin's own type id). Distinct from `plugin_id`, which is the app's
     /// *manifest* identity — the runtime kind alone cannot relaunch anything.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_kind: Option<String>,
@@ -75,7 +76,7 @@ pub struct SavedPane {
     /// `restore_builtin_app_pane`) and for saves written before this field
     /// existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch: Option<SavedAppLaunch>,
+    pub launch: Option<SavedViewLaunch>,
     /// Named file-backed pane slots (`slot_name -> path`) persisted across restarts.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub slots: HashMap<String, PathBuf>,
@@ -182,8 +183,8 @@ pub struct AgentHistoryRecord {
 }
 
 impl SavedPane {
-    /// True for a pre-0680 save of a Python/WASM app pane: `app_id` holds the
-    /// *runtime kind* (`AppRuntime::type_id()`), not the app's manifest id,
+    /// True for a pre-0680 save of a Python/WASM app pane: `plugin_id` holds the
+    /// *runtime kind* (`ViewRuntime::type_id()`), not the app's manifest id,
     /// and `runtime_kind`/`launch` are absent because the field didn't exist
     /// yet. There is no recoverable manifest identity in this record, so
     /// restore renders a launch-failed pane naming the runtime kind rather
@@ -191,7 +192,7 @@ impl SavedPane {
     /// terminal.
     pub fn is_legacy_runtime_kind_id(&self) -> bool {
         self.runtime_kind.is_none()
-            && matches!(self.app_id.as_deref(), Some("python-wasm" | "wasm"))
+            && matches!(self.plugin_id.as_deref(), Some("python-wasm" | "wasm"))
     }
 }
 
@@ -222,9 +223,10 @@ pub enum SavedPaneKind {
 /// re-derived at restore time, not persisted into the workspace file.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "runtime", rename_all = "snake_case")]
-pub enum SavedAppLaunch {
+pub enum SavedViewLaunch {
     Python {
-        app_dir: PathBuf,
+        #[serde(rename = "app_dir")]
+        plugin_dir: PathBuf,
         #[serde(default)]
         args: Vec<String>,
     },
@@ -499,6 +501,24 @@ impl WorkspaceFile {
                 }
             }
         }
+        let mut migrated = false;
+        for window in &mut ws.windows {
+            for pane in &mut window.panes {
+                if let Some(SavedViewLaunch::Python { plugin_dir, .. }) = &mut pane.launch {
+                    if let Some(path) = crate::app::plugin_migration::migrated_path(plugin_dir) {
+                        *plugin_dir = path;
+                        migrated = true;
+                    }
+                }
+            }
+        }
+        if migrated {
+            if let Err(error) = ws.save_to_with_migration_source(profile_dir, Some(data.as_bytes())) {
+                log::error!("workspace plugin-path migration: {}: {error}; preserving original", path.display());
+                return None;
+            }
+            log::info!("workspace migration: saved plugin launch paths after package migration v2");
+        }
         Some(ws)
     }
 
@@ -610,7 +630,7 @@ impl WorkspaceFile {
                 return Err(invalid(format!("window {} references missing context {}", window.window_id, window.context_id)));
             }
             for pane in &window.panes {
-                if matches!(pane.kind, SavedPaneKind::App) && pane.app_id.is_none() {
+                if matches!(pane.kind, SavedPaneKind::App) && pane.plugin_id.is_none() {
                     return Err(invalid(format!("app pane {} has no app identity", pane.id)));
                 }
                 if let SavedPaneKind::Portal { context_id, .. } = pane.kind {
@@ -1291,8 +1311,8 @@ mod tests {
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
                 name: Some("split-pane".to_string()),
-                app_id: matches!(kind, SavedPaneKind::App).then(|| "snake".to_string()),
-                app_state: None,
+                plugin_id: matches!(kind, SavedPaneKind::App).then(|| "snake".to_string()),
+                plugin_state: None,
                 hidden: false,
                 heartbeat: None,
                 runtime_kind: None,
@@ -1312,8 +1332,8 @@ mod tests {
             kind: SavedPaneKind::Portal { context_id: 42, reveal_after_close: false },
             cwd: PathBuf::new(),
             name: None,
-            app_id: None,
-            app_state: None,
+            plugin_id: None,
+            plugin_state: None,
             hidden: false,
             heartbeat: None,
             runtime_kind: None,
@@ -1330,7 +1350,7 @@ mod tests {
         assert_eq!(restored.id, 99);
 
         // Backward compat: old "sub_context" JSON still deserializes to Portal.
-        let legacy_json = r#"{"id":99,"kind":{"sub_context":{"context_id":42}},"cwd":"","name":null,"app_id":null,"app_state":null}"#;
+        let legacy_json = r#"{"id":99,"kind":{"sub_context":{"context_id":42}},"cwd":"","name":null,"plugin_id":null,"app_state":null}"#;
         let legacy: SavedPane =
             serde_json::from_str(legacy_json).expect("deserialize legacy sub_context");
         assert!(
@@ -1457,8 +1477,8 @@ mod tests {
             kind: SavedPaneKind::Terminal,
             cwd: PathBuf::from("/tmp/work"),
             name: Some("worker-1".to_string()),
-            app_id: None,
-            app_state: None,
+            plugin_id: None,
+            plugin_state: None,
             hidden: false,
             heartbeat: None,
             runtime_kind: None,

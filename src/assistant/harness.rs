@@ -1,6 +1,6 @@
 //! Deterministic Assistant turn-loop harness.
 //!
-//! The harness drives `AssistantApp` without egui. A scripted broker observes
+//! The harness drives `AssistantView` without egui. A scripted broker observes
 //! the real broker request, dispatches through the real gated tool snapshot,
 //! and records every orchestration boundary as typed data.
 
@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::model::PermissionChoice;
-use super::{AssistantApp, SkillRegistry};
-use crate::app::app_trait::{App, AppCommand};
+use super::{AssistantView, SkillRegistry};
+use crate::app::app_trait::{App, ViewCommand};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use crate::plexi_ai::tool_dispatch::ToolCallResult;
 use crate::plexi_ai::turn_loop::TurnDelta;
@@ -495,7 +495,7 @@ impl AiBroker for ScriptedBroker {
 pub struct AssistantHarness {
     _root: tempfile::TempDir,
     workspace: PathBuf,
-    app: AssistantApp,
+    app: AssistantView,
     broker: Arc<ScriptedBroker>,
     trace: Arc<Mutex<Vec<OrchestrationEvent>>>,
 }
@@ -553,7 +553,7 @@ impl AssistantHarness {
             skills: Mutex::new(probes),
             agent_id: Mutex::new("default".to_string()),
         });
-        let mut app = AssistantApp::new(workspace.clone(), broker.clone(), &profile, 1);
+        let mut app = AssistantView::new(workspace.clone(), broker.clone(), &profile, 1);
         if let Some((agent_id, _, _)) = route {
             app.model.active_agent_id = agent_id.to_string();
         }
@@ -627,7 +627,7 @@ impl AssistantHarness {
                 self.app.resolve_permission(decision.into());
             }
             for command in App::take_pending_commands(&mut self.app) {
-                let AppCommand::AssistantHostTool {
+                let ViewCommand::AssistantHostTool {
                     name,
                     input_json,
                     reply,
@@ -713,7 +713,7 @@ mod tests {
                 model: Some("test/cheap".to_string()),
             }),
             offered_skills: Some(vec![
-                "build-plexi-app".to_string(),
+                "build-plexi-plugin".to_string(),
                 "pane-audit".to_string(),
             ]),
             activated_skill: Some("pane-audit".to_string()),
@@ -736,7 +736,7 @@ mod tests {
             }],
             ordered_events: vec![
                 ExpectedEvent::SkillsOffered(vec![
-                    "build-plexi-app".to_string(),
+                    "build-plexi-plugin".to_string(),
                     "pane-audit".to_string(),
                 ]),
                 ExpectedEvent::SkillActivated("pane-audit".to_string()),
@@ -968,7 +968,7 @@ mod tests {
             output["stdout"]
                 .as_str()
                 .unwrap()
-                .contains("stub-build app init demo-app"),
+                .contains("stub-build plugin init demo-app"),
             "{output}"
         );
     }

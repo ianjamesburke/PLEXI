@@ -30,12 +30,12 @@ pub(crate) struct NewContextTiming {
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
 /// Calls the shared `init_workspace` function which creates all workspace files
-/// (workspace.toml, secrets.toml, apps.toml, commands.toml) under the channel dir.
+/// (workspace.toml, secrets.toml, plugins.toml, commands.toml) under the channel dir.
 ///
 /// Idempotent — skips if the channel dir already has workspace.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
-/// Ensure `<root>/.plexi/.gitignore` covers `app_states/` so a user can never
-/// accidentally commit their app state with a project (standing ruling: app
+/// Ensure `<root>/.plexi/.gitignore` covers `plugin_states/` so a user can never
+/// accidentally commit their plugin state with a project (standing ruling: app
 /// state is personal, single-user, local data). Idempotent; preserves any
 /// existing user rules. Every path that creates or rewrites a context root
 /// calls this.
@@ -2030,7 +2030,7 @@ impl PlexiApp {
         // the old background-thread load (guarded by `context_id`) could.
         let _ = self.registries.view_for_context(context_id, &self.router);
         self.reconcile_registry_watchers();
-        // Same workspace resolution `AppRegistry::load` performs internally
+        // Same workspace resolution `PluginRegistry::load` performs internally
         // (cwd-walk to the channel dir) — agents live in that workspace's
         // `agents/` dir.
         self.agent_host.reload_workspace(
@@ -2415,8 +2415,8 @@ impl PlexiApp {
                         kind: crate::workspace::SavedPaneKind::Terminal,
                         cwd,
                         name: t.name.clone(),
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2437,7 +2437,7 @@ impl PlexiApp {
                         ),
                     });
                 } else if let Some(a) = pane.as_app() {
-                    if let crate::host::pane::AppRuntime::Builtin(view) = &a.runtime {
+                    if let crate::host::pane::ViewRuntime::Builtin(view) = &a.runtime {
                         if let Some(original) = view.disabled_plugin_record() {
                             let mut saved = original.clone();
                             saved.id = id;
@@ -2465,10 +2465,10 @@ impl PlexiApp {
                         cwd: a.workspace_root.clone(),
                         name: Some(a.name.clone()),
                         // The app's real manifest identity (stint 0680) — the
-                        // runtime kind alone (`AppRuntime::type_id()`) cannot
+                        // runtime kind alone (`ViewRuntime::type_id()`) cannot
                         // be looked up in `builtin_factory` or relaunched.
-                        app_id: Some(a.manifest_id.clone()),
-                        app_state: a.runtime.serialize_state(),
+                        plugin_id: Some(a.manifest_id.clone()),
+                        plugin_state: a.runtime.serialize_state(),
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2495,8 +2495,8 @@ impl PlexiApp {
                         },
                         cwd: std::path::PathBuf::new(),
                         name: None,
-                        app_id: None,
-                        app_state: None,
+                        plugin_id: None,
+                        plugin_state: None,
                         hidden: pane_hidden,
                         heartbeat: self.pane_heartbeats.get(&id).map(|heartbeat| {
                             crate::workspace::SavedPaneHeartbeat {
@@ -2568,8 +2568,8 @@ mod tests {
                     kind: crate::workspace::SavedPaneKind::App,
                     cwd: std::env::temp_dir(),
                     name: None,
-                    app_id: Some("test".to_string()),
-                    app_state: None,
+                    plugin_id: Some("test".to_string()),
+                    plugin_state: None,
                     hidden: false,
                     heartbeat: None,
                     runtime_kind: None,

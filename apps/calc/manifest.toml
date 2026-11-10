@@ -1,18 +1,9 @@
-schema_version = 1
-
-[app]
-id = "calc"
-type = "app"
-name = "Calculator"
-version = "0.1.0"
-description = "Four-function calculator with connector tools for the Assistant."
-entry = "calc.py"
+schema_version = 2
 
 [runtime]
 python_compat = true
-
-[app.capabilities]
-capabilities = []
+kind = "python"
+entry = "calc.py"
 
 [launch]
 
@@ -20,3 +11,16 @@ capabilities = []
 visibility = "public"
 price = "free"
 publisher = "plexi"
+
+[plugin]
+id = "calc"
+name = "Calculator"
+version = "0.1.0"
+description = "Four-function calculator with connector tools for the Assistant."
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "calc.main"
+default = true

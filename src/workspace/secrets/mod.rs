@@ -4,7 +4,7 @@
 //! 1. **Keychain** stores raw values under namespaced names:
 //!    `plexi:<workspace-id>:<friendly-name>` for workspace-scoped, and
 //!    `plexi:user:<friendly-name>` for cross-workspace fallback.
-//! 2. **App manifest** declares canonical secret names — the app calls
+//! 2. **App manifest** declares canonical secret names — the plugin calls
 //!    `ctx.secret("OPENAI_API_KEY")` but never knows the friendly Keychain name.
 //! 3. **Workspace router** at `<workspace_root>/.plexi/secrets.toml` maps
 //!    canonical names per-app (and a shared `[default]` route) to friendly
@@ -13,8 +13,8 @@
 //!
 //! ## Runtime resolution (4-step order)
 //!
-//! When app `<app-id>` in workspace `<root>` calls `ctx.secret("X")`:
-//! 1. `[apps.<app-id>] X = "fname"` → return `plexi:<workspace-id>:fname`.
+//! When app `<plugin-id>` in workspace `<root>` calls `ctx.secret("X")`:
+//! 1. `[apps.<plugin-id>] X = "fname"` → return `plexi:<workspace-id>:fname`.
 //! 2. `[default] X = "fname"` → return `plexi:<workspace-id>:fname`.
 //! 3. `fallback = true` AND `plexi:user:X` exists → return user-scope value.
 //! 4. Else: missing-secret prompt (or hard error if `fallback = false` and no

@@ -19,7 +19,7 @@
 //! - The host receives `ReloadRequest { pane_id }` exclusively through the
 //!   channel passed to `HotReloadWatcher::new`. No other side-effects.
 //! - Watching is opt-in (manifest `[app] watch = true`) and gated to
-//!   workspace-local installs by the caller (`AppRegistry::launch_process`).
+//!   workspace-local installs by the caller (`PluginRegistry::launch_process`).
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
@@ -40,30 +40,30 @@ pub const DEBOUNCE_MS: u64 = 250;
 
 /// Directory names that never contain app source and must never trigger a
 /// reload — tooling output from running the app's own checks (`plexi app
-/// check` / `app test`) while the pane is open. Checked against every path
+/// check` / `plugin test`) while the pane is open. Checked against every path
 /// component, not just the leaf, so `<app>/.venv/lib/...` is excluded too.
 const EXCLUDED_DIR_NAMES: &[&str] = &[".venv", "__pycache__", ".pytest_cache", ".mypy_cache"];
 
 /// Returns true if `path` (an absolute event path somewhere under
-/// `app_dir`) should trigger a reload — i.e. no component of its path
-/// *relative to `app_dir`* names an excluded tooling directory or a
+/// `plugin_dir`) should trigger a reload — i.e. no component of its path
+/// *relative to `plugin_dir`* names an excluded tooling directory or a
 /// dotfile/dot-directory.
 ///
-/// Only components below `app_dir` are examined: the app's own absolute
+/// Only components below `plugin_dir` are examined: the app's own absolute
 /// path (e.g. a dotfile in the user's home directory ancestry — every
 /// installed app lives under `~/.plexi-<channel>/apps/<name>`) must never
 /// affect the classification. Single source of truth for the exclusion
 /// set — both the event filter and any future caller (docs, tests) go
 /// through this function rather than re-deriving the list.
 ///
-/// Fails open: if `path` cannot be stripped of the `app_dir` prefix (a
+/// Fails open: if `path` cannot be stripped of the `plugin_dir` prefix (a
 /// non-canonical event path, a differing symlink resolution), there is
 /// nothing safe to classify, so the event is treated as relevant rather
 /// than scanning the full path — which would misclassify every event for
 /// any installed app, since `~/.plexi-<channel>/...` is itself a dot-dir
 /// ancestor. Watching a bit too much beats hot reload dying silently.
-fn is_reload_relevant(path: &Path, app_dir: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(app_dir) else {
+fn is_reload_relevant(path: &Path, plugin_dir: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(plugin_dir) else {
         return true;
     };
     for component in relative.components() {
@@ -147,10 +147,10 @@ impl HotReloadWatcher {
         )
     }
 
-    /// Begin watching `app_dir` for `pane_id`. Replaces any existing watcher
+    /// Begin watching `plugin_dir` for `pane_id`. Replaces any existing watcher
     /// for the same pane (caller responsibility — typically a no-op since
     /// reload reuses the watcher).
-    pub fn watch(&mut self, pane_id: PaneId, app_dir: &Path) {
+    pub fn watch(&mut self, pane_id: PaneId, plugin_dir: &Path) {
         // Replace any existing watcher (idempotent).
         self.watchers.remove(&pane_id);
 
@@ -169,9 +169,9 @@ impl HotReloadWatcher {
         // back to the full path and every component of the app's own
         // (often dot-prefixed, e.g. under a `.tmp*` tempdir) ancestry gets
         // misclassified as excluded.
-        let watch_dir = app_dir
+        let watch_dir = plugin_dir
             .canonicalize()
-            .unwrap_or_else(|_| app_dir.to_path_buf());
+            .unwrap_or_else(|_| plugin_dir.to_path_buf());
         let logged_ignored = Arc::new(Mutex::new(false));
         let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
             match res {
@@ -214,25 +214,25 @@ impl HotReloadWatcher {
             Ok(w) => w,
             Err(e) => {
                 log::error!(
-                    "hot_reload: failed to create watcher for pane {pane_id} at {app_dir:?}: {e}"
+                    "hot_reload: failed to create watcher for pane {pane_id} at {plugin_dir:?}: {e}"
                 );
                 return;
             }
         };
 
-        if let Err(e) = watcher.watch(app_dir, RecursiveMode::Recursive) {
-            log::error!("hot_reload: failed to begin watching {app_dir:?} for pane {pane_id}: {e}");
+        if let Err(e) = watcher.watch(plugin_dir, RecursiveMode::Recursive) {
+            log::error!("hot_reload: failed to begin watching {plugin_dir:?} for pane {pane_id}: {e}");
             return;
         }
 
-        let app_dir_log = app_dir.to_path_buf();
+        let plugin_dir_log = plugin_dir.to_path_buf();
         let thread = thread::spawn(move || {
             crate::app::debounce::run(
                 raw_rx,
                 cancel_thread,
                 Duration::from_millis(DEBOUNCE_MS),
                 |_| {
-                    log::info!("hot_reload: debounced reload for pane {pane_id} ({app_dir_log:?})");
+                    log::info!("hot_reload: debounced reload for pane {pane_id} ({plugin_dir_log:?})");
                     sender.send(ReloadRequest { pane_id }).is_ok()
                 },
             );
@@ -246,7 +246,7 @@ impl HotReloadWatcher {
                 _watcher: watcher,
             },
         );
-        log::info!("hot_reload: watching {app_dir:?} for pane {pane_id}");
+        log::info!("hot_reload: watching {plugin_dir:?} for pane {pane_id}");
     }
 
     /// Stop watching `pane_id`. Idempotent — closing a pane that was never
@@ -294,53 +294,53 @@ mod tests {
 
     #[test]
     fn is_reload_relevant_excludes_venv_and_caches() {
-        let app_dir = Path::new("/apps/foo");
+        let plugin_dir = Path::new("/apps/foo");
         assert!(!is_reload_relevant(
-            &app_dir.join(".venv/lib/site-packages/x.py"),
-            app_dir
+            &plugin_dir.join(".venv/lib/site-packages/x.py"),
+            plugin_dir
         ));
         assert!(!is_reload_relevant(
-            &app_dir.join("__pycache__/main.cpython-312.pyc"),
-            app_dir
+            &plugin_dir.join("__pycache__/main.cpython-312.pyc"),
+            plugin_dir
         ));
         assert!(!is_reload_relevant(
-            &app_dir.join(".pytest_cache/v/cache/lastfailed"),
-            app_dir
+            &plugin_dir.join(".pytest_cache/v/cache/lastfailed"),
+            plugin_dir
         ));
         assert!(!is_reload_relevant(
-            &app_dir.join(".mypy_cache/3.12"),
-            app_dir
+            &plugin_dir.join(".mypy_cache/3.12"),
+            plugin_dir
         ));
-        assert!(!is_reload_relevant(&app_dir.join(".DS_Store"), app_dir));
+        assert!(!is_reload_relevant(&plugin_dir.join(".DS_Store"), plugin_dir));
     }
 
     #[test]
     fn is_reload_relevant_allows_source_files() {
-        let app_dir = Path::new("/apps/foo");
-        assert!(is_reload_relevant(&app_dir.join("main.py"), app_dir));
-        assert!(is_reload_relevant(&app_dir.join("lib/helpers.py"), app_dir));
+        let plugin_dir = Path::new("/apps/foo");
+        assert!(is_reload_relevant(&plugin_dir.join("main.py"), plugin_dir));
+        assert!(is_reload_relevant(&plugin_dir.join("lib/helpers.py"), plugin_dir));
     }
 
     #[test]
     fn is_reload_relevant_ignores_dotfiles_in_ancestor_path() {
-        // A dot component above `app_dir` (e.g. the user's home directory
+        // A dot component above `plugin_dir` (e.g. the user's home directory
         // ancestry) must never affect classification — only the path
-        // relative to `app_dir` is examined.
-        let app_dir = Path::new("/Users/.hidden-home/apps/foo");
-        assert!(is_reload_relevant(&app_dir.join("main.py"), app_dir));
+        // relative to `plugin_dir` is examined.
+        let plugin_dir = Path::new("/Users/.hidden-home/apps/foo");
+        assert!(is_reload_relevant(&plugin_dir.join("main.py"), plugin_dir));
     }
 
     #[test]
-    fn is_reload_relevant_fails_open_when_path_is_not_under_app_dir() {
+    fn is_reload_relevant_fails_open_when_path_is_not_under_plugin_dir() {
         // A prefix mismatch (non-canonical event path, differing symlink
         // resolution) leaves nothing safe to classify. Every installed app
         // lives under `~/.plexi-<channel>/apps/<name>` — itself a dot-dir
         // ancestor — so falling back to scanning the full path would
         // misclassify every event for an installed app as irrelevant and
         // kill hot reload silently. Fail open instead.
-        let app_dir = Path::new("/Users/.plexi-alpha/apps/foo");
+        let plugin_dir = Path::new("/Users/.plexi-alpha/apps/foo");
         let unrelated = Path::new("/Users/.plexi-alpha/apps/bar/main.py");
-        assert!(is_reload_relevant(unrelated, app_dir));
+        assert!(is_reload_relevant(unrelated, plugin_dir));
     }
 
     #[test]
@@ -360,7 +360,7 @@ mod tests {
         let _ = poll_for_reload(&rx, Duration::from_millis(500));
         while rx.try_recv().is_ok() {}
 
-        // Simulate tooling output from `plexi app check` / `app test`.
+        // Simulate tooling output from `plexi plugin check` / `plugin test`.
         fs::write(dir.path().join(".venv/lib/marker.txt"), "x").unwrap();
         let got = poll_for_reload(&rx, Duration::from_millis(800));
         assert!(

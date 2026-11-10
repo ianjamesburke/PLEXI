@@ -60,8 +60,8 @@ pub mod code {
 /// What the host, never the guest, knows about the asking pane.
 #[derive(Debug, Clone)]
 pub struct PaneIdentity {
-    pub app_id: String,
-    pub app_dir: PathBuf,
+    pub plugin_id: String,
+    pub plugin_dir: PathBuf,
     pub workspace_root: PathBuf,
     pub pane_id: u64,
     pub context_id: u64,
@@ -287,7 +287,7 @@ impl CliOpService {
         }
         log::info!(
             "cli_ops: submit app={} request={request_id} operation={operation_id}",
-            who.app_id
+            who.plugin_id
         );
         let values = values.clone();
         match self.admit_and_launch(who, env, request_id, operation_id, &values) {
@@ -449,7 +449,7 @@ impl CliOpService {
         .to_string();
         let call_id = format!("cliop_{request_id}_{}", uuid::Uuid::new_v4().simple());
         let disclosure = Disclosure {
-            app_id: &who.app_id,
+            plugin_id: &who.plugin_id,
             operation_id: &admitted.decl.id,
             mode,
             workspace: &admitted.workspace,
@@ -458,7 +458,7 @@ impl CliOpService {
             authority: &admitted.decl.authority,
             changed_since_approval: env.monitor.list_entries().iter().any(|entry| {
                 entry.kind == "allow"
-                    && entry.actor_id == who.app_id
+                    && entry.actor_id == who.plugin_id
                     && entry.tool == tool
                     && entry.resource_id.as_deref().is_some_and(|id| {
                         id != resource && id.starts_with(&format!("{operation_id}#"))
@@ -472,7 +472,7 @@ impl CliOpService {
                 tool,
                 input_json: &input,
                 actor_type: ActorType::App,
-                actor_id: &who.app_id,
+                actor_id: &who.plugin_id,
                 actor_scope: ActorScope::User,
                 trust_origin: "host",
                 workspace_root: &admitted.workspace,
@@ -503,7 +503,7 @@ impl CliOpService {
                 // revoked grant stops here.
                 env.monitor
                     .note_use(
-                        &who.app_id,
+                        &who.plugin_id,
                         &call_id,
                         &grant_id,
                         &fingerprint,
@@ -521,7 +521,7 @@ impl CliOpService {
                 env.monitor.consume_once(&grant_id, None);
                 let running = self.launch(who, env, &admitted).map_err(|(c, m)| {
                     let _ = env.monitor.note_outcome(
-                        &who.app_id,
+                        &who.plugin_id,
                         &call_id,
                         &grant_id,
                         &fingerprint,
@@ -535,7 +535,7 @@ impl CliOpService {
                 })?;
                 Ok(Step::Run(Box::new(Running {
                     op: running.0,
-                    actor: who.app_id.clone(),
+                    actor: who.plugin_id.clone(),
                     decl: admitted.decl,
                     call_id,
                     grant_id,
@@ -556,20 +556,20 @@ impl CliOpService {
         operation_id: &str,
         values: &Map<String, Value>,
     ) -> Result<Admitted, (&'static str, String)> {
-        if !super::app_id_is_path_safe(&who.app_id) {
+        if !super::plugin_id_is_path_safe(&who.plugin_id) {
             return Err((
                 code::PACKAGE_INVALID,
-                format!("app id '{}' cannot name a private directory", who.app_id),
+                format!("app id '{}' cannot name a private directory", who.plugin_id),
             ));
         }
-        let manifest_path = who.app_dir.join("manifest.toml");
+        let manifest_path = who.plugin_dir.join("manifest.toml");
         let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
             (
                 code::PACKAGE_INVALID,
                 format!("cannot read {}: {e}", manifest_path.display()),
             )
         })?;
-        let manifest: crate::app::registry::AppManifest = toml::from_str(&raw).map_err(|e| {
+        let manifest: crate::app::registry::PluginManifest = toml::from_str(&raw).map_err(|e| {
             (
                 code::PACKAGE_INVALID,
                 format!("manifest.toml does not parse: {e}"),
@@ -577,12 +577,12 @@ impl CliOpService {
         })?;
         crate::app::cli_operation::validate_all(&manifest.cli_operations)
             .map_err(|e| (code::PACKAGE_INVALID, e.to_string()))?;
-        if manifest.app.id != who.app_id {
+        if manifest.plugin.id != who.plugin_id {
             return Err((
                 code::PACKAGE_INVALID,
                 format!(
                     "package declares app id '{}' but the pane runs '{}'",
-                    manifest.app.id, who.app_id
+                    manifest.plugin.id, who.plugin_id
                 ),
             ));
         }
@@ -597,9 +597,9 @@ impl CliOpService {
                     format!("the package declares no operation '{operation_id}'"),
                 )
             })?;
-        if is_registry_install(&who.app_dir)
+        if is_registry_install(&who.plugin_dir)
             && !who
-                .app_dir
+                .plugin_dir
                 .join(crate::app::package::INSTALL_COMPLETE_MARKER)
                 .is_file()
         {
@@ -610,7 +610,7 @@ impl CliOpService {
             ));
         }
         let argv_check = decl.build_argv(values).map_err(|e| arg_failure(&e))?;
-        let package_digest = crate::app::package::content_digest(&who.app_dir)
+        let package_digest = crate::app::package::content_digest(&who.plugin_dir)
             .map_err(|e| (code::PACKAGE_INVALID, e.to_string()))?;
         let workspace = crate::platform::path::canonical_or_self(&who.workspace_root);
         let path =
@@ -655,7 +655,7 @@ impl CliOpService {
         let opened =
             exec::open_and_identify(&admitted.identity.path).map_err(|e| exec_failure(&e))?;
         let sealed = opened
-            .seal(&env.seal_base.join(&who.app_id), &admitted.identity.sha256)
+            .seal(&env.seal_base.join(&who.plugin_id), &admitted.identity.sha256)
             .map_err(|e| exec_failure(&e))?;
         let spec = LaunchSpec {
             sealed,
@@ -678,7 +678,7 @@ impl CliOpService {
             exec::spawn_supervised(spec, Arc::clone(env.wake)).map_err(|e| exec_failure(&e))?;
         log::info!(
             "cli_ops: app={} operation={} launched exe={} sha256={}",
-            who.app_id,
+            who.plugin_id,
             admitted.decl.id,
             admitted.identity.path.display(),
             &admitted.identity.sha256[..12]
@@ -699,9 +699,9 @@ enum Resolved {
     Decided,
 }
 
-fn is_registry_install(app_dir: &Path) -> bool {
-    let apps = crate::platform::path::canonical_or_self(&crate::app::registry::apps_dir());
-    crate::platform::path::canonical_or_self(app_dir).starts_with(apps)
+fn is_registry_install(plugin_dir: &Path) -> bool {
+    let apps = crate::platform::path::canonical_or_self(&crate::app::registry::plugins_dir());
+    crate::platform::path::canonical_or_self(plugin_dir).starts_with(apps)
 }
 
 /// SHA-256 over the canonical JSON of everything an approval binds.
@@ -725,7 +725,7 @@ fn binding_digest(
 /// What the approval surface shows. Built once, from host-verified facts, so
 /// the seeded scene and the live prompt cannot drift apart.
 pub struct Disclosure<'a> {
-    pub app_id: &'a str,
+    pub plugin_id: &'a str,
     pub operation_id: &'a str,
     pub mode: OperationMode,
     pub workspace: &'a Path,
@@ -733,7 +733,7 @@ pub struct Disclosure<'a> {
     pub executable_sha256: &'a str,
     pub authority: &'a crate::app::cli_operation::AuthorityDecl,
     /// This operation was approved before and something it was approved against
-    /// (program, app package or definition) is different now.
+    /// (program, plugin package or definition) is different now.
     pub changed_since_approval: bool,
 }
 
@@ -749,7 +749,7 @@ impl Disclosure<'_> {
             }
         };
         let changed = if self.changed_since_approval {
-            "CHANGED SINCE YOU APPROVED THIS: the program, the app package or the operation definition is different. "
+            "CHANGED SINCE YOU APPROVED THIS: the program, the plugin package or the operation definition is different. "
         } else {
             ""
         };
@@ -759,7 +759,7 @@ impl Disclosure<'_> {
              This runs a native program with your user account's full authority. Plexi does not confine it, \
              and the declaration above is not enforced.",
             changed = changed,
-            app = self.app_id,
+            app = self.plugin_id,
             op = self.operation_id,
             mode = match self.mode {
                 OperationMode::Read => "read",

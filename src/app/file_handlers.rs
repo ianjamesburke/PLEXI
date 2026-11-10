@@ -4,7 +4,7 @@
 //! A handler spec is a `kind:value` string chosen by the user per file
 //! extension. The grammar is prefix-namespaced by *handler kind* (not by
 //! `plexi:`) so the value space stays open-ended — new kinds (`mcp:`, `url:`,
-//! …) slot in without colliding with the app-id namespace:
+//! …) slot in without colliding with the plugin-id namespace:
 //!
 //!   `app:<id>`      — open in a Plexi app by its registry id
 //!   `os`            — hand to the OS default opener (`open` / `xdg-open`)

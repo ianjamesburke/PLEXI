@@ -965,7 +965,7 @@ impl PlexiApp {
                 dismiss_value
             );
             if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
-                let cmds = vec![crate::app::app_trait::AppCommand::DeliverNotifyAction {
+                let cmds = vec![crate::app::app_trait::ViewCommand::DeliverNotifyAction {
                     pane_id: n.sender_pane_id,
                     notify_id: n.notify_id.clone(),
                     action_label: "timeout".to_string(),

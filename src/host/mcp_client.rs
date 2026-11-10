@@ -1,6 +1,6 @@
 //! Outbound MCP stdio transport (stint 0382).
 //!
-//! Plexi consumes external MCP servers through the app-connector plane: a
+//! Plexi consumes external MCP servers through the plugin-connector plane: a
 //! bridge app hosts the MCP client and re-exposes the server's tools via
 //! `ExposeTools`. This module owns the half of that split the app runtime
 //! cannot own — the **server process** — and nothing else.
@@ -89,7 +89,7 @@
 //! ```
 //!
 //! Note: this is the *outbound* direction. `PlexiEvent::McpToolCall` and
-//! `AppRequest::McpToolResult` are the inbound direction — an external MCP
+//! `HostRequest::McpToolResult` are the inbound direction — an external MCP
 //! client calling into a Plexi app's `[app.mcp]` surface. The two never meet.
 //!
 //! **Runtime scope: CPython bridge apps only.** The app-facing messages

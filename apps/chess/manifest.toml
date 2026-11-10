@@ -1,15 +1,9 @@
-schema_version = 1
-
-[app]
-id = "chess"
-type = "app"
-name = "Chess"
-version = "0.2.0"
-description = "One chess game that people and agents play through the same domain operations: chess.* tools, revision-checked moves with receipts, and chess.move_committed events."
-entry = "chess.py"
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "chess.py"
 
 [state]
 scopes = ["context"]
@@ -19,10 +13,20 @@ scopes = ["context"]
 # instead of stacking a pane whose tools the host cannot address.
 on_launch = "focus_existing_in_context"
 
-[app.capabilities]
-capabilities = []
-
 [marketplace]
 visibility = "public"
 price = "free"
 publisher = "plexi"
+
+[plugin]
+id = "chess"
+name = "Chess"
+version = "0.2.0"
+description = "One chess game that people and agents play through the same domain operations: chess.* tools, revision-checked moves with receipts, and chess.move_committed events."
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "chess.main"
+default = true

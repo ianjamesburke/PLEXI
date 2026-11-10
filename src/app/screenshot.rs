@@ -1,6 +1,6 @@
 //! Live-host screenshot capture (`plexi host screenshot`, stint 0461).
 //!
-//! The CLI sends `AppRequest::Screenshot`; the handler queues a
+//! The CLI sends `HostRequest::Screenshot`; the handler queues a
 //! [`PendingScreenshot`] and asks egui for a viewport capture
 //! (`ViewportCommand::Screenshot`). The wgpu backend reads the real
 //! live paint target back and delivers it as `egui::Event::Screenshot` in a later

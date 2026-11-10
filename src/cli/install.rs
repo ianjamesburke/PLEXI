@@ -9,7 +9,7 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
     let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
     let resolved = if is_bare_id(&source_str) {
         // A bare id resolves only through the hosted marketplace catalog. A
-        // free/licensed app installs from its CDN artifact (or a declared github
+        // free/licensed plugin installs from its CDN artifact (or a declared github
         // source); a paid app with no license is blocked; an unknown id or an
         // unreachable registry is a hard error. There is no legacy fallback.
         match crate::cli::marketplace::plan_install(&source_str) {
@@ -38,7 +38,7 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
             InstallPlan::Blocked => return 1,
             InstallPlan::NotFound => {
                 eprintln!(
-                    "error: no app '{source_str}' in the marketplace — run `plexi app search {source_str}` or `plexi app browse`"
+                    "error: no app '{source_str}' in the marketplace — run `plexi plugin search {source_str}` or `plexi plugin browse`"
                 );
                 return 1;
             }
@@ -64,7 +64,7 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
             return 1;
         }
     };
-    let target_root = crate::app::registry::apps_dir();
+    let target_root = crate::app::registry::plugins_dir();
     let cloner = crate::cli::install_host::GitCloner;
     match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root)
     {
@@ -72,7 +72,7 @@ pub fn install_cli(spec: &str, assume_yes: bool) -> i32 {
             crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
                 print_tip(&format!(
-                    "open your app with `plexi app open {}`.",
+                    "open your app with `plexi view open {}`.",
                     outcome.id
                 ));
                 0
@@ -129,7 +129,7 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
             }
         }
     };
-    let target_root = crate::app::registry::apps_dir();
+    let target_root = crate::app::registry::plugins_dir();
     if let Err(e) = std::fs::create_dir_all(&target_root) {
         eprintln!("error: create apps dir {}: {e}", target_root.display());
         return 1;
@@ -171,11 +171,11 @@ pub fn install_pack_cli(spec: &str, refresh_local: bool) -> i32 {
     }
 }
 
-/// `plexi install` with no args — detect `<channel_dir>/apps.toml` and apply it.
+/// `plexi install` with no args — detect `<channel_dir>/plugins.toml` and apply it.
 ///
 /// Walks up from CWD looking for the channel dir (workspace marker), reads
-/// `apps.toml` from it, and installs declared apps into the workspace-scoped
-/// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
+/// `plugins.toml` from it, and installs declared apps into the workspace-scoped
+/// channel apps dir (`<workspace_root>/<channel_dir>/plugins/`).
 pub fn install_workspace_pack_cli() -> i32 {
     log::info!("cli: install_workspace_pack (no-args flow)");
     let cwd = match std::env::current_dir() {
@@ -215,31 +215,31 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let Some(root) = workspace_root else {
         eprintln!(
-            "Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>"
+            "Usage: plexi plugin install <source-spec>[@ref] | plexi plugin install --pack <path|core>"
         );
-        eprintln!("  In a workspace (directory with {channel_dir}/), `plexi app install` applies the manifest.");
+        eprintln!("  In a workspace (directory with {channel_dir}/), `plexi plugin install` applies the manifest.");
         eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
         return 1;
     };
 
-    let apps_toml = root.join(&channel_dir).join("apps.toml");
-    if !apps_toml.exists() {
+    let plugins_toml = root.join(&channel_dir).join("plugins.toml");
+    if !plugins_toml.exists() {
         eprintln!(
-            "no {channel_dir}/apps.toml found in workspace at {}",
+            "no {channel_dir}/plugins.toml found in workspace at {}",
             root.display()
         );
-        eprintln!("  Declare app dependencies there, then re-run `plexi app install`.");
+        eprintln!("  Declare app dependencies there, then re-run `plexi plugin install`.");
         eprintln!(
-            "  Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>"
+            "  Usage: plexi plugin install <source-spec>[@ref] | plexi plugin install --pack <path|core>"
         );
         return 1;
     }
 
     log::info!(
         "install_workspace_pack:cli: applying {}",
-        apps_toml.display()
+        plugins_toml.display()
     );
-    println!("Applying workspace manifest {}...", apps_toml.display());
+    println!("Applying workspace manifest {}...", plugins_toml.display());
 
     let cloner = crate::cli::install_host::GitCloner;
     let outcomes = match crate::cli::install_host::apply_workspace_pack(&root, &cloner) {
@@ -251,7 +251,7 @@ pub fn install_workspace_pack_cli() -> i32 {
     };
 
     if outcomes.is_empty() {
-        println!("No apps declared in {channel_dir}/apps.toml.");
+        println!("No apps declared in {channel_dir}/plugins.toml.");
         return 0;
     }
 
@@ -369,15 +369,15 @@ fn remove_channel_data(profile: &Path) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpdateTarget {
     pub id: String,
-    pub app_dir: PathBuf,
+    pub plugin_dir: PathBuf,
 }
 
-fn update_target_from_installed(app: &crate::app::registry::InstalledApp) -> Option<UpdateTarget> {
+fn update_target_from_installed(app: &crate::app::registry::InstalledPlugin) -> Option<UpdateTarget> {
     match app.source {
         crate::app::registry::RegistrySource::Global
-        | crate::app::registry::RegistrySource::LocalApp => Some(UpdateTarget {
+        | crate::app::registry::RegistrySource::LocalPlugin => Some(UpdateTarget {
             id: app.manifest.id.clone(),
-            app_dir: app.app_dir.clone(),
+            plugin_dir: app.plugin_dir.clone(),
         }),
         crate::app::registry::RegistrySource::LocalAgent => None,
     }
@@ -388,11 +388,11 @@ pub(crate) fn resolve_update_targets(
     cwd: &Path,
     global_apps_dir: &Path,
 ) -> Result<Vec<UpdateTarget>, String> {
-    let registry = crate::app::registry::AppRegistry::load_with_global(cwd, global_apps_dir);
+    let registry = crate::app::registry::PluginRegistry::load_with_global(cwd, global_apps_dir);
     if let Some(id) = maybe_id {
         let app = registry
             .get(id)
-            .ok_or_else(|| format!("app '{id}' not installed — run `plexi app list`"))?;
+            .ok_or_else(|| format!("app '{id}' not installed — run `plexi plugin list`"))?;
         return update_target_from_installed(app)
             .map(|target| vec![target])
             .ok_or_else(|| format!("'{id}' is not an installed app"));
@@ -404,7 +404,7 @@ pub(crate) fn resolve_update_targets(
         .collect())
 }
 
-/// `plexi app update [<id>]` — git-pull one installed app, or all visible apps.
+/// `plexi plugin update [<id>]` — git-pull one installed app, or all visible apps.
 /// `plexi update apps [<id>]` is a compatibility alias for the same path.
 /// Apps that aren't git checkouts (e.g. bundled core entries) are skipped.
 pub fn update_cli(maybe_id: Option<&str>) -> i32 {
@@ -415,7 +415,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let global_apps_dir = crate::app::registry::apps_dir();
+    let global_apps_dir = crate::app::registry::plugins_dir();
     let cloner = crate::cli::install_host::GitCloner;
     let targets = match resolve_update_targets(maybe_id, &cwd, &global_apps_dir) {
         Ok(targets) => targets,
@@ -435,7 +435,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
     );
     let mut any_failed = false;
     for target in targets {
-        match crate::cli::install_host::update_app_dir(&cloner, &target.id, &target.app_dir) {
+        match crate::cli::install_host::update_plugin_dir(&cloner, &target.id, &target.plugin_dir) {
             Ok(()) => println!("  updated  {}", target.id),
             Err(e) if e.contains("not a git checkout") => {
                 println!("  skipped  {} (not a git checkout)", target.id);
@@ -458,17 +458,17 @@ mod update_tests {
     use super::*;
 
     fn write_app(apps_root: &Path, id: &str, name: &str) -> PathBuf {
-        let app_dir = apps_root.join(id);
-        std::fs::create_dir_all(&app_dir).unwrap();
+        let plugin_dir = apps_root.join(id);
+        std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(
-            app_dir.join("manifest.toml"),
+            plugin_dir.join("manifest.toml"),
             format!(
-                "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n"
+                "schema_version = 2\n\n[plugin]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[runtime]\nkind = \"python\"\nentry = \"run.sh\"\n\n[[contributes.views]]\nid = \"{id}.main\"\ndefault = true\n"
             ),
         )
         .unwrap();
-        std::fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
-        app_dir
+        std::fs::write(plugin_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        plugin_dir
     }
 
     #[test]
@@ -476,7 +476,7 @@ mod update_tests {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let workspace_apps = workspace.path().join(&channel_dir).join("apps");
+        let workspace_apps = workspace.path().join(&channel_dir).join("plugins");
         std::fs::create_dir_all(&workspace_apps).unwrap();
 
         write_app(global.path(), "tool", "Global Tool");
@@ -487,7 +487,7 @@ mod update_tests {
 
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id, "tool");
-        assert_eq!(targets[0].app_dir, local_dir);
+        assert_eq!(targets[0].plugin_dir, local_dir);
     }
 
     #[test]
@@ -495,7 +495,7 @@ mod update_tests {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
-        let workspace_apps = workspace.path().join(&channel_dir).join("apps");
+        let workspace_apps = workspace.path().join(&channel_dir).join("plugins");
         std::fs::create_dir_all(&workspace_apps).unwrap();
 
         let global_dir = write_app(global.path(), "global-tool", "Global Tool");
@@ -505,8 +505,8 @@ mod update_tests {
             .expect("all update targets should resolve");
 
         assert_eq!(targets.len(), 2);
-        assert!(targets.iter().any(|target| target.app_dir == global_dir));
-        assert!(targets.iter().any(|target| target.app_dir == local_dir));
+        assert!(targets.iter().any(|target| target.plugin_dir == global_dir));
+        assert!(targets.iter().any(|target| target.plugin_dir == local_dir));
     }
 }
 

@@ -6,9 +6,9 @@
 //! runtime equals `pane_height - visible_chrome_height`, regardless of which
 //! chrome bands are active.
 
-use crate::app::app_trait::AppRenderContext;
+use crate::app::app_trait::ViewRenderContext;
 use crate::protocol::PlexiEvent;
-use crate::host::pane::AppPane;
+use crate::host::pane::ViewPane;
 use crate::ui::theme::Colors;
 use crate::ui::{button, style};
 use egui::RichText;
@@ -31,7 +31,7 @@ pub(crate) fn chrome_height(has_overtake: bool, has_nav: bool) -> f32 {
 
 pub fn render(
     ui: &mut egui::Ui,
-    app_pane: &mut AppPane,
+    app_pane: &mut ViewPane,
     colors: &Colors,
     suppress_overtake: bool,
     pending_click: Option<crate::host::pane::PendingPaneClick>,
@@ -137,13 +137,13 @@ pub fn render(
     // ui.available_height() == pane_height - chrome_height(has_overtake, nav_title.is_some())
     // guaranteed by the allocate_exact_size calls above. Apps read ui.available_height() /
     // available_size() and always see the post-chrome budget with no guesswork.
-    let ctx = AppRenderContext {
+    let ctx = ViewRenderContext {
         colors,
         pane_id: app_pane.id,
     };
     let content_rect = ui.available_rect_before_wrap();
     app_pane.runtime.ui(ui, &ctx, pending_click);
-    if matches!(app_pane.runtime, crate::host::pane::AppRuntime::Builtin(_)) {
+    if matches!(app_pane.runtime, crate::host::pane::ViewRuntime::Builtin(_)) {
         if let Some(state) = ui.ctx().viewport(|viewport| {
             viewport
                 .this_pass

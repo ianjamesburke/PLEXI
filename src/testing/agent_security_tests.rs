@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::broker::gate::{ApprovalChoice, PermissionMonitor};
-use crate::protocol::AppRequest;
+use crate::protocol::HostRequest;
 use crate::testing::HostHarness;
 use crate::workspace::secrets::NonDestructiveStore;
 
@@ -32,7 +32,7 @@ fn write_workspace(root: &Path, workspace_id: &str, inject: &[&str]) {
 /// listener stamps a real peer.
 fn secret_get(h: &mut HostHarness, name: &str, root: &Path, ancestry: &[u32]) -> serde_json::Value {
     let reply = PathBuf::from(crate::rpc::response_file("secret-get-test", "json"));
-    let request = AppRequest::PaneSecretGet {
+    let request = HostRequest::PaneSecretGet {
         name: name.to_string(),
         global: false,
         workspace_root: Some(root.to_path_buf()),
@@ -191,7 +191,7 @@ fn spawn_second_terminal(h: &mut HostHarness, beside: u64) -> u64 {
 
 fn socket_request(
     h: &mut HostHarness,
-    req: &AppRequest,
+    req: &HostRequest,
     ancestry: &[u32],
     token: &Path,
 ) -> serde_json::Value {
@@ -214,7 +214,7 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
     let attacker_pid = h.terminal_backend(attacker).child_pid();
     let root = h.workspace_root();
 
-    let done = AppRequest::AgentDone {
+    let done = HostRequest::AgentDone {
         pane_id: victim,
         result: Some("{\"forged\":true}".into()),
         summary: Some("forged".into()),
@@ -229,7 +229,7 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
         "a refused agent done must not commit a result for the victim"
     );
 
-    let ask = AppRequest::AgentAsk {
+    let ask = HostRequest::AgentAsk {
         pane_id: victim,
         question: "forged question".into(),
         peer_ancestry: None,
@@ -243,7 +243,7 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
     );
 
     // The same peer acting as itself is accepted.
-    let own = AppRequest::AgentDone {
+    let own = HostRequest::AgentDone {
         pane_id: attacker,
         result: Some("{\"ok\":1}".into()),
         summary: Some("mine".into()),
@@ -255,7 +255,7 @@ fn agent_done_and_ask_from_one_pane_cannot_act_as_another_pane() {
     assert!(h.app.pane_results.get(&attacker).is_some_and(|r| r.committed.is_some()));
 
     // A caller outside every pane (the human at a plain terminal) keeps working.
-    let outside = AppRequest::AgentDone {
+    let outside = HostRequest::AgentDone {
         pane_id: victim,
         result: Some("{\"by\":\"human\"}".into()),
         summary: None,
@@ -272,7 +272,7 @@ fn set_agent_state_from_one_pane_cannot_change_another_pane() {
     let attacker = h.add_focused_terminal();
     let victim = spawn_second_terminal(&mut h, attacker);
     let attacker_pid = h.terminal_backend(attacker).child_pid();
-    let report = |pane_id| AppRequest::SetAgentState {
+    let report = |pane_id| HostRequest::SetAgentState {
         pane_id,
         state: crate::protocol::AgentState::Failed,
         agent: "claude-code".into(),
@@ -315,7 +315,7 @@ fn caller_context_is_answered_from_the_verified_peer() {
     let root = h.workspace_root();
     let ask = |h: &mut HostHarness, ancestry: &[u32], name: &str| {
         let token = root.join(name);
-        let req = AppRequest::CallerContext {
+        let req = HostRequest::CallerContext {
             peer_ancestry: None,
             response_file: token.to_string_lossy().into_owned(),
         };
@@ -358,7 +358,7 @@ fn agent_done_works_from_a_spawned_pane_without_a_manual_socket_export() {
     assert_eq!(env.get("PLEXI_PANE_ID"), Some(&pane.to_string()));
 
     let reply_path = root.join("spawned-done.json");
-    let done = AppRequest::AgentDone {
+    let done = HostRequest::AgentDone {
         pane_id: pane,
         result: Some("{\"answer\":42}".into()),
         summary: Some("done".into()),

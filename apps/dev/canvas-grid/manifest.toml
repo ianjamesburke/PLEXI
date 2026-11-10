@@ -1,18 +1,22 @@
-schema_version = 1
-
-[app]
-id = "canvas-grid"
-type = "app"
-name = "Canvas Grid"
-version = "0.1.0"
-description = "POC: canvas coordinate hit-testing — click a cell in a fit-scaled grid, logs and highlights the canvas-space cell (stint 0397)."
-entry = "canvas_grid.py"
-watch = true
-
-[app.capabilities]
-capabilities = []
+schema_version = 2
 
 [runtime]
 python_compat = true
+kind = "python"
+entry = "canvas_grid.py"
 
 [launch]
+
+[plugin]
+id = "canvas-grid"
+name = "Canvas Grid"
+version = "0.1.0"
+description = "POC: canvas coordinate hit-testing — click a cell in a fit-scaled grid, logs and highlights the canvas-space cell (stint 0397)."
+watch = true
+
+[plugin.capabilities]
+capabilities = []
+
+[[contributes.views]]
+id = "canvas-grid.main"
+default = true
