@@ -4,9 +4,7 @@ themes = ["plexi-dusk", "plexi-dawn"]
 [[steps]]
 open = { kind = "builtin", id = "agents", as = "agents" }
 [[steps]]
-seed_failed_agent = true
-[[steps]]
-key = { target = "host", value = "escape" }
+seed_agent_dashboard = true
 [[steps]]
 key = { target = "agents", value = "j" }
 [[steps]]

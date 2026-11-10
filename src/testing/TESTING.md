@@ -236,6 +236,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 | `focus = "<handle>"` | Focus an opened pane through the production pane-navigation path (`plexi pane focus` live). |
 | `close = "<handle>"` | Close an opened pane through the production pane lifecycle path (`plexi pane close` live). |
 | `seed_failed_agent = true` | Set the focused pane to a failed agent state and open its attention bar. Headless-only; live runs return `unsupported_live_verb`. |
+| `seed_agent_dashboard = true` | Seed a failed terminal agent on a background tab for the Agents dashboard. Headless-only; uses an isolated workspace and a disposable shell process. |
 | `seed_cli_operation_approval = true` | File a typed CLI operation approval built with the production `Disclosure` text and open the attention queue. Headless-only; live runs return `unsupported_live_verb`. |
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
