@@ -4394,7 +4394,7 @@ mod tests {
         let path = crate::config::workspace_config_path(&root);
         let first = std::fs::read_to_string(&path).unwrap();
         let after = crate::config::PlexiConfig::load_with_workspace(Some(&root));
-        assert_eq!(before.theme.unwrap().preset, after.theme.unwrap().preset);
+        assert_eq!(serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
         h.app
             .run_palette_command(PaletteCommand::OpenWorkspaceConfig);
         assert_eq!(first, std::fs::read_to_string(path).unwrap());
