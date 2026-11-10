@@ -51,6 +51,18 @@ mod workspace;
 
 fn main() -> eframe::Result {
     let raw_args: Vec<String> = std::env::args().collect();
+    // Resolve routing before profile/workspace setup or any pane defaults read
+    // inherited identity. This is still single-threaded process startup.
+    let dropped_identity = {
+        use clap::Parser;
+        let args = cli::args::normalize_config_scope_aliases(strip_profile_args(&raw_args));
+        match cli::args::Cli::try_parse_from(&args) {
+            Ok(parsed) if parsed.command.is_some() => {
+                cli::drop_foreign_channel_identity(parsed.socket.is_some())
+            }
+            _ => Vec::new(),
+        }
+    };
     #[cfg(unix)]
     if let Err(error) = configure_cli_sigpipe(&raw_args) {
         eprintln!("CLI SIGPIPE setup failed: {error}");
@@ -234,6 +246,9 @@ fn main() -> eframe::Result {
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = !is_host_startup(&raw_args);
     crate::platform::logging::init(log_level, retention_days, cli_mode);
+    if !dropped_identity.is_empty() {
+        log::info!("cli: dropped foreign channel identity variables {dropped_identity:?}");
+    }
     if !cli_mode {
         let enabled: Vec<&str> = crate::release::ReleaseFeature::ALL
             .iter()

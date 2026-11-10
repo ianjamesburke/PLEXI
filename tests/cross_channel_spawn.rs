@@ -5,8 +5,7 @@ use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-#[test]
-fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
+fn capture_app_open(cross_channel: bool) -> (serde_json::Value, std::path::PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
     let channel_dir = home.join(".plexi-pr-1195");
@@ -28,7 +27,14 @@ fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
         .args(["app", "open", "balls"])
         .current_dir(&cwd)
         .env("HOME", home)
-        .env("PLEXI_SOCKET", home.join(".plexi-beta/notify.sock"))
+        .env(
+            "PLEXI_SOCKET",
+            if cross_channel {
+                home.join(".plexi-beta/notify.sock")
+            } else {
+                socket
+            },
+        )
         .env("PLEXI_PANE_ID", "229")
         .env("PLEXI_CONTEXT_ID", "4")
         .env("PLEXI_RUNNING", "1")
@@ -71,9 +77,25 @@ fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    (request, cwd.canonicalize().unwrap())
+}
+
+#[test]
+fn cross_channel_app_open_drops_foreign_pane_and_sends_caller_cwd() {
+    let (request, cwd) = capture_app_open(true);
     assert!(
         request.get("from_pane_id").is_none(),
         "foreign identity leaked: {request}"
     );
     assert_eq!(request["cwd"], cwd.to_str().unwrap());
+}
+
+#[test]
+fn same_channel_app_open_preserves_pane_identity() {
+    let (request, _) = capture_app_open(false);
+    assert_eq!(request["from_pane_id"], 229);
+    assert!(
+        request.get("cwd").is_none(),
+        "pane cwd should remain host-resolved: {request}"
+    );
 }
