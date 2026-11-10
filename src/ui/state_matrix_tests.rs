@@ -245,6 +245,7 @@ fn assert_state_stable_impl(
 fn button_state_matrix() {
     let colors = crate::testing::HostHarness::new().app.colors;
     for specimen in crate::overlays::ui_gallery::kit_specimens() {
+        eprintln!("testing gallery specimen: {specimen:?}");
         if specimen.interactive() {
             assert_state_stable(|ui, state| {
                 specimen.show(

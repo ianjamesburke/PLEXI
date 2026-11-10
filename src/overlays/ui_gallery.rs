@@ -177,7 +177,7 @@ fn gallery_row(
     row.show(ui, colors).response()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum KitSpecimen {
     Button {
         kind: ButtonKind,
