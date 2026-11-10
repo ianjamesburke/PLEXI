@@ -12,3 +12,6 @@ logic-only.
 The `screenshot_tests` regression exercises the production paint predicate.
 Run from the workspace with `cargo test -p eframe --no-default-features
 --features wgpu,default_fonts screenshot_tests` through the repository Cargo lease.
+
+The vendored copy also updates renamed lints and obsolete lint expectations for
+the repository toolchain; eframe reuses its existing viewport callback alias.

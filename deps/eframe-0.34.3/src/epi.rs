@@ -1,3 +1,4 @@
+// Plexi modification: current-toolchain lint compatibility (see PLEXI-PATCH.md).
 //! Platform-agnostic interface for writing apps using [`egui`] (epi = egui programming interface).
 //!
 //! `epi` provides interfaces for window management and serialization.
@@ -597,7 +598,7 @@ impl Default for WebOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub enum WebGlContextOption {
-    /// Force Use WebGL1.
+    /// Force Use `WebGL1`.
     WebGl1,
 
     /// Force use WebGL2.
@@ -606,7 +607,7 @@ pub enum WebGlContextOption {
     /// Use WebGL2 first.
     BestFirst,
 
-    /// Use WebGL1 first
+    /// Use `WebGL1` first
     CompatibilityFirst,
 }
 
@@ -773,7 +774,6 @@ impl Frame {
     /// True if you are in a web environment.
     ///
     /// Equivalent to `cfg!(target_arch = "wasm32")`
-    #[expect(clippy::unused_self)]
     pub fn is_web(&self) -> bool {
         cfg!(target_arch = "wasm32")
     }

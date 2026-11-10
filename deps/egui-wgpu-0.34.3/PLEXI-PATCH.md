@@ -12,3 +12,6 @@ The original presentation method delegates with presentation enabled. Plexi's
 `screenshot_gpu_readback_without_compositor_drawable` regression checks real GPU
 readback without a surface, row padding, and freshness when reusing the capture
 texture. Live host validation remains a separate requirement.
+
+The vendored copy also updates renamed lints and obsolete lint expectations for
+the repository toolchain; eframe reuses its existing viewport callback alias.
