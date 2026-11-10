@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -60,6 +61,18 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('macos-arm64', result.stderr)
         self.assertFalse((self.root / 'gh.log').exists())
+
+    def test_signing_workflow_uses_packaged_channel_archive_names(self):
+        workflow = SCRIPT.parent.parent / '.github/workflows/distribution.yml'
+        match = re.search(r'--archive "(dist/plexi-.*?)" --expected-authority', workflow.read_text())
+        self.assertIsNotNone(match)
+        expression = match.group(1).replace('${{ matrix.platform }}', 'macos-arm64')
+        lines = re.findall(r'^\s+(archive_suffix=.*)$', workflow.read_text(), re.M)
+        self.assertEqual(len(lines), 2)
+        for channel, suffix in [('stable', ''), ('beta', '-beta'), ('alpha', '-alpha')]:
+            script = 'channel=$1; ' + '; '.join(lines) + '; printf "%s" "' + expression + '"'
+            actual = subprocess.check_output(['bash', '-c', script, '_', channel], text=True)
+            self.assertEqual(actual, f'dist/plexi-macos-arm64{suffix}.tar.gz')
 
     def test_alpha_requires_only_alpha_mac_assets(self):
         self.assets('macos-arm64', ['-alpha'])

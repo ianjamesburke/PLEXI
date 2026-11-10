@@ -120,7 +120,9 @@ jobs:
             command=(uv run --no-project python scripts/test-package.py --package "dist/package-${{ matrix.platform }}-$channel" --output "evidence/$channel" --gui)
             if [[ '${{ runner.os }}' == Linux ]]; then xvfb-run -a "${command[@]}"; else "${command[@]}"; fi
             if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' != '' ]]; then
-              uv run --no-project python scripts/test-macos-signing.py --archive "dist/plexi-${{ matrix.platform }}${channel:+-$channel}.tar.gz" --expected-authority 'Plexi Dev' --expected-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1"
+              archive_suffix="${channel/#stable/}"
+              archive_suffix="${archive_suffix:+-$archive_suffix}"
+              uv run --no-project python scripts/test-macos-signing.py --archive "dist/plexi-${{ matrix.platform }}${archive_suffix}.tar.gz" --expected-authority 'Plexi Dev' --expected-certificate-sha1 "$PLEXI_SIGNING_CERT_SHA1"
             fi
           done
           if [[ '${{ runner.os }}' == macOS && '${{ inputs.tag }}' == *-alpha.* ]]; then
