@@ -2,9 +2,9 @@
 //! recorded root pid is also its process-group id. The host marker follows
 //! children across nohup, setsid and reparenting; it is never inherited by a
 //! host launched through `plexi host start`.
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use std::path::Path;
 #[cfg(unix)]
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -37,7 +37,10 @@ const ROOTS_RECORD: &str = "pane-roots";
 /// selecting another host's panes.
 pub(crate) fn record_session_marker(profile: &Path) {
     let path = profile.join(SESSION_RECORD);
-    if let Err(error) = std::fs::write(&path, format!("{}\n{}\n", std::process::id(), session_marker())) {
+    if let Err(error) = std::fs::write(
+        &path,
+        format!("{}\n{}\n", std::process::id(), session_marker()),
+    ) {
         log::warn!("quit: could not record pane session marker at {path:?}: {error}");
     }
     #[cfg(unix)]
@@ -240,6 +243,7 @@ pub(crate) struct KillReport {
     pub signal: Duration,
     pub grace_waited: Duration,
     pub kill: Duration,
+    pub remaining: usize,
 }
 
 /// `default_grace` is the caller's budget between HUP/TERM and SIGKILL;
@@ -276,14 +280,15 @@ fn stop_pane_processes_with_tmux(marker: &str, default_grace: Duration, tmux: &s
     stop_marked_tmux_sessions(tmux, marker, deadline);
     report.tmux = tmux_start.elapsed();
     crate::app::quit::trace("tmux_end");
-    KillReport {
-        grace,
-        ..report
-    }
+    KillReport { grace, ..report }
 }
 
 // Shutdown helpers must not let an unresponsive tmux server stall host exit.
-fn quit_helper(program: &str, args: &[&str], deadline: Instant) -> std::io::Result<std::process::Output> {
+fn quit_helper(
+    program: &str,
+    args: &[&str],
+    deadline: Instant,
+) -> std::io::Result<std::process::Output> {
     if Instant::now() >= deadline {
         return Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -332,7 +337,8 @@ fn stop_marked_tmux_sessions(tmux: &str, marker: &str, deadline: Instant) {
             break;
         }
         let env = match quit_helper(
-            tmux, &["show-environment", "-t", session, SESSION_ENV],
+            tmux,
+            &["show-environment", "-t", session, SESSION_ENV],
             deadline,
         ) {
             Ok(output) => output,
@@ -371,7 +377,9 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::new().with_environ(UpdateKind::Always).with_exe(UpdateKind::Always),
+        ProcessRefreshKind::new()
+            .with_environ(UpdateKind::Always)
+            .with_exe(UpdateKind::Always),
     );
     let own_pid = std::process::id();
     let own_group = unsafe { libc::getpgrp() };
@@ -465,7 +473,11 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     // but exit (saving history) on HUP. TERM follows for daemons that only
     // honor TERM.
     for sig in [libc::SIGHUP, libc::SIGTERM] {
-        crate::app::quit::trace(if sig == libc::SIGHUP { "children_hup" } else { "children_term" });
+        crate::app::quit::trace(if sig == libc::SIGHUP {
+            "children_hup"
+        } else {
+            "children_term"
+        });
         for group in &groups {
             signal(-*group, sig);
         }
@@ -485,30 +497,7 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         .map(|pid| sysinfo::Pid::from_u32(*pid))
         .collect();
     let survivors = loop {
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&tracked),
-            true,
-            ProcessRefreshKind::new(),
-        );
-        let live: Vec<u32> = identities
-            .iter()
-            .filter_map(|(pid, start)| {
-                let mut status = 0;
-                // A pane root is normally our child. Reap it when it exits:
-                // macOS can otherwise retain an unreaped zombie in sysinfo's
-                // process table for the entire quit grace period.
-                if unsafe { libc::waitpid(*pid as i32, &mut status, libc::WNOHANG) } == *pid as i32
-                {
-                    return None;
-                }
-                system
-                    .process(sysinfo::Pid::from_u32(*pid))
-                    .filter(|p| {
-                        p.start_time() == *start && p.status() != sysinfo::ProcessStatus::Zombie
-                    })
-                    .map(|_| *pid)
-            })
-            .collect();
+        let live = refresh_owned_alive(&mut system, &tracked, &identities);
         if live.is_empty() || Instant::now() >= deadline {
             break live;
         }
@@ -517,12 +506,17 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     let waited = Instant::now();
     crate::app::quit::trace("children_grace_end");
     let mut escalated = BTreeSet::new();
-    for pid in survivors {
+    for pid in &survivors {
+        let pid = *pid;
         let group = unsafe { libc::getpgid(pid as i32) };
         // Only executable identity; never argv or environment (which can hold secrets).
-        let executable = system.process(sysinfo::Pid::from_u32(pid))
-            .and_then(|process| process.exe()).map(|path| path.as_os_str().to_string_lossy().into_owned());
-        log::info!("quit_survivor: pid={pid} pgid={group} executable={executable:?} signal=SIGKILL");
+        let executable = system
+            .process(sysinfo::Pid::from_u32(pid))
+            .and_then(|process| process.exe())
+            .map(|path| path.as_os_str().to_string_lossy().into_owned());
+        log::info!(
+            "quit_survivor: pid={pid} pgid={group} executable={executable:?} signal=SIGKILL"
+        );
         if groups.contains(&group) {
             escalated.insert(group);
         }
@@ -532,6 +526,19 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
     for group in &escalated {
         signal(-*group, libc::SIGKILL);
     }
+    // SIGKILL delivery is not process death. Observe/reap owned identities
+    // before reporting cleanup complete, bounded independently of the grace.
+    let reap_deadline = Instant::now() + Duration::from_millis(250);
+    let remaining = loop {
+        let live = refresh_owned_alive(&mut system, &tracked, &identities);
+        if live.is_empty() || Instant::now() >= reap_deadline {
+            break live;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    if !remaining.is_empty() {
+        log::error!("quit: owned processes remain after SIGKILL pids={remaining:?}");
+    }
     crate::app::quit::trace("children_kill_end");
     KillReport {
         groups: groups.len(),
@@ -540,8 +547,38 @@ fn stop_marked_processes(marker: &str, grace: Duration, total_deadline: Instant)
         signal: signaled - scanned,
         grace_waited: waited - signaled,
         kill: waited.elapsed(),
+        remaining: remaining.len(),
         ..KillReport::default()
     }
+}
+
+#[cfg(unix)]
+fn refresh_owned_alive(
+    system: &mut sysinfo::System,
+    tracked: &[sysinfo::Pid],
+    identities: &BTreeMap<u32, u64>,
+) -> Vec<u32> {
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(tracked),
+        true,
+        sysinfo::ProcessRefreshKind::new(),
+    );
+    identities
+        .iter()
+        .filter_map(|(pid, started)| {
+            let mut status = 0;
+            // Reap our own roots; a zombie descendant has already stopped running.
+            if unsafe { libc::waitpid(*pid as i32, &mut status, libc::WNOHANG) } == *pid as i32 {
+                return None;
+            }
+            system
+                .process(sysinfo::Pid::from_u32(*pid))
+                .filter(|p| {
+                    p.start_time() == *started && p.status() != sysinfo::ProcessStatus::Zombie
+                })
+                .map(|_| *pid)
+        })
+        .collect()
 }
 
 #[cfg(not(unix))]
@@ -570,7 +607,7 @@ mod tests {
         let error =
             quit_helper("/bin/sleep", &["600"], start + Duration::from_millis(30)).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < crate::testing::load_aware_timeout(Duration::from_secs(1)));
     }
 
     #[test]
@@ -603,9 +640,13 @@ mod tests {
         }
         let mut child = FixtureChild(command.spawn().unwrap());
         // Signals sent before the shell installs its trap would just kill it.
-        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        let ready_deadline =
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         while !ready.exists() {
-            assert!(Instant::now() < ready_deadline, "fixture never became ready");
+            assert!(
+                Instant::now() < ready_deadline,
+                "fixture never became ready"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         let registration = PaneProcessGroup::record_for(child.0.id(), &marker);
@@ -616,11 +657,11 @@ mod tests {
             tmux.to_str().unwrap(),
         );
         assert!(
-            start.elapsed() < Duration::from_millis(450),
+            start.elapsed() < crate::testing::load_aware_timeout(Duration::from_millis(450)),
             "cleanup exceeded its 280ms cap"
         );
         assert!(
-            report.tmux < Duration::from_millis(300),
+            report.tmux < crate::testing::load_aware_timeout(Duration::from_millis(300)),
             "tmux exceeded remaining budget: {:?}",
             report.tmux
         );
@@ -660,19 +701,29 @@ mod tests {
         let other_marker = uuid::Uuid::new_v4().to_string();
         let spawn = |marker: &str| {
             let mut command = std::process::Command::new("/bin/sh");
-            command.args(["-c", "trap '' HUP; trap 'exit 0' TERM; echo ready; while :; do :; done"])
+            command
+                .args([
+                    "-c",
+                    "trap '' HUP; trap 'exit 0' TERM; echo ready; while :; do :; done",
+                ])
                 .env(SESSION_ENV, marker)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null());
             unsafe {
                 command.pre_exec(|| {
-                    if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+                    if libc::setsid() < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
                 });
             }
             let mut child = FixtureChild(command.spawn().unwrap());
             let mut ready = String::new();
-            std::io::BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+            std::io::BufReader::new(child.0.stdout.take().unwrap())
+                .read_line(&mut ready)
+                .unwrap();
             assert_eq!(ready.trim(), "ready");
             child
         };
@@ -683,12 +734,18 @@ mod tests {
         let budget = crate::testing::load_aware_timeout(Duration::from_secs(2));
         let report = stop_marked_processes(&marker, budget, Instant::now() + budget);
         assert_eq!(report.groups, 1);
-        assert_eq!(report.escalated, 0, "TERM-cooperative child must not need KILL");
+        assert_eq!(
+            report.escalated, 0,
+            "TERM-cooperative child must not need KILL"
+        );
         match owned.0.wait() {
             Ok(status) => assert!(status.success()),
             Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ECHILD)),
         }
-        assert!(unrelated.0.try_wait().unwrap().is_none(), "another host owns this group");
+        assert!(
+            unrelated.0.try_wait().unwrap().is_none(),
+            "another host owns this group"
+        );
     }
 
     #[test]
@@ -806,7 +863,7 @@ mod tests {
         // The expansion only appears once zsh has read and run the line, so
         // its signal dispositions are installed.
         master.write_all(b"echo READY_$((40+2))\n").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         let mut output = Vec::new();
         while !String::from_utf8_lossy(&output).contains("READY_42") {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -826,14 +883,14 @@ mod tests {
         let report = stop_marked_processes(
             &marker,
             Duration::from_secs(5),
-            Instant::now() + Duration::from_secs(5),
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5)),
         );
         let elapsed = start.elapsed();
         drop(registration);
         assert_eq!(report.groups, 1);
         assert_eq!(report.escalated, 0, "zsh -i needed SIGKILL");
         assert!(
-            elapsed < Duration::from_secs(2),
+            elapsed < crate::testing::load_aware_timeout(Duration::from_secs(2)),
             "teardown took {elapsed:?}"
         );
         match child.0.wait() {
@@ -852,10 +909,7 @@ mod tests {
             let evidence = std::path::PathBuf::from(
                 std::env::var(EVIDENCE_ENV).expect("fixture evidence path"),
             );
-            let env = crate::cli::host::restart_coordinator_env(
-                std::env::vars().collect(),
-                None,
-            );
+            let env = crate::cli::host::restart_coordinator_env(std::env::vars().collect(), None);
             let mut command = std::process::Command::new("/bin/sleep");
             command
                 .arg("600")
@@ -902,14 +956,17 @@ mod tests {
         let mut parent = parent.spawn().expect("spawn marked parent fixture");
         let parent_pid = parent.id() as i32;
         let _registration = PaneProcessGroup::record_for(parent.id(), &old_marker);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(5));
         let coordinator = loop {
             if let Ok(pid) = std::fs::read_to_string(evidence.path()) {
                 if let Ok(pid) = pid.trim().parse::<u32>() {
                     break pid;
                 }
             }
-            assert!(Instant::now() < deadline, "coordinator fixture did not start");
+            assert!(
+                Instant::now() < deadline,
+                "coordinator fixture did not start"
+            );
             std::thread::sleep(Duration::from_millis(10));
         };
         let report = stop_marked_processes(
@@ -917,7 +974,10 @@ mod tests {
             Duration::from_millis(20),
             Instant::now() + Duration::from_secs(1),
         );
-        assert!(report.groups >= 1, "marked parent was not selected: {report:?}");
+        assert!(
+            report.groups >= 1,
+            "marked parent was not selected: {report:?}"
+        );
         match parent.wait() {
             Ok(status) => assert!(!status.success()),
             // The parallel test binary can reap a fixture that its marker
@@ -925,15 +985,15 @@ mod tests {
             Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {}
             Err(error) => panic!("reap marked parent: {error}"),
         }
-        let parent_deadline = Instant::now() + Duration::from_secs(2);
+        let parent_deadline =
+            Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(2));
         while unsafe { libc::kill(parent_pid, 0) } == 0 && Instant::now() < parent_deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
         let parent_result = unsafe { libc::kill(parent_pid, 0) };
         let parent_error = std::io::Error::last_os_error();
         assert_eq!(
-            parent_result,
-            -1,
+            parent_result, -1,
             "marked parent pid {parent_pid} remained after marker sweep"
         );
         assert_eq!(
@@ -995,7 +1055,8 @@ wait
                     .panes
                     .insert(id, crate::host::pane::Pane::Terminal(Box::new(terminal)));
             }
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now()
+                + crate::testing::load_aware_timeout(Duration::from_secs(10));
             while !(evidence.join("escaped-0").exists() && evidence.join("escaped-1").exists()) {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -1003,24 +1064,42 @@ wait
                 );
                 std::thread::sleep(Duration::from_millis(10));
             }
+            let profile = h.profile_dir().to_path_buf();
             if mode == "host-stop" {
                 h.inject_ipc(crate::protocol::AppRequest::Shutdown);
-                h.hidden_frame();
+                h.run_hidden_frames(3);
                 panic!("host stop returned instead of exiting");
+            } else if mode == "update" {
+                h.app
+                    .request_quit(crate::app::quit::ExitReason::UpdateRestart);
+                for _ in 0..3 {
+                    h.app
+                        .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
+                            assert!(crate::workspace::WorkspaceFile::load_from(&profile).is_some());
+                            assert!(!evidence.join("restart-scheduled").exists());
+                            std::fs::write(
+                                evidence.join("restart-scheduled"),
+                                "scheduled after save",
+                            )
+                            .unwrap();
+                            Ok(())
+                        });
+                }
+                panic!("update returned instead of exiting");
             } else {
                 assert!(h.app.prepare_user_quit());
-                // Eframe's real window-close callback. The harness does not
-                // destroy an OS window, so invoke that final callback directly.
-                eframe::App::on_exit(&mut h.app);
+                h.app
+                    .request_quit(crate::app::quit::ExitReason::WindowClosed);
+                h.run_hidden_frames(3);
                 panic!("window close returned instead of exiting");
             }
         }
-        for mode in ["window", "host-stop"] {
+        for mode in ["window", "host-stop", "update"] {
             let evidence = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--ignored",
-                "--exact",
+                    "--exact",
                     "host::process_cleanup::tests::host_exit_paths_reap_pane_processes",
                     "--nocapture",
                 ])
@@ -1029,6 +1108,13 @@ wait
                 .env("PLEXI_QUIT_GRACE_MS", "30")
                 .output()
                 .expect("run isolated host shutdown");
+            if mode == "update" {
+                assert!(evidence.path().join("restart-scheduled").exists());
+            }
+            eprintln!(
+                "quit fixture mode={mode}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             let mut alive = Vec::new();
             for kind in ["root", "nohup", "escaped"] {
                 for index in 0..2 {
@@ -1038,7 +1124,8 @@ wait
                             .trim()
                             .parse()
                             .unwrap();
-                    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                    let deadline = std::time::Instant::now()
+                        + crate::testing::load_aware_timeout(Duration::from_secs(2));
                     while unsafe { libc::kill(pid, 0) } == 0 && std::time::Instant::now() < deadline
                     {
                         std::thread::sleep(Duration::from_millis(20));
