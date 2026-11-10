@@ -18,7 +18,7 @@
     "skills": [],
     "supportedInterfaces": [],
     "tier": "built-in",
-    "version": "0.4.0"
+    "version": "<VERSION>"
   },
   {
     "capabilities": {},
@@ -39,7 +39,7 @@
     "skills": [],
     "supportedInterfaces": [],
     "tier": "global",
-    "version": "0.4.0"
+    "version": "<VERSION>"
   },
   {
     "capabilities": {},
@@ -60,6 +60,6 @@
     "skills": [],
     "supportedInterfaces": [],
     "tier": "workspace",
-    "version": "0.4.0"
+    "version": "<VERSION>"
   }
 ]

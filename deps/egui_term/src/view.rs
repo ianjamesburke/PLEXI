@@ -95,6 +95,7 @@ pub struct TerminalViewState {
     current_mouse_position_on_grid: TerminalGridPoint,
     last_cursor_toggle: Instant,
     cursor_visible: bool,
+    cursor_blink_enabled: bool,
     copy_mode: Option<CopyModeState>,
     search_mode: Option<SearchModeState>,
     keyboard: crate::keyboard::KeyboardEncoder,
@@ -112,11 +113,21 @@ impl Default for TerminalViewState {
             current_mouse_position_on_grid: TerminalGridPoint::default(),
             last_cursor_toggle: Instant::now(),
             cursor_visible: true,
+            cursor_blink_enabled: true,
             copy_mode: None,
             search_mode: None,
             keyboard: crate::keyboard::KeyboardEncoder::default(),
             frozen_selection_range: None,
         }
+    }
+}
+
+impl TerminalViewState {
+    /// Control cursor blinking for deterministic rendering; disabling it shows the cursor.
+    pub fn set_cursor_blink_enabled(&mut self, enabled: bool) {
+        self.cursor_blink_enabled = enabled;
+        self.cursor_visible = true;
+        self.last_cursor_toggle = Instant::now();
     }
 }
 
@@ -808,7 +819,7 @@ impl<'a> TerminalView<'a> {
                     // Focused: blink the cursor
                     let blink_interval = Duration::from_millis(530);
                     let elapsed = state.last_cursor_toggle.elapsed();
-                    if elapsed >= blink_interval {
+                    if state.cursor_blink_enabled && elapsed >= blink_interval {
                         state.cursor_visible = !state.cursor_visible;
                         state.last_cursor_toggle = Instant::now();
                         // Note only when the toggle actually fires — noting
@@ -854,9 +865,11 @@ impl<'a> TerminalView<'a> {
                             CursorShape::Hidden => {},
                         }
                     }
-                    let remaining = blink_interval
-                        .saturating_sub(state.last_cursor_toggle.elapsed());
-                    painter.ctx().request_repaint_after(remaining);
+                    if state.cursor_blink_enabled {
+                        let remaining = blink_interval
+                            .saturating_sub(state.last_cursor_toggle.elapsed());
+                        painter.ctx().request_repaint_after(remaining);
+                    }
                 } else {
                     // Unfocused: hollow outline, no blink
                     foreground.push(Shape::Rect(RectShape::stroke(

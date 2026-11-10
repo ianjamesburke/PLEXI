@@ -4975,27 +4975,47 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
         let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
         loop {
             h.run_steps(2);
-            let ready = h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&id)
-                .and_then(|pane| pane.as_terminal_mut()).expect("fixture terminal")
-                .backend.capture_lines(50).iter().any(|line| line.contains("CLOCK_READY")));
-            if ready { h.run_steps(2); break; }
-            assert!(Instant::now() < deadline, "clock fixture timed out");
+            let ready = h.with_app_mut(|app| {
+                let backend = &mut app.windows[app.active_window].panes.get_mut(&id)
+                    .and_then(|pane| pane.as_terminal_mut()).expect("fixture terminal").backend;
+                let content = backend.last_content();
+                content.cursor_visible && content.grid.cursor.point.line.0 == 0
+                    && content.grid.cursor.point.column.0 == 2
+                    && backend.capture_lines(50).iter().any(|line| line.contains("CLOCK_READY"))
+            });
+            if ready { break; }
+            assert!(Instant::now() < deadline, "clock fixture cursor not ready");
             std::thread::sleep(Duration::from_millis(20));
         }
+        let widget_id = egui_term::terminal_widget_id(id);
+        h.harness().ctx.data_mut(|data| {
+            let mut state = data.get_temp::<egui_term::TerminalViewState>(widget_id).unwrap_or_default();
+            state.set_cursor_blink_enabled(false);
+            data.insert_temp(widget_id, state);
+        });
+        h.step();
+        let rect = h.harness().ctx.read_response(widget_id).expect("terminal widget").rect;
+        let size = h.with_app_mut(|app| app.windows[app.active_window].panes.get_mut(&id)
+            .and_then(|pane| pane.as_terminal_mut()).expect("fixture terminal")
+            .backend.last_content().terminal_size);
+        let scale = 2.0;
+        let x = ((rect.min.x + 2.0 + 2.0 * size.cell_width as f32) * scale).round() as u32;
+        let y = (rect.min.y * scale).round() as u32;
+        let width = (size.cell_width as f32 * scale).round() as u32;
+        let height = (size.cell_height as f32 * scale).round() as u32;
         let image = h.render().expect("render clock fixture");
         image.save(&evidence_png!()).expect("save clock screenshot");
-        // Fixed viewport coordinates: verify the dark cursor block is visible
-        // and contains an amber glyph before checking the blue cell to its right.
-        assert_eq!(image.get_pixel(55, 184).0[..3], [26, 29, 40], "cursor must be visible");
-        let glyph = (189..224).flat_map(|y| (56..72).map(move |x| (x, y)))
-            .filter(|&(x, y)| {
-                let [r, g, b, _] = image.get_pixel(x, y).0;
+        // Check the cursor block and inverted glyph, then the neighboring blue cell.
+        assert_eq!(image.get_pixel(x + 3, y + 2).0[..3], [26, 29, 40], "cursor must be visible");
+        let glyph = (y..y + height).flat_map(|py| (x..x + width).map(move |px| (px, py)))
+            .filter(|&(px, py)| {
+                let [r, g, b, _] = image.get_pixel(px, py).0;
                 r > 160 && g > 100 && b < 150
             }).count();
         assert!(glyph > 30, "visible cursor must contain the inverted clock glyph");
-        let spill = (189..224).flat_map(|y| (78..85).map(move |x| (x, y)))
-            .filter(|&(x, y)| {
-                let [r, g, b, _] = image.get_pixel(x, y).0;
+        let spill = (y..y + height).flat_map(|py| (x + width..x + 2 * width).map(move |px| (px, py)))
+            .filter(|&(px, py)| {
+                let [r, g, b, _] = image.get_pixel(px, py).0;
                 r > 160 && g > 100 && b < 150
             }).count();
         assert_eq!(spill, 0, "inverted clock glyph spilled into the next cell");
