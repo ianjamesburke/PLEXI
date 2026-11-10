@@ -186,6 +186,13 @@ impl PlexiApp {
         );
         let radius = crate::ui::style::pane_radius(self.config.pane_corner_radius, left);
         crate::ui::style::mask_pane_corners(ui.painter(), left, radius, self.colors.bg_darkest);
+        if let Some(color) = self.windows[window]
+            .panes
+            .get(&parent)
+            .and_then(|pane| crate::ui::activity::pane_state_color(pane, &self.colors))
+        {
+            crate::ui::style::paint_pane_state_ring(ui.painter(), left, radius, focused, color);
+        }
         if focused {
             ui.painter().rect_stroke(
                 left,

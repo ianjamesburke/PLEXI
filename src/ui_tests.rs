@@ -6571,6 +6571,169 @@ open(out + ".done", "w").close()
         println!("Screenshot saved to {}", evidence_png!());
     }
 
+    fn pane_chrome_fixture(scale: f32) -> (PlexiUiHarness, u64, u64) {
+        let mut h = PlexiUiHarness::new_sized_scaled(1200.0, 700.0, scale);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let second = add_focused_pane(&mut h);
+        let root = h.workspace_root().to_path_buf();
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let term = crate::host::pane::TerminalPane::new(first, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings { shell: "/bin/sh".into(), working_directory: Some(root), ..Default::default() }, 14.0).unwrap();
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(first, Pane::Terminal(Box::new(term)));
+            let a = win.tree.tiles.find_pane(&first).unwrap();
+            let b = win.tree.tiles.find_pane(&second).unwrap();
+            win.tree.root = Some(win.tree.tiles.insert_horizontal_tile(vec![a, b]));
+        });
+        (h, first, second)
+    }
+
+    #[test]
+    fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
+        use crate::protocol::AgentState;
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        for state in [AgentState::Working, AgentState::Idle, AgentState::Blocked, AgentState::NeedsYou, AgentState::Interrupted, AgentState::Failed, AgentState::Completed] {
+            for focused in [false, true] {
+                h.with_app_mut(|app| {
+                    app.windows[app.active_window].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: state.clone(), agent: "fixture".into(), detail: None, session_id: None }));
+                });
+                h.focus_pane(if focused { pane } else { other }).unwrap();
+                h.run_steps(3);
+                let (rect, color, accent) = h.with_app(|app| (app.visible_pane_rect(pane).unwrap(), crate::ui::activity::dot_color_from_time(&state, &app.colors, 0.0, 0), app.colors.accent));
+                let shapes = &h.harness().output().shapes;
+                let ring = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(r) if r.stroke.color == egui::epaint::ColorMode::Solid(color) && r.points.iter().all(|p| rect.contains(*p)) => Some(r), _ => None }).next().unwrap_or_else(|| panic!("state-color ring must be painted: {state:?}, focused={focused}, paths={:?}", shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(p) if p.closed && p.points.len() == 36 => Some((&p.stroke.color, egui::Rect::from_points(&p.points))), _ => None }).collect::<Vec<_>>()));
+                assert!(ring.stroke.width > 0.0);
+                if focused {
+                    let focus = shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => Some(r), _ => None }).next().expect("focus ring");
+                    let left = ring.points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - ring.stroke.width / 2.0;
+                    assert!(left + 0.001 >= focus.rect.left() + focus.stroke.width, "focus and state strokes overlap");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pane_chrome_selected_app_keeps_its_state_ring() {
+        let (mut h, terminal, app_pane) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            app.windows[app.active_window].panes.get_mut(&app_pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: app_pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
+            }));
+            let window = app.windows[app.active_window].window_id;
+            app.host.extend_pane_selection(window, terminal, app_pane);
+        });
+        h.focus_pane(terminal).unwrap();
+        h.run_steps(3);
+        let (rect, color) = h.with_app(|app| (app.visible_pane_rect(app_pane).unwrap(), app.colors.state_blocked));
+        let ring = h.harness().output().shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Path(p) if p.stroke.color == egui::epaint::ColorMode::Solid(color) && p.points.iter().all(|point| rect.contains(*point)) => Some(p),
+            _ => None,
+        }).next().expect("selected app retains its state ring");
+        let left = ring.points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min) - ring.stroke.width / 2.0;
+        assert!((left - rect.left() - crate::ui::style::PANE_FOCUS_WIDTH).abs() < 0.01);
+    }
+
+    #[test]
+    fn pane_chrome_app_tabs_use_responsive_state_header() {
+        let mut h = PlexiUiHarness::new_sized(500.0, 300.0);
+        h.step();
+        let first = add_focused_pane(&mut h);
+        let second = add_focused_pane(&mut h);
+        h.with_app_mut(|app| {
+            app.sidebar_visible = false;
+            let win = &mut app.windows[app.active_window];
+            win.panes.get_mut(&first).unwrap().set_agent(Some(crate::protocol::PaneAgentState {
+                pane_id: first, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None,
+            }));
+            let a = win.tree.tiles.find_pane(&first).unwrap();
+            let b = win.tree.tiles.find_pane(&second).unwrap();
+            win.tree.root = Some(win.tree.tiles.insert_tab_tile(vec![a, b]));
+            win.focused_pane = Some(a);
+        });
+        h.run_steps(3);
+        let (layout, fill) = h.with_app(|app| {
+            let color = app.colors.status_badge_color(app.colors.state_blocked);
+            (crate::render::terminal_pane::last_rendered_tab_bar_layout(&app.ctx, first).expect("app tab header uses shared layout"),
+             egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 36))
+        });
+        let badge = h.harness().output().shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None,
+        }).expect("wide app tab header shows state chip");
+        if let Some(title) = layout.label_rect { assert!(!title.intersects(badge), "app tab title must not overlap its state chip"); }
+    }
+
+    #[test]
+    fn pane_chrome_rings_are_concentric_at_both_scales() {
+        for scale in [1.0, 2.0] {
+            let (mut h, pane, _) = pane_chrome_fixture(scale);
+            h.with_app_mut(|app| { app.windows[app.active_window].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Blocked, agent: "fixture".into(), detail: None, session_id: None })); });
+            h.focus_pane(pane).unwrap();
+            h.run_steps(3);
+            let (rect, color, accent) = h.with_app(|app| (app.visible_pane_rect(pane).unwrap(), app.colors.state_blocked, app.colors.accent));
+            let radius = crate::ui::style::pane_radius(None, rect).nw as f32;
+            let focus = h.harness().output().shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Rect(r) if r.stroke.color == accent && r.rect == rect => Some(r), _ => None }).next().expect("focus ring");
+            assert_eq!(focus.corner_radius.nw as f32, radius);
+            let ring = h.harness().output().shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Path(r) if r.stroke.color == egui::epaint::ColorMode::Solid(color) && r.points.iter().all(|p| rect.contains(*p)) => Some(r), _ => None }).next().expect("state ring");
+            assert!((ring.points[0].x - (rect.right() - radius)).abs() < 0.01);
+            assert!((ring.points[8].y - (rect.top() + radius)).abs() < 0.01, "ring curves must share the tile corner center");
+        }
+    }
+
+    #[test]
+    fn screenshot_pane_chrome_state_matrix() {
+        use crate::protocol::AgentState;
+        let states = [
+            ("working", AgentState::Working), ("idle", AgentState::Idle),
+            ("blocked", AgentState::Blocked), ("needs_you", AgentState::NeedsYou),
+            ("interrupted", AgentState::Interrupted), ("failed", AgentState::Failed),
+            ("completed", AgentState::Completed),
+        ];
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            for wide in [false, true] {
+                let mut h = PlexiUiHarness::new_sized(1400.0, 800.0);
+                h.step();
+                std::fs::write(crate::config::config_path(), format!("[theme]\npreset = \"{theme}\"\n")).unwrap();
+                h.with_app_mut(|app| { app.reload_config(); app.sidebar_visible = false; });
+                h.run_steps(3);
+                h.with_app(|app| {
+                    let expected = crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
+                    assert_eq!(app.colors.bg_darkest, expected.bg_darkest, "fixture must render the requested theme");
+                });
+                let root = h.workspace_root().to_path_buf();
+                let mut ids = Vec::new();
+                for (name, state) in &states {
+                    let id = add_focused_pane(&mut h);
+                    ids.push(id);
+                    h.with_app_mut(|app| {
+                        let mut term = crate::host::pane::TerminalPane::new(id, app.ctx.clone(), app.pty_event_tx.clone(),
+                            egui_term::BackendSettings { shell: "/bin/sh".into(), args: vec!["-c".into(), "printf 'Agent task\\nReviewing changes and tests.\\n'; sleep 300".into()], working_directory: Some(root.clone()), ..Default::default() }, 14.0).unwrap();
+                        term.name = Some(format!("{name}: review implementation"));
+                        term.outside_workspace_cached = false;
+                        term.outside_workspace_checked_at = Some(Instant::now());
+                        term.outside_workspace_root = Some(root.clone());
+                        term.agent = Some(crate::protocol::PaneAgentState { pane_id: id, state: state.clone(), agent: "codex".into(), detail: None, session_id: None });
+                        app.windows[app.active_window].panes.insert(id, Pane::Terminal(Box::new(term)));
+                    });
+                }
+                h.with_app_mut(|app| {
+                    app.sidebar_visible = false;
+                    let win = &mut app.windows[app.active_window];
+                    let tiles: Vec<_> = ids.iter().map(|id| win.tree.tiles.find_pane(id).unwrap()).collect();
+                    win.tree.root = Some(if wide { win.tree.tiles.insert_grid_tile(tiles) } else { win.tree.tiles.insert_horizontal_tile(tiles) });
+                });
+                for (index, (name, _)) in states.iter().enumerate() {
+                    h.focus_pane(ids[index]).unwrap();
+                    h.run_steps(3);
+                    let path = evidence_png!(&format!("_{theme}_{}_{name}", if wide { "wide" } else { "narrow" }));
+                    h.save_screenshot(&path).unwrap();
+                    println!("screenshot: {path}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn screenshot_state_presets_and_attention_styles() {
         use crate::protocol::AgentState;

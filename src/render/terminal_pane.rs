@@ -105,8 +105,6 @@ pub fn render(
         })
         .or_else(|| tab_activities.get(pane_id).map(|(state, _)| state.clone()));
     let needs_you = matches!(pane_agent_state, Some(AgentState::NeedsYou));
-    let border_escalation_color =
-        crate::ui::activity::escalation_color(pane_agent_state.as_ref(), is_error, colors);
     let spawned_by_badge = terminal.spawned_by_badge();
     let waiting_results_badge = (!terminal.pending_child_results.is_empty()).then(|| {
         let count = terminal.pending_child_results.len();
@@ -136,6 +134,7 @@ pub fn render(
                     name_font_size: pane_title_font_size,
                     spawned_by_badge: spawned_by_badge.as_deref(),
                     waiting_results_badge: waiting_results_badge.as_deref(),
+                    overtake_hint: false,
                 },
             )
         } else {
@@ -153,8 +152,7 @@ pub fn render(
                 ui.colored_label(exit_color, "[process exited]");
             });
         });
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
         // Auto-close on any keypress. Keyboard events were taken out of `ctx`
         // before the render pass (stint 0387), so read them from the
         // host-supplied buffer rather than `ui.input()`.
@@ -183,6 +181,7 @@ pub fn render(
             name_font_size: pane_title_font_size,
             spawned_by_badge: spawned_by_badge.as_deref(),
             waiting_results_badge: waiting_results_badge.as_deref(),
+            overtake_hint: false,
         },
     );
 
@@ -266,8 +265,7 @@ pub fn render(
                 });
             },
         );
-        if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+        crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
         return (false, tab_action);
     }
 
@@ -296,26 +294,9 @@ pub fn render(
         .with_input(input.keyboard_events, input.modifiers);
     ui.add(view);
 
-    if !needs_you { paint_escalation_border(ui.painter(), pane_rect, border_escalation_color); }
-    crate::ui::activity::paint_attention_chrome(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you);
+    crate::ui::activity::paint_attention_effect(ui.painter(), pane_rect, colors.state_needs_you, egui::Id::new(("terminal_attention", pane_id)), needs_you, false);
 
     (false, tab_action)
-}
-
-fn paint_escalation_border(
-    painter: &egui::Painter,
-    pane_rect: egui::Rect,
-    escalation_color: Option<egui::Color32>,
-) {
-    if let Some(col) = escalation_color {
-        let stroke_col = egui::Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 200);
-        painter.rect_stroke(
-            pane_rect,
-            0.0,
-            egui::Stroke::new(1.5_f32, stroke_col),
-            egui::StrokeKind::Inside,
-        );
-    }
 }
 
 /// Recorded geometry from the most recent `render_name_bar_and_tabs` pass for a
@@ -340,23 +321,82 @@ pub(crate) fn last_rendered_tab_bar_layout(
 static LOG_OUTSIDE_WORKSPACE_BADGE_RESERVE: Once = Once::new();
 static LOG_WORKING_NO_ESCALATION: Once = Once::new();
 
-struct NameBarParams<'a> {
-    tile_id: TileId,
-    pane_id: &'a PaneId,
-    tab_info: &'a HashMap<TileId, TabGroupInfo>,
-    tab_labels: &'a HashMap<PaneId, String>,
-    tab_activities: &'a HashMap<PaneId, (AgentState, bool)>,
-    pane_names: &'a HashMap<PaneId, String>,
-    pane_agent_state: Option<&'a AgentState>,
-    is_error: bool,
-    colors: &'a Colors,
-    outside_workspace: bool,
-    name_font_size: f32,
-    spawned_by_badge: Option<&'a str>,
-    waiting_results_badge: Option<&'a str>,
+pub(crate) struct NameBarParams<'a> {
+    pub(crate) tile_id: TileId,
+    pub(crate) pane_id: &'a PaneId,
+    pub(crate) tab_info: &'a HashMap<TileId, TabGroupInfo>,
+    pub(crate) tab_labels: &'a HashMap<PaneId, String>,
+    pub(crate) tab_activities: &'a HashMap<PaneId, (AgentState, bool)>,
+    pub(crate) pane_names: &'a HashMap<PaneId, String>,
+    pub(crate) pane_agent_state: Option<&'a AgentState>,
+    pub(crate) is_error: bool,
+    pub(crate) colors: &'a Colors,
+    pub(crate) outside_workspace: bool,
+    pub(crate) name_font_size: f32,
+    pub(crate) spawned_by_badge: Option<&'a str>,
+    pub(crate) waiting_results_badge: Option<&'a str>,
+    pub(crate) overtake_hint: bool,
 }
 
-fn render_name_bar_and_tabs(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeaderStateChip { Full, Icon, Hidden }
+
+struct HeaderAccessories {
+    outside: bool,
+    waiting: bool,
+    provenance: bool,
+    state: HeaderStateChip,
+}
+
+fn header_pip_extent(ctx: &egui::Context, state: Option<&AgentState>) -> f32 {
+    if matches!(state, Some(AgentState::NeedsYou)) {
+        let visual = crate::ui::activity::attention(ctx);
+        if visual.alpha > 0.0 {
+            return TAB_PIP_RADIUS * visual.radius_scale + 1.5 + visual.stroke / 2.0;
+        }
+    }
+    TAB_PIP_RADIUS + 0.7
+}
+
+struct HeaderRequests<'a> {
+    outside: bool,
+    waiting: Option<&'a str>,
+    provenance: bool,
+    state: Option<&'a str>,
+}
+
+fn header_accessories(
+    painter: &egui::Painter, width: f32, leading: f32, requests: HeaderRequests<'_>, icon_extent: f32,
+) -> HeaderAccessories {
+    let HeaderRequests { outside, waiting, provenance, state } = requests;
+    let gap = crate::ui::style::SPACE_XS;
+    let measure = |label: &str| {
+        let galley = painter.layout_no_wrap(label.to_owned(), crate::ui::badge::badge_font(), egui::Color32::PLACEHOLDER);
+        crate::ui::badge::badge_size(galley.size()).x + gap
+    };
+    let mut available = (width - leading).max(0.0);
+    let mut reserve = |needed: f32, requested: bool| {
+        if requested && available >= needed { available -= needed; true } else { false }
+    };
+    let outside = reserve(measure(OUTSIDE_WORKSPACE_BADGE_LABEL), outside);
+    let waiting_visible = waiting.is_some_and(|label| reserve(measure(label), true));
+    let provenance = reserve(crate::ui::style::PROVENANCE_ICON_SIZE + gap, provenance);
+    let state = match state {
+        Some(label) if available >= measure(label) => HeaderStateChip::Full,
+        Some(_) if available >= icon_extent * 2.0 + gap * 2.0 => HeaderStateChip::Icon,
+        _ => HeaderStateChip::Hidden,
+    };
+    HeaderAccessories { outside, waiting: waiting_visible, provenance, state }
+}
+
+fn paint_header_state_icon(ui: &egui::Ui, bar_rect: egui::Rect, right: f32, state: Option<&AgentState>, color: egui::Color32) -> f32 {
+    let extent = header_pip_extent(ui.ctx(), state);
+    let x = right - crate::ui::style::SPACE_XS - extent;
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(x, bar_rect.center().y), TAB_PIP_RADIUS, state, color, false);
+    x - extent - crate::ui::style::SPACE_XS
+}
+
+pub(crate) fn render_name_bar_and_tabs(
     ui: &mut egui::Ui,
     params: NameBarParams<'_>,
 ) -> Option<(TileId, TabBarAction)> {
@@ -374,11 +414,13 @@ fn render_name_bar_and_tabs(
         name_font_size,
         spawned_by_badge,
         waiting_results_badge,
+        overtake_hint,
     } = params;
     let has_name = pane_names.contains_key(pane_id);
     let tab_group = tab_info.get(&tile_id);
     let mut tab_action = None;
     let agent_state = pane_agent_state.or_else(|| tab_activities.get(pane_id).map(|(state, _)| state));
+    let glyph_state = if is_error { Some(&AgentState::Failed) } else { agent_state };
     let escalation_col = crate::ui::activity::escalation_color(agent_state, is_error, colors)
         .filter(|_| !matches!(agent_state, Some(AgentState::NeedsYou)) || crate::ui::activity::attention(ui.ctx()).alpha > 0.0);
     let escalation_col = escalation_col.map(|color| colors.status_badge_color(color));
@@ -403,6 +445,15 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
+        let extent = header_pip_extent(ui.ctx(), agent_state);
+        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        let layout = header_accessories(ui.painter(), bar_rect.width(), leading, HeaderRequests {
+            outside: outside_workspace, waiting: waiting_results_badge, provenance: spawned_by_badge.is_some(),
+            state: escalation_lbl.filter(|_| escalation_col.is_some()),
+        }, extent);
+        let outside_workspace = layout.outside;
+        let waiting_results_badge = waiting_results_badge.filter(|_| layout.waiting);
+        let spawned_by_badge = spawned_by_badge.filter(|_| layout.provenance);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
@@ -424,7 +475,7 @@ fn render_name_bar_and_tabs(
         } else {
             None
         };
-        let status_badge_x = if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+        let status_badge_x = if layout.state == HeaderStateChip::Full { if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
             let galley =
                 ui.painter()
                     .layout_no_wrap(lbl.to_string(), crate::ui::badge::badge_font(), col);
@@ -432,9 +483,8 @@ fn render_name_bar_and_tabs(
             let x = right_edge - size.x - crate::ui::style::SPACE_XS;
             right_edge = x;
             Some((lbl, col))
-        } else {
-            None
-        };
+        } else { None } } else { None };
+        if layout.state == HeaderStateChip::Icon { right_edge -= extent * 2.0 + crate::ui::style::SPACE_XS * 2.0; }
         let waiting_badge_x = if let Some(lbl) = waiting_results_badge {
             let col = colors.status_badge_color(colors.accent);
             let galley =
@@ -507,7 +557,7 @@ fn render_name_bar_and_tabs(
 
         if let Some(action) = paint_tab_bar(
             ui.ctx(),
-            ui.painter(),
+            &ui.painter().with_clip_rect(tabs_bar_rect),
             TabBarPaintParams {
                 bar_rect: tabs_bar_rect,
                 group,
@@ -515,7 +565,7 @@ fn render_name_bar_and_tabs(
                 tab_activities,
                 colors,
                 font_size: name_font_size,
-                overtake_hint: false,
+                overtake_hint,
             },
         ) {
             tab_action = Some((group.container_tile, action));
@@ -528,6 +578,10 @@ fn render_name_bar_and_tabs(
         }
         if let Some((lbl, col)) = status_badge_x {
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
+        } else if layout.state == HeaderStateChip::Icon {
+            if let Some(color) = escalation_col {
+                paint_right = paint_header_state_icon(ui, bar_rect, paint_right, glyph_state, color);
+            }
         }
         if let Some((lbl, col)) = waiting_badge_x {
             paint_right = paint_status_badge(ui.painter(), bar_rect, paint_right, lbl, col);
@@ -557,6 +611,15 @@ fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         ui.advance_cursor_after_rect(bar_rect);
+        let extent = header_pip_extent(ui.ctx(), agent_state);
+        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        let layout = header_accessories(ui.painter(), bar_rect.width(), leading, HeaderRequests {
+            outside: outside_workspace, waiting: waiting_results_badge, provenance: spawned_by_badge.is_some(),
+            state: escalation_lbl.filter(|_| escalation_col.is_some()),
+        }, extent);
+        let outside_workspace = layout.outside;
+        let waiting_results_badge = waiting_results_badge.filter(|_| layout.waiting);
+        let spawned_by_badge = spawned_by_badge.filter(|_| layout.provenance);
         ui.painter()
             .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
         if let Some(esc_col) = escalation_col {
@@ -571,17 +634,13 @@ fn render_name_bar_and_tabs(
             );
         }
 
-        let pip_space = if agent_state.is_some() || is_error {
-            TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0
-        } else {
-            0.0
-        };
+        let pip_space = leading;
 
-        if is_error {
+        if is_error && bar_rect.width() >= pip_space {
             let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
             crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
-        } else if let Some(state) = agent_state {
-            paint_activity_dot(ui, bar_rect, state, colors);
+        } else if bar_rect.width() >= pip_space {
+            if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
 
         let mut right_edge = bar_rect.right();
@@ -599,8 +658,14 @@ fn render_name_bar_and_tabs(
         } else {
             None
         };
-        if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
-            right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
+        if layout.state == HeaderStateChip::Full {
+            if let (Some(lbl), Some(col)) = (escalation_lbl, escalation_col) {
+                right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, col);
+            }
+        } else if layout.state == HeaderStateChip::Icon {
+            if let Some(color) = escalation_col {
+                right_edge = paint_header_state_icon(ui, bar_rect, right_edge, glyph_state, color);
+            }
         }
         if let Some(lbl) = waiting_results_badge {
             right_edge = paint_status_badge(ui.painter(), bar_rect, right_edge, lbl, colors.status_badge_color(colors.accent));
@@ -843,6 +908,69 @@ fn is_terminal_outside_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_chrome_header_degrades_without_overlap() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let state = AgentState::NeedsYou;
+        let mut names = HashMap::new();
+        names.insert(7, "A long agent pane title".to_owned());
+        let status_color = colors.status_badge_color(colors.state_needs_you);
+        let fill = egui::Color32::from_rgba_unmultiplied(status_color.r(), status_color.g(), status_color.b(), 36);
+        for width in [30.0, 50.0, 80.0, 120.0, 200.0, 400.0] {
+            let ctx = egui::Context::default();
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
+                    render_name_bar_and_tabs(ui, NameBarParams {
+                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
+                        pane_agent_state: Some(&state), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
+                    });
+                });
+            });
+            let badge = output.shapes.iter().find_map(|s| match &s.shape { egui::Shape::Rect(r) if r.fill == fill => Some(r.rect), _ => None });
+            if let Some(rect) = badge {
+                assert!(rect.left() >= TAB_PIP_MARGIN + TAB_PIP_RADIUS * 2.0 && rect.right() <= width, "status badge overlaps the state icon or escapes header at width {width}: {rect:?}");
+            }
+            let title = last_rendered_tab_bar_layout(&ctx, 7).and_then(|layout| layout.label_rect);
+            let provenance: Option<egui::Rect> = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64))));
+            if let (Some(title), Some(badge)) = (title, badge) {
+                assert!(!title.intersects(badge), "title and state chip overlap at width {width}");
+            }
+            if let (Some(title), Some(icon)) = (title, provenance) {
+                assert!(!title.intersects(icon), "title and provenance icon overlap at width {width}");
+            }
+            if let (Some(badge), Some(icon)) = (badge, provenance) {
+                assert!(!badge.intersects(icon), "state chip and provenance icon overlap at width {width}");
+            }
+            if width == 400.0 { assert!(badge.is_some(), "wide header retains the full chip"); }
+            if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
+        }
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let extent = header_pip_extent(ui.ctx(), Some(&state));
+            let leading = TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent;
+            let mode = |width| header_accessories(ui.painter(), width, leading, HeaderRequests { outside: false, waiting: None, provenance: false, state: Some("NEEDS YOU") }, extent).state;
+            assert!(mode(leading) == HeaderStateChip::Hidden);
+            assert!(mode(leading + extent * 2.0 + crate::ui::style::SPACE_XS * 2.0) == HeaderStateChip::Icon);
+            assert!(mode(400.0) == HeaderStateChip::Full);
+        });
+    }
+
+    #[test]
+    fn pane_chrome_error_chip_collapses_to_failed_glyph() {
+        let ctx = egui::Context::default();
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(55.0, TAB_BAR_HEIGHT))), |ui| {
+                render_name_bar_and_tabs(ui, NameBarParams {
+                    tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
+                    pane_agent_state: None, is_error: true, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
+                });
+            });
+        });
+        let lines = output.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. })).count();
+        assert!(lines >= 5, "the leading and collapsed failed icons must both be crosses; got {lines} line segments");
+    }
 
     #[test]
     fn narrow_wrapped_standby_banner_keeps_enter_hint_visible() {
