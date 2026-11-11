@@ -25,6 +25,7 @@ CLI examples use illustrative ids and names. Relative UI navigation maps to expl
 | `Quit` | `plexi host stop` |  |
 | `ToggleSidebar` | ui-only: Toggles host chrome only. |  |
 | `ToggleShortcuts` | ui-only: Displays the keyboard reference overlay; agents use CLI help. |  |
+| `OpenChangelog` | ui-only: Opens the changelog overlay; release notes are available in CHANGELOG.md. |  |
 | `ToggleZoom` | `plexi pane zoom 42` |  |
 | `ToggleCommandPalette` | ui-only: Displays a human command chooser; agents invoke the selected command directly. |  |
 | `RenamePane` | `plexi pane name 42 name` |  |
