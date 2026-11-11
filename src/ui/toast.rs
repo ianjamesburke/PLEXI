@@ -57,15 +57,14 @@ impl<'a> ToastShell<'a> {
     /// own surface. They stay Md rather than Sm (28): the layout contract
     /// reserves a 32px minimum hit target for every required action (see the
     /// `minimum` recorded in `action`), and a 28px control would violate it.
+    /// The label never wraps: `action` reserves `KitButton::natural_width`.
     pub(crate) fn button<'l>(label: &'l str, colors: &Colors) -> crate::ui::button::KitButton<'l> {
-        crate::ui::button::KitButton::new(label, colors)
-            .wrap_mode(egui::TextWrapMode::Wrap)
-            .surface(colors.bg_sidebar)
+        crate::ui::button::KitButton::new(label, colors).surface(colors.bg_sidebar)
     }
 
     /// Reserve the complete action before fitting the message. Reflow into
-    /// two rows when the inline message lane becomes too small. An oversized
-    /// translated action wraps with its name intact instead of eliding.
+    /// two rows when the inline message lane becomes too small. The action
+    /// keeps its natural width and never wraps; the message elides first.
     pub(crate) fn action(
         self,
         ctx: &egui::Context,
@@ -79,17 +78,10 @@ impl<'a> ToastShell<'a> {
             let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "toast");
             let font = egui::FontId::proportional(style::TEXT_CAPTION);
             let max_width = ui.available_width();
-            let padding = egui::vec2(style::SPACE_MD, style::SPACE_XS);
-            let action_text = ui.fonts_mut(|f| {
-                f.layout(
-                    label.into(),
-                    font.clone(),
-                    colors.text_primary,
-                    (max_width - padding.x * 2.0).max(1.0),
-                )
-            });
-            let action_size = (action_text.size() + padding * 2.0)
-                .max(egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD));
+            let action_size = egui::vec2(
+                Self::button(label, colors).natural_width(ui).min(max_width),
+                style::BUTTON_H_MD,
+            );
             let message_width = crate::ui::text::elided_galley(
                 ui,
                 message,
@@ -318,6 +310,73 @@ mod tests {
         }
     }
 
+    /// Ian's ruling (stint 1216 round 2): the toast action never wraps. It
+    /// keeps the default kit button's natural width at every screen width and
+    /// message length; the message shrinks and elides instead.
+    #[test]
+    fn toast_action_never_wraps_and_keeps_natural_width() {
+        let host = crate::testing::HostHarness::new();
+        let ctx = &host.app.ctx;
+        let long = "Moved a note with a very long title that cannot possibly fit beside the action to Trash";
+        for name in crate::ui::theme::preset_names() {
+            let colors = crate::ui::theme::Colors::from_config(
+                &crate::ui::theme::preset_colors(name).unwrap(),
+            );
+            crate::ui::theme::setup_style(ctx, &colors);
+            for screen_width in [900.0_f32, 420.0, 300.0] {
+                for message in ["Moved note to Trash", long] {
+                    let case =
+                        format!("{name} screen={screen_width} message_len={}", message.len());
+                    let mut natural = egui::Vec2::ZERO;
+                    let mut action = egui::Rect::NOTHING;
+                    let mut output = None;
+                    for frame in 0..4 {
+                        output = Some(ctx.run_ui(
+                            egui::RawInput {
+                                time: Some(frame as f64),
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(screen_width, 600.0),
+                                )),
+                                ..Default::default()
+                            },
+                            |ui| {
+                                egui::Area::new(egui::Id::new("natural"))
+                                    .fixed_pos(egui::pos2(0.0, 0.0))
+                                    .show(ui.ctx(), |ui| {
+                                        natural = default_kit_button(ui, &colors).rect.size();
+                                    });
+                                action = super::ToastShell::bottom("never_wrap")
+                                    .action(ctx, &colors, message, "Undo", None)
+                                    .rect;
+                            },
+                        ));
+                    }
+                    let output = output.unwrap();
+                    let galley = output
+                        .shapes
+                        .iter()
+                        .find_map(|s| match &s.shape {
+                            egui::Shape::Text(text)
+                                if text.galley.job.text == "Undo"
+                                    && action.contains(text.visual_bounding_rect().center()) =>
+                            {
+                                Some(text.galley.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("{case}: action label not painted"));
+                    assert_eq!(galley.rows.len(), 1, "{case}: the action label wrapped");
+                    assert_eq!(
+                        action.width(),
+                        natural.x,
+                        "{case}: the action keeps its natural width"
+                    );
+                }
+            }
+        }
+    }
+
     /// Reported mismatch (2026-11-10): the toast action button differed from
     /// the default kit button in corner radius, stroke, padding, height class,
     /// font and fill. Every one of those is asserted here for every theme
@@ -373,7 +432,7 @@ mod tests {
                 assert_eq!(default.stroke, toast.stroke, "{case}: stroke");
                 assert_eq!(default.fill, toast.fill, "{case}: fill");
                 assert_eq!(
-                    default.fill, colors.bg_active,
+                    default.fill, colors.accent,
                     "{case}: fill source is the kit's"
                 );
                 assert_eq!(default.font, toast.font, "{case}: font");

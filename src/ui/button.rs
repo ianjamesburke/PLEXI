@@ -3,7 +3,8 @@ use egui::{Align2, Color32, RichText, Vec2};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-/// Fill and emphasis of a button. `Primary` is the declared default kind.
+/// Fill and emphasis of a button. `Primary` is the declared default kind: the
+/// accent-filled, strongest button in every theme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ButtonKind {
     #[default]
@@ -11,15 +12,22 @@ pub(crate) enum ButtonKind {
     Secondary,
     Accent,
     Danger,
-    /// Transparent at rest; the theme's hover/press fill appears on
-    /// interaction. Used for menu items and text/glyph controls.
+    /// No fill; a faint outline at rest so it reads as a button, and the
+    /// theme's hover/press fill on interaction. Menu items (`menu_item`) and
+    /// compact glyph controls drop the outline (`flat`).
     Ghost,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ChromeButtonState {
     pub(crate) disabled: bool,
     pub(crate) down: bool,
+    /// Active member of a group. Repaints Primary, Secondary and Ghost with
+    /// the active fill and an accent outline; Accent and Danger keep their
+    /// fill and gain an inset outline. Never changes the layout box.
+    pub(crate) selected: bool,
+    /// Ghost without its rest outline: menu items and glyph controls.
+    pub(crate) flat: bool,
 }
 
 /// Height class. `Md` is the declared default.
@@ -65,6 +73,7 @@ pub(crate) struct KitButton<'a> {
     wrap: egui::TextWrapMode,
     text: LabelStyle,
     compact: bool,
+    flat: bool,
     surface: Option<Color32>,
 }
 
@@ -83,6 +92,7 @@ impl<'a> KitButton<'a> {
             wrap: egui::TextWrapMode::Extend,
             text: LabelStyle::default(),
             compact: false,
+            flat: false,
             surface: None,
         }
     }
@@ -139,6 +149,12 @@ impl<'a> KitButton<'a> {
         self.compact = true;
         self
     }
+    /// Drop the Ghost rest outline. Menu items and compact glyph controls are
+    /// chrome, not buttons that must read as buttons at rest.
+    pub(crate) fn flat(mut self) -> Self {
+        self.flat = true;
+        self
+    }
     /// Colour the button sits on when it is not the panel fill (menus,
     /// toasts). Contrast of the disabled and pressed states is resolved over
     /// it.
@@ -148,39 +164,9 @@ impl<'a> KitButton<'a> {
     }
 }
 
-impl egui::Widget for KitButton<'_> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the kit button is the one place that constructs egui::Button"
-    )]
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let kind = self.kind;
-        let paint_kind =
-            if self.selected && !matches!(kind, ButtonKind::Accent | ButtonKind::Danger) {
-                ButtonKind::Accent
-            } else {
-                kind
-            };
-        log_first_paint(kind, self.size, self.compact);
-        let parent = self.surface.unwrap_or(ui.visuals().panel_fill);
-        let disabled = !ui.is_enabled();
-        let state = ChromeButtonState {
-            disabled: false,
-            down: false,
-        };
-        let visuals =
-            chrome_button_visuals(paint_kind, &self.colors, state, parent, self.text.color);
-        let active = chrome_button_visuals(
-            paint_kind,
-            &self.colors,
-            ChromeButtonState {
-                down: true,
-                ..state
-            },
-            parent,
-            self.text.color,
-        );
-        let padding = if self.compact {
+impl KitButton<'_> {
+    fn padding(&self) -> Vec2 {
+        if self.compact {
             Vec2::ZERO
         } else {
             egui::vec2(
@@ -191,7 +177,10 @@ impl egui::Widget for KitButton<'_> {
                 },
                 style::SPACE_XS,
             )
-        };
+        }
+    }
+
+    fn label_font(&self) -> egui::FontId {
         let label_size = self.text.size.unwrap_or_else(|| {
             let height = self.min_size.y.max(self.size.height());
             if height >= style::BUTTON_H_LG {
@@ -202,17 +191,69 @@ impl egui::Widget for KitButton<'_> {
                 style::TEXT_CAPTION
             }
         });
-        let font = if self.text.monospace {
+        if self.text.monospace {
             egui::FontId::monospace(label_size)
         } else {
             crate::ui::theme::font_medium(label_size)
+        }
+    }
+
+    /// Width of the button laid out on one line: the same font and padding
+    /// `ui` paints with, so a container sized to it never makes the label
+    /// wrap or elide. Callers that reserve room for a button (toast
+    /// actions) must measure through this, not re-derive the metrics.
+    pub(crate) fn natural_width(&self, ui: &egui::Ui) -> f32 {
+        let font = self.label_font();
+        let text = crate::ui::text::elided_galley(
+            ui,
+            self.label,
+            font,
+            f32::MAX,
+            crate::ui::text::Side::Trailing,
+        )
+        .size()
+        .x;
+        (text + self.padding().x * 2.0).max(self.min_size.x)
+    }
+}
+
+impl egui::Widget for KitButton<'_> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the kit button is the one place that constructs egui::Button"
+    )]
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let kind = self.kind;
+        log_first_paint(kind, self.size, self.compact);
+        let parent = self.surface.unwrap_or(ui.visuals().panel_fill);
+        let disabled = !ui.is_enabled();
+        let state = ChromeButtonState {
+            disabled,
+            down: false,
+            selected: self.selected,
+            flat: self.flat || self.compact,
         };
+        let visuals = chrome_button_visuals(kind, &self.colors, state, parent, self.text.color);
+        let active = chrome_button_visuals(
+            kind,
+            &self.colors,
+            ChromeButtonState {
+                down: true,
+                ..state
+            },
+            parent,
+            self.text.color,
+        );
+        let padding = self.padding();
+        let font = self.label_font();
         let shown = if matches!(self.wrap, egui::TextWrapMode::Extend) && !self.compact {
             crate::ui::text::elide(
                 ui,
                 self.label,
                 font.clone(),
-                (ui.available_width() - padding.x * 2.0).max(0.0),
+                // Half a pixel of slack: a box sized by `natural_width` must
+                // not elide to float rounding.
+                (ui.available_width() - padding.x * 2.0 + 0.5).max(0.0),
                 crate::ui::text::Side::Trailing,
             )
         } else {
@@ -235,7 +276,9 @@ impl egui::Widget for KitButton<'_> {
         } else {
             visuals.stroke
         };
-        let button = egui::Button::new(text)
+        // Growing atoms on both sides centre the label in any stretched box;
+        // egui otherwise aligns it from the parent layout (left in a row).
+        let button = egui::Button::new((egui::Atom::grow(), text, egui::Atom::grow()))
             .stroke(stroke)
             .corner_radius(if self.size == ButtonSize::Lg {
                 style::RADIUS_MD
@@ -245,11 +288,14 @@ impl egui::Widget for KitButton<'_> {
             .fill(visuals.fill)
             .min_size(min_size)
             .wrap_mode(self.wrap);
-        let hover_fill = match paint_kind {
-            ButtonKind::Primary => visuals.fill.lerp_to_gamma(self.colors.text_primary, 0.06),
-            ButtonKind::Secondary | ButtonKind::Ghost => self.colors.bg_hover,
-            ButtonKind::Accent | ButtonKind::Danger => {
-                visuals.fill.lerp_to_gamma(Color32::WHITE, 0.08)
+        let hover_fill = if repaints_when_selected(kind, self.selected) {
+            visuals.fill.lerp_to_gamma(self.colors.text_primary, 0.06)
+        } else {
+            match kind {
+                ButtonKind::Secondary | ButtonKind::Ghost => self.colors.bg_hover,
+                ButtonKind::Primary | ButtonKind::Accent | ButtonKind::Danger => {
+                    visuals.fill.lerp_to_gamma(Color32::WHITE, 0.08)
+                }
             }
         };
         let response = ui
@@ -258,6 +304,8 @@ impl egui::Widget for KitButton<'_> {
                     ui.spacing_mut().interact_size.y = self.size.height();
                 }
                 ui.spacing_mut().button_padding = padding;
+                // The grow atoms must not add a gap to the natural width.
+                ui.spacing_mut().icon_spacing = 0.0;
                 tactile_button(
                     ui,
                     button,
@@ -295,6 +343,7 @@ pub(crate) fn menu_item(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui
         KitButton::new(label, colors)
             .kind(ButtonKind::Ghost)
             .size(ButtonSize::Sm)
+            .flat()
             .surface(ui.visuals().window_fill),
     )
 }
@@ -328,9 +377,24 @@ struct ChromeButtonVisuals {
     stroke: egui::Stroke,
 }
 
+/// Selection repaints the quiet kinds (active fill, accent outline). Accent
+/// and Danger are already the strongest paint, so they keep their fill.
+fn repaints_when_selected(kind: ButtonKind, selected: bool) -> bool {
+    selected
+        && matches!(
+            kind,
+            ButtonKind::Primary | ButtonKind::Secondary | ButtonKind::Ghost
+        )
+}
+
 /// `parent` is the surface the button sits on; transparent and disabled fills
 /// resolve contrast over it. `preferred_text` overrides the kind's text colour
 /// before the contrast correction.
+///
+/// Primary is the accent-filled strongest button. Selected quiet kinds use the
+/// active fill with an accent outline, so a selected item never reads as
+/// Primary. Disabled is a neutral dim chip that matches no enabled kind. Every
+/// state paints inside the same 1px frame, so none changes the layout box.
 fn chrome_button_visuals(
     kind: ButtonKind,
     colors: &Colors,
@@ -338,23 +402,30 @@ fn chrome_button_visuals(
     parent: Color32,
     preferred_text: Option<Color32>,
 ) -> ChromeButtonVisuals {
-    let secondary_fill = Color32::TRANSPARENT;
-    let base_fill = match kind {
-        ButtonKind::Primary => colors.bg_active,
-        ButtonKind::Secondary => secondary_fill,
-        ButtonKind::Accent => colors.accent,
-        ButtonKind::Danger => colors.danger,
-        ButtonKind::Ghost => Color32::TRANSPARENT,
+    let selected_quiet = repaints_when_selected(kind, state.selected);
+    let base_fill = if selected_quiet {
+        colors.bg_active
+    } else {
+        match kind {
+            ButtonKind::Primary | ButtonKind::Accent => colors.accent,
+            ButtonKind::Danger => colors.danger,
+            ButtonKind::Secondary | ButtonKind::Ghost => Color32::TRANSPARENT,
+        }
     };
     let fill = if state.disabled && matches!(kind, ButtonKind::Ghost) {
         Color32::TRANSPARENT
     } else if state.disabled {
-        colors.bg_active.gamma_multiply(0.55)
+        colors.bg_active.gamma_multiply(DISABLED_FILL)
     } else if state.down {
-        match kind {
-            ButtonKind::Accent | ButtonKind::Danger => base_fill.gamma_multiply(0.90),
-            ButtonKind::Secondary | ButtonKind::Ghost => colors.bg_active,
-            ButtonKind::Primary => base_fill.lerp_to_gamma(colors.text_primary, 0.12),
+        if selected_quiet {
+            base_fill.lerp_to_gamma(colors.text_primary, 0.12)
+        } else {
+            match kind {
+                ButtonKind::Primary | ButtonKind::Accent | ButtonKind::Danger => {
+                    base_fill.gamma_multiply(0.90)
+                }
+                ButtonKind::Secondary | ButtonKind::Ghost => colors.bg_active,
+            }
         }
     } else {
         base_fill
@@ -363,19 +434,32 @@ fn chrome_button_visuals(
         colors.text_dim
     } else if let Some(preferred) = preferred_text {
         preferred
+    } else if selected_quiet {
+        colors.text_primary
     } else {
         match kind {
-            ButtonKind::Accent | ButtonKind::Danger => colors.text_on(base_fill),
-            ButtonKind::Secondary => colors.text_primary,
-            ButtonKind::Primary | ButtonKind::Ghost => colors.text_primary,
+            ButtonKind::Primary | ButtonKind::Accent | ButtonKind::Danger => {
+                colors.text_on(base_fill)
+            }
+            ButtonKind::Secondary | ButtonKind::Ghost => colors.text_primary,
         }
     };
-    let stroke = match kind {
-        ButtonKind::Ghost => egui::Stroke::NONE,
-        ButtonKind::Secondary => {
-            egui::Stroke::new(1.0_f32, colors.border.lerp_to_gamma(colors.text_dim, 0.45))
+    let stroke = if state.disabled {
+        egui::Stroke::NONE
+    } else if selected_quiet {
+        egui::Stroke::new(1.0_f32, colors.accent)
+    } else if state.selected {
+        egui::Stroke::new(1.0_f32, colors.text_on(base_fill))
+    } else {
+        match kind {
+            ButtonKind::Secondary => {
+                egui::Stroke::new(1.0_f32, colors.border.lerp_to_gamma(colors.text_dim, 0.45))
+            }
+            ButtonKind::Ghost if !state.flat => {
+                egui::Stroke::new(1.0_f32, colors.border.gamma_multiply(0.7))
+            }
+            _ => egui::Stroke::NONE,
         }
-        _ => egui::Stroke::NONE,
     };
     let surface = crate::ui::foreground::Surface::over(parent, fill);
     ChromeButtonVisuals {
@@ -384,6 +468,12 @@ fn chrome_button_visuals(
         stroke,
     }
 }
+
+/// Opacity of the neutral disabled chip over the surface. The label stays
+/// opaque `text_dim`: the layout report's SmallText contrast gate (4.5:1)
+/// applies to disabled text too, so dimming comes from the chip and the
+/// quiet colour, never from fading the glyphs.
+const DISABLED_FILL: f32 = 0.4;
 
 const GLYPH_MIN_W: f32 = style::BUTTON_H_MD - style::SPACE_SM;
 
@@ -649,11 +739,11 @@ fn tactile_button(
                     list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
                         match &mut entry.shape {
                             egui::Shape::Rect(rect) => {
-                                rect.fill = rest.fill.gamma_multiply(0.4);
-                                rect.stroke.color = rest.stroke.color.gamma_multiply(0.4);
+                                rect.fill = rest.fill;
+                                rect.stroke.color = Color32::TRANSPARENT;
                             }
                             egui::Shape::Text(text) => {
-                                text.override_text_color = Some(rest_text.gamma_multiply(0.4));
+                                text.override_text_color = Some(rest_text);
                             }
                             _ => {}
                         }
@@ -794,12 +884,17 @@ mod tests {
                     ButtonKind::Danger,
                     ButtonKind::Ghost,
                 ] {
-                    for disabled in [false, true] {
+                    for (disabled, selected) in [(false, false), (false, true), (true, false)] {
                         for down in [false, true] {
                             let visuals = chrome_button_visuals(
                                 kind,
                                 &colors,
-                                ChromeButtonState { disabled, down },
+                                ChromeButtonState {
+                                    disabled,
+                                    down,
+                                    selected,
+                                    ..Default::default()
+                                },
                                 parent,
                                 None,
                             );
@@ -810,7 +905,7 @@ mod tests {
                             );
                             assert!(
                                 ratio >= 4.5,
-                                "{name}: {kind:?} on {parent:?} disabled={disabled} down={down} contrast={ratio}"
+                                "{name}: {kind:?} on {parent:?} disabled={disabled} selected={selected} down={down} contrast={ratio}"
                             );
                         }
                     }
@@ -840,13 +935,17 @@ mod tests {
             "builder order must not matter"
         );
         assert!(
-            fill_of(true).contains(&colors.accent),
-            "selected paints Accent"
+            fill_of(true).contains(&colors.bg_active),
+            "selected Ghost paints the active fill"
+        );
+        assert!(
+            !fill_of(true).contains(&colors.accent),
+            "selected must not paint the Primary accent fill"
         );
     }
 
     #[test]
-    fn selection_preserves_kind_emphasis_for_all_button_kinds() {
+    fn selection_repaints_quiet_kinds_and_keeps_strong_kinds() {
         let colors = crate::testing::HostHarness::new().app.colors;
         for kind in [
             ButtonKind::Primary,
@@ -858,15 +957,136 @@ mod tests {
             let (output, rect) = render(3, None, |ui| {
                 ui.add(KitButton::new("Tab", &colors).kind(kind).selected(true))
             });
-            let expected = if kind == ButtonKind::Danger {
-                colors.danger
-            } else {
-                colors.accent
+            let expected = match kind {
+                ButtonKind::Danger => colors.danger,
+                ButtonKind::Accent => colors.accent,
+                _ => colors.bg_active,
             };
-            assert!(
-                fills_at(&output, rect.center()).contains(&expected),
+            assert_eq!(
+                fills_at(&output, rect.center()).last(),
+                Some(&expected),
                 "selected {kind:?}"
             );
+        }
+    }
+
+    /// Ian's ruling (stint 1216 round 2): Primary is the strongest button in
+    /// every theme, light included, and a selected item is distinguishable
+    /// from it.
+    #[test]
+    fn primary_is_strongest_and_selected_is_distinguishable_in_every_theme() {
+        let ratio = |a: Color32, b: Color32| {
+            crate::ui::theme::contrast(
+                crate::ui::theme::luminance(a),
+                crate::ui::theme::luminance(b),
+            )
+        };
+        for name in crate::ui::theme::preset_names() {
+            let colors = Colors::from_config(&crate::ui::theme::preset_colors(name).unwrap());
+            let visuals = |kind, selected| {
+                chrome_button_visuals(
+                    kind,
+                    &colors,
+                    ChromeButtonState {
+                        selected,
+                        ..Default::default()
+                    },
+                    colors.bg_sidebar,
+                    None,
+                )
+            };
+            let primary = visuals(ButtonKind::Primary, false);
+            assert_eq!(
+                primary.fill, colors.accent,
+                "{name}: Primary is accent-filled"
+            );
+            assert!(
+                ratio(primary.fill, colors.bg_sidebar) >= 2.5,
+                "{name}: Primary must stand out from the panel"
+            );
+            for kind in [
+                ButtonKind::Primary,
+                ButtonKind::Secondary,
+                ButtonKind::Ghost,
+            ] {
+                let selected = visuals(kind, true);
+                assert!(
+                    ratio(primary.fill, selected.fill) >= 1.5,
+                    "{name}: selected {kind:?} fill must differ from Primary"
+                );
+                assert_eq!(
+                    selected.stroke.color, colors.accent,
+                    "{name}: selected {kind:?} carries the accent outline"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ghost_has_a_faint_outline_at_rest_unless_flat() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        let stroke_of = |flat| {
+            chrome_button_visuals(
+                ButtonKind::Ghost,
+                &colors,
+                ChromeButtonState {
+                    flat,
+                    ..Default::default()
+                },
+                colors.bg_sidebar,
+                None,
+            )
+            .stroke
+        };
+        assert_eq!(stroke_of(false).width, 1.0);
+        assert_ne!(stroke_of(false).color, Color32::TRANSPARENT);
+        assert_eq!(stroke_of(true), egui::Stroke::NONE);
+        let secondary = chrome_button_visuals(
+            ButtonKind::Secondary,
+            &colors,
+            ChromeButtonState::default(),
+            colors.bg_sidebar,
+            None,
+        )
+        .stroke;
+        assert!(
+            stroke_of(false).color.a() < secondary.color.a()
+                || stroke_of(false).color != secondary.color,
+            "Ghost outline is fainter than Secondary"
+        );
+    }
+
+    /// Label text is centred in the control in both axes, at every size class.
+    #[test]
+    fn label_is_centred_in_every_size_class() {
+        let colors = crate::testing::HostHarness::new().app.colors;
+        for size in [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg] {
+            for min_width in [0.0_f32, 160.0] {
+                let (output, rect) = render(3, None, |ui| {
+                    ui.add(
+                        KitButton::new("Centre", &colors)
+                            .size(size)
+                            .min_width(min_width),
+                    )
+                });
+                let text = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == "Centre" => Some(t),
+                        _ => None,
+                    })
+                    .expect("painted label");
+                let label = egui::Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    (label.center().x - rect.center().x).abs() <= 0.5,
+                    "{size:?} min_width={min_width}: x {label:?} in {rect:?}"
+                );
+                assert!(
+                    (label.center().y - rect.center().y).abs() <= 0.5,
+                    "{size:?} min_width={min_width}: y {label:?} in {rect:?}"
+                );
+            }
         }
     }
 
@@ -921,9 +1141,9 @@ mod tests {
         for (kind, rest, hover, pressed) in [
             (
                 ButtonKind::Primary,
-                colors.bg_active,
-                colors.bg_active.lerp_to_gamma(colors.text_primary, 0.06),
-                colors.bg_active.lerp_to_gamma(colors.text_primary, 0.12),
+                colors.accent,
+                colors.accent.lerp_to_gamma(Color32::WHITE, 0.08),
+                colors.accent.gamma_multiply(0.9),
             ),
             (
                 ButtonKind::Secondary,
@@ -970,8 +1190,8 @@ mod tests {
                 kind,
                 &colors,
                 ChromeButtonState {
-                    disabled: false,
                     down: true,
+                    ..Default::default()
                 },
                 colors.bg_sidebar,
                 None,
@@ -980,60 +1200,47 @@ mod tests {
         }
     }
 
+    /// Ian's ruling (stint 1216 round 2): disabled is clearly dimmed and never
+    /// close to Primary or any enabled kind; the layout box is unchanged.
     #[test]
-    fn disabled_accent_is_forty_percent_of_rest_paint() {
+    fn disabled_is_dimmed_and_matches_no_enabled_kind() {
         let colors = crate::testing::HostHarness::new().app.colors;
-        let (rest, rect) = render(3, None, |ui| {
-            ui.add(KitButton::new("Action", &colors).kind(ButtonKind::Accent))
-        });
-        let (disabled, disabled_rect) = render(3, None, |ui| {
-            ui.add_enabled(
-                false,
-                KitButton::new("Action", &colors).kind(ButtonKind::Accent),
-            )
-        });
-        assert_eq!(rect, disabled_rect);
-        assert_eq!(
-            fills_at(&disabled, rect.center()).last().copied(),
-            fills_at(&rest, rect.center())
-                .last()
-                .map(|color| color.gamma_multiply(0.4))
-        );
-        assert_eq!(
-            label_shape(&disabled, "Action").1,
-            label_shape(&rest, "Action").1.gamma_multiply(0.4)
-        );
-    }
-
-    #[test]
-    fn disabled_paint_fades_every_kind_without_contrast_lift() {
-        let colors = crate::testing::HostHarness::new().app.colors;
-        for kind in [
+        let kinds = [
             ButtonKind::Primary,
             ButtonKind::Secondary,
             ButtonKind::Ghost,
             ButtonKind::Accent,
             ButtonKind::Danger,
-        ] {
+        ];
+        let rest_of = |kind| {
             let (rest, rect) = render(3, None, |ui| {
                 ui.add(KitButton::new("Action", &colors).kind(kind))
             });
+            (
+                fills_at(&rest, rect.center()).last().copied(),
+                label_shape(&rest, "Action").1,
+                rect,
+            )
+        };
+        let enabled_fills: Vec<_> = kinds.iter().map(|k| rest_of(*k).0).collect();
+        for kind in kinds {
+            let (rest_fill, rest_label, rect) = rest_of(kind);
             let (disabled, disabled_rect) = render(3, None, |ui| {
                 ui.add_enabled(false, KitButton::new("Action", &colors).kind(kind))
             });
-            assert_eq!(rect, disabled_rect, "{kind:?}");
-            assert_eq!(
-                fills_at(&disabled, rect.center()).last().copied(),
-                fills_at(&rest, rect.center())
-                    .last()
-                    .map(|color| color.gamma_multiply(0.4)),
-                "{kind:?} fill"
-            );
-            assert_eq!(
-                label_shape(&disabled, "Action").1,
-                label_shape(&rest, "Action").1.gamma_multiply(0.4),
-                "{kind:?} label"
-            );
+            assert_eq!(rect, disabled_rect, "{kind:?}: layout box");
+            let fill = fills_at(&disabled, rect.center()).last().copied();
+            let label = label_shape(&disabled, "Action").1;
+            assert_ne!(label, rest_label, "{kind:?}: label is dimmed");
+            if kind != ButtonKind::Ghost {
+                for (other, enabled) in kinds.iter().zip(&enabled_fills) {
+                    assert_ne!(
+                        fill, *enabled,
+                        "{kind:?} disabled looks like enabled {other:?}"
+                    );
+                }
+                assert_ne!(fill, rest_fill, "{kind:?}: fill changes when disabled");
+            }
         }
     }
 
@@ -1079,10 +1286,7 @@ mod tests {
     fn secondary_is_distinguishable_from_primary_and_the_card_surface() {
         for name in crate::ui::theme::preset_names() {
             let colors = Colors::from_config(&crate::ui::theme::preset_colors(name).unwrap());
-            let state = ChromeButtonState {
-                disabled: false,
-                down: false,
-            };
+            let state = ChromeButtonState::default();
             let fill =
                 |kind| chrome_button_visuals(kind, &colors, state, colors.bg_active, None).fill;
             assert_ne!(

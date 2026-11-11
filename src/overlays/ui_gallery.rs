@@ -498,7 +498,7 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
         ])
 }
 
-/// Every kind at every size class, plus the disabled state. Rendered by the
+/// Every kind at every size class, plus the disabled and selected states. Rendered by the
 /// gallery and by the `one-kit-gallery` scene fixture.
 pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
     use crate::ui::button::ButtonSize;
@@ -515,6 +515,7 @@ pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
             ui.add_enabled_ui(false, |ui| {
                 KitSpecimen::Button { kind: ButtonKind::Primary, size, label: "Disabled" }.show(ui, colors, false, "", "");
             });
+            KitSpecimen::Button { kind: ButtonKind::Secondary, size, label: "Selected" }.show(ui, colors, true, "", "");
         });
     }
 }

@@ -405,6 +405,9 @@ mod tests {
             let colors = crate::ui::theme::Colors::from_config(
                 &crate::ui::theme::preset_colors(theme).unwrap(),
             );
+            // The kit button labels in the medium UI family, which a bare
+            // context does not bind.
+            crate::ui::theme::setup_fonts(&ctx);
             crate::ui::theme::setup_style(&ctx, &colors);
             for enabled in [true, false] {
                 let _ = ctx.run_ui(egui::RawInput::default(), |ui| {

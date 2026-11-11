@@ -9200,6 +9200,61 @@ open(out + ".done", "w").close()
     // its two crispness invariants are frozen mechanically below — the subtitle
     // color clears the contrast floor on `bg_toolbar`, and its `font_medium`
     // galleys snap to the grid.
+    /// Evidence seam for stint 1216: the button gallery at rest, with the Md
+    /// Primary hovered, pressed, and with keyboard focus on the first control.
+    /// Writes /tmp/plexi_screenshot_button_states_<theme>_<state>.png.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_button_states() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let mut h = PlexiUiHarness::new_sized(1100.0, 640.0);
+            apply_fixture_theme(&mut h, theme);
+            h.with_app_mut(|app| app.sidebar_visible = false);
+            let root = h.workspace_root().to_path_buf();
+            h.open_target(HarnessOpenTarget::Builtin {
+                id: "button-gallery-fixture",
+                cwd: &root,
+                args: &[],
+            })
+            .expect("open button gallery fixture");
+            h.run_steps(4);
+            let mut primaries: Vec<egui::Rect> = h
+                .harness()
+                .get_all_by_label("Primary")
+                .map(|node| node.rect())
+                .collect();
+            primaries.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            let md_primary = primaries[1];
+            h.save_screenshot(&evidence_png!(format!("_{theme}_rest"))).unwrap();
+            let pos = md_primary.center();
+            h.harness().input_mut().events.push(egui::Event::PointerMoved(pos));
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_hover"))).unwrap();
+            h.harness().input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_pressed"))).unwrap();
+            h.harness().input_mut().events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerGone);
+            h.run_steps(2);
+            h.harness().key_press(egui::Key::Tab);
+            h.run_steps(3);
+            h.save_screenshot(&evidence_png!(format!("_{theme}_focus"))).unwrap();
+        }
+    }
+
     mod crispness_gate {
         use super::*;
         use crate::app::permissions::{PermissionState, PermissionStore};
