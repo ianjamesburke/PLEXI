@@ -618,6 +618,10 @@ impl PlexiApp {
                 log::info!("host: reporting running build identity {}", env!("PLEXI_BUILD_ID"));
                 let mut value = crate::distribution::build_info();
                 value["pid"] = serde_json::json!(std::process::id());
+                match std::env::current_exe() {
+                    Ok(path) => value["executable_path"] = serde_json::json!(path),
+                    Err(error) => log::info!("host: executable path unavailable: {error}"),
+                }
                 write_json_response(response_file, value);
             }
             crate::protocol::AppRequest::ListPanes {
