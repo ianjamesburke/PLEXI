@@ -739,7 +739,7 @@ impl PlexiApp {
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal_wrapped(|ui| {
-                                KitSpecimen::KeyChip.show(ui, &colors, false, "app", "");
+                                KitSpecimen::KeyChip.show(ui, &colors, false, "view", "");
                                 KitSpecimen::KeyChip.show(ui, &colors, false, "term", "");
                                 KitSpecimen::StatusChip.show(ui, &colors, false, data.status, "");
                                 KitSpecimen::Badge.show(
