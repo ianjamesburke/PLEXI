@@ -6139,6 +6139,33 @@ fn open_gate_note(h: &mut HostHarness, dir: &std::path::Path, initial: &str) -> 
     pane_id
 }
 
+#[test]
+fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("document.txt");
+    std::fs::write(&path, b"original bytes\n").unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new(path.clone())),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane = *h.state().open_panes.last().unwrap();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.close_focused_app();
+    h.run_frames(2);
+    assert_eq!(h.app.focus_stack.last().map(|kind| kind.name()), Some("UnsavedChanges"));
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(std::fs::read(&path).unwrap(), b"original bytes\n");
+}
+
 fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
     h.app.windows[0]
         .panes
