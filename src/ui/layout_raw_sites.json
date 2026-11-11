@@ -195,6 +195,13 @@
       "rationale": "ActionModal owns measured shortcut columns and complete wrapped action labels with minimum named hit targets; production layout reports and rendered fixtures check the result."
     },
     {
+      "source": "src/ui/dialog.rs",
+      "site": "button_row | ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {",
+      "count": 1,
+      "surface": "src/ui/dialog.rs",
+      "rationale": "ActionModal button rows right-align measured kit buttons, stack them full-width when the measured row does not fit, and emit modal_action layout reports; the unsaved-changes scene checks wide and narrow panes."
+    },
+    {
       "source": "src/ui/list.rs",
       "site": "show | let action_response = ui.interact(",
       "count": 1,

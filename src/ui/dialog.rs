@@ -1,4 +1,4 @@
-use crate::ui::button::ButtonKind;
+use crate::ui::button::{ButtonKind, ButtonSize, KitButton};
 use crate::ui::overlay::ModalShell;
 use crate::ui::shortcuts;
 use crate::ui::style;
@@ -87,6 +87,7 @@ pub(crate) struct ActionModal<'a> {
     width: f32,
     actions: &'a [DialogAction<'a>],
     default_action: Option<&'a str>,
+    button_row: bool,
 }
 
 impl<'a> ActionModal<'a> {
@@ -97,7 +98,16 @@ impl<'a> ActionModal<'a> {
             width: style::MODAL_WIDTH_MD,
             actions,
             default_action: None,
+            button_row: false,
         }
+    }
+
+    /// Conventional confirm layout: one right-aligned row of kit buttons in
+    /// the order given (left to right), each carrying its shortcut as a dim
+    /// hint. Stacks full-width only when the row cannot fit the modal.
+    pub(crate) fn button_row(mut self) -> Self {
+        self.button_row = true;
+        self
     }
 
     pub(crate) fn default_action(mut self, id: &'a str) -> Self {
@@ -148,6 +158,14 @@ impl<'a> ActionModal<'a> {
             add_body(ui);
             ui.add_space(style::SPACE_MD);
 
+            if self.button_row {
+                ui.add_space(style::SPACE_SM);
+                if let Some(id) = button_row(ui, self.actions, colors) {
+                    selected = Some(id);
+                }
+                return;
+            }
+
             // Every label starts past the widest combo so the chip column and
             // the label column each read as one edge — the modal has a single
             // left alignment from title through body to actions.
@@ -173,6 +191,91 @@ impl<'a> ActionModal<'a> {
             dismissed: response.dismissed,
         }
     }
+}
+
+/// The shortcut spelled as one compact hint, e.g. `⌘S`, `D`, `Esc`.
+fn hint_text(shortcut: &DialogShortcut<'_>) -> String {
+    shortcuts::display_tokens(shortcut.keys).concat()
+}
+
+fn confirm_button<'b>(
+    action: &'b DialogAction<'_>,
+    hint: &'b str,
+    colors: &Colors,
+) -> KitButton<'b> {
+    let mut button = KitButton::new(action.label, colors)
+        .kind(action.kind)
+        .size(ButtonSize::Md);
+    if !hint.is_empty() {
+        button = button.hint(hint);
+    }
+    button
+}
+
+/// Right-aligned row of kit buttons, left to right as `actions` are ordered.
+/// The layout depends only on the labels and the available width, never on
+/// hover or press, so no state moves a button. A row that cannot fit stacks
+/// full-width with the last action (the primary one) on top.
+fn button_row<'a>(
+    ui: &mut egui::Ui,
+    actions: &'a [DialogAction<'a>],
+    colors: &Colors,
+) -> Option<&'a str> {
+    let hints: Vec<String> = actions
+        .iter()
+        .map(|action| action.shortcut.as_ref().map(hint_text).unwrap_or_default())
+        .collect();
+    let widths: Vec<f32> = actions
+        .iter()
+        .zip(&hints)
+        .map(|(action, hint)| confirm_button(action, hint, colors).natural_width(ui))
+        .collect();
+    let needed =
+        widths.iter().sum::<f32>() + style::SPACE_SM * widths.len().saturating_sub(1) as f32;
+    let stacked = needed > ui.available_width();
+    if stacked {
+        static STACKED: std::sync::Once = std::sync::Once::new();
+        STACKED.call_once(|| log::info!("ui: stacking confirm buttons, row does not fit"));
+    }
+    let capture = super::layout_report::Capture::begin(ui.painter(), "modal_action");
+    let mut selected = None;
+    let mut reports = Vec::new();
+    let start = ui.cursor().min;
+    let mut add = |ui: &mut egui::Ui, index: usize, full_width: bool| {
+        let action = &actions[index];
+        let mut button = confirm_button(action, &hints[index], colors);
+        if full_width {
+            button = button.min_width(ui.available_width());
+        }
+        let response = ui.add(button);
+        reports.push(super::layout_report::Action {
+            id: action.id.into(),
+            name: action.label.into(),
+            painted_label: action.label.into(),
+            hit: response.rect,
+            minimum: egui::Vec2::splat(style::BUTTON_H_MD),
+            inactive: false,
+        });
+        if response.clicked() {
+            selected = Some(action.id);
+        }
+    };
+    if stacked {
+        ui.spacing_mut().item_spacing.y = style::SPACE_SM;
+        for index in (0..actions.len()).rev() {
+            add(ui, index, true);
+        }
+    } else {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+            for index in (0..actions.len()).rev() {
+                add(ui, index, false);
+            }
+        });
+    }
+    let rect = egui::Rect::from_min_max(start, ui.min_rect().max);
+    capture.finish(ui.painter(), rect, colors.bg_sidebar, reports, vec![]);
+    selected
 }
 
 /// One full-width action row: its shortcut chips are the primary affordance,
@@ -359,27 +462,15 @@ impl UnsavedChangesDialog {
         colors: &Colors,
     ) -> Option<UnsavedChangesChoice> {
         use egui::{Key, Modifiers};
-        let actions =
-            [
-                DialogAction::new(
-                    "save",
-                    if self.conflicted {
-                        "Overwrite disk"
-                    } else {
-                        "Save"
-                    },
-                    ButtonKind::Primary,
-                )
-                .shortcut(DialogShortcut::new(&["cmd", "S"], Modifiers::COMMAND, Key::S).exact()),
-                DialogAction::new(
-                    "discard",
-                    if self.reload {
-                        "Reload from disk"
-                    } else {
-                        "Discard edits"
-                    },
-                    ButtonKind::Danger,
-                )
+        let discard_label = if self.reload {
+            "Reload from disk"
+        } else {
+            "Discard"
+        };
+        let actions = [
+            DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
+            DialogAction::new("discard", discard_label, ButtonKind::Danger)
                 .shortcut(if self.reload {
                     DialogShortcut::new(&["R"], Modifiers::NONE, Key::R).exact()
                 } else {
@@ -388,22 +479,39 @@ impl UnsavedChangesDialog {
                 .alternate((!self.reload).then(|| {
                     DialogShortcut::new(&["cmd", "D"], Modifiers::COMMAND, Key::D).exact()
                 })),
-                DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
-                    .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
-            ];
+            DialogAction::new(
+                "save",
+                if self.conflicted {
+                    "Overwrite disk"
+                } else {
+                    "Save"
+                },
+                ButtonKind::Primary,
+            )
+            .shortcut(DialogShortcut::new(&["cmd", "S"], Modifiers::COMMAND, Key::S).exact()),
+        ];
+        let name = std::path::Path::new(&self.path)
+            .file_name()
+            .map_or_else(|| self.path.clone(), |n| n.to_string_lossy().into_owned());
+        let question = if self.conflicted {
+            format!("{name} changed on disk. Overwriting replaces those changes.")
+        } else {
+            format!("Save changes to {name}?")
+        };
         let response = ActionModal::new("unsaved_changes", "Unsaved changes", &actions)
+            .width(style::MODAL_WIDTH_SM)
             .default_action("save")
+            .button_row()
             .show(ctx, colors, |ui| {
-                super::typography::body(ui, &self.path, colors);
-                super::typography::caption(
+                super::typography::modal_body(ui, &question, colors);
+                let path = super::text::elide(
                     ui,
-                    if self.conflicted {
-                        "The file changed on disk. Overwriting replaces those changes."
-                    } else {
-                        "Save your changes before leaving this document?"
-                    },
-                    colors,
+                    &self.path,
+                    egui::FontId::proportional(style::TEXT_HINT),
+                    ui.available_width(),
+                    super::text::Side::Middle,
                 );
+                super::typography::caption(ui, path, colors);
                 if let Some(error) = &self.error {
                     super::typography::caption(ui, error, colors);
                 }

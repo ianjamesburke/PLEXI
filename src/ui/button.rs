@@ -110,6 +110,7 @@ pub(crate) struct KitButton<'a> {
     compact: bool,
     flat: bool,
     surface: Option<Color32>,
+    hint: Option<&'a str>,
 }
 
 impl<'a> KitButton<'a> {
@@ -129,7 +130,16 @@ impl<'a> KitButton<'a> {
             compact: false,
             flat: false,
             surface: None,
+            hint: None,
         }
+    }
+
+    /// A dim shortcut hint painted inside the button after the label. It is
+    /// part of the one-line button box, so it never wraps or changes the
+    /// button's height.
+    pub(crate) fn hint(mut self, hint: &'a str) -> Self {
+        self.hint = Some(hint);
+        self
     }
 
     pub(crate) fn kind(mut self, kind: ButtonKind) -> Self {
@@ -239,7 +249,26 @@ impl KitButton<'_> {
         .size()
         .x;
         // Rounded up once, so a box sized to this never elides to float noise.
-        (text + self.padding().x * 2.0).ceil().max(self.min_size.x)
+        (text + self.hint_width(ui) + self.padding().x * 2.0)
+            .ceil()
+            .max(self.min_size.x)
+    }
+
+    /// Room the hint takes after the label: the gap plus its own text.
+    fn hint_width(&self, ui: &egui::Ui) -> f32 {
+        self.hint.map_or(0.0, |hint| {
+            let font = egui::FontId::proportional(style::TEXT_HINT);
+            style::SPACE_SM
+                + crate::ui::text::elided_galley(
+                    ui,
+                    hint,
+                    font,
+                    f32::MAX,
+                    crate::ui::text::Side::Trailing,
+                )
+                .size()
+                .x
+        })
     }
 }
 
@@ -277,7 +306,7 @@ impl egui::Widget for KitButton<'_> {
                 ui,
                 self.label,
                 font.clone(),
-                (ui.available_width() - padding.x * 2.0).max(0.0),
+                (ui.available_width() - padding.x * 2.0 - self.hint_width(ui)).max(0.0),
                 crate::ui::text::Side::Trailing,
             )
         } else {
@@ -307,7 +336,24 @@ impl egui::Widget for KitButton<'_> {
         };
         // Growing atoms on both sides centre the label in any stretched box;
         // egui otherwise aligns it from the parent layout (left in a row).
-        let button = egui::Button::new((egui::Atom::grow(), text, egui::Atom::grow()))
+        use egui::IntoAtoms as _;
+        let atoms = match self.hint {
+            Some(hint) => (
+                egui::Atom::grow(),
+                text,
+                egui::Atom::custom(
+                    egui::Id::new("kit_button_hint_gap"),
+                    egui::vec2(style::SPACE_SM, 0.0),
+                ),
+                RichText::new(hint)
+                    .size(style::TEXT_HINT)
+                    .color(visuals.text.gamma_multiply(0.7)),
+                egui::Atom::grow(),
+            )
+                .into_atoms(),
+            None => (egui::Atom::grow(), text, egui::Atom::grow()).into_atoms(),
+        };
+        let button = egui::Button::new(atoms)
             .stroke(stroke)
             .corner_radius(self.class().radius())
             .fill(visuals.fill)

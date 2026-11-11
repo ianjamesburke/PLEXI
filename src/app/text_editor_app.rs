@@ -570,6 +570,15 @@ impl TextEditorApp {
         self.last_edit = Some(Instant::now());
     }
 
+    /// Select from `anchor` to `head` (line, column pairs) without editing.
+    #[cfg(test)]
+    pub(crate) fn test_select(&mut self, anchor: (usize, usize), head: (usize, usize)) {
+        self.doc
+            .apply(EditorCommand::SetCursor(crate::editor::Cursor::new(anchor.0, anchor.1)));
+        self.doc
+            .apply(EditorCommand::ExtendTo(crate::editor::Cursor::new(head.0, head.1)));
+    }
+
     #[cfg(test)]
     pub(crate) fn test_discard_unsaved(&mut self) {
         self.last_edit = None;

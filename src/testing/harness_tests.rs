@@ -6266,6 +6266,35 @@ fn unsaved_dialog_cancel_and_unrecognized_input_never_edit_buffer() {
 }
 
 #[test]
+fn unsaved_dialog_cancel_preserves_caret_selection_and_scroll() {
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    let body: String = (0..200).map(|n| format!("line {n}\n")).collect();
+    h.text_editor_mut(pane).test_set_unsaved(&body);
+    h.text_editor_mut(pane).test_select((40, 2), (44, 5));
+    h.text_editor_mut(pane).test_set_scroll_y(300.0);
+    h.run_frames(2);
+    let state = |h: &mut HostHarness| {
+        let state = crate::app::app_trait::App::semantic_state(h.text_editor_mut(pane)).unwrap();
+        (state["primary_selection"].clone(), state["scroll"].clone())
+    };
+    let before = state(&mut h);
+    assert_ne!(before.0["anchor"], before.0["caret"], "selection is set");
+    assert!(before.1["y"].as_f64().unwrap() > 0.0, "scroll is set");
+
+    h.app.close_focused_app();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last().map(|kind| kind.name()),
+        Some("UnsavedChanges")
+    );
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(state(&mut h), before, "Cancel must not move caret, selection or scroll");
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
 fn unsaved_dialog_clean_close_has_no_modal() {
     let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
     h.app.close_focused_app();
