@@ -301,7 +301,7 @@ impl egui::Widget for KitButton<'_> {
         }
         // Keep the frame geometry identical for every paint state.
         let stroke = if visuals.stroke.width == 0.0 {
-            egui::Stroke::new(1.0, Color32::TRANSPARENT)
+            egui::Stroke::new(1.0_f32, Color32::TRANSPARENT)
         } else {
             visuals.stroke
         };
