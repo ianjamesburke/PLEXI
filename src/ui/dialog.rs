@@ -281,6 +281,7 @@ fn action_row(
             painted_label: action.label.into(),
             hit: response.rect,
             minimum: egui::Vec2::splat(style::BUTTON_H_MD),
+            inactive: false,
         }],
         vec![],
     );

@@ -469,11 +469,11 @@ fn chrome_button_visuals(
     }
 }
 
-/// Opacity of the neutral disabled chip over the surface. The label stays
-/// opaque `text_dim`: the layout report's SmallText contrast gate (4.5:1)
-/// applies to disabled text too, so dimming comes from the chip and the
-/// quiet colour, never from fading the glyphs.
+/// Opacity of the neutral disabled chip over the surface, and of its label.
+/// Disabled labels are inactive text: `layout_report::INACTIVE_TEXT_MIN`
+/// governs their legibility instead of the SmallText 4.5:1 minimum.
 const DISABLED_FILL: f32 = 0.4;
+const DISABLED_LABEL: f32 = 0.6;
 
 const GLYPH_MIN_W: f32 = style::BUTTON_H_MD - style::SPACE_SM;
 
@@ -743,7 +743,8 @@ fn tactile_button(
                                 rect.stroke.color = Color32::TRANSPARENT;
                             }
                             egui::Shape::Text(text) => {
-                                text.override_text_color = Some(rest_text);
+                                text.override_text_color =
+                                    Some(rest_text.gamma_multiply(DISABLED_LABEL));
                             }
                             _ => {}
                         }
@@ -1200,47 +1201,84 @@ mod tests {
         }
     }
 
-    /// Ian's ruling (stint 1216 round 2): disabled is clearly dimmed and never
-    /// close to Primary or any enabled kind; the layout box is unchanged.
+    /// Disabled is a neutral chip with a faded label: the fade is exact, not
+    /// just a recolour, so it cannot drift back to an enabled-looking label.
     #[test]
-    fn disabled_is_dimmed_and_matches_no_enabled_kind() {
+    fn disabled_primary_fades_the_label_and_uses_the_neutral_chip() {
         let colors = crate::testing::HostHarness::new().app.colors;
+        let (rest, rect) = render(3, None, |ui| ui.add(KitButton::new("Action", &colors)));
+        let (disabled, disabled_rect) = render(3, None, |ui| {
+            ui.add_enabled(false, KitButton::new("Action", &colors))
+        });
+        assert_eq!(rect, disabled_rect, "layout box");
+        assert_eq!(label_shape(&rest, "Action").1.a(), 255);
+        let faded = label_shape(&disabled, "Action").1.a();
+        let expected = (255.0 * DISABLED_LABEL).round() as i32;
+        assert!(
+            (i32::from(faded) - expected).abs() <= 1,
+            "disabled label alpha {faded}, expected {expected}"
+        );
+        assert_eq!(
+            fills_at(&disabled, rect.center()).last().copied(),
+            Some(colors.bg_active.gamma_multiply(DISABLED_FILL)),
+            "disabled chip"
+        );
+    }
+
+    /// Ian's ruling (stint 1216 round 3): disabled is clearly dimmed in every
+    /// kind, Ghost included, and never close to an enabled strongest kind.
+    /// Distances are contrast ratios so the check holds in any theme.
+    #[test]
+    fn disabled_is_clearly_dimmed_and_far_from_every_enabled_kind() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let panel = host.app.ctx.style().visuals.panel_fill;
+        let ratio = |a: Color32, b: Color32| {
+            crate::ui::theme::contrast(
+                crate::ui::theme::luminance(a),
+                crate::ui::theme::luminance(b),
+            )
+        };
         let kinds = [
             ButtonKind::Primary,
             ButtonKind::Secondary,
             ButtonKind::Ghost,
-            ButtonKind::Accent,
             ButtonKind::Danger,
         ];
-        let rest_of = |kind| {
-            let (rest, rect) = render(3, None, |ui| {
-                ui.add(KitButton::new("Action", &colors).kind(kind))
+        let paint = |kind, enabled: bool| {
+            let (out, rect) = render(3, None, |ui| {
+                ui.add_enabled(enabled, KitButton::new("Action", &colors).kind(kind))
             });
-            (
-                fills_at(&rest, rect.center()).last().copied(),
-                label_shape(&rest, "Action").1,
-                rect,
-            )
+            let fill = panel.blend(
+                fills_at(&out, rect.center())
+                    .last()
+                    .copied()
+                    .unwrap_or(Color32::TRANSPARENT),
+            );
+            (fill, label_shape(&out, "Action").1, rect)
         };
-        let enabled_fills: Vec<_> = kinds.iter().map(|k| rest_of(*k).0).collect();
         for kind in kinds {
-            let (rest_fill, rest_label, rect) = rest_of(kind);
-            let (disabled, disabled_rect) = render(3, None, |ui| {
-                ui.add_enabled(false, KitButton::new("Action", &colors).kind(kind))
-            });
+            let (rest_fill, rest_label, rect) = paint(kind, true);
+            let (fill, label, disabled_rect) = paint(kind, false);
             assert_eq!(rect, disabled_rect, "{kind:?}: layout box");
-            let fill = fills_at(&disabled, rect.center()).last().copied();
-            let label = label_shape(&disabled, "Action").1;
-            assert_ne!(label, rest_label, "{kind:?}: label is dimmed");
-            if kind != ButtonKind::Ghost {
-                for (other, enabled) in kinds.iter().zip(&enabled_fills) {
-                    assert_ne!(
-                        fill, *enabled,
-                        "{kind:?} disabled looks like enabled {other:?}"
-                    );
-                }
-                assert_ne!(fill, rest_fill, "{kind:?}: fill changes when disabled");
-            }
+            let legibility = |fill: Color32, label: Color32| ratio(fill.blend(label), fill);
+            let (enabled, dimmed) = (legibility(rest_fill, rest_label), legibility(fill, label));
+            assert!(
+                enabled >= dimmed * 1.5,
+                "{kind:?}: disabled label ({dimmed:.2}) must be clearly dimmer than enabled ({enabled:.2})"
+            );
+            assert!(
+                dimmed >= crate::ui::layout_report::INACTIVE_TEXT_MIN,
+                "{kind:?}: disabled label {dimmed:.2} under the inactive floor"
+            );
+        }
+        let disabled_chip = paint(ButtonKind::Secondary, false).0;
+        for strong in [ButtonKind::Primary, ButtonKind::Danger] {
+            let enabled = paint(strong, true).0;
+            assert!(
+                ratio(disabled_chip, enabled) >= 1.5,
+                "disabled chip {disabled_chip:?} is too close to enabled {strong:?} {enabled:?}"
+            );
         }
     }
 

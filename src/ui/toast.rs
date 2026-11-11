@@ -175,6 +175,7 @@ impl<'a> ToastShell<'a> {
                     painted_label: label.into(),
                     hit: response.rect,
                     minimum: egui::vec2(style::BUTTON_H_MD, style::BUTTON_H_MD),
+                    inactive: false,
                 }],
                 vec![],
             );

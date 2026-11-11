@@ -439,6 +439,7 @@ impl<'a> ListRow<'a> {
                 painted_label: label.into(),
                 hit,
                 minimum: Vec2::splat(style::BUTTON_H_MD),
+                inactive: false,
             });
         }
         if stacked {
