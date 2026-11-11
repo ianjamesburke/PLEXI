@@ -381,6 +381,24 @@
       },
       "states": "configuration shadow notice; Dusk/Dawn; zoom 1/2",
       "minimum": "Show notice text without actions in the toast shell"
+    },
+    {
+      "id": "src/ui/dropdown.rs",
+      "fixture": {
+        "file": "tests/scenes/kit-dropdown.toml"
+      },
+      "additional_fixtures": [
+        {
+          "file": "src/app/secrets_app.rs",
+          "test": "screenshot_scope_popup_rows_stay_fixed_on_hover"
+        },
+        {
+          "file": "src/ui/state_matrix_tests.rs",
+          "test": "dropdown_options_state_matrix"
+        }
+      ],
+      "states": "Dusk/Dawn; idle, hover, pressed, selected, disabled; popup dismissal and selection",
+      "minimum": "MENU_MIN_W popup; dense ListRow options elide long text without resizing; trigger uses BUTTON_H_MD"
     }
   ]
 }

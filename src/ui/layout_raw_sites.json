@@ -1,6 +1,6 @@
 {
   "base_commit": "c9bcffdf2410f3170639466e7711fd28303aab66",
-  "policy": "Legacy syntax inventory is migration debt. New raw calls need a scoped rationale and a surface with a registered fixture. This syntax guard cannot establish runtime conformance.",
+  "policy": "Legacy syntax inventory is migration debt. New raw calls need a scoped rationale and a surface with a registered fixture. This syntax guard cannot establish runtime conformance. ComboBox construction is confined to src/ui/dropdown.rs and enforced by clippy.toml; migrated scope and descriptor options use ListRow.",
   "legacy": {
     "src/ui/activity.rs": {
       "paint_attention_effect | painter.text(": 1

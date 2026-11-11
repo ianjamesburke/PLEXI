@@ -4017,6 +4017,14 @@ impl eframe::App for PlexiApp {
                 .collect()
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
+        // Native popup dismissal owns bare Escape before the app/CloseApp
+        // handlers. Otherwise a dropdown can close its entire parent pane.
+        if egui::Popup::is_any_open(ctx)
+            && router_input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
+        {
+            egui::Popup::close_all(ctx);
+            log::info!("ui: Escape dismissed native popup before pane key dispatch");
+        }
         self.suppress_approval_decision_repeats(&mut router_input);
         let mut poll_actions_result = keys::poll_actions(
             &mut router_input,
