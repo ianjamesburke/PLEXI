@@ -3141,6 +3141,7 @@ pub(crate) struct HookReport {
     pub event: String,
 }
 
+#[cfg(test)]
 fn hook_str<'a>(input: &'a serde_json::Value, paths: &[&[&str]]) -> Option<&'a str> {
     paths.iter().find_map(|path| {
         let mut cur = input;
@@ -3155,7 +3156,8 @@ fn truncate_chars(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn hook_tool_detail(input: &serde_json::Value) -> Option<String> {
+#[cfg(test)]
+fn baseline_hook_tool_detail(input: &serde_json::Value) -> Option<String> {
     let tool = hook_str(input, &[&["tool_name"], &["toolName"]])?;
     let path_value = || {
         hook_str(
@@ -3227,7 +3229,8 @@ fn hook_tool_detail(input: &serde_json::Value) -> Option<String> {
 
 /// Map a Claude Code / Codex / Pi hook payload to a state report. Events that
 /// carry no state (subagent lifecycle, unknown names) return `None`.
-pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> {
+#[cfg(test)]
+fn baseline_map_hook_payload(input: &serde_json::Value) -> Option<HookReport> {
     let event = hook_str(input, &[&["hook_event_name"]])?;
     let (state, with_tool) = match event {
         "PreToolUse" | "tool_call" | "PostToolUse" | "PostToolBatch" | "tool_result" => {
@@ -3243,11 +3246,70 @@ pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> 
     Some(HookReport {
         state,
         detail: if with_tool {
-            hook_tool_detail(input)
+            baseline_hook_tool_detail(input)
         } else {
             None
         },
         session_id: hook_str(input, &[&["session_id"], &["sessionId"]]).map(str::to_string),
+        event: event.to_string(),
+    })
+}
+
+// Spike: parse the embedded rules once per CLI process; the real host would own
+// validation and caching when loading a plugin package.
+fn hook_rules() -> &'static serde_json::Value {
+    static RULES: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        serde_json::from_str(include_str!("hook_rules_spike.json"))
+            .expect("embedded spike hook rules must be valid JSON")
+    })
+}
+
+fn rule_paths<'a>(input: &'a serde_json::Value, paths: &serde_json::Value) -> Option<&'a str> {
+    paths.as_array()?.iter().find_map(|path| {
+        let mut value = input;
+        for key in path.as_array()? {
+            value = value.get(key.as_str()?)?;
+        }
+        value.as_str().and_then(non_empty_string)
+    })
+}
+
+pub(crate) fn map_hook_payload(input: &serde_json::Value) -> Option<HookReport> {
+    let rules = hook_rules();
+    let event = rule_paths(input, &rules["event_paths"])?;
+    let rule = rules["events"].get(event)?;
+    let state = rule["state"].as_str()?;
+    let detail = if rule["tool_detail"].as_bool()? {
+        rule_paths(input, &rules["tool_paths"]).map(|tool| {
+            let Some(format) = rules["tools"].get(tool) else {
+                return tool.to_string();
+            };
+            let label = format["label"].as_str().unwrap_or(tool);
+            let value = rule_paths(input, &format["paths"]).and_then(|v| {
+                if format["basename"].as_bool().unwrap_or(false) {
+                    Path::new(v)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                } else {
+                    Some(truncate_chars(
+                        v,
+                        format["max_chars"].as_u64().unwrap_or(60) as usize,
+                    ))
+                }
+            });
+            match value {
+                Some(v) => format!("{label}: {v}"),
+                None => label.to_string(),
+            }
+        })
+    } else {
+        None
+    };
+    Some(HookReport {
+        state,
+        detail,
+        session_id: rule_paths(input, &rules["session_paths"]).map(str::to_string),
         event: event.to_string(),
     })
 }
@@ -3892,6 +3954,126 @@ mod agent_tests {
             "PLEXI_AGENT_NAME=codex /tmp/current/claude-code-agent-state.sh"
         );
         assert_eq!(hooks[0]["hooks"][0]["statusMessage"], "Plexi agent state");
+    }
+
+    #[test]
+    fn hook_payload_spike_parity_and_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let rules = super::hook_rules();
+        let mut inputs = vec![
+            serde_json::json!({}),
+            serde_json::json!({"hook_event_name":"unknown"}),
+        ];
+        for event in rules["events"].as_object().unwrap().keys() {
+            for tool in rules["tools"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .chain(["other"])
+            {
+                inputs.push(serde_json::json!({"hook_event_name":event,"sessionId":"s", "toolName":tool,
+                    "input":{"command":"é".repeat(100),"file_path":"/a/b.rs","query":"q".repeat(80),"url":"url","description":"desc"}}));
+                inputs.push(serde_json::json!({"hook_event_name":event,"tool_name":tool}));
+            }
+        }
+        for input in &inputs {
+            assert_eq!(
+                super::baseline_map_hook_payload(input),
+                super::map_hook_payload(input),
+                "{input}"
+            );
+        }
+        let iterations = 200_000;
+        for (name, f) in [
+            (
+                "baseline",
+                super::baseline_map_hook_payload as fn(&serde_json::Value) -> _,
+            ),
+            (
+                "table",
+                super::map_hook_payload as fn(&serde_json::Value) -> _,
+            ),
+        ] {
+            let start = Instant::now();
+            for i in 0..iterations {
+                black_box(f(black_box(&inputs[i % inputs.len()])));
+            }
+            println!(
+                "{name}: {:.1} ns/event, {iterations} events, {} mixed inputs",
+                start.elapsed().as_nanos() as f64 / iterations as f64,
+                inputs.len()
+            );
+        }
+        let start = Instant::now();
+        for _ in 0..1000 {
+            black_box(
+                serde_json::from_str::<serde_json::Value>(black_box(include_str!(
+                    "hook_rules_spike.json"
+                )))
+                .unwrap(),
+            );
+        }
+        println!(
+            "table parse: {:.1} µs/process, 1000 parses",
+            start.elapsed().as_nanos() as f64 / 1_000_000.0
+        );
+    }
+
+    #[test]
+    fn hook_payload_spike_path_and_fallback_parity() {
+        let tools = [
+            "Bash",
+            "bash",
+            "apply_patch",
+            "Edit",
+            "edit",
+            "Write",
+            "write",
+            "Read",
+            "read",
+            "WebSearch",
+            "WebFetch",
+            "Agent",
+            "other",
+        ];
+        let parents = ["tool_input", "input", "args"];
+        let fields = [
+            "command",
+            "cmd",
+            "file_path",
+            "path",
+            "query",
+            "url",
+            "description",
+            "prompt",
+        ];
+        for tool in tools {
+            for parent in parents {
+                for field in fields {
+                    let mut input = serde_json::json!({"hook_event_name":"PreToolUse", "tool_name":tool, "session_id":"  s  ", "sessionId":"other"});
+                    input[parent] = serde_json::json!({});
+                    input[parent][field] = serde_json::json!("  /repo/é.rs  ");
+                    assert_eq!(
+                        super::baseline_map_hook_payload(&input),
+                        super::map_hook_payload(&input),
+                        "{input}"
+                    );
+                }
+            }
+        }
+        for input in [
+            serde_json::json!({"hook_event_name":" PreToolUse ","tool_name":" ","toolName":" Bash ","tool_input":{"command":" ","cmd":"  hi  "}}),
+            serde_json::json!({"hook_event_name":"PreToolUse","tool_name":12}),
+            serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/"}}),
+        ] {
+            assert_eq!(
+                super::baseline_map_hook_payload(&input),
+                super::map_hook_payload(&input),
+                "{input}"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,387 @@
+{
+  "event_paths": [
+    [
+      "hook_event_name"
+    ]
+  ],
+  "session_paths": [
+    [
+      "session_id"
+    ],
+    [
+      "sessionId"
+    ]
+  ],
+  "tool_paths": [
+    [
+      "tool_name"
+    ],
+    [
+      "toolName"
+    ]
+  ],
+  "events": {
+    "PreToolUse": {
+      "state": "working",
+      "tool_detail": true
+    },
+    "tool_call": {
+      "state": "working",
+      "tool_detail": true
+    },
+    "PostToolUse": {
+      "state": "working",
+      "tool_detail": true
+    },
+    "PostToolBatch": {
+      "state": "working",
+      "tool_detail": true
+    },
+    "tool_result": {
+      "state": "working",
+      "tool_detail": true
+    },
+    "PermissionRequest": {
+      "state": "blocked",
+      "tool_detail": true
+    },
+    "UserPromptSubmit": {
+      "state": "working",
+      "tool_detail": false
+    },
+    "agent_start": {
+      "state": "working",
+      "tool_detail": false
+    },
+    "before_agent_start": {
+      "state": "working",
+      "tool_detail": false
+    },
+    "SessionStart": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "session_start": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "Stop": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "agent_end": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "StopFailure": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "SessionEnd": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "session_shutdown": {
+      "state": "idle",
+      "tool_detail": false
+    },
+    "UsageLimit": {
+      "state": "blocked",
+      "tool_detail": false
+    },
+    "BootFailure": {
+      "state": "blocked",
+      "tool_detail": false
+    }
+  },
+  "tools": {
+    "Bash": {
+      "label": "Bash",
+      "paths": [
+        [
+          "tool_input",
+          "command"
+        ],
+        [
+          "tool_input",
+          "cmd"
+        ],
+        [
+          "input",
+          "command"
+        ],
+        [
+          "args",
+          "command"
+        ]
+      ],
+      "max_chars": 60
+    },
+    "bash": {
+      "label": "Bash",
+      "paths": [
+        [
+          "tool_input",
+          "command"
+        ],
+        [
+          "tool_input",
+          "cmd"
+        ],
+        [
+          "input",
+          "command"
+        ],
+        [
+          "args",
+          "command"
+        ]
+      ],
+      "max_chars": 60
+    },
+    "apply_patch": {
+      "label": "Patch",
+      "paths": [
+        [
+          "tool_input",
+          "command"
+        ],
+        [
+          "input",
+          "command"
+        ]
+      ],
+      "max_chars": 60
+    },
+    "Edit": {
+      "label": "Edit",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "edit": {
+      "label": "Edit",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "Write": {
+      "label": "Write",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "write": {
+      "label": "Write",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "Read": {
+      "label": "Read",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "read": {
+      "label": "Read",
+      "paths": [
+        [
+          "tool_input",
+          "file_path"
+        ],
+        [
+          "tool_input",
+          "path"
+        ],
+        [
+          "input",
+          "file_path"
+        ],
+        [
+          "input",
+          "path"
+        ],
+        [
+          "args",
+          "file_path"
+        ],
+        [
+          "args",
+          "path"
+        ]
+      ],
+      "basename": true
+    },
+    "WebSearch": {
+      "label": "WebSearch",
+      "paths": [
+        [
+          "tool_input",
+          "query"
+        ],
+        [
+          "input",
+          "query"
+        ]
+      ],
+      "max_chars": 50
+    },
+    "WebFetch": {
+      "label": "WebFetch",
+      "paths": [
+        [
+          "tool_input",
+          "url"
+        ],
+        [
+          "input",
+          "url"
+        ]
+      ],
+      "max_chars": 60
+    },
+    "Agent": {
+      "label": "Agent",
+      "paths": [
+        [
+          "tool_input",
+          "description"
+        ],
+        [
+          "tool_input",
+          "prompt"
+        ],
+        [
+          "input",
+          "description"
+        ],
+        [
+          "input",
+          "prompt"
+        ]
+      ],
+      "max_chars": 60
+    }
+  }
+}
