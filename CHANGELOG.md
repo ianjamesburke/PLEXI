@@ -1,6 +1,20 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.6] — 2026-11-11
+
+### Changes
+- fix(release): align local and release gates (#3055)
+- design(plugins): thin core plus core plugins on one capability API (#3024)
+- fix(ui): share kit dropdown rows and popup dismissal (#3054)
+- fix(editor): keyboard-driven unsaved changes dialog (#3050)
+- fix(agent): clear idle hand-launched agent on exit (#3049)
+- feat(palette): open changelog from search (#3046)
+- fix(ui): use global_style in button test (alpha test build break) (#3052)
+- fix(ui): type kit button transparent stroke literal as f32 (#3051)
+- Stabilize button appearance and state geometry (#3041)
+- feat(cli): pane state/status/wait/heartbeat default to the current pane (#3048)
+- fix(restore): verify Claude session transcript exists before resuming (#3047)
 ## [0.4.5] — 2026-11-11
 
 ### Changes
