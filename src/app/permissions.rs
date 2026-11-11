@@ -192,8 +192,8 @@ impl Capability {
 
     /// Every capability variant. The single source of truth for "all known
     /// capabilities" — validators iterate this instead of hand-rolling string
-    /// lists. When adding a variant, `as_str`/`try_from` won't compile without
-    /// it, and `capability_all_round_trips` fails if it is missing here.
+    /// lists. `as_str` owns the wire spelling; parsing and manifest validation
+    /// derive their accepted IDs from this list.
     pub const ALL: &'static [Capability] = &[
         Self::FsRead,
         Self::FsWrite,
@@ -347,7 +347,7 @@ pub const RESERVED_CAPABILITY_IDS: &[&str] = &["usage.read", "usage.refresh"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityId {
-    Available(Capability),
+    Available,
     Reserved,
 }
 
@@ -356,7 +356,7 @@ pub enum CapabilityId {
 pub fn capability_ids() -> impl Iterator<Item = (&'static str, CapabilityId)> {
     Capability::ALL
         .iter()
-        .map(|cap| (cap.as_str(), CapabilityId::Available(*cap)))
+        .map(|cap| (cap.as_str(), CapabilityId::Available))
         .chain(
             RESERVED_CAPABILITY_IDS
                 .iter()

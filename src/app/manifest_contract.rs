@@ -94,7 +94,7 @@ impl ManifestError {
 pub(super) fn validate_capabilities(plugin: &str, ids: &[String]) -> Result<(), ManifestError> {
     for id in ids {
         let kind = match capability_ids().find(|(known, _)| *known == id) {
-            Some((_, CapabilityId::Available(_))) => continue,
+            Some((_, CapabilityId::Available)) => continue,
             Some((_, CapabilityId::Reserved)) => ManifestErrorKind::ReservedCapability(id.clone()),
             None => ManifestErrorKind::UnknownCapability(id.clone()),
         };
@@ -478,6 +478,111 @@ mod tests {
     }
 
     #[test]
+    fn schema2_concurrent_git_installs_keep_one_command_owner() {
+        use crate::app::packs::SourceSpec;
+        use crate::cli::install_host::{install_one, test_support::MockCloner};
+        let target = tempfile::tempdir().unwrap();
+        let first = GOOD
+            .replace("main.wasm", "run.sh")
+            .replace("sample.open", "sample.tools.open");
+        let second = first
+            .replace("id = \"sample\"", "id = \"sample.tools\"")
+            .replace("sample.main", "sample.tools.main");
+        let cloner = MockCloner::new()
+            .with_manifest("first", &first)
+            .with_manifest("second", &second);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ["first", "second"]
+                .into_iter()
+                .map(|url| {
+                    let cloner = &cloner;
+                    let barrier = &barrier;
+                    let target = target.path();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        install_one(cloner, &SourceSpec::Git(url.into()), None, target)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect();
+            assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+            let error = results.into_iter().find_map(Result::err).unwrap();
+            assert!(
+                error.contains("sample.tools.open") && error.contains("first install wins"),
+                "{error}"
+            );
+        });
+        assert_ne!(
+            target.path().join("sample").exists(),
+            target.path().join("sample.tools").exists()
+        );
+    }
+
+    #[test]
+    fn schema2_git_install_rejects_invalid_capability_before_placing_plugin() {
+        use crate::app::packs::SourceSpec;
+        use crate::cli::install_host::{install_one, test_support::MockCloner};
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new().with_manifest("bad", &fixture("reserved-read"));
+        let error =
+            install_one(&cloner, &SourceSpec::Git("bad".into()), None, target.path()).unwrap_err();
+        assert!(
+            error.contains("sample")
+                && error.contains("usage.read")
+                && error.contains("reserved, not yet available"),
+            "{error}"
+        );
+        assert!(!target.path().join("sample").exists());
+    }
+
+    #[test]
+    fn schema2_rejects_command_paths_empty_segments_and_shell_fields() {
+        for id in [
+            "sample.",
+            "sample..open",
+            "sample./open",
+            "sample.open;quit",
+            "sample.open now",
+        ] {
+            let raw = GOOD.replace("sample.open", id);
+            assert!(
+                matches!(
+                    PluginManifest::parse(&raw).unwrap_err().kind,
+                    ManifestErrorKind::CommandNamespace(_)
+                ),
+                "{id}"
+            );
+        }
+        for handler in [
+            "",
+            "/bin/sh",
+            "$(touch /tmp/probe)",
+            "open;quit",
+            "open now",
+            "9invalid",
+        ] {
+            let raw = GOOD.replace("open_picker", handler);
+            assert!(
+                matches!(
+                    PluginManifest::parse(&raw).unwrap_err().kind,
+                    ManifestErrorKind::InvalidCommandHandler(_)
+                ),
+                "{handler}"
+            );
+        }
+        assert!(matches!(
+            PluginManifest::parse(&format!("{GOOD}shell = 'echo nope'\n"))
+                .unwrap_err()
+                .kind,
+            ManifestErrorKind::InvalidField(_)
+        ));
+    }
+
+    #[test]
     fn schema2_reserves_all_core_namespaces_including_aliases() {
         for namespace in CORE_NAMESPACES.iter() {
             let raw = GOOD.replace("sample.open", &format!("{namespace}.open"));
@@ -514,16 +619,50 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires isolated process-global logger"]
+    fn schema2_rejections_emit_info_with_plugin_field_and_reason() {
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().to_owned());
+        crate::platform::logging::init(log::LevelFilter::Info, 1, true);
+        let names = [
+            "unknown-capability",
+            "reserved-read",
+            "reserved-refresh",
+            "duplicate-command",
+            "foreign-command",
+            "core-command",
+            "shell-handler",
+            "unsupported-panel",
+        ];
+        let errors: Vec<_> = names
+            .iter()
+            .map(|name| PluginManifest::parse(&fixture(name)).unwrap_err())
+            .collect();
+        log::logger().flush();
+        let output = std::fs::read_to_string(profile.path().join("plexi.log")).unwrap();
+        for error in errors {
+            let expected = format!(
+                "manifest: rejected plugin={} field={} reason={}",
+                error.plugin, error.field, error.kind
+            );
+            assert!(
+                output
+                    .lines()
+                    .any(|line| line.contains("[INFO]") && line.contains(&expected)),
+                "missing info rejection: {expected}\n{output}"
+            );
+        }
+        println!("{output}");
+    }
+
+    #[test]
     fn schema2_registry_preserves_runtime_ids_and_reservations_never_grant() {
         let mut seen = HashSet::new();
         for (id, availability) in capability_ids() {
             assert!(seen.insert(id), "duplicate registry ID {id}");
             match availability {
-                CapabilityId::Available(cap) => {
-                    assert_eq!(
-                        crate::app::permissions::Capability::try_from(id).unwrap(),
-                        cap
-                    );
+                CapabilityId::Available => {
+                    crate::app::permissions::Capability::try_from(id).unwrap();
                     validate_capabilities("sample", &[id.into()]).unwrap();
                 }
                 CapabilityId::Reserved => {

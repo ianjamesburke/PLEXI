@@ -196,3 +196,10 @@ The `pane layout` workflow is documented in `skills/plexi-cli/intro.md` under In
 ## Workspace rollback
 
 The `host workspace-rollback` workflow is documented in `skills/plexi-cli/intro.md` under Inspect the host and manage capacity. It exports only to a new channel profile.
+
+## Plugin manifest checks
+
+`plugin check`, package validation and install use `PluginManifest::parse`. The
+manifest contract and generated reference are owned by
+`src/app/manifest_contract.rs` and `tools/gen_manifest_docs.py`. Command
+reservations remain inert until command dispatch is available.

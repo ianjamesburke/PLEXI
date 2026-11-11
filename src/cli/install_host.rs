@@ -207,12 +207,9 @@ fn install_one_git(
 
     // Stage into a sibling `.tmp-<unique>/clone` dir inside `target_root` so
     // we can read the manifest BEFORE committing to the final dest. Same-FS
-    // ensures the eventual `rename` is atomic. We hand-roll the temp dir name
-    // (no `tempfile` dependency in non-test code) — uniqueness comes from
-    // nanos + pid.
-    let nanos = crate::platform::clock::now_nanos();
-    let pid = std::process::id();
-    let stage_root = target_root.join(format!(".tmp-install-{pid}-{nanos}"));
+    // ensures the eventual `rename` is atomic. A UUID keeps concurrent installs
+    // in this process separate even when the wall clock returns the same tick.
+    let stage_root = target_root.join(format!(".tmp-install-{}", uuid::Uuid::new_v4()));
     let stage_path = stage_root.join("clone");
     // Best-effort cleanup wrapper: any early return below leaks the dir, so
     // we explicitly clean on every error branch via a local closure.
