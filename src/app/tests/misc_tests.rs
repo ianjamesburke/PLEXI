@@ -789,9 +789,15 @@ fn explorer_media_viewer_close_returns_focus_and_preserves_selection() {
 
     app.close_focused();
 
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = app.windows[0].focused_pane.expect("explorer focused");
+    assert!(matches!(
+        app.windows[0].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
     assert_eq!(
-        app.windows[0].focused_pane,
-        Some(browser_tile),
+        PlexiApp::find_pane_in_tile(&app.windows[0].tree, focus),
+        Some(browser_pane_id),
         "closing viewer should return focus to explorer sibling"
     );
     let browser_state_after = app.windows[0]

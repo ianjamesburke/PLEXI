@@ -424,6 +424,7 @@ impl WorkspaceFile {
                     if migration_source.is_some() && existing.version == 2 && self.version == 3 {
                         existing.remove_legacy_deleted_context_focus();
                     }
+                    existing.heal_stale_focus();
                     existing.validate()?;
                     if existing.version == 2 && self.version == 3 {
                         preserve_v2_rollback(&path, &data)?;
@@ -501,6 +502,7 @@ impl WorkspaceFile {
         if ws.version == 2 {
             ws.remove_legacy_deleted_context_focus();
         }
+        ws.heal_stale_focus();
         if let Err(error) = ws.validate() {
             log::error!(
                 "workspace_load: invalid workspace {}: {error}; preserving original",
@@ -575,6 +577,34 @@ impl WorkspaceFile {
             log::info!("workspace migration: saved plugin launch paths after package migration v2");
         }
         Some(ws)
+    }
+
+    /// A saved `focused_pane` can name a container: `Tree::simplify` re-wraps
+    /// panes in Tabs and the container takes over the old pane's tile id. Move
+    /// such focus to the first visible pane, as `Window::reconcile_stale_tiles`
+    /// does for a live window, so an invalid file on disk neither fails to load
+    /// nor blocks every later save. `validate` is unchanged.
+    fn heal_stale_focus(&mut self) {
+        for window in &mut self.windows {
+            let Some(old) = window.focused_pane else { continue };
+            if matches!(window.tree.tiles.get(old), Some(egui_tiles::Tile::Pane(_))) {
+                continue;
+            }
+            let new = crate::host::context::first_visible_pane_in(&window.tree, old);
+            if new.is_none() && !window.panes.is_empty() {
+                log::warn!(
+                    "workspace: window {} focus {old:?} is not a pane and has no \
+                     visible pane; focus cleared",
+                    window.window_id
+                );
+            } else {
+                log::info!(
+                    "workspace: healed stale focus window={} old={old:?} new={new:?}",
+                    window.window_id
+                );
+            }
+            window.focused_pane = new;
+        }
     }
 
     /// Version 2 could persist focus entries after a context was deleted.

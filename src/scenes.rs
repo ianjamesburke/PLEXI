@@ -443,6 +443,10 @@ pub enum Step {
     Sidebar {
         sidebar: bool,
     },
+    /// Make the isolated harness workspace the active context (headless only).
+    SeedWorkspace {
+        seed_workspace: bool,
+    },
     /// Seed one message notification through the real host modal render path.
     /// Headless-only: live scenes must create notifications through a plugin.
     SeedNotification {
@@ -459,6 +463,10 @@ pub enum Step {
     },
     SeedFailedAgent {
         seed_failed_agent: bool,
+    },
+    /// A real terminal agent for the dashboard fixture, on a background tab.
+    SeedAgentDashboard {
+        seed_agent_dashboard: bool,
     },
     /// Switch to the context at this router index.
     SwitchContext {
@@ -670,6 +678,8 @@ pub struct AssertSpec {
     /// Portal panes across all windows.
     pub portal_count: Option<usize>,
     pub sidebar: Option<bool>,
+    /// App-wide UI scale (headless backend only), e.g. `1.0` after Reset UI scale.
+    pub ui_scale: Option<f32>,
     /// Whether the target pane currently exists.
     pub exists: Option<bool>,
     /// Whether the target pane is the active focused pane.
@@ -1235,6 +1245,9 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             .as_ref()
             .map(|suffix| format!("[{suffix}] "))
             .unwrap_or_default();
+        // Release the previous case's thread-local profile before constructing
+        // the next harness; overlapping guards would reuse a deleted profile.
+        drop(runner.take());
         let mut h = PlexiUiHarness::new_sized_scaled_with_config(
             size[0],
             size[1],
@@ -1245,6 +1258,22 @@ pub fn run_scene(scene_path: &Path, out_dir: &Path, no_shots: bool) -> SceneRepo
             },
         );
         if styled {
+            // Pane focus reloads configuration. Persist the matrix selection in
+            // the harness-owned profile so a reload cannot restore the default.
+            let config_path = crate::config::config_path();
+            if let Err(error) = std::fs::write(
+                &config_path,
+                format!("ui_scale = {scale}\n[theme]\npreset = {theme:?}\n"),
+            ) {
+                log::error!(
+                    "scene: write matrix config {}: {error}",
+                    config_path.display()
+                );
+                return failed_report(
+                    scene_name,
+                    SceneError::new("scene_config", error.to_string()),
+                );
+            }
             h.with_app_mut(|app| {
                 let cfg = crate::ui::theme::preset_colors(theme).expect("validated matrix theme");
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
@@ -2177,9 +2206,17 @@ impl LiveBackend {
                 "unsupported_live_verb",
                 "sidebar mutation has no sanctioned live CLI/IPC command",
             )),
+            Step::SeedWorkspace { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "seed_workspace is headless-only",
+            )),
             Step::SeedNotification { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
                 "seed_notification is headless-only; live scenes must notify through a plugin",
+            )),
+            Step::SeedAgentDashboard { .. } => Err(SceneError::new(
+                "unsupported_live_verb",
+                "seed_agent_dashboard is headless-only",
             )),
             Step::SeedFailedAgent { .. } => Err(SceneError::new(
                 "unsupported_live_verb",
@@ -2249,6 +2286,12 @@ impl LiveBackend {
             return Err(SceneError::new(
                 "unsupported_live_assertion",
                 "sidebar state is not exposed by the live pane metadata API",
+            ));
+        }
+        if spec.ui_scale.is_some() {
+            return Err(SceneError::new(
+                "unsupported_live_assertion",
+                "ui_scale is not exposed by the live pane metadata API",
             ));
         }
         let host = self.host_state();
@@ -2706,9 +2749,13 @@ fn step_label(step: &Step) -> String {
         Step::Focus { focus } => format!("focus {focus}"),
         Step::Close { close } => format!("close {close}"),
         Step::Sidebar { sidebar } => format!("sidebar {sidebar}"),
+        Step::SeedWorkspace { seed_workspace } => format!("seed_workspace {seed_workspace}"),
         Step::SeedNotification { seed_notification } => {
             format!("seed_notification {:?}", seed_notification.title)
         }
+        Step::SeedAgentDashboard {
+            seed_agent_dashboard,
+        } => format!("seed_agent_dashboard {seed_agent_dashboard}"),
         Step::SeedFailedAgent { seed_failed_agent } => {
             format!("seed_failed_agent {seed_failed_agent}")
         }
@@ -3100,6 +3147,19 @@ impl HeadlessBackend {
                 self.h.step();
                 Ok(None)
             }
+            Step::SeedWorkspace { seed_workspace } => {
+                if *seed_workspace {
+                    let root = self.h.workspace_root().to_path_buf();
+                    std::fs::create_dir_all(root.join(crate::config::workspace_channel_dir()))
+                        .map_err(|error| SceneError::new("seed_workspace", error.to_string()))?;
+                    self.h.with_app_mut(|app| {
+                        app.router.get_mut(app.router.active_idx()).root = root.clone();
+                        app.windows[app.active_window].path = root;
+                    });
+                    self.h.step();
+                }
+                Ok(None)
+            }
             Step::SeedNotification { seed_notification } => {
                 // Deliberately bypasses `enqueue_notification`: this is a
                 // screenshot fixture, not a notification surface. It force-opens
@@ -3151,6 +3211,61 @@ impl HeadlessBackend {
                 Ok(Some(StepDetail::Message {
                     message: format!("seeded notification {id}"),
                 }))
+            }
+            Step::SeedAgentDashboard {
+                seed_agent_dashboard,
+            } => {
+                if !seed_agent_dashboard {
+                    return Err(SceneError::new(
+                        "seed_failed",
+                        "seed_agent_dashboard must be true",
+                    ));
+                }
+                let cwd = self.h.workspace_root().to_path_buf();
+                self.h.with_app_mut(|app| {
+                    let pane_id = app.host.alloc_pane_id();
+                    let mut terminal = crate::host::pane::TerminalPane::new(
+                        pane_id,
+                        app.ctx.clone(),
+                        app.pty_event_tx.clone(),
+                        egui_term::BackendSettings {
+                            shell: "/bin/sh".into(),
+                            args: vec!["-c".into(), "sleep 300".into()],
+                            working_directory: Some(cwd),
+                            ..Default::default()
+                        },
+                        14.0,
+                    )
+                    .ok_or_else(|| {
+                        log::error!("scene: could not create dashboard terminal");
+                        SceneError::new("seed_failed", "could not create dashboard terminal")
+                    })?;
+                    terminal.agent_role = Some("Reviewer".into());
+                    terminal.agent_harness = Some("scene-agent".into());
+                    terminal.agent = Some(crate::protocol::PaneAgentState {
+                        pane_id,
+                        state: crate::protocol::AgentState::Failed,
+                        agent: "scene-agent".into(),
+                        detail: Some("Review command failed".into()),
+                        session_id: None,
+                    });
+                    terminal.tail_preview =
+                        Some("Review stopped; inspect output and retry.".into());
+                    let window = &mut app.windows[app.active_window];
+                    window.panes.insert(
+                        pane_id,
+                        crate::host::pane::Pane::Terminal(Box::new(terminal)),
+                    );
+                    let terminal_tile = window.tree.tiles.insert_pane(pane_id);
+                    window.tree.root = Some(match window.tree.root {
+                        Some(root) => window.tree.tiles.insert_tab_tile(vec![root, terminal_tile]),
+                        None => terminal_tile,
+                    });
+                    window.zoomed_pane = window.focused_pane;
+                    Ok::<_, SceneError>(())
+                })?;
+                self.h.run_steps(2);
+                Ok(None)
             }
             Step::SeedFailedAgent { seed_failed_agent } => {
                 if !seed_failed_agent {
@@ -3784,6 +3899,10 @@ impl HeadlessBackend {
         if let Some(v) = spec.sidebar {
             expect("sidebar", v.to_string(), host.sidebar.to_string());
         }
+        if let Some(v) = spec.ui_scale {
+            let actual = self.h.with_app(|app| app.ui_scale);
+            expect("ui_scale", format!("{v:.2}"), format!("{actual:.2}"));
+        }
         if let Some(expected) = spec.exists {
             let target = spec.target.as_deref().ok_or_else(|| {
                 SceneError::new(
@@ -4135,6 +4254,41 @@ mod tests {
             serde_json::to_string_pretty(&report).expect("serialize report")
         );
         assert!(report.passed, "scene failed — see report above");
+    }
+
+    #[test]
+    fn scene_matrix_theme_survives_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let scene = directory.path().join("theme-persistence.toml");
+        std::fs::write(
+            &scene,
+            r#"
+size = [600.0, 400.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+[[steps]]
+open = { kind = "builtin", id = "button-gallery-fixture", as = "gallery" }
+[[steps]]
+run_steps = 3
+[[steps]]
+shot = "theme.png"
+"#,
+        )
+        .unwrap();
+        let report = run_scene(&scene, directory.path(), false);
+        assert!(report.passed);
+        assert_eq!(report.shots.len(), 2);
+        for (shot, name) in report.shots.iter().zip(["plexi-dusk", "plexi-dawn"]) {
+            let image = image::open(shot).unwrap().into_rgba8();
+            let expected = crate::ui::theme::Colors::from_config(
+                &crate::ui::theme::preset_colors(name).unwrap(),
+            )
+            .bg_darkest;
+            assert_eq!(
+                image.get_pixel(400, 350).0,
+                expected.to_array(),
+                "{name}: opening a pane must retain the requested scene theme"
+            );
+        }
     }
 
     #[test]

@@ -10,16 +10,16 @@ paste = { target = "draft", value = "By morning, the whole world knows who I am.
 key = { target = "draft", value = "cmd+w" }
 
 [[steps]]
-expect = { target = "draft", source_text_contains = "the whole world knows who I am.", rendered_text_contains = "Unsaved changes." }
+expect = { target = "draft", source_text_contains = "the whole world knows who I am.", rendered_text_contains = "Unsaved changes" }
 
 [[steps]]
 shot = "notes-safe-close.png"
 
 [[steps]]
-key = { target = "draft", value = "d" }
+key = { target = "host", value = "escape" }
 
 [[steps]]
-text = { target = "draft", value = "reaming" }
+text = { target = "draft", value = "dreaming" }
 
 [[steps]]
 expect = { target = "draft", source_text_contains = "the whole world knows who I am.dreaming", focused = true }

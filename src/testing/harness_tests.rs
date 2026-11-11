@@ -185,7 +185,7 @@ fn manually_launched_agent_exit_clears_working_report() {
 fn manually_launched_idle_agent_exit_is_not_idle() {
     assert_manual_agent_exit(
         crate::protocol::AgentState::Idle,
-        crate::protocol::AgentState::ExitedUnreported,
+        crate::protocol::AgentState::Idle,
     );
 }
 
@@ -230,7 +230,7 @@ fn assert_manual_agent_exit(
         .unwrap()
         .set_agent(Some(PaneAgentState {
             pane_id: id,
-            state: reported_state,
+            state: reported_state.clone(),
             agent: "codex".into(),
             detail: None,
             session_id: None,
@@ -243,9 +243,14 @@ fn assert_manual_agent_exit(
         let pane = &h.app.windows[0].panes[&id];
         let terminal = pane.as_terminal().unwrap();
         if terminal.observed_agent.is_none() && terminal.activity.is_none() {
+            let expected_state = if reported_state == crate::protocol::AgentState::Idle {
+                None
+            } else {
+                Some(expected.clone())
+            };
             assert_eq!(
                 pane.effective_agent().map(|a| a.state),
-                Some(expected.clone()),
+                expected_state,
                 "shell={} fg={:?} last={:?} harness={:?} role={:?}",
                 terminal.backend.child_pid(),
                 terminal.backend.foreground_pid(),
@@ -253,7 +258,22 @@ fn assert_manual_agent_exit(
                 terminal.agent_harness,
                 terminal.agent_role
             );
-            assert_eq!(pane.effective_activity(), Some(&expected));
+            assert_eq!(pane.effective_activity(), expected_state.as_ref());
+            if reported_state == crate::protocol::AgentState::Idle {
+                assert!(pane.agent().is_none(), "the idle hook must be cleared");
+                assert!(
+                    terminal.build_saved_agent_session().is_none(),
+                    "the plain shell must not restore as an agent"
+                );
+                assert!(
+                    h.app
+                        .fleet_history
+                        .borrow()
+                        .iter()
+                        .any(|record| record.pane_id == id && record.harness == "codex"),
+                    "the departed agent must remain in fleet history"
+                );
+            }
             break;
         }
         assert!(Instant::now() < deadline, "manual agent did not exit");
@@ -6402,6 +6422,288 @@ fn open_gate_note(h: &mut HostHarness, dir: &std::path::Path, initial: &str) -> 
     pane_id
 }
 
+#[test]
+fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("document.txt");
+    std::fs::write(&path, b"original bytes\n").unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(
+            path.clone(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane = *h.state().open_panes.last().unwrap();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.close_focused_view();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last().map(|kind| kind.name()),
+        Some("UnsavedChanges")
+    );
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(std::fs::read(&path).unwrap(), b"original bytes\n");
+}
+
+fn unsaved_editor_fixture() -> (tempfile::TempDir, std::path::PathBuf, HostHarness, PaneId) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("document.txt");
+    std::fs::write(&path, b"original bytes\n").unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_view_pane(
+        Box::new(crate::app::text_editor_view::TextEditorView::new(
+            path.clone(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane = *h.state().open_panes.last().unwrap();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    (dir, path, h, pane)
+}
+
+#[test]
+fn unsaved_dialog_save_default_and_discard_alias() {
+    for (key, modifiers, expected) in [
+        (egui::Key::S, egui::Modifiers::COMMAND, "unsaved edits"),
+        (egui::Key::Enter, egui::Modifiers::NONE, "unsaved edits"),
+        (egui::Key::D, egui::Modifiers::COMMAND, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        let pane_count = h.state().open_panes.len();
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        h.app.close_focused_view();
+        h.run_frames(2);
+        h.press_key(key, modifiers);
+        h.run_frames(2);
+        assert!(!h.app.windows[0].panes.contains_key(&pane));
+        assert_eq!(
+            h.state().open_panes.len(),
+            pane_count - 1,
+            "discard alias must not split"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(h.app.focus_stack.is_empty());
+    }
+}
+
+#[test]
+fn unsaved_dialog_cancel_and_unrecognized_input_never_edit_buffer() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    use crate::app::FocusKind;
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.close_focused_view();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.host_input_owner(),
+        InputOwner::Overlay(OverlaySurface::Layer(FocusKind::UnsavedChanges))
+    );
+    h.press_key(
+        egui::Key::D,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
+    h.run_frames(2);
+    assert!(
+        h.app.windows[0].panes.contains_key(&pane),
+        "Cmd+Shift+D must not discard"
+    );
+    h.press_key(egui::Key::X, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert_eq!(h.app.focus_stack.last(), Some(&FocusKind::UnsavedChanges));
+    h.frame(egui::RawInput {
+        events: vec![
+            egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("must not leak".into()),
+        ],
+        ..Default::default()
+    });
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
+fn unsaved_dialog_cancel_preserves_caret_selection_and_scroll() {
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    let body: String = (0..200).map(|n| format!("line {n}\n")).collect();
+    h.text_editor_mut(pane).test_set_unsaved(&body);
+    h.text_editor_mut(pane).test_select((40, 2), (44, 5));
+    h.text_editor_mut(pane).test_set_scroll_y(300.0);
+    h.run_frames(2);
+    let state = |h: &mut HostHarness| {
+        let state = crate::app::view_trait::View::semantic_state(h.text_editor_mut(pane)).unwrap();
+        (state["primary_selection"].clone(), state["scroll"].clone())
+    };
+    let before = state(&mut h);
+    assert_ne!(before.0["anchor"], before.0["caret"], "selection is set");
+    assert!(before.1["y"].as_f64().unwrap() > 0.0, "scroll is set");
+
+    h.app.close_focused_view();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last().map(|kind| kind.name()),
+        Some("UnsavedChanges")
+    );
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(
+        state(&mut h),
+        before,
+        "Cancel must not move caret, selection or scroll"
+    );
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
+fn unsaved_dialog_clean_close_has_no_modal() {
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    h.app.close_focused_view();
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(h.app.focus_stack.is_empty());
+}
+
+#[test]
+fn unsaved_dialog_switch_cancel_discard_and_save() {
+    use crate::app::view_trait::View;
+    for (key, modifiers, switches, expected) in [
+        (
+            egui::Key::Escape,
+            egui::Modifiers::NONE,
+            false,
+            "original bytes\n",
+        ),
+        (
+            egui::Key::D,
+            egui::Modifiers::NONE,
+            true,
+            "original bytes\n",
+        ),
+        (
+            egui::Key::S,
+            egui::Modifiers::COMMAND,
+            true,
+            "unsaved edits",
+        ),
+    ] {
+        let (dir, path, mut h, pane) = unsaved_editor_fixture();
+        let next = dir.path().join("next.txt");
+        std::fs::write(&next, "target contents").unwrap();
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        h.text_editor_mut(pane)
+            .restore_state(&serde_json::json!({"path": next}));
+        h.run_frames(2);
+        assert_eq!(
+            h.app.focus_stack.last().map(|k| k.name()),
+            Some("UnsavedChanges")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+        h.press_key(key, modifiers);
+        h.run_frames(2);
+        let buffer = h.text_editor_mut(pane).open_buffer();
+        assert_eq!(
+            buffer.path,
+            if switches { &next } else { &path }.display().to_string()
+        );
+        assert_eq!(
+            buffer.text,
+            if switches {
+                "target contents"
+            } else {
+                "unsaved edits"
+            }
+        );
+        assert_eq!(buffer.dirty, !switches);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(h.app.focus_stack.is_empty());
+        h.text_editor_mut(pane).test_discard_unsaved();
+    }
+}
+
+#[test]
+fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    assert!(!h.app.prepare_user_quit());
+    h.run_frames(2);
+    assert_eq!(h.app.focused_pane_id(), Some(pane));
+    assert_eq!(
+        h.app.focus_stack.last().map(|k| k.name()),
+        Some("UnsavedChanges")
+    );
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.quitting);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
+fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    h.app.close_focused_view();
+    h.run_frames(2);
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(
+        h.app.focus_stack.last().map(|k| k.name()),
+        Some("UnsavedChanges")
+    );
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(path.is_dir());
+}
+
+#[test]
+fn unsaved_dialog_conflicted_close_requires_explicit_overwrite() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    std::fs::write(&path, "external edits").unwrap();
+    h.text_editor_mut(pane).test_check_disk();
+    h.app.close_focused_view();
+    h.run_frames(2);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external edits");
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "unsaved edits");
+}
+
 fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
     h.app.windows[0]
         .panes
@@ -6441,7 +6743,14 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     h.frame(input);
     assert!(!h.app.quitting);
     assert_eq!(h.app.quit_press_count, 0);
-    h.text_editor_mut(pane).test_discard_unsaved();
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("gate-note.md")).unwrap(),
+        "agent version"
+    );
+    assert!(h.app.focus_stack.is_empty());
     h.frame(egui::RawInput {
         events: vec![egui::Event::Key {
             key: egui::Key::Q,
@@ -6457,10 +6766,9 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
     assert!(
         h.app.quitting,
-        "explicit resolution permits retry; count={} confirm={} state={}",
+        "explicit resolution permits retry; count={} confirm={}",
         h.app.quit_press_count,
-        h.app.confirm_quit(),
-        gate_note_semantics(&h, pane)
+        h.app.confirm_quit()
     );
 }
 
@@ -6474,6 +6782,21 @@ fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
     std::fs::write(&path, "agent version").unwrap();
     h.text_editor_mut(pane).test_check_disk();
     h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last().map(|kind| kind.name()),
+        Some("UnsavedChanges")
+    );
+    assert_eq!(
+        gate_note_semantics(&h, pane)["source_text"],
+        "my whole poem"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent version");
+    // Modal prompts require explicit Cancel before prose reaches the editor.
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
     h.frame(egui::RawInput {
         events: vec![
             egui::Event::Key {
@@ -6493,7 +6816,7 @@ fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
         .to_string();
     assert!(
         text.contains("my whole poem"),
-        "typing R must not reload: {text}"
+        "typing R after Cancel must not reload: {text}"
     );
     assert_eq!(
         text.len(),
@@ -8876,8 +9199,86 @@ mod routine_firing {
     }
 
     #[test]
+    fn routine_firing_experiment_gate_and_disabled_log() {
+        const CHILD: &str = "PLEXI_ROUTINE_GATE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "testing::harness_tests::routine_firing::routine_firing_experiment_gate_and_disabled_log", "--nocapture"])
+                .env(CHILD, "1").output().unwrap();
+            assert!(
+                output.status.success(),
+                "child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let logs = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(
+                logs.matches("scheduler: routines are disabled; routines.toml ignored")
+                    .count(),
+                1,
+                "{logs}"
+            );
+            return;
+        }
+        struct Logger;
+        impl log::Log for Logger {
+            fn enabled(&self, metadata: &log::Metadata) -> bool {
+                metadata.level() <= log::Level::Info
+            }
+            fn log(&self, record: &log::Record) {
+                if self.enabled(record.metadata()) {
+                    eprintln!("{}", record.args());
+                }
+            }
+            fn flush(&self) {}
+        }
+        log::set_boxed_logger(Box::new(Logger)).unwrap();
+        log::set_max_level(log::LevelFilter::Info);
+        let mut h = HostHarness::new();
+        let root = tempfile::tempdir().unwrap();
+        root_default_context(&mut h, root.path());
+        add_focused_view_pane(&mut h, 0, root.path());
+        write_routines(
+            root.path(),
+            "[[routine]]\nname = \"gate\"\ncommand = \"true\"\nschedule = \"every 2 hours\"\n",
+        );
+        let _disabled = crate::release::set_test_experiments(&[]);
+        h.app.tick_scheduler();
+        h.app.tick_scheduler();
+        assert!(
+            terminal_pane_ids(&h, 0).is_empty(),
+            "disabled routines must not spawn a pane"
+        );
+        assert!(
+            h.app.scheduler.entries.is_empty(),
+            "disabled routines must not load"
+        );
+        let _enabled =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
+        h.app.config.core_only = Some(true);
+        h.app.tick_scheduler();
+        assert!(
+            terminal_pane_ids(&h, 0).is_empty(),
+            "core-only must not fire routines"
+        );
+        assert!(
+            h.app.scheduler.entries.is_empty(),
+            "core-only must not load routines"
+        );
+        h.app.config.core_only = Some(false);
+        h.app.tick_scheduler();
+        assert_eq!(
+            terminal_pane_ids(&h, 0).len(),
+            1,
+            "enabled routine must fire"
+        );
+    }
+
+    #[test]
     fn routine_fires_into_named_context_and_restores_focus() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -8923,6 +9324,8 @@ mod routine_firing {
     fn spawn_pane_context_name_lands_in_named_context() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -8976,6 +9379,8 @@ mod routine_firing {
     fn spawn_pane_unknown_context_name_errors() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9017,6 +9422,8 @@ mod routine_firing {
     #[test]
     fn routine_empty_context_fires_into_active_context() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9042,6 +9449,8 @@ mod routine_firing {
     #[test]
     fn routine_missing_context_skips_notifies_once() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
@@ -9083,6 +9492,8 @@ mod routine_firing {
     #[test]
     fn startup_does_not_stampede_with_persisted_last_fire() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9119,6 +9530,8 @@ mod routine_firing {
     fn startup_fires_when_persisted_last_fire_is_stale_or_absent() {
         // Stale persisted state → fires once.
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9167,6 +9580,8 @@ mod routine_firing {
     #[test]
     fn overlap_guard_skips_streaks_and_reaps_on_close() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         h.app.notifications_enabled = true; // harness default is off
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
@@ -9254,6 +9669,8 @@ mod routine_firing {
     #[test]
     fn ephemeral_bare_command_run_blocks_refire_without_activity_sample() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9300,6 +9717,8 @@ mod routine_firing {
     #[test]
     fn nonephemeral_exited_shell_reaps_and_refires() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -9352,6 +9771,8 @@ mod routine_firing {
     #[test]
     fn ephemeral_routine_pane_closes_on_exit_and_nonephemeral_stays() {
         let mut h = HostHarness::new();
+        let _experiments =
+            crate::release::set_test_experiments(&[crate::release::ReleaseFeature::Routines]);
         let root = tempfile::tempdir().expect("tempdir");
         root_default_context(&mut h, root.path());
         add_focused_view_pane(&mut h, 0, root.path());
@@ -12576,6 +12997,14 @@ mod agent_state_restoration_tests {
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let tmp = tempfile::tempdir().expect("tempdir");
+        let claude_store = tmp.path().join("claude-projects");
+        std::fs::create_dir_all(claude_store.join("-proj")).unwrap();
+        std::fs::write(
+            claude_store.join("-proj").join("sess-active-10.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let _claude_guard = crate::cli::agent::set_test_claude_projects_dir(claude_store);
         for (role, harness) in [("lead", "claude"), ("worker", "codex")] {
             let agent_dir = profile_dir.path().join("agents").join(role);
             std::fs::create_dir_all(&agent_dir).expect("create agent definition");
@@ -12996,6 +13425,63 @@ mod agent_state_restoration_tests {
             terminal.last_resumed_command.as_deref(),
             Some("codex resume thread-enter")
         );
+    }
+
+    #[test]
+    fn standby_wake_with_claude_session_lacking_transcript_launches_bare_and_clears_id() {
+        let claude_store = tempfile::tempdir().expect("claude store");
+        let _claude_guard =
+            crate::cli::agent::set_test_claude_projects_dir(claude_store.path().to_path_buf());
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let cwd = tempfile::tempdir().expect("cwd");
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("terminal pane")
+            .as_terminal_mut()
+            .expect("terminal pane")
+            .standby_cwd = Some(cwd.path().to_path_buf());
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal pane");
+        terminal.agent_session_id = Some("9faadb29-no-transcript".to_string());
+        terminal.standby_session = Some(SavedAgentSession {
+            fleet_result: None,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_dismissed: false,
+            fleet_since: 0,
+            harness: "claude".to_string(),
+            config_name: None,
+            permission_posture: None,
+            session_id: Some("9faadb29-no-transcript".to_string()),
+            last_state: AgentState::Idle,
+            last_blocked_reason: None,
+            last_detail: None,
+            parent_pane_id: None,
+            spawned_by: None,
+            pending_child_results: Vec::new(),
+            ephemeral: false,
+            tail_preview: None,
+            standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+        });
+
+        h.inject_ipc(HostRequest::KeyPane {
+            pane_id,
+            key: "enter".to_string(),
+            response_file: None,
+        });
+        h.hidden_frame();
+
+        let terminal = h.app.windows[0].panes[&pane_id]
+            .as_terminal()
+            .expect("terminal pane after Enter");
+        assert!(!terminal.is_standby(), "Enter must dismiss Standby");
+        assert_eq!(terminal.last_resumed_command.as_deref(), Some("claude"));
+        assert_eq!(terminal.agent_session_id, None, "dead id must be cleared");
     }
 
     #[test]
@@ -17583,5 +18069,247 @@ fn python_view_pane_receives_focus_and_visibility_events_in_order() {
         pane_b,
         "shown,gained,lost,hidden,shown,hidden,shown,hidden,shown",
         false,
+    );
+}
+
+#[test]
+#[ignore = "requires-pty"]
+fn changelog_escape_restores_pane_and_closed_escape_reaches_terminal() {
+    use crate::app::input_owner::InputOwner;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_focused_terminal();
+    h.terminal_backend(pane).enable_input_tap();
+    h.app.toggle_changelog();
+    h.run_frames(1);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!h.app.show_changelog, "Escape must close the changelog");
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert!(
+        h.terminal_backend(pane).take_input_tap().is_empty(),
+        "overlay must consume Escape"
+    );
+
+    h.run_frames(2);
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert_eq!(h.terminal_backend(pane).take_input_tap(), b"\x1b");
+}
+
+#[test]
+fn changelog_toolbar_and_click_away_close_focus_layer() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.run_frames(3);
+    let version: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "version"))))
+        .expect("version toolbar button");
+    let click = |h: &mut HostHarness, pos: egui::Pos2| {
+        for pressed in [true, false] {
+            h.frame(egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            });
+        }
+    };
+    click(&mut h, version.center());
+    h.run_frames(2);
+    assert!(h.app.show_changelog);
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&crate::app::FocusKind::Changelog)
+    );
+    click(&mut h, egui::pos2(10.0, 300.0));
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(
+        h.app.host_input_owner(),
+        crate::app::input_owner::InputOwner::Pane(pane)
+    );
+
+    h.run_frames(3);
+    click(&mut h, version.center());
+    h.run_frames(2);
+    assert!(h.app.show_changelog);
+    click(&mut h, version.center());
+    assert!(!h.app.show_changelog);
+    assert!(h.app.focus_stack.is_empty());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn titlebar_background_double_click_emits_zoom() {
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("titlebar_test_action"),
+            crate::platform::titlebar::DoubleClickAction::Maximize,
+        )
+    });
+    h.run_frames(3);
+    let row: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new("titlebar_row_rect")))
+        .unwrap();
+    let pos = egui::pos2(row.left() + 20.0, row.center().y);
+    for (i, pressed) in [true, false, true, false].into_iter().enumerate() {
+        h.frame(egui::RawInput {
+            time: Some(1.0 + i as f64 * 0.05),
+            events: vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        });
+    }
+    let commands =
+        &h.last_full_output.as_ref().unwrap().viewport_output[&egui::ViewportId::ROOT].commands;
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, egui::ViewportCommand::Maximized(true))),
+        "expected zoom, got {commands:?}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn titlebar_drag_and_exclusions_preserve_pointer_routing() {
+    fn frame(
+        h: &mut HostHarness,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> Vec<egui::ViewportCommand> {
+        h.frame(egui::RawInput {
+            time: Some(time),
+            events,
+            ..Default::default()
+        });
+        h.last_full_output.as_ref().unwrap().viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .clone()
+    }
+    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+    fn double_click(h: &mut HostHarness, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+        let mut commands = Vec::new();
+        for (i, pressed) in [true, false, true, false].into_iter().enumerate() {
+            commands.extend(frame(
+                h,
+                1.0 + i as f64 * 0.05,
+                vec![egui::Event::PointerMoved(pos), button(pos, pressed)],
+            ));
+        }
+        commands
+    }
+    let mut h = HostHarness::new();
+    h.app.last_sent_window_title = Some("A visible title".to_owned());
+    h.ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("titlebar_test_action"),
+            crate::platform::titlebar::DoubleClickAction::Maximize,
+        )
+    });
+    h.run_frames(3);
+    let title: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new("titlebar_title_rect")))
+        .unwrap();
+    assert!(title.is_positive());
+    let commands = double_click(&mut h, title.center());
+    assert!(!commands.iter().any(|c| matches!(
+        c,
+        egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::StartDrag
+    )));
+
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("titlebar_test_action"),
+            crate::platform::titlebar::DoubleClickAction::Maximize,
+        )
+    });
+    h.run_frames(3);
+    let help: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "help"))))
+        .unwrap();
+    frame(
+        &mut h,
+        1.0,
+        vec![
+            egui::Event::PointerMoved(help.center()),
+            button(help.center(), true),
+        ],
+    );
+    frame(&mut h, 1.05, vec![button(help.center(), false)]);
+    assert!(
+        h.app.show_shortcuts,
+        "toolbar button must receive its click"
+    );
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("titlebar_test_action"),
+            crate::platform::titlebar::DoubleClickAction::Maximize,
+        )
+    });
+    h.run_frames(3);
+    let help: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "help"))))
+        .unwrap();
+    let commands = double_click(&mut h, help.center());
+    assert!(!commands.iter().any(|c| matches!(
+        c,
+        egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::StartDrag
+    )));
+
+    let mut h = HostHarness::new();
+    h.run_frames(3);
+    let row: egui::Rect = h
+        .ctx
+        .data(|d| d.get_temp(egui::Id::new("titlebar_row_rect")))
+        .unwrap();
+    let pos = egui::pos2(row.left() + 20.0, row.center().y);
+    frame(
+        &mut h,
+        1.0,
+        vec![egui::Event::PointerMoved(pos), button(pos, true)],
+    );
+    let commands = frame(
+        &mut h,
+        1.05,
+        vec![egui::Event::PointerMoved(pos + egui::vec2(20.0, 0.0))],
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, egui::ViewportCommand::StartDrag)),
+        "expected drag, got {commands:?}"
     );
 }

@@ -5,7 +5,7 @@ resolver = "2"
 
 [package]
 name = "plexi"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2021"
 
 [package.metadata.bundle]
@@ -156,7 +156,7 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-user-notifications = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSFileManager"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject", "NSProcessInfo", "NSFileManager", "NSUserDefaults"] }
 # AVFoundation video decoder (#346).
 objc2-av-foundation = { version = "0.3", features = [
     "AVAsset",

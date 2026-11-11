@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 pub type PaneId = u64;
 
-pub(crate) const TAB_BAR_HEIGHT: f32 = 20.0;
+pub(crate) const TAB_BAR_HEIGHT: f32 = crate::ui::style::PANE_HEADER_HEIGHT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabBarAction {

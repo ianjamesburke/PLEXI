@@ -46,6 +46,12 @@ pub fn escalation_color(
 
 /// State color shared by terminal and view pane outlines.
 pub fn pane_state_color(pane: &crate::host::pane::Pane, colors: &Colors) -> Option<egui::Color32> {
+    // Quiet states (Idle, Completed) paint no ring: a gray ring just inside an unfocused
+    // pane's edge reads as a stray line, and the header glyph already carries the state.
+    let ring = |state: &AgentState| {
+        (!matches!(state, AgentState::Idle | AgentState::Completed))
+            .then(|| dot_color_from_time(state, colors, 0.0, 0))
+    };
     if let Some(terminal) = pane.as_terminal() {
         if terminal.exited
             && terminal
@@ -62,16 +68,10 @@ pub fn pane_state_color(pane: &crate::host::pane::Pane, colors: &Colors) -> Opti
             || terminal.reported_7501.is_some()
             || terminal.observed_agent.is_some()
         {
-            return Some(dot_color_from_time(
-                &terminal.effective_agent_state().0,
-                colors,
-                0.0,
-                0,
-            ));
+            return ring(&terminal.effective_agent_state().0);
         }
     }
-    pane.effective_activity()
-        .map(|state| dot_color_from_time(state, colors, 0.0, 0))
+    pane.effective_activity().and_then(ring)
 }
 
 /// Compact uppercase status badge label for a pane's escalation state.

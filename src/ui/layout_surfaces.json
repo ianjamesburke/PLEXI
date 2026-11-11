@@ -2,10 +2,6 @@
   "contract": "Internal host surfaces only; external plugin and arbitrary canvas composition require explicit conformance. A gap is not a passing layout assertion.",
   "surfaces": [
     {
-      "id": "src/app/plugin_call.rs::draw_keychain_recovery_banner",
-      "gap": "Unresolved: plugin_call has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
-    },
-    {
       "id": "src/app/attention_queue.rs::draw_attention_queue_and_decision_overlay",
       "gap": "Unresolved: attention_queue has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
@@ -20,6 +16,50 @@
     {
       "id": "src/app/card_gallery.rs::draw_card_gallery",
       "gap": "Unresolved: card_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/app/core_only.rs::draw_plugin_notice",
+      "fixture": {
+        "file": "tests/scenes/core-only.toml"
+      },
+      "states": "core-only Notes shortcut refusal; notifications may be disabled",
+      "minimum": "Host ToastShell wraps explanation above the named Dismiss action; narrow matrix scene coverage"
+    },
+    {
+      "id": "src/app/focus.rs::draw_config_notice",
+      "fixture": {
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_notes_delete_toast_themes"
+      },
+      "states": "configuration shadow notice; Dusk/Dawn; zoom 1/2",
+      "minimum": "Show notice text without actions in the toast shell"
+    },
+    {
+      "id": "src/app/focus.rs::draw_unsaved_changes",
+      "fixture": {
+        "file": "tests/scenes/editor-unsaved-dialog.toml"
+      },
+      "states": [
+        "dirty plain file",
+        "dark",
+        "light",
+        "cancel",
+        "default save"
+      ],
+      "minimum": "ActionModal owns bounded action rows and wrapping at the host minimum size."
+    },
+    {
+      "id": "src/app/plugin_call.rs::draw_keychain_recovery_banner",
+      "gap": "Unresolved: plugin_call has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/app/text_editor_view.rs::draw_find_bar",
+      "fixture": {
+        "file": "src/app/text_editor_view.rs",
+        "test": "find_bar_and_header_stay_inside_pane_at_every_size"
+      },
+      "states": "panes 100/140/180/250 wide by 100/120/200 tall; query with one match; replace row inline, stacked or collapsed; header kept at every size; scenes editor-find-bar-narrow/small/large capture Dusk and Dawn screenshots",
+      "minimum": "Find row always present with the clear action; count degrades full, compact, hidden; Replace and All are required actions that stack under the input, then the replace block collapses before the editor drops under two lines"
     },
     {
       "id": "src/app/zoom.rs::draw_tree_atlas_canvas",
@@ -51,6 +91,10 @@
     },
     {
       "id": "src/overlays/confirmations.rs::draw_quit_confirm_overlay",
+      "gap": "Unresolved: confirmations has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/overlays/confirmations.rs::draw_quit_save_failure",
       "gap": "Unresolved: confirmations has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
@@ -119,20 +163,20 @@
       "minimum": "400 physical pixels; native safe area kept; toolbar actions overflow"
     },
     {
+      "id": "src/overlays/ui_gallery.rs::draw_button_sizes",
+      "fixture": {
+        "file": "tests/scenes/one-kit-gallery.toml"
+      },
+      "states": "Primary/Secondary/Danger/Ghost and disabled at Sm/Md/Lg; Dusk/Dawn",
+      "minimum": "Gallery button rows wrap at the available width; complete labels remain visible and padded from the pane edge"
+    },
+    {
       "id": "src/overlays/ui_gallery.rs::draw_ui_gallery",
       "gap": "Unresolved: ui_gallery has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/render/view_chrome.rs",
-      "gap": "Unresolved: view_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
-    },
-    {
-      "id": "src/render/view_pane.rs",
-      "gap": "Unresolved: view_pane has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
-    },
-    {
       "id": "src/render/cli_renderer_view.rs",
-      "gap": "Unresolved: cli_renderer_view has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "gap": "Unresolved: cli_renderer_app has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/render/descriptor_widgets.rs",
@@ -148,7 +192,7 @@
     },
     {
       "id": "src/render/mcp_renderer_view.rs",
-      "gap": "Unresolved: mcp_renderer_view has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "gap": "Unresolved: mcp_renderer_app has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/render/minimap.rs",
@@ -160,21 +204,26 @@
         "file": "src/ui_tests.rs",
         "test": "screenshot_pane_chrome_state_matrix"
       },
-      "states": "terminal/app/portal/tabbed callers covered by renderer tests; states in screenshot matrix",
-      "minimum": "Header minimum and collapse owned by PaneHeader"
+      "states": "terminal/app/portal/tabbed callers covered by renderer tests; states in screenshot matrix; terminal content with focused state ring, normal/narrow, Dusk/Dawn in the additional fixture",
+      "minimum": "Terminal grid clears pane rings using the shared content inset; padded grid determines PTY size",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "screenshot_terminal_inset_and_provenance_matrix"
+        }
+      ]
+    },
+    {
+      "id": "src/render/view_chrome.rs",
+      "gap": "Unresolved: view_chrome has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
+      "id": "src/render/view_pane.rs",
+      "gap": "Unresolved: view_pane has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
       "id": "src/ui/activity.rs",
       "gap": "Unresolved: activity has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
-    },
-    {
-      "id": "src/ui/view_chrome.rs",
-      "fixture": {
-        "file": "src/ui_tests.rs",
-        "test": "screenshot_ui_kit_adoption"
-      },
-      "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
-      "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
     },
     {
       "id": "src/ui/badge.rs",
@@ -219,6 +268,24 @@
       },
       "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
       "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
+    },
+    {
+      "id": "src/ui/dropdown.rs",
+      "fixture": {
+        "file": "tests/scenes/kit-dropdown.toml"
+      },
+      "additional_fixtures": [
+        {
+          "file": "src/app/secrets_view.rs",
+          "test": "screenshot_scope_popup_rows_stay_fixed_on_hover"
+        },
+        {
+          "file": "src/ui/state_matrix_tests.rs",
+          "test": "dropdown_options_state_matrix"
+        }
+      ],
+      "states": "Dusk/Dawn; idle, hover, pressed, selected, disabled; popup dismissal and selection",
+      "minimum": "MENU_MIN_W popup; dense ListRow options elide long text without resizing; trigger uses BUTTON_H_MD"
     },
     {
       "id": "src/ui/embedded_bar.rs",
@@ -267,8 +334,14 @@
         "file": "src/ui_tests.rs",
         "test": "screenshot_pane_chrome_state_matrix"
       },
-      "states": "seven activity states; narrow/wide; Dusk/Dawn; zoom 1/2",
-      "minimum": "Optional accessories collapse before minimum title lane; below minimum title hides"
+      "states": "seven activity states; narrow/wide; Dusk/Dawn; zoom 1/2; human provenance with focused state in the additional fixture",
+      "minimum": "Right accessories clear the shared content inset; optional accessories collapse before minimum title lane",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "screenshot_terminal_inset_and_provenance_matrix"
+        }
+      ]
     },
     {
       "id": "src/ui/provenance.rs",
@@ -280,7 +353,12 @@
     },
     {
       "id": "src/ui/search_bar.rs",
-      "gap": "Unresolved: search_bar has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+      "fixture": {
+        "file": "src/app/text_editor_view.rs",
+        "test": "find_bar_and_header_stay_inside_pane_at_every_size"
+      },
+      "states": "SearchBar as embedded in the editor find bar: query with one match, panes 100/140/180/250 wide; count degrades full, compact, hidden; Explorer wiring is covered by file_browser tests, not by this fixture",
+      "minimum": "Clear is a required slot; icon and input yield last; the status badge is optional and hides before the input drops under its minimum"
     },
     {
       "id": "src/ui/shortcuts.rs",
@@ -336,12 +414,13 @@
       "gap": "Unresolved: typography has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
-      "id": "src/app/core_only.rs::draw_plugin_notice",
+      "id": "src/ui/view_chrome.rs",
       "fixture": {
-        "file": "tests/scenes/core-only.toml"
+        "file": "src/ui_tests.rs",
+        "test": "screenshot_ui_kit_adoption"
       },
-      "states": "core-only Notes shortcut refusal; notifications may be disabled",
-      "minimum": "Host ToastShell wraps explanation above the named Dismiss action; narrow matrix scene coverage"
+      "states": "Dusk/Dawn at 1x/2x; long app title and subtitle, worst-case list metadata and actions, context-close action modal. Focused adoption tests exercise wrapped translated labels and pointer activation.",
+      "minimum": "Required actions enforce BUTTON_H_MD; list actions stack when title budget is insufficient; app-bar text elides within its band; modal keys and labels wrap."
     }
   ]
 }

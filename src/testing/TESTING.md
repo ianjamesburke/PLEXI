@@ -236,6 +236,7 @@ Failures include `layout.json`, rendered pixels, and a `replay.toml` reduced to 
 | `focus = "<handle>"` | Focus an opened pane through the production pane-navigation path (`plexi pane focus` live). |
 | `close = "<handle>"` | Close an opened pane through the production pane lifecycle path (`plexi pane close` live). |
 | `seed_failed_agent = true` | Set the focused pane to a failed agent state and open its attention bar. Headless-only; live runs return `unsupported_live_verb`. |
+| `seed_agent_dashboard = true` | Seed a failed terminal agent on a background tab for the Agents dashboard. Headless-only; uses an isolated workspace and a disposable shell process. |
 | `seed_cli_operation_approval = true` | File a typed CLI operation approval built with the production `Disclosure` text and open the attention queue. Headless-only; live runs return `unsupported_live_verb`. |
 | `sidebar = true` | Show/hide the host sidebar. |
 | `switch_context = 0` | Switch to the context at this router index. |
@@ -252,7 +253,7 @@ Every `open` step binds one unique symbolic handle. Later pane steps reject miss
 
 ### Assertions
 
-`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `context_pane_count` counts all owned panes across the target pane's context pages on both backends. `context_pane_count`, `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `fit = "fill"|"contain"` and `aspect = [width, height]` inspect committed canvas semantic bounds. `exists` and `focused` check pane lifecycle/focus while the latter inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
+`pane_count`, `window_count`, `context_count`, `portal_count` (across all windows), and `sidebar` assert host state. `ui_scale` asserts the app-wide UI scale on the headless backend only (the live host does not expose it). `context_pane_count` counts all owned panes across the target pane's context pages on both backends. `context_pane_count`, `exists`, `focused`, `lifecycle`, and `tree_contains` require `target = "<handle>"`; `fit = "fill"|"contain"` and `aspect = [width, height]` inspect committed canvas semantic bounds. `exists` and `focused` check pane lifecycle/focus while the latter inspect a process or WASM app's serialized L1 state. Native builtins use `assert_label`. Every present key must match. Prefer handle-scoped assertions in scenes meant for both backends: an installed profile may restore unrelated panes, so absolute global counts are intentionally profile-dependent.
 
 ### Running
 

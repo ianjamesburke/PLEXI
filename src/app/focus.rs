@@ -55,6 +55,7 @@ impl FocusSegmentReason {
 pub(crate) enum FocusKind {
     ApprovalBanner,
     ConfirmClose,
+    UnsavedChanges,
     CommandPalette,
     RenamePane,
     /// Context naming overlay.
@@ -82,6 +83,7 @@ pub(crate) enum FocusKind {
     RawWasmReview,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
+    Changelog,
 }
 
 impl FocusKind {
@@ -90,6 +92,7 @@ impl FocusKind {
         match self {
             Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
+            Self::UnsavedChanges => "UnsavedChanges",
             Self::CommandPalette => "CommandPalette",
             Self::RenamePane => "RenamePane",
             Self::ContextRename => "ContextRename",
@@ -101,6 +104,7 @@ impl FocusKind {
             Self::EventConsent => "EventConsent",
             Self::RawWasmReview => "RawWasmReview",
             Self::NotesPicker => "NotesPicker",
+            Self::Changelog => "Changelog",
         }
     }
 
@@ -111,6 +115,7 @@ impl FocusKind {
         match self {
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
+            Self::UnsavedChanges => &UnsavedChangesOwner,
             Self::CommandPalette => &CommandPaletteOwner,
             Self::RenamePane => &RenamePaneOwner,
             Self::ContextRename => &ContextRenameOwner,
@@ -122,6 +127,7 @@ impl FocusKind {
             Self::EventConsent => &EventConsentOwner,
             Self::RawWasmReview => &RawWasmReviewOwner,
             Self::NotesPicker => &NotesPickerOwner,
+            Self::Changelog => &ChangelogOwner,
         }
     }
 }
@@ -193,6 +199,8 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
+    Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
     CommandPalette => CommandPaletteOwner { key: command_palette_handle_key, draw: draw_command_palette },
@@ -920,6 +928,17 @@ impl PlexiApp {
     }
 
     pub(crate) fn reload_config_for_workspace(&mut self, active_workspace: Option<&Path>) {
+        self.reload_config_inner(active_workspace, true);
+    }
+
+    pub(crate) fn reload_config_after_global_save(&mut self, key: &str) {
+        let root = self.router.active().root.clone();
+        self.reload_config_inner(Some(&root), false);
+        self.config_notice = None;
+        self.report_config_shadows(&root, Some(key), "Saved globally");
+    }
+
+    fn reload_config_inner(&mut self, active_workspace: Option<&Path>, report_shadows: bool) {
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
         if let Some(root) = active_workspace {
             let project_path = root
@@ -1046,12 +1065,65 @@ impl PlexiApp {
         self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
+        if report_shadows {
+            self.config_notice = None;
+            if let Some(root) = active_workspace {
+                self.report_config_shadows(root, None, "Reloaded");
+            }
+        }
         log::info!(
             "Configuration reloaded from disk. active_workspace={}",
             active_workspace
                 .map(|root| root.display().to_string())
                 .unwrap_or_else(|| "<none>".to_string())
         );
+    }
+
+    pub(crate) fn report_config_shadows(&mut self, root: &Path, only: Option<&str>, prefix: &str) {
+        self.config_notice = None;
+        let shadows: Vec<_> = crate::config::workspace_config_shadows(root, only)
+            .into_iter()
+            .filter(|(key, _)| only.is_none_or(|wanted| key == wanted))
+            .collect();
+        if shadows.is_empty() {
+            return;
+        }
+        log::info!(
+            "config: workspace overrides {}",
+            shadows
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let summary = shadows
+            .iter()
+            .take(3)
+            .map(|(key, value)| format!("{key} ({value})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.config_notice = Some((
+            format!("{prefix}. This repo overrides {summary}."),
+            std::time::Instant::now(),
+        ));
+    }
+
+    pub(crate) fn draw_config_notice(&self, ctx: &egui::Context) {
+        if let Some((message, at)) = &self.config_notice {
+            let remaining = std::time::Duration::from_secs(5).saturating_sub(at.elapsed());
+            if !remaining.is_zero() {
+                crate::ui::toast::ToastShell::bottom("config_notice").show(
+                    ctx,
+                    &self.colors,
+                    |ui| {
+                        crate::ui::toast::toast_caption(ui, message, &self.colors);
+                    },
+                );
+                ctx.request_repaint_after(
+                    remaining + std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt)),
+                );
+            }
+        }
     }
 
     /// Push the current host `Colors` to every running plugin as a `Theme` event.
@@ -1081,7 +1153,53 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::ConfirmClose, self.pending_close);
+        let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
+        self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
+    }
+
+    pub(crate) fn sync_unsaved_changes_focus(&mut self) {
+        let wanted = self.focused_unsaved_changes().is_some();
+        self.reconcile_promoted_focus_layer(FocusKind::UnsavedChanges, wanted);
+    }
+
+    fn focused_unsaved_changes(&self) -> Option<(u64, crate::ui::dialog::UnsavedChangesDialog)> {
+        let id = self.focused_pane_id()?;
+        let pane = self.windows[self.active_window].panes.get(&id)?.as_view()?;
+        match &pane.runtime {
+            crate::host::pane::AppRuntime::Builtin(app) => {
+                app.unsaved_changes_dialog().map(|dialog| (id, dialog))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unsaved_changes_handle_key(
+        &mut self,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        // ActionModal consumes shortcuts after the router gives the buffer back.
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn draw_unsaved_changes(&mut self, ctx: &egui::Context) {
+        let Some((id, dialog)) = self.focused_unsaved_changes() else {
+            return;
+        };
+        if let Some(choice) = dialog.show(ctx, &self.colors) {
+            if let Some(pane) = self.windows[self.active_window]
+                .panes
+                .get_mut(&id)
+                .and_then(|p| p.as_app_mut())
+            {
+                if let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime {
+                    app.resolve_unsaved_changes(choice);
+                }
+            }
+        }
+        // The complete input pass belongs to the modal, including paired Text
+        // events and unrecognized shortcuts on the frame that resolves it.
+        let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
+        input.clear();
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {

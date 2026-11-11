@@ -2,7 +2,7 @@
 name: plexi-cli
 description: "Operate a running Plexi host: panes, apps, contexts, notifications, workspace tools, and agent coordination."
 skill_version: "6.1.6"
-plexi_version: "0.4.4"
+plexi_version: "0.4.5"
 last_verified: "2026-11-10"
 disable-model-invocation: true
 ---
@@ -152,6 +152,8 @@ plexi view open file_browser           # no path: browses the pane's directory
 Built-in pane types do not appear in `plexi plugin list` (that lists installed
 plugins only), and `text-editor` with no path opens a fresh scratch note. Read an
 open plugin pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+`pane state|status|wait|heartbeat` with no id act on the calling pane
+(`PLEXI_PANE_ID`); outside a pane they exit 1 and ask for an id.
 
 ## Capture and handle notes
 

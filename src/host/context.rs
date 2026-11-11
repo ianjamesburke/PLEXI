@@ -242,21 +242,7 @@ impl Window {
     }
 
     pub(crate) fn find_first_pane_in(&self, tile_id: TileId) -> Option<TileId> {
-        match self.tree.tiles.get(tile_id)? {
-            Tile::Pane(_) => Some(tile_id),
-            Tile::Container(container) => {
-                if let Container::Tabs(tabs) = container {
-                    // Only follow the active tab — others are invisible
-                    return self.find_first_pane_in(tabs.active?);
-                }
-                for &child in container.children() {
-                    if let Some(pane) = self.find_first_pane_in(child) {
-                        return Some(pane);
-                    }
-                }
-                None
-            }
-        }
+        first_visible_pane_in(&self.tree, tile_id)
     }
 
     /// Navigate to a tile: sets focused_pane and activates ALL ancestor Tabs containers
@@ -300,8 +286,11 @@ impl Window {
         let mut zoom_cleared = false;
         if let Some(zp) = self.zoomed_pane {
             if !matches!(self.tree.tiles.get(zp), Some(Tile::Pane(_))) {
-                self.zoomed_pane = None;
-                zoom_cleared = true;
+                // A container that took over the zoomed pane's id (simplify
+                // wraps panes in Tabs) still holds that pane: follow it so the
+                // zoom survives. Only a tile with no pane left clears zoom.
+                self.zoomed_pane = self.find_first_pane_in(zp);
+                zoom_cleared = self.zoomed_pane.is_none();
             }
         }
         zoom_cleared
@@ -534,6 +523,23 @@ pub(crate) fn replace_child(container: &mut Container, old: TileId, new: TileId)
         Container::Grid(_) => {
             container.remove_child(old);
             container.add_child(new);
+        }
+    }
+}
+
+/// First pane reachable from `tile_id`, following only the active tab of each
+/// Tabs container (other tabs are invisible). Shared by the live window and
+/// the saved-workspace focus heal so both resolve a stale container the same way.
+pub(crate) fn first_visible_pane_in(tree: &Tree<PaneId>, tile_id: TileId) -> Option<TileId> {
+    match tree.tiles.get(tile_id)? {
+        Tile::Pane(_) => Some(tile_id),
+        Tile::Container(container) => {
+            if let Container::Tabs(tabs) = container {
+                return first_visible_pane_in(tree, tabs.active?);
+            }
+            container
+                .children()
+                .find_map(|&child| first_visible_pane_in(tree, child))
         }
     }
 }

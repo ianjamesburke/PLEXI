@@ -1982,7 +1982,7 @@ pub use pane::{
     pane_layout_cli, pane_list_cli, pane_message_recv_cli, pane_message_send_cli,
     pane_result_read_cli, pane_self_cli, pane_send_cli, pane_set_title_cli, pane_slot_delete_cli,
     pane_slot_list_cli, pane_slot_read_cli, pane_slot_wait_cli, pane_slot_write_cli,
-    pane_state_cli, pane_status_cli, pane_tree_cli,
+    current_pane_id, pane_state_cli, pane_status_cli, pane_tree_cli,
 };
 pub use permissions::permissions_cli;
 pub use plugin::{

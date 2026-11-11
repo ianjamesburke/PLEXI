@@ -582,7 +582,7 @@ impl CliRendererView {
                     } else {
                         "▶  Run"
                     };
-                    if button::chrome_button(ui, run_text, ButtonKind::Accent, colors, 120.0)
+                    if ui.add(button::KitButton::new(run_text, colors).kind(ButtonKind::Primary).min_width(120.0))
                         .clicked()
                     {
                         should_execute = true;

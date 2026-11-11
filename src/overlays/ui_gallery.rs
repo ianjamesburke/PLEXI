@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{choice_button, chrome_button, icon_button, toolbar_button, ButtonKind},
+    button::{choice_button, icon_button, toolbar_button, ButtonKind, KitButton},
     code_viewer::ReadOnlyCodeViewer,
     hints::{HintBar, HintGroup},
     labels::chrome_section,
@@ -140,9 +140,30 @@ pub(crate) fn gallery_rows(
     colors: &crate::ui::theme::Colors,
 ) {
     for (index, name) in data.names.iter().enumerate() {
-        ListRow::new(name)
-            .secondary(data.detail)
-            .chip("view")
+        gallery_row(ui, data, colors, name, index, false, index == 1);
+    }
+    for name in data.names {
+        gallery_row(ui, data, colors, name, 0, true, false);
+    }
+}
+
+fn gallery_row(
+    ui: &mut egui::Ui,
+    data: &GalleryFixture,
+    colors: &Colors,
+    name: &str,
+    index: usize,
+    dense: bool,
+    selected: bool,
+) -> egui::Response {
+    let row = ListRow::new(name)
+        .chip("view")
+        .trailing_action(if index == 2 { "Delete" } else { "Open" })
+        .selected(selected);
+    let row = if dense {
+        row.dense()
+    } else {
+        row.secondary(data.detail)
             .metadata_chips(data.tags)
             .pane_pips(ListRowPips {
                 count: data.pips,
@@ -151,17 +172,350 @@ pub(crate) fn gallery_rows(
                 activities: vec![],
                 static_health_pips: vec![],
             })
-            .trailing_action(if index == 2 { "Delete" } else { "Open" })
-            .selected(index == 1)
             .danger_trailing(index == 2)
-            .show(ui, colors);
+    };
+    row.show(ui, colors).response()
+}
+
+fn gallery_sidebar_row(
+    ui: &mut egui::Ui,
+    data: &GalleryFixture,
+    colors: &Colors,
+    name: &str,
+    index: usize,
+    selected: bool,
+) -> egui::Response {
+    crate::ui::sidebar_row::SidebarRow {
+        ancestry: Vec::new(),
+        is_active: selected,
+        is_dragging: false,
+        any_dragging: false,
+        action_enabled: true,
+        ctx_name: name.to_owned(),
+        ctx_index: Some(index),
+        badge_count: data.count,
+        subtitle: Some(data.command.to_owned()),
+        draggable: false,
+        pane_dots: Some(crate::ui::sidebar_row::PaneDots {
+            route_idx: None,
+            count: data.pips,
+            focused_idx: Some(0),
+            hidden_set: Default::default(),
+            activities: vec![],
+            static_health_pips: Default::default(),
+            windows: vec![],
+        }),
     }
-    for name in data.names {
-        ListRow::new(name)
-            .dense()
-            .chip("view")
-            .trailing_action("Open")
-            .show(ui, colors);
+    .show(ui, egui::Id::new(("gallery_sidebar", index)), colors)
+    .1
+}
+
+fn gallery_text_field(
+    ui: &mut egui::Ui,
+    colors: &Colors,
+    id: egui::Id,
+    hint: &str,
+    buffer: &mut String,
+    log_name: Option<&'static str>,
+) -> egui::Response {
+    let field = TextField::singleline(id, hint);
+    let field = if let Some(name) = log_name {
+        field.log_name(name)
+    } else {
+        field
+    };
+    field.show(ui, buffer, colors)
+}
+
+fn gallery_text_area(ui: &mut egui::Ui, colors: &Colors, buffer: &mut String) -> egui::Response {
+    TextArea::multiline(
+        egui::Id::new("host_ui_gallery_text_area"),
+        "Multiline text area",
+    )
+    .rows(3)
+    .log_name("ui_gallery")
+    .show(ui, buffer, colors)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum KitSpecimen {
+    Button {
+        kind: ButtonKind,
+        size: crate::ui::button::ButtonSize,
+        label: &'static str,
+    },
+    GalleryButton {
+        kind: ButtonKind,
+        label: &'static str,
+        min_width: f32,
+    },
+    Choice,
+    Icon,
+    Toolbar,
+    CodeViewer,
+    CopyCommand,
+    CompactCommand,
+    Progress,
+    TrustNeutral,
+    TrustWarning,
+    TrustDanger,
+    KeyChip,
+    StatusChip,
+    Badge,
+    EmptyState,
+    SwatchToolbar,
+    SwatchActive,
+    SwatchAccent,
+    SwatchDanger,
+    SwatchBorder,
+    Hints,
+    TrustHints,
+    ToastCaption,
+    Row,
+    DenseRow,
+    SidebarRow,
+    TextField,
+    TextArea,
+}
+
+impl KitSpecimen {
+    pub(crate) fn show(
+        self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        selected: bool,
+        choice_label: &str,
+        detail: &str,
+    ) -> egui::Response {
+        match self {
+            Self::Button { kind, size, label } => ui.add(
+                KitButton::new(label, colors)
+                    .kind(kind)
+                    .size(size)
+                    .selected(selected),
+            ),
+            Self::GalleryButton {
+                kind,
+                label,
+                min_width,
+            } => ui.add(
+                KitButton::new(label, colors)
+                    .kind(kind)
+                    .min_width(min_width)
+                    .selected(selected),
+            ),
+            Self::Choice => choice_button(ui, choice_label, "⌘Enter", selected, colors),
+            Self::Icon => icon_button(ui, "+", "Icon button", colors),
+            Self::Toolbar => toolbar_button(
+                ui,
+                KitButton::new("Toolbar", colors).text_color(colors.text_dim),
+                "Toolbar button",
+            ),
+            Self::CodeViewer => ReadOnlyCodeViewer::new(
+                egui::Id::new("host_ui_gallery_code_viewer"),
+                choice_label,
+                "rs",
+            )
+            .line_numbers(true)
+            .max_height(96.0)
+            .show(ui, colors),
+            Self::CopyCommand => copyable_command(
+                ui,
+                egui::Id::new("host_ui_gallery_copyable_command"),
+                choice_label,
+                colors,
+            ),
+            Self::CompactCommand => compact_copyable_command(
+                ui,
+                egui::Id::new("host_ui_gallery_compact_command"),
+                choice_label,
+                colors,
+            ),
+            Self::Progress => ProgressDots::new(2, 3).show(ui, colors),
+            Self::TrustNeutral => {
+                trust_decision_panel(ui, choice_label, detail, TrustTone::Neutral, colors)
+            }
+            Self::TrustWarning => {
+                trust_decision_panel(ui, choice_label, detail, TrustTone::Warning, colors)
+            }
+            Self::TrustDanger => {
+                trust_decision_panel(ui, choice_label, detail, TrustTone::Danger, colors)
+            }
+            Self::KeyChip => key_chip(
+                ui,
+                choice_label,
+                colors,
+                egui::FontId::monospace(style::TEXT_HINT),
+            ),
+            Self::StatusChip => status_chip(ui, choice_label, colors),
+            Self::Badge => crate::ui::badge::badge(ui, choice_label, colors.bg_active, colors),
+            Self::EmptyState => empty_state_panel(ui, choice_label, Some(detail), colors),
+            Self::Row => gallery_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                false,
+                selected,
+            ),
+            Self::DenseRow => gallery_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                true,
+                selected,
+            ),
+            Self::SidebarRow => gallery_sidebar_row(
+                ui,
+                &UiGalleryDataMode::Demo.fixture(),
+                colors,
+                "Normal row",
+                0,
+                selected,
+            ),
+            Self::TextField => gallery_text_field(
+                ui,
+                colors,
+                egui::Id::new("host_ui_gallery_text_normal"),
+                "Normal text field",
+                &mut choice_label.to_owned(),
+                None,
+            ),
+            Self::TextArea => gallery_text_area(ui, colors, &mut choice_label.to_owned()),
+            Self::SwatchToolbar => color_swatch(ui, "toolbar", colors.bg_toolbar, colors),
+            Self::SwatchActive => color_swatch(ui, "active", colors.bg_active, colors),
+            Self::SwatchAccent => color_swatch(ui, "accent", colors.accent, colors),
+            Self::SwatchDanger => color_swatch(ui, "danger", colors.danger, colors),
+            Self::SwatchBorder => color_swatch(ui, "border", colors.border, colors),
+            Self::Hints => ui.scope(|ui| hint_bar(ui, colors)).response,
+            Self::TrustHints => {
+                ui.scope(|ui| {
+                    let hints = [
+                        HintGroup::new(&["Enter"], "confirm"),
+                        HintGroup::new(&["Esc"], "cancel"),
+                        HintGroup::new(&["Shift", "Esc"], "deny forever"),
+                    ];
+                    HintBar::new(&hints).show(ui, colors);
+                })
+                .response
+            }
+            Self::ToastCaption => {
+                ui.scope(|ui| toast_caption(ui, choice_label, colors))
+                    .response
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn interactive(self) -> bool {
+        matches!(
+            self,
+            Self::Button { .. }
+                | Self::GalleryButton { .. }
+                | Self::Choice
+                | Self::Icon
+                | Self::Toolbar
+                | Self::Row
+                | Self::DenseRow
+                | Self::SidebarRow
+                | Self::TextField
+                | Self::TextArea
+        )
+    }
+}
+
+pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
+    use crate::ui::button::ButtonSize;
+    [ButtonSize::Sm, ButtonSize::Md, ButtonSize::Lg]
+        .into_iter()
+        .flat_map(|size| {
+            [
+                (ButtonKind::Primary, "Primary"),
+                (ButtonKind::Secondary, "Secondary"),
+                (ButtonKind::Danger, "Danger"),
+                (ButtonKind::Ghost, "Ghost"),
+            ]
+            .into_iter()
+            .map(move |(kind, label)| KitSpecimen::Button { kind, size, label })
+        })
+        .chain([
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Ghost,
+                label: "Full width",
+                min_width: 0.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Primary,
+                label: "Install",
+                min_width: 88.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Secondary,
+                label: "Cancel",
+                min_width: 88.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Danger,
+                label: "Deny forever",
+                min_width: 116.0,
+            },
+            KitSpecimen::GalleryButton {
+                kind: ButtonKind::Primary,
+                label: "Open text-entry modal",
+                min_width: 180.0,
+            },
+            KitSpecimen::Choice,
+            KitSpecimen::Icon,
+            KitSpecimen::Toolbar,
+            KitSpecimen::CodeViewer,
+            KitSpecimen::CopyCommand,
+            KitSpecimen::CompactCommand,
+            KitSpecimen::Progress,
+            KitSpecimen::TrustNeutral,
+            KitSpecimen::TrustWarning,
+            KitSpecimen::TrustDanger,
+            KitSpecimen::KeyChip,
+            KitSpecimen::StatusChip,
+            KitSpecimen::Badge,
+            KitSpecimen::EmptyState,
+            KitSpecimen::SwatchToolbar,
+            KitSpecimen::SwatchActive,
+            KitSpecimen::SwatchAccent,
+            KitSpecimen::SwatchDanger,
+            KitSpecimen::SwatchBorder,
+            KitSpecimen::Hints,
+            KitSpecimen::TrustHints,
+            KitSpecimen::ToastCaption,
+            KitSpecimen::Row,
+            KitSpecimen::DenseRow,
+            KitSpecimen::SidebarRow,
+            KitSpecimen::TextField,
+            KitSpecimen::TextArea,
+        ])
+}
+
+/// Every kind at every size class, plus the disabled and selected states. Rendered by the
+/// gallery and by the `one-kit-gallery` scene fixture.
+pub(crate) fn draw_button_sizes(ui: &mut egui::Ui, colors: &Colors) {
+    use crate::ui::button::ButtonSize;
+    for (size, caption) in [
+        (ButtonSize::Sm, "Sm · 28"),
+        (ButtonSize::Md, "Md · 32 (default)"),
+        (ButtonSize::Lg, "Lg · 40"),
+    ] {
+        crate::ui::typography::caption(ui, caption, colors);
+        ui.horizontal_wrapped(|ui| {
+            for specimen in kit_specimens().filter(|specimen| matches!(specimen, KitSpecimen::Button { size: specimen_size, .. } if *specimen_size == size)) {
+                specimen.show(ui, colors, false, "", "");
+            }
+            ui.add_enabled_ui(false, |ui| {
+                KitSpecimen::Button { kind: ButtonKind::Primary, size, label: "Disabled" }.show(ui, colors, false, "", "");
+            });
+            KitSpecimen::Button { kind: ButtonKind::Secondary, size, label: "Selected" }.show(ui, colors, true, "", "");
+        });
     }
 }
 
@@ -190,12 +544,31 @@ impl PlexiApp {
                 let previous = preview.mode;
                 ui.horizontal_wrapped(|ui| {
                     for mode in UiGalleryDataMode::ALL {
-                        ui.selectable_value(&mut preview.mode, mode, mode.label());
+                        if (KitSpecimen::GalleryButton {
+                            kind: ButtonKind::Ghost,
+                            label: mode.label(),
+                            min_width: 0.0,
+                        })
+                        .show(ui, &colors, preview.mode == mode, "", "")
+                        .clicked()
+                        {
+                            preview.mode = mode;
+                        }
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut preview.narrow, false, "Full width");
-                    ui.selectable_value(&mut preview.narrow, true, "Narrow 320px");
+                    for (narrow, label) in [(false, "Full width"), (true, "Narrow 320px")] {
+                        if (KitSpecimen::GalleryButton {
+                            kind: ButtonKind::Ghost,
+                            label,
+                            min_width: 0.0,
+                        })
+                        .show(ui, &colors, preview.narrow == narrow, "", "")
+                        .clicked()
+                        {
+                            preview.narrow = narrow;
+                        }
+                    }
                 });
                 if previous != preview.mode {
                     log::info!("ui_gallery: data_mode={:?}", preview.mode);
@@ -219,79 +592,68 @@ impl PlexiApp {
                         });
                         chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
-                            hint_bar(ui, &colors);
+                            KitSpecimen::Hints.show(ui, &colors, false, "", "");
                         });
 
                         chrome_section(ui, "Code and toast surfaces", &colors, |ui| {
-                            ReadOnlyCodeViewer::new(
-                                egui::Id::new("host_ui_gallery_code_viewer"),
-                                data.code,
-                                "rs",
-                            )
-                            .line_numbers(true)
-                            .max_height(96.0)
-                            .show(ui, &colors);
+                            KitSpecimen::CodeViewer.show(ui, &colors, false, data.code, "");
                             ui.add_space(style::SPACE_SM);
-                            copyable_command(
-                                ui,
-                                egui::Id::new("host_ui_gallery_copyable_command"),
-                                data.command,
-                                &colors,
-                            );
+                            KitSpecimen::CopyCommand.show(ui, &colors, false, data.command, "");
                             ui.add_space(style::SPACE_SM);
                             ui.vertical(|ui| {
-                                toast_caption(ui, "Shell completions aren't set up.", &colors);
-                                compact_copyable_command(
+                                KitSpecimen::ToastCaption.show(
                                     ui,
-                                    egui::Id::new("host_ui_gallery_compact_command"),
-                                    data.command,
                                     &colors,
+                                    false,
+                                    "Shell completions aren't set up.",
+                                    "",
                                 );
-                                ProgressDots::new(2, 3).show(ui, &colors);
+                                KitSpecimen::CompactCommand.show(
+                                    ui,
+                                    &colors,
+                                    false,
+                                    data.command,
+                                    "",
+                                );
+                                KitSpecimen::Progress.show(ui, &colors, false, "", "");
                             });
                         });
 
                         chrome_section(ui, "Trust and confirmations", &colors, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                chrome_button(ui, "Install", ButtonKind::Primary, &colors, 88.0);
-                                chrome_button(ui, "Cancel", ButtonKind::Secondary, &colors, 88.0);
-                                chrome_button(
-                                    ui,
-                                    "Deny forever",
-                                    ButtonKind::Danger,
-                                    &colors,
-                                    116.0,
-                                );
+                                for (label, kind, min_width) in [
+                                    ("Install", ButtonKind::Primary, 88.0),
+                                    ("Cancel", ButtonKind::Secondary, 88.0),
+                                    ("Deny forever", ButtonKind::Danger, 116.0),
+                                ] {
+                                    KitSpecimen::GalleryButton {
+                                        kind,
+                                        label,
+                                        min_width,
+                                    }
+                                    .show(ui, &colors, false, "", "");
+                                }
                             });
-                            let hints = [
-                                HintGroup::new(&["Enter"], "confirm"),
-                                HintGroup::new(&["Esc"], "cancel"),
-                                HintGroup::new(&["Shift", "Esc"], "deny forever"),
-                            ];
-                            HintBar::new(&hints).show(ui, &colors);
-                            trust_decision_panel(
-                                ui,
-                                data.names.first().copied().unwrap_or(""),
-                                data.detail,
-                                TrustTone::Neutral,
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            trust_decision_panel(
-                                ui,
-                                data.names.first().copied().unwrap_or(""),
-                                data.detail,
-                                TrustTone::Warning,
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            trust_decision_panel(
-                                ui,
-                                data.names.first().copied().unwrap_or(""),
-                                data.detail,
-                                TrustTone::Danger,
-                                &colors,
-                            );
+                            KitSpecimen::TrustHints.show(ui, &colors, false, "", "");
+                            for (index, specimen) in [
+                                KitSpecimen::TrustNeutral,
+                                KitSpecimen::TrustWarning,
+                                KitSpecimen::TrustDanger,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            {
+                                if index > 0 {
+                                    ui.add_space(style::SPACE_SM);
+                                }
+                                specimen.show(
+                                    ui,
+                                    &colors,
+                                    false,
+                                    data.names.first().copied().unwrap_or(""),
+                                    data.detail,
+                                );
+                            }
                         });
 
                         chrome_section(ui, "Rows", &colors, |ui| {
@@ -299,80 +661,41 @@ impl PlexiApp {
                         });
                         chrome_section(ui, "Sidebar rows", &colors, |ui| {
                             for (index, name) in data.names.iter().enumerate() {
-                                crate::ui::sidebar_row::SidebarRow {
-                                    ancestry: Vec::new(),
-                                    is_active: index == 1,
-                                    is_dragging: false,
-                                    any_dragging: false,
-                                    action_enabled: true,
-                                    ctx_name: (*name).to_owned(),
-                                    ctx_index: Some(index),
-                                    badge_count: data.count,
-                                    subtitle: Some(data.command.to_owned()),
-                                    draggable: false,
-                                    pane_dots: Some(crate::ui::sidebar_row::PaneDots {
-                                        route_idx: None,
-                                        count: data.pips,
-                                        focused_idx: Some(0),
-                                        hidden_set: Default::default(),
-                                        activities: vec![],
-                                        static_health_pips: Default::default(),
-                                        windows: vec![],
-                                    }),
-                                }
-                                .show(
-                                    ui,
-                                    egui::Id::new(("gallery_sidebar", index)),
-                                    &colors,
-                                );
+                                gallery_sidebar_row(ui, &data, &colors, name, index, index == 1);
                             }
                         });
 
                         chrome_section(ui, "Text fields", &colors, |ui| {
-                            TextField::singleline(
+                            gallery_text_field(
+                                ui,
+                                &colors,
                                 egui::Id::new("host_ui_gallery_text_normal"),
                                 "Normal text field",
-                            )
-                            .show(
-                                ui,
                                 &mut self.ui_gallery_normal_buf,
-                                &colors,
+                                None,
                             );
                             ui.add_space(style::SPACE_SM);
-                            // No `.focused(true)` here — a hardcoded focus
-                            // demo fights the user's clicks (two fields
-                            // re-stealing focus from each other every frame).
-                            // Focus follows clicks; the focused style shows on
-                            // whichever field the user activates.
-                            TextField::singleline(
+                            // Focus follows clicks; a hardcoded focus demo would fight the user.
+                            gallery_text_field(
+                                ui,
+                                &colors,
                                 egui::Id::new("host_ui_gallery_text_focused"),
                                 "Click to focus — accent ring + cursor",
-                            )
-                            .log_name("ui_gallery")
-                            .show(
-                                ui,
                                 &mut self.ui_gallery_focused_buf,
-                                &colors,
+                                Some("ui_gallery"),
                             );
                             ui.add_space(style::SPACE_SM);
                             let mut multiline_demo = data.code.to_owned();
-                            TextArea::multiline(
-                                egui::Id::new("host_ui_gallery_text_area"),
-                                "Multiline text area",
-                            )
-                            .rows(3)
-                            .log_name("ui_gallery")
-                            .show(ui, &mut multiline_demo, &colors);
+                            gallery_text_area(ui, &colors, &mut multiline_demo);
                         });
 
                         chrome_section(ui, "Modal patterns", &colors, |ui| {
-                            if chrome_button(
-                                ui,
-                                "Open text-entry modal",
-                                ButtonKind::Primary,
-                                &colors,
-                                180.0,
-                            )
+                            if (KitSpecimen::GalleryButton {
+                                kind: ButtonKind::Primary,
+                                label: "Open text-entry modal",
+                                min_width: 180.0,
+                            })
+                            .show(ui, &colors, false, "", "")
                             .clicked()
                             {
                                 self.ui_gallery_show_text_modal = true;
@@ -381,75 +704,66 @@ impl PlexiApp {
                         });
 
                         chrome_section(ui, "Buttons and chips", &colors, |ui| {
+                            draw_button_sizes(ui, &colors);
                             ui.horizontal_wrapped(|ui| {
-                                chrome_button(
-                                    ui,
-                                    data.names.first().copied().unwrap_or(""),
-                                    ButtonKind::Primary,
-                                    &colors,
-                                    80.0,
-                                );
-                                chrome_button(
-                                    ui,
-                                    "Secondary",
-                                    ButtonKind::Secondary,
-                                    &colors,
-                                    92.0,
-                                );
-                                chrome_button(ui, "Danger", ButtonKind::Danger, &colors, 80.0);
-                                chrome_button(ui, "Accent", ButtonKind::Accent, &colors, 80.0);
-                                ui.add_enabled_ui(false, |ui| {
-                                    chrome_button(
-                                        ui,
-                                        "Disabled",
-                                        ButtonKind::Secondary,
-                                        &colors,
+                                for (label, kind, min_width) in [
+                                    (
+                                        data.names.first().copied().unwrap_or(""),
+                                        ButtonKind::Primary,
                                         80.0,
-                                    );
+                                    ),
+                                    ("Secondary", ButtonKind::Secondary, 92.0),
+                                    ("Danger", ButtonKind::Danger, 80.0),
+                                ] {
+                                    KitSpecimen::GalleryButton {
+                                        kind,
+                                        label,
+                                        min_width,
+                                    }
+                                    .show(ui, &colors, false, "", "");
+                                }
+                                ui.add_enabled_ui(false, |ui| {
+                                    KitSpecimen::GalleryButton {
+                                        kind: ButtonKind::Secondary,
+                                        label: "Disabled",
+                                        min_width: 80.0,
+                                    }
+                                    .show(ui, &colors, false, "", "");
                                 });
                             });
-                            choice_button(ui, data.detail, "⌘Enter", false, &colors);
+                            KitSpecimen::Choice.show(ui, &colors, false, data.detail, "");
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
-                                icon_button(ui, "+", "Icon button", &colors);
-                                toolbar_button(
-                                    ui,
-                                    RichText::new("Toolbar")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                    "Toolbar button",
-                                );
+                                KitSpecimen::Icon.show(ui, &colors, false, "", "");
+                                KitSpecimen::Toolbar.show(ui, &colors, false, "", "");
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal_wrapped(|ui| {
-                                key_chip(
+                                KitSpecimen::KeyChip.show(ui, &colors, false, "app", "");
+                                KitSpecimen::KeyChip.show(ui, &colors, false, "term", "");
+                                KitSpecimen::StatusChip.show(ui, &colors, false, data.status, "");
+                                KitSpecimen::Badge.show(
                                     ui,
-                                    "view",
                                     &colors,
-                                    egui::FontId::monospace(style::TEXT_HINT),
-                                );
-                                key_chip(
-                                    ui,
-                                    "term",
-                                    &colors,
-                                    egui::FontId::monospace(style::TEXT_HINT),
-                                );
-                                status_chip(ui, data.status, &colors);
-                                crate::ui::badge::badge(
-                                    ui,
+                                    false,
                                     &crate::ui::text::format_count_plural(
                                         data.count, "item", "items",
                                     ),
-                                    colors.bg_active,
-                                    &colors,
+                                    "",
                                 );
-                                status_chip(ui, "error", &colors);
-                                status_chip(ui, "empty", &colors);
+                                KitSpecimen::StatusChip.show(ui, &colors, false, "error", "");
+                                KitSpecimen::StatusChip.show(ui, &colors, false, "empty", "");
                             });
                         });
 
                         chrome_section(ui, "Empty states", &colors, |ui| {
-                            empty_state_panel(ui, data.empty, Some(data.detail), &colors);
+                            KitSpecimen::EmptyState.show(
+                                ui,
+                                &colors,
+                                false,
+                                data.empty,
+                                data.detail,
+                            );
                         });
                     });
             });
@@ -469,12 +783,14 @@ impl PlexiApp {
                 .width(style::MODAL_WIDTH_MD)
                 .escape(true)
                 .show(ctx, &colors, |ui| {
-                    TextField::singleline(
+                    gallery_text_field(
+                        ui,
+                        &colors,
                         egui::Id::new("host_ui_gallery_modal_field"),
                         "Type something...",
-                    )
-                    .log_name("ui_gallery_modal")
-                    .show(ui, &mut self.ui_gallery_modal_buf, &colors);
+                        &mut self.ui_gallery_modal_buf,
+                        Some("ui_gallery_modal"),
+                    );
                     let hints = [
                         HintGroup::new(&["\u{23ce}"], "save"),
                         HintGroup::new(&["esc"], "dismiss"),
@@ -492,11 +808,15 @@ impl PlexiApp {
 
 fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     ui.horizontal_wrapped(|ui| {
-        color_swatch(ui, "toolbar", colors.bg_toolbar, colors);
-        color_swatch(ui, "active", colors.bg_active, colors);
-        color_swatch(ui, "accent", colors.accent, colors);
-        color_swatch(ui, "danger", colors.danger, colors);
-        color_swatch(ui, "border", colors.border, colors);
+        for specimen in [
+            KitSpecimen::SwatchToolbar,
+            KitSpecimen::SwatchActive,
+            KitSpecimen::SwatchAccent,
+            KitSpecimen::SwatchDanger,
+            KitSpecimen::SwatchBorder,
+        ] {
+            specimen.show(ui, colors, false, "", "");
+        }
     });
 }
 

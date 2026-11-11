@@ -998,6 +998,14 @@ fn pr_isolation_active() -> bool {
     let compiled = option_env!("PLEXI_BUILD_TEST_CHANNEL").map(str::to_string);
     let runtime = crate::config::build_channel();
     let keychain_path = std::env::var("PLEXI_KEYCHAIN_PATH").ok();
+    #[cfg(test)]
+    let keychain_path = if compiled.is_some() {
+        // with_pr_channel_seal_isolation models a PR without an explicit keychain.
+        // Do not let an outer subprocess-safety override change this fixture.
+        None
+    } else {
+        keychain_path
+    };
     should_use_pr_profile_seal_store(
         compiled.as_deref(),
         runtime.as_deref(),

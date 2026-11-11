@@ -292,6 +292,34 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn toggle_changelog(&mut self) {
+        if self.show_changelog {
+            self.close_changelog();
+        } else {
+            self.show_changelog = true;
+            self.push_focus_layer(crate::app::FocusKind::Changelog);
+            log::info!("changelog: opened");
+        }
+    }
+
+    pub(crate) fn close_changelog(&mut self) {
+        if self.show_changelog {
+            self.show_changelog = false;
+            self.reconcile_focus_layer(crate::app::FocusKind::Changelog, false);
+            log::info!("changelog: closed");
+        }
+    }
+
+    pub(crate) fn changelog_handle_key(
+        &mut self,
+        input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::view_trait::KeyDisposition {
+        if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            self.close_changelog();
+        }
+        crate::app::view_trait::KeyDisposition::Consumed
+    }
+
     pub(crate) fn draw_changelog_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_changelog {
             return;
@@ -301,7 +329,6 @@ impl PlexiApp {
         let response = crate::ui::overlay::ModalShell::centered("changelog")
             .title("Changelog")
             .width(560.0)
-            .escape(true)
             .show_scroll_body(ctx, &self.colors.clone(), 420.0, "changelog_body", |ui| {
                 if let Some(ref latest) = self.update_available.clone() {
                     egui::Frame::new()
@@ -319,25 +346,17 @@ impl PlexiApp {
                                     );
                                     ui.add_space(4.0);
                                     ui.horizontal(|ui| {
-                                        let confirm_btn = egui::Button::new(
-                                            RichText::new(format!("Restart to v{latest}"))
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_on(self.colors.accent)),
-                                        )
-                                        .fill(self.colors.accent)
-                                        .corner_radius(crate::ui::style::RADIUS_SMALL);
+                                        let restart_label = format!("Restart to v{latest}");
+                                        let confirm_btn = crate::ui::button::KitButton::new(&restart_label, &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Primary)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(confirm_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                             self.update_quit_pending = true;
                                         }
-                                        let cancel_btn = egui::Button::new(
-                                            RichText::new("Cancel")
-                                                .size(style::TEXT_HINT)
-                                                .color(self.colors.text_dim),
-                                        )
-                                        .fill(egui::Color32::TRANSPARENT)
-                                        .stroke(Stroke::new(1.0_f32, self.colors.border))
-                                        .corner_radius(crate::ui::style::RADIUS_SMALL);
+                                        let cancel_btn = crate::ui::button::KitButton::new("Cancel", &self.colors)
+                                            .kind(crate::ui::button::ButtonKind::Ghost)
+                                            .size(crate::ui::button::ButtonSize::Sm);
                                         if ui.add(cancel_btn).clicked() {
                                             self.update_confirm_prompt = false;
                                         }
@@ -353,13 +372,9 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let btn = egui::Button::new(
-                                                RichText::new("Restart to update")
-                                                    .size(style::TEXT_HINT)
-                                                    .color(self.colors.text_on(self.colors.accent)),
-                                            )
-                                            .fill(self.colors.accent)
-                                            .corner_radius(crate::ui::style::RADIUS_SMALL);
+                                            let btn = crate::ui::button::KitButton::new("Restart to update", &self.colors)
+                                                .kind(crate::ui::button::ButtonKind::Primary)
+                                                .size(crate::ui::button::ButtonSize::Sm);
                                             if ui.add(btn).clicked() {
                                                 self.update_confirm_prompt = true;
                                             }
@@ -392,7 +407,7 @@ impl PlexiApp {
                 }
             });
         if response.dismissed {
-            self.show_changelog = false;
+            self.close_changelog();
         }
     }
 
@@ -461,14 +476,13 @@ impl PlexiApp {
                 if show_browse {
                     ui.add_space(style::SPACE_SM);
                     ui.horizontal(|ui| {
-                        if crate::ui::button::chrome_button(
-                            ui,
-                            "Browse\u{2026}",
-                            crate::ui::button::ButtonKind::Primary,
-                            &self.colors,
-                            80.0,
-                        )
-                        .clicked()
+                        if ui
+                            .add(
+                                crate::ui::button::KitButton::new("Browse\u{2026}", &self.colors)
+                                    .kind(crate::ui::button::ButtonKind::Secondary)
+                                    .min_width(80.0),
+                            )
+                            .clicked()
                         {
                             browse_clicked = true;
                         }

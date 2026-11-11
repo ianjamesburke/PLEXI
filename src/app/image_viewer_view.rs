@@ -102,24 +102,14 @@ impl View for ImageViewerView {
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
-            let fit_kind = if self.fit_to_view {
-                ButtonKind::Accent
-            } else {
-                ButtonKind::Secondary
-            };
-            if button::chrome_button_sized(ui, "Fit", fit_kind, colors, 48.0, style::BUTTON_H_MD)
+            if ui.add(button::KitButton::new("Fit", colors).kind(ButtonKind::Secondary).selected(self.fit_to_view).min_width(48.0))
                 .clicked()
             {
                 self.fit_to_view = true;
             }
             ui.add_space(style::SPACE_XS);
             let one_to_one = !self.fit_to_view && (self.zoom - 1.0).abs() < f32::EPSILON;
-            let one_kind = if one_to_one {
-                ButtonKind::Accent
-            } else {
-                ButtonKind::Secondary
-            };
-            if button::chrome_button_sized(ui, "100%", one_kind, colors, 52.0, style::BUTTON_H_MD)
+            if ui.add(button::KitButton::new("100%", colors).kind(ButtonKind::Secondary).selected(one_to_one).min_width(52.0))
                 .clicked()
             {
                 self.fit_to_view = false;

@@ -5,6 +5,7 @@ pub mod button;
 pub mod card_block;
 pub mod code_viewer;
 pub mod dialog;
+pub(crate) mod dropdown;
 pub mod embedded_bar;
 pub mod focus;
 pub(crate) mod foreground;
@@ -20,6 +21,8 @@ pub(crate) mod pane_header;
 pub mod provenance;
 #[cfg(test)]
 mod radius_guard_tests;
+#[cfg(test)]
+mod state_matrix_tests;
 pub mod row;
 pub mod search_bar;
 pub mod shortcuts;

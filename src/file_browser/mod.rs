@@ -2313,25 +2313,23 @@ impl FileBrowserView {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_pending_operation();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Move to Trash",
-                        crate::ui::button::ButtonKind::Danger,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Move to Trash", colors)
+                                .kind(crate::ui::button::ButtonKind::Danger)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         if let Err(err) = self.confirm_pending_operation() {
                             self.error = Some(err);
@@ -2380,24 +2378,17 @@ impl FileBrowserView {
                 }
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Cancel",
-                        crate::ui::button::ButtonKind::Secondary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
-                    .clicked()
+                    if ui
+                        .add(
+                            crate::ui::button::KitButton::new("Cancel", colors)
+                                .kind(crate::ui::button::ButtonKind::Secondary)
+                                .min_width(style::BUTTON_MIN_W_MODAL),
+                        )
+                        .clicked()
                     {
                         self.cancel_rename_modal();
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Rename",
-                        crate::ui::button::ButtonKind::Primary,
-                        colors,
-                        style::BUTTON_MIN_W_MODAL,
-                    )
+                    if ui.add(crate::ui::button::KitButton::new("Rename", colors).min_width(style::BUTTON_MIN_W_MODAL))
                     .clicked()
                     {
                         self.confirm_rename_modal();
@@ -2549,6 +2540,10 @@ impl FileBrowserView {
             .collect()
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn draw_toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -2633,21 +2628,9 @@ impl FileBrowserView {
                 } else {
                     label.clone()
                 };
-                let text_color = if is_last {
-                    colors.accent
-                } else {
-                    colors.text_primary
-                };
-                let btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(display_label)
-                            .size(font_size)
-                            .monospace()
-                            .color(text_color),
-                    )
-                    .frame(false),
-                );
-                let synthetic_click = pending_click.is_some_and(|click| click.targets_id(btn.id));
+                let btn = breadcrumb_segment(ui, &display_label, is_last, font_size, colors);
+                let synthetic_click =
+                    pending_click.is_some_and(|click| click.targets_id(btn.id));
                 if btn.clicked() || synthetic_click {
                     navigate_target = Some(seg_path.clone());
                 }
@@ -2662,13 +2645,9 @@ impl FileBrowserView {
                 // (stint 0469).
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("View \u{2304}")
-                            .size(style::TEXT_HINT)
-                            .color(colors.text_secondary(colors.bg_elevated)),
-                    )
-                    .fill(colors.bg_elevated)
-                    .stroke(Stroke::new(1.0_f32, colors.border)),
+                    crate::ui::button::KitButton::new("View \u{2304}", colors)
+                        .kind(crate::ui::button::ButtonKind::Secondary)
+                        .size(crate::ui::button::ButtonSize::Sm),
                 );
                 let synthetic_open =
                     pending_click.is_some_and(|click| click.targets_id(menu_button.id));
@@ -2888,12 +2867,11 @@ impl FileBrowserView {
                     }
 
                     let close_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("\u{00d7}")
-                                .size(self.font_size)
-                                .color(colors.text_dim),
-                        )
-                        .frame(false),
+                        crate::ui::button::KitButton::new("\u{00d7}", colors)
+                            .kind(crate::ui::button::ButtonKind::Ghost)
+                            .compact()
+                            .text_size(self.font_size)
+                            .text_color(colors.text_dim),
                     );
                     let synthetic_close =
                         pending_click.is_some_and(|c| c.targets_id(close_btn.id));
@@ -3820,9 +3798,78 @@ impl View for FileBrowserView {
     }
 }
 
+/// One breadcrumb segment: a compact Ghost kit button in monospace at the
+/// browser font size. The current (last) segment is emphasised with the accent
+/// colour, the others use the primary text colour.
+fn breadcrumb_segment(
+    ui: &mut egui::Ui,
+    label: &str,
+    is_last: bool,
+    font_size: f32,
+    colors: &crate::ui::theme::Colors,
+) -> egui::Response {
+    let text_color = if is_last {
+        colors.accent
+    } else {
+        colors.text_primary
+    };
+    ui.add(
+        crate::ui::button::KitButton::new(label, colors)
+            .kind(crate::ui::button::ButtonKind::Ghost)
+            .compact()
+            .text_size(font_size)
+            .monospace()
+            .text_color(text_color),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Breadcrumb segments keep monospace, the browser font size and the
+    /// current-segment emphasis that the raw button used to paint.
+    #[test]
+    fn breadcrumb_segment_keeps_monospace_size_and_current_emphasis() {
+        let host = crate::testing::HostHarness::new();
+        let colors = host.app.colors;
+        let paint = |label: &str, is_last: bool| {
+            let mut output = None;
+            for frame in 0..2 {
+                output = Some(host.app.ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(frame as f64),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            breadcrumb_segment(ui, label, is_last, 19.0, &colors);
+                        });
+                    },
+                ));
+            }
+            output
+                .unwrap()
+                .shapes
+                .into_iter()
+                .find_map(|s| match s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == label => {
+                        let section = &t.galley.job.sections[0];
+                        Some((
+                            section.format.font_id.clone(),
+                            t.override_text_color.unwrap_or(section.format.color),
+                        ))
+                    }
+                    _ => None,
+                })
+                .expect("segment label")
+        };
+        let (font, current) = paint("src", true);
+        let (_, parent) = paint("src", false);
+        assert_eq!(font.size, 19.0, "browser font size");
+        assert_eq!(font.family, egui::FontFamily::Monospace, "monospace");
+        assert_ne!(current, parent, "current segment is emphasised");
+    }
     use egui::{Event, Key, Modifiers, RawInput};
     use helpers::SortDescriptor;
 
@@ -6067,6 +6114,8 @@ mod tests {
 
         // Render one UI pass of the action palette and verify SurfaceKey::Pane(pane_id) is claimed.
         let ctx = egui::Context::default();
+        // Kit buttons label in the medium UI family, which a bare context does not bind.
+        crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
             app.draw_action_palette(ui, &colors, 77, None);

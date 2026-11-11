@@ -98,6 +98,28 @@ impl AgentHarness {
     pub fn restore_command_with_flags(self, session_id: Option<&str>, flags: &[String]) -> String {
         self.adapter().restore_command_with_flags(session_id, flags)
     }
+
+    /// Whether `session_id` can be resumed. Pi and Claude persist transcripts lazily, so their
+    /// ids are verified on disk; other harnesses are assumed resumable.
+    pub fn session_exists(self, session_id: &str) -> bool {
+        self.session_exists_in(session_id, self.session_store_dir().as_deref())
+    }
+
+    fn session_store_dir(self) -> Option<PathBuf> {
+        match self {
+            AgentHarness::Pi => pi_sessions_dir(),
+            AgentHarness::Claude => claude_projects_dir(),
+            _ => None,
+        }
+    }
+
+    fn session_exists_in(self, session_id: &str, store_root: Option<&Path>) -> bool {
+        match self {
+            AgentHarness::Pi => pi_session_exists_in(session_id, store_root),
+            AgentHarness::Claude => claude_session_exists_in(session_id, store_root),
+            _ => true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +151,77 @@ pub fn set_test_pi_sessions_dir(path: PathBuf) -> TestPiSessionsDirGuard {
         NEXT_TEST_PI_SESSIONS_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     TEST_PI_SESSIONS_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
     TestPiSessionsDirGuard { token }
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLAUDE_PROJECTS_DIR_OVERRIDE: std::cell::RefCell<Vec<(u64, PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub struct TestClaudeProjectsDirGuard {
+    token: u64,
+}
+
+#[cfg(test)]
+impl Drop for TestClaudeProjectsDirGuard {
+    fn drop(&mut self) {
+        let token = self.token;
+        TEST_CLAUDE_PROJECTS_DIR_OVERRIDE.with(|c| c.borrow_mut().retain(|(t, _)| *t != token));
+    }
+}
+
+#[cfg(test)]
+pub fn set_test_claude_projects_dir(path: PathBuf) -> TestClaudeProjectsDirGuard {
+    let token =
+        NEXT_TEST_PI_SESSIONS_GUARD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    TEST_CLAUDE_PROJECTS_DIR_OVERRIDE.with(|c| c.borrow_mut().push((token, path)));
+    TestClaudeProjectsDirGuard { token }
+}
+
+fn claude_projects_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(override_dir) =
+        TEST_CLAUDE_PROJECTS_DIR_OVERRIDE.with(|c| c.borrow().last().map(|(_, p)| p.clone()))
+    {
+        return Some(override_dir);
+    }
+    dirs::home_dir().map(|h| h.join(".claude").join("projects"))
+}
+
+/// Return true when Claude Code has persisted a transcript for `session_id`.
+///
+/// Claude Code exposes no typed "does session X exist" surface (`claude --resume` is the only
+/// probe and it is interactive). This is the single, read-only exception that knows the
+/// transcript layout `<projects_dir>/<encoded-cwd>/<session-id>.jsonl`. Claude writes the
+/// transcript only after the first user message, while the SessionStart hook reports the id
+/// earlier, so an id can exist with no transcript and `claude --resume` then fails with
+/// "No conversation found".
+pub fn claude_session_exists_in(session_id: &str, projects_dir: Option<&Path>) -> bool {
+    let Some(sid) = non_empty_string(session_id) else {
+        return false;
+    };
+    if sid.contains(['/', '\\']) || sid.contains("..") {
+        return false;
+    }
+    let Some(root) = projects_dir else {
+        return false;
+    };
+    let file_name = format!("{sid}.jsonl");
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) => {
+            log::warn!(
+                "agent_restore: cannot read Claude projects dir {}: {err}",
+                root.display()
+            );
+            return false;
+        }
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().join(&file_name).is_file())
 }
 
 fn pi_sessions_dir() -> Option<PathBuf> {
@@ -895,9 +988,9 @@ impl HarnessAdapter {
 
     /// Build the CLI command to restore an agent pane on workspace startup or standby wake.
     /// Falls back to a bare harness binary launch when `session_id` is absent or when a
-    /// `pi` session ID has no persisted session file on disk.
+    /// `pi` or `claude` session ID has no persisted session on disk.
     pub fn restore_command_with_flags(&self, session_id: Option<&str>, flags: &[String]) -> String {
-        let dir = pi_sessions_dir();
+        let dir = self.harness.session_store_dir();
         self.restore_command_with_flags_in(session_id, flags, dir.as_deref())
     }
 
@@ -905,16 +998,16 @@ impl HarnessAdapter {
     pub fn restore_command_in(
         &self,
         session_id: Option<&str>,
-        pi_sessions_root: Option<&Path>,
+        session_store_root: Option<&Path>,
     ) -> String {
-        self.restore_command_with_flags_in(session_id, &[], pi_sessions_root)
+        self.restore_command_with_flags_in(session_id, &[], session_store_root)
     }
 
     pub fn restore_command_with_flags_in(
         &self,
         session_id: Option<&str>,
         flags: &[String],
-        pi_sessions_root: Option<&Path>,
+        session_store_root: Option<&Path>,
     ) -> String {
         let safe_flags: Vec<String> = flags.iter().map(|f| shell_quote_arg(f)).collect();
         let flags_prefix = if safe_flags.is_empty() {
@@ -925,9 +1018,10 @@ impl HarnessAdapter {
         let Some(sid) = session_id.and_then(non_empty_string) else {
             return format!("{}{flags_prefix}", self.binary);
         };
-        if self.harness == AgentHarness::Pi && !pi_session_exists_in(sid, pi_sessions_root) {
+        if !self.harness.session_exists_in(sid, session_store_root) {
             log::warn!(
-                "agent_restore: Pi session '{}' has no persisted session file on disk; falling back to bare '{}' launch",
+                "agent_restore: {} session '{}' has no persisted session on disk; falling back to bare '{}' launch",
+                self.binary,
                 sid,
                 self.binary
             );
@@ -5195,6 +5289,14 @@ mod agent_tests {
         let proj_dir = sessions_dir.join("--Users-test-project--");
         fs::create_dir_all(&proj_dir).unwrap();
         let _pi_guard = super::set_test_pi_sessions_dir(sessions_dir.clone());
+        let claude_store = dir.path().join("claude-projects");
+        fs::create_dir_all(claude_store.join("-proj")).unwrap();
+        fs::write(
+            claude_store.join("-proj").join("sess-claude-1.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let _claude_guard = super::set_test_claude_projects_dir(claude_store);
 
         let pi = super::AgentHarness::Pi;
         let claude = super::AgentHarness::Claude;
@@ -5228,6 +5330,41 @@ mod agent_tests {
         assert_eq!(
             pi.restore_command_with_flags(Some(&direct_path), &[]),
             format!("pi --session {direct_path}")
+        );
+    }
+
+    #[test]
+    fn claude_restore_without_transcript_is_bare_launch_and_with_transcript_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("projects");
+        let proj = store.join("-Users-test-project");
+        fs::create_dir_all(&proj).unwrap();
+        // A tool-results style directory named after the id is not a transcript.
+        fs::create_dir_all(proj.join("9faadb29-dead")).unwrap();
+        let _guard = super::set_test_claude_projects_dir(store.clone());
+        let claude = super::AgentHarness::Claude;
+        let flags = vec!["--verbose".to_string()];
+
+        assert!(!claude.session_exists("9faadb29-dead"));
+        assert_eq!(
+            claude.restore_command_with_flags(Some("9faadb29-dead"), &[]),
+            "claude"
+        );
+        assert_eq!(
+            claude.restore_command_with_flags(Some("9faadb29-dead"), &flags),
+            "claude --verbose"
+        );
+        assert!(!claude.session_exists("../escape"));
+
+        fs::write(proj.join("1111-live.jsonl"), "{\"type\":\"user\"}\n").unwrap();
+        assert!(claude.session_exists("1111-live"));
+        assert_eq!(
+            claude.restore_command_with_flags(Some("1111-live"), &[]),
+            "claude --resume 1111-live"
+        );
+        assert_eq!(
+            claude.restore_command_with_flags(Some("1111-live"), &flags),
+            "claude --verbose --resume 1111-live"
         );
     }
 
@@ -5740,6 +5877,14 @@ mod agent_tests {
 
     #[test]
     fn test_custom_harness_flags_parity_across_harnesses() {
+        let claude_store = tempfile::tempdir().unwrap();
+        fs::create_dir_all(claude_store.path().join("-proj")).unwrap();
+        fs::write(
+            claude_store.path().join("-proj").join("sess-123.jsonl"),
+            "{}\n",
+        )
+        .unwrap();
+        let _claude_guard = super::set_test_claude_projects_dir(claude_store.path().to_path_buf());
         let claude_adapter = super::AgentHarness::Claude.adapter();
         let claude_flags = vec!["--verbose".to_string()];
         let claude_start = claude_adapter.start_command_with_flags_and_extensions(

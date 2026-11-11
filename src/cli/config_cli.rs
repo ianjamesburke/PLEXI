@@ -322,6 +322,25 @@ pub fn config_check_report(
     for (cfg_path, cmds_path, scope_label) in &targets {
         total_files += 2;
         diags.extend(crate::config::validate_from_path(cfg_path));
+        if *scope_label == "workspace" {
+            if let Ok(data) = std::fs::read_to_string(cfg_path) {
+                if let Ok(table) = toml::from_str::<toml::Table>(&data) {
+                    for key in [
+                        "focus_history_depth",
+                        "cli",
+                        "file_handlers",
+                        "config_version",
+                    ] {
+                        if table.contains_key(key) {
+                            diags.push(crate::config::ConfigDiagnostic::WorkspaceGlobalOnly {
+                                path: cfg_path.display().to_string(),
+                                key: key.to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         diags.extend(crate::config::validate_commands_from_path(cmds_path));
 
         let kb_count = count_config_keybindings(cfg_path);
@@ -1062,6 +1081,34 @@ mod tests {
     }
 
     #[test]
+    fn config_check_warns_for_workspace_global_only_keys() {
+        let profile = tempfile::tempdir().unwrap();
+        let _guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
+        let workspace = tempfile::tempdir().unwrap();
+        let path = crate::config::workspace_config_path(workspace.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            "config_version = 1\nfocus_history_depth = 10\n[cli]\n[file_handlers]\n",
+        )
+        .unwrap();
+        let (report, code) =
+            config_check_report(ConfigScope::Workspace, Some(workspace.path())).unwrap();
+        assert_eq!(code, 0, "{report}");
+        for key in [
+            "config_version",
+            "focus_history_depth",
+            "cli",
+            "file_handlers",
+        ] {
+            assert!(
+                report.contains(&format!("`{key}` is global-only")),
+                "{report}"
+            );
+        }
+    }
+
+    #[test]
     fn config_check_reports_ok_summary_and_flags_misplaced_commands_and_config_tables() {
         let profile = tempfile::tempdir().unwrap();
         let _profile_guard = crate::config::set_test_profile_dir(profile.path().to_path_buf());
@@ -1070,11 +1117,7 @@ mod tests {
         let ws_cmds = workspace.path().join(crate::cli::commands_file());
         std::fs::create_dir_all(ws_cfg.parent().unwrap()).unwrap();
 
-        std::fs::write(
-            &ws_cfg,
-            "config_version = 1\n\n[keys]\n\"cmd+shift+p\" = \"run:gs\"\n",
-        )
-        .unwrap();
+        std::fs::write(&ws_cfg, "[keys]\n\"cmd+shift+p\" = \"run:gs\"\n").unwrap();
         std::fs::write(
             &ws_cmds,
             "[commands]\ngs = \"git status -sb\"\nbuild = \"cargo build\"\n",

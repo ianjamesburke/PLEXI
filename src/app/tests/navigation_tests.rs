@@ -279,9 +279,15 @@ fn closing_focused_pane_in_background_window_keeps_nearest_sibling_focused() {
 
     h.app.close_pane_by_id(right_pane);
 
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = h.app.windows[1].focused_pane.expect("B keeps a focus");
+    assert!(matches!(
+        h.app.windows[1].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
     assert_eq!(
-        h.app.windows[1].focused_pane,
-        Some(left_tile),
+        PlexiApp::find_pane_in_tile(&h.app.windows[1].tree, focus),
+        Some(left_pane),
         "closing B's focused pane must focus its explicit sibling while A stays active"
     );
     assert_eq!(
@@ -300,7 +306,7 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
         .windows
         .push(same_workspace_window_right(context_id, 2));
 
-    let (left_tile, _left_pane) = h.app.add_view_pane_in_window(1, "left");
+    let (left_tile, left_pane) = h.app.add_view_pane_in_window(1, "left");
     let (right_tile, right_pane) = h.app.add_view_pane_in_window(1, "right");
     let root = h.app.windows[1]
         .tree
@@ -311,9 +317,15 @@ fn closing_background_pane_in_background_window_preserves_its_focus() {
 
     h.app.close_pane_by_id(right_pane);
 
+    // Compared by pane identity: simplify re-wraps panes in Tabs and re-ids tiles.
+    let focus = h.app.windows[1].focused_pane.expect("B keeps a focus");
+    assert!(matches!(
+        h.app.windows[1].tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
     assert_eq!(
-        h.app.windows[1].focused_pane,
-        Some(left_tile),
+        PlexiApp::find_pane_in_tile(&h.app.windows[1].tree, focus),
+        Some(left_pane),
         "closing a background pane must preserve B's focused sibling"
     );
     assert_eq!(

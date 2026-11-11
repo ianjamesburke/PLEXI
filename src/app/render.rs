@@ -207,6 +207,7 @@ impl PlexiApp {
         self.sync_capability_modal_focus();
         self.sync_event_consent_focus();
         self.sync_raw_wasm_review_focus();
+        self.sync_unsaved_changes_focus();
 
         let _ = ctx; // ctx is unused in the preamble itself; parameter reserved for future use
     }
@@ -1117,6 +1118,7 @@ impl PlexiApp {
                                                     .set_focus(owner_pane == Some(pane_id))
                                                     .set_theme(self.theme.clone())
                                                     .set_font(theme::terminal_font(font_size))
+                                                    .set_padding(crate::render::terminal_pane::terminal_content_padding())
                                                     .set_size(Vec2::new(
                                                         ui.available_width(),
                                                         ui.available_height(),
@@ -1285,9 +1287,6 @@ impl PlexiApp {
         // Shortcuts overlay
         self.draw_shortcuts_overlay(&ctx);
 
-        // Changelog overlay
-        self.draw_changelog_overlay(&ctx);
-
         // Developer-only host chrome gallery
         self.draw_ui_gallery(&ctx);
         self.draw_plugin_notice(&ctx);
@@ -1300,6 +1299,7 @@ impl PlexiApp {
         // their own keystrokes before the drain. Drawing again here would
         // double-dispatch Enter/Escape after keys have been drained.
         self.draw_notes_delete_toast(&ctx);
+        self.draw_config_notice(&ctx);
 
         // Quit confirmation overlay
         if self.confirm_quit() && self.quit_press_count > 0 {

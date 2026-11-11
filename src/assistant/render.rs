@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 
 use egui::RichText;
 
-use crate::ui::button::{chrome_button, ButtonKind};
+use crate::ui::button::{ButtonKind, KitButton};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::ListRow;
 use crate::ui::style;
@@ -466,7 +466,7 @@ impl AssistantRenderer {
         }
         let review = if turn.text.contains("plexi permissions list") {
             let response =
-                chrome_button(ui, "Review permissions", ButtonKind::Secondary, colors, 0.0);
+                ui.add(KitButton::new("Review permissions", colors).kind(ButtonKind::Secondary));
             response
                 .clicked()
                 .then_some(ComposerEvent::ReviewPermissions)
@@ -739,17 +739,17 @@ impl AssistantRenderer {
                 let actions: [(&str, ButtonKind, PermissionChoice); 5] = [
                     (
                         "Allow once",
-                        ButtonKind::Accent,
+                        ButtonKind::Primary,
                         PermissionChoice::AllowOnce,
                     ),
                     (
                         "Allow this session",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowSession,
                     ),
                     (
                         "Always allow",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowAlways,
                     ),
                     (
@@ -765,7 +765,7 @@ impl AssistantRenderer {
                 let mut painted: Vec<(&str, [f64; 4])> = Vec::new();
                 ui.horizontal_wrapped(|ui| {
                     for (i, (label, kind, value)) in actions.into_iter().enumerate() {
-                        let resp = chrome_button(ui, label, kind, colors, 0.0);
+                        let resp = ui.add(KitButton::new(label, colors).kind(kind));
                         let rect = resp.rect;
                         // Pane state reads accesskit. The chrome button's
                         // glyph runs are not a labeled button, so the click

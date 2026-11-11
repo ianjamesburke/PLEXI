@@ -915,24 +915,12 @@ impl PlexiApp {
                 );
                 ui.add_space(crate::ui::style::SPACE_MD);
                 ui.horizontal_wrapped(|ui| {
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Continue",
-                        crate::ui::button::ButtonKind::Accent,
-                        &self.colors,
-                        0.0,
-                    )
+                    if ui.add(crate::ui::button::KitButton::new("Continue", &self.colors).kind(crate::ui::button::ButtonKind::Primary))
                     .clicked_by(egui::PointerButton::Primary)
                     {
                         choice = Some(true);
                     }
-                    if crate::ui::button::chrome_button(
-                        ui,
-                        "Not now",
-                        crate::ui::button::ButtonKind::Secondary,
-                        &self.colors,
-                        0.0,
-                    )
+                    if ui.add(crate::ui::button::KitButton::new("Not now", &self.colors).kind(crate::ui::button::ButtonKind::Secondary))
                     .clicked_by(egui::PointerButton::Primary)
                     {
                         choice = Some(false);

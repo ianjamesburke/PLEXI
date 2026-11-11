@@ -3997,10 +3997,19 @@ mod tests {
 
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut tree_seq: u64 = 0;
+        // `set_fonts` binds the `ui-medium` family on the next frame, so the
+        // first frame only registers fonts (see src/ui/AGENTS.md).
+        let mut fonts_ready = false;
         let mut harness = egui_kittest::Harness::builder()
             .with_size(egui::Vec2::new(400.0, 300.0))
             .build_ui_state(
                 move |ui, pane| {
+                    if !fonts_ready {
+                        crate::ui::theme::setup_fonts(ui.ctx());
+                        fonts_ready = true;
+                        ui.ctx().request_repaint();
+                        return;
+                    }
                     let tree = pane.view().expect("view");
                     // This runtime re-evaluates `view()` every frame, so every
                     // painted tree is a new generation — mirror the live pane.

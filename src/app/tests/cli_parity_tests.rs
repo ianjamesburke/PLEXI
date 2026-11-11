@@ -11,6 +11,26 @@ fn request(h: &mut HostHarness, value: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
+fn cli_and_watcher_reload_report_workspace_shadow() {
+    let mut h = HostHarness::new();
+    let root = tempfile::tempdir().unwrap();
+    h.app.set_context_root(root.path().to_path_buf(), None);
+    std::fs::write(crate::config::config_path(), "[theme]\npreset = \"plexi-dusk\"\n").unwrap();
+    let path = crate::config::workspace_config_path(root.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "[theme]\npreset = \"plexi-night\"\n").unwrap();
+    assert_eq!(request(&mut h, serde_json::json!({"type":"reload_config"}))["ok"], true);
+    assert!(h.app.config_notice.as_ref().is_some_and(|(text, _)| text.contains("theme.preset") && text.contains("plexi-night")));
+    h.app.config_notice = None;
+    let wake = std::sync::Arc::new(crate::app::ui_mailbox::RecordingWake::new());
+    let (sender, receiver) = crate::app::ui_mailbox::UiMailbox::channel(wake, "config_watcher_test");
+    h.app.config_reload_rx = Some(receiver);
+    sender.send(()).unwrap();
+    h.hidden_frame();
+    assert!(h.app.config_notice.as_ref().is_some_and(|(text, _)| text.contains("theme.preset") && text.contains("plexi-night")));
+}
+
+#[test]
 fn cli_parity_hide_reveal_and_zoom_use_keyboard_handlers() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();

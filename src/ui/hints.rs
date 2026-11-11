@@ -170,6 +170,10 @@ impl<'a> HintBar<'a> {
         for row in hint_rows(&widths, full, style::SPACE_MD) {
             let total = widths[row.clone()].iter().sum::<f32>()
                 + style::SPACE_MD * row.len().saturating_sub(1) as f32;
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |list| list.all_entries().len()));
             let row_resp = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = style::SPACE_MD;
                 ui.add_space(((full - total) / 2.0).max(0.0));
@@ -178,6 +182,18 @@ impl<'a> HintBar<'a> {
                     resp.chip_rects.extend(chips);
                     if let Some(l) = label {
                         resp.label_rects.push(l);
+                    }
+                }
+            });
+            // Keep rasterized glyph edges inside the allocated row even when
+            // fractional layout coordinates round outward to the pixel grid.
+            ui.ctx().graphics_mut(|g| {
+                if let Some(list) = g.get_mut(layer) {
+                    let end = list.all_entries().len();
+                    for index in start..end {
+                        list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                            entry.clip_rect = entry.clip_rect.intersect(row_resp.response.rect);
+                        });
                     }
                 }
             });

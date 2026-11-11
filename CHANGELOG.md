@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [0.4.5] — 2026-11-11
+
+### Changes
+- fix(ui): restore titlebar window gestures (#3044)
+- Terminal content inset and top bar profile icon clipping (#3038)
+- fix(workspace): reconcile stale focus before saving (#3042)
+- fix(scheduler): gate routines on experiment (#3040)
+- Settings: open global or repo config from the palette, with shadow notice (#3037)
+- Fix text editor find/replace bar clipping and off-screen matches (#3035)
+- fix: close changelog with Escape (#3039)
+- One kit button: consolidate host, toast and plugin buttons (#3034)
+- Palette scale and zoom commands must match their shortcuts (#3036)
 ## [0.4.4] — 2026-11-10
 
 ### Changes

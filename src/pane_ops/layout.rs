@@ -999,6 +999,10 @@ impl PlexiApp {
                 log::info!("close_tile: cleared stale zoom (closed tile was zoomed)");
             }
 
+            // Unconditional: simplify can re-id a surviving focused pane into
+            // a Tabs container even when the closed pane was not focused.
+            ctx.reconcile_stale_tiles();
+
             removed
         };
 
@@ -1617,6 +1621,7 @@ impl PlexiApp {
                 ..SimplificationOptions::default()
             });
             ctx.focused_pane = next_src_focus;
+            ctx.reconcile_stale_tiles();
             pane
         };
 
@@ -1793,6 +1798,7 @@ impl PlexiApp {
                 ..SimplificationOptions::default()
             });
             ctx.focused_pane = next_src_focus;
+            ctx.reconcile_stale_tiles();
             pane
         };
 
@@ -2162,6 +2168,23 @@ mod close_pane_by_id_tests {
         assert!(!h.app.windows[0].panes.contains_key(&pane_id));
     }
 
+    /// Focus must name a `Tile::Pane` holding `expected`. Identity is compared by
+    /// pane id: a close runs `simplify`, which re-wraps panes in Tabs and re-ids
+    /// the tile, so the pre-close tile id is not a stable handle.
+    fn assert_focus_pane(app: &PlexiApp, expected: u64, message: &str) {
+        let tree = &app.windows[0].tree;
+        let tile = app.windows[0].focused_pane.expect(message);
+        assert!(
+            matches!(tree.tiles.get(tile), Some(Tile::Pane(_))),
+            "{message}: focus must be a pane tile"
+        );
+        assert_eq!(
+            PlexiApp::find_pane_in_tile(tree, tile),
+            Some(expected),
+            "{message}"
+        );
+    }
+
     /// Closing the active tab of a background tab container must not steal focus.
     /// Regression guard for #1547 (Gemini-identified edge case).
     #[test]
@@ -2199,9 +2222,9 @@ mod close_pane_by_id_tests {
         app.close_pane_by_id(bg_active_id);
         assert!(!app.windows[0].panes.contains_key(&bg_active_id));
 
-        assert_eq!(
-            app.windows[0].focused_pane,
-            Some(tile_focused),
+        assert_focus_pane(
+            app,
+            focused_id,
             "focus must remain on the focused pane after closing a background active tab",
         );
     }
@@ -2231,9 +2254,9 @@ mod close_pane_by_id_tests {
         app.close_pane_by_id(bg_id);
         assert!(!app.windows[0].panes.contains_key(&bg_id));
 
-        assert_eq!(
-            app.windows[0].focused_pane,
-            Some(tile_focused),
+        assert_focus_pane(
+            app,
+            focused_id,
             "focus must remain on the originally-focused pane after closing a background pane",
         );
     }
@@ -2261,15 +2284,19 @@ mod close_pane_by_id_tests {
         app.close_pane_by_id(bg_id);
         assert!(!app.windows[0].panes.contains_key(&bg_id));
 
+        assert_focus_pane(app, zoomed_id, "focus must remain on the zoomed pane");
+        let zoom = app.windows[0]
+            .zoomed_pane
+            .expect("zoom must remain after closing a background pane");
         assert_eq!(
-            app.windows[0].zoomed_pane,
-            Some(tile_zoomed),
+            PlexiApp::find_pane_in_tile(&app.windows[0].tree, zoom),
+            Some(zoomed_id),
             "zoom must remain on the originally-zoomed pane after closing a background pane",
         );
         assert_eq!(
             app.windows[0].focused_pane,
-            Some(tile_zoomed),
-            "focus must remain on the zoomed pane",
+            Some(zoom),
+            "focus and zoom name the same tile"
         );
     }
 }

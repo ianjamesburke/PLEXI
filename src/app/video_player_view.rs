@@ -248,7 +248,7 @@ impl View for VideoPlayerView {
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
             let label = if self.playing { "Pause" } else { "Play" };
-            if button::chrome_button(ui, label, ButtonKind::Accent, colors, 64.0).clicked() {
+            if ui.add(button::KitButton::new(label, colors).kind(ButtonKind::Primary).min_width(64.0)).clicked() {
                 self.set_playing(!self.playing);
             }
             ui.add_space(style::SPACE_SM);

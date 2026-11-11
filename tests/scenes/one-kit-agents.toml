@@ -1,0 +1,15 @@
+size = [1280.0, 800.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+
+[[steps]]
+open = { kind = "builtin", id = "agents", as = "agents" }
+[[steps]]
+seed_agent_dashboard = true
+[[steps]]
+key = { target = "agents", value = "j" }
+[[steps]]
+assert_label = { target = "agents", label = "Jump [Enter]" }
+[[steps]]
+assert_label = { target = "agents", label = "Dismiss [x]" }
+[[steps]]
+shot = "one-kit-agents.png"

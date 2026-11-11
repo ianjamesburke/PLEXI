@@ -18,7 +18,7 @@ use super::layout::{DisplayLayout, LineLayout};
 use super::mode::EditorMode;
 use super::movement::line_text;
 use super::preview::{is_bare_http_url, LinkTarget, MarkdownLayoutCache, MdStyle};
-use super::view::ViewState;
+use super::view::{Reveal, ViewState};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -924,15 +924,28 @@ impl<'a> EditorWidget<'a> {
         }
         let pending_reveal = self.view.pending_reveal.take();
         if edited || reveal_after_resize || pending_reveal.is_some() {
-            let caret = if edited {
-                self.doc.cursor()
+            let reveal = if edited {
+                Reveal::caret(self.doc.cursor())
             } else {
-                pending_reveal.unwrap_or_else(|| self.doc.cursor())
+                pending_reveal.unwrap_or_else(|| Reveal::caret(self.doc.cursor()))
             };
-            self.view.scroll_to_cursor(caret, line_count);
-            if !soft_wrap {
-                self.view
-                    .scroll_to_x(self.cursor_display_x(caret, &line_galleys, None));
+            // End first, start last: when the target is wider or taller than
+            // the viewport, the start wins and stays visible.
+            for target in [reveal.end, reveal.start] {
+                self.view.scroll_to_cursor(target, line_count);
+                if !soft_wrap {
+                    self.view
+                        .scroll_to_x(self.cursor_display_x(target, &line_galleys, None));
+                }
+            }
+            if reveal.start != reveal.end {
+                log::info!(
+                    "editor: revealed range {:?}..{:?} scroll=({:.1}, {:.1})",
+                    reveal.start,
+                    reveal.end,
+                    self.view.scroll_x,
+                    self.view.scroll_y
+                );
             }
         }
 

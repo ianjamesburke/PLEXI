@@ -65,6 +65,10 @@ pub fn form_fields<'a>(
 /// Renders one arg/flag field. When `want_focus` is true and this field is
 /// a text input, it requests keyboard focus and returns true so the caller
 /// stops offering focus to later fields.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "legacy bool checkbox awaits its kit replacement"
+)]
 fn render_field(
     ui: &mut egui::Ui,
     colors: &crate::ui::theme::Colors,
@@ -116,17 +120,24 @@ fn render_field(
                 }
                 ArgType::Enum => {
                     if let Some(options) = &arg.enum_values {
-                        egui::ComboBox::from_id_salt(("descriptor_enum", pane_key, &arg.name))
-                            .selected_text(if val.is_empty() {
-                                "(select)"
-                            } else {
-                                val.as_str()
-                            })
-                            .show_ui(ui, |ui| {
-                                for opt in options {
-                                    ui.selectable_value(val, opt.clone(), opt);
-                                }
-                            });
+                        let selected = if val.is_empty() {
+                            "(select)"
+                        } else {
+                            val.as_str()
+                        }
+                        .to_owned();
+                        crate::ui::dropdown::select_value(
+                            ui,
+                            ("descriptor_enum", pane_key, &arg.name),
+                            &selected,
+                            val,
+                            || {
+                                options
+                                    .iter()
+                                    .map(|option| (option.clone(), option.as_str()))
+                            },
+                            colors,
+                        );
                     }
                 }
                 _ => {
@@ -160,4 +171,53 @@ fn render_field(
         });
     });
     took_focus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn enum_popup_rows_keep_kit_geometry_across_states() {
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let colors = Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
+            let field: ArgSpec = serde_json::from_value(serde_json::json!({
+                "name": "Environment", "type": "enum",
+                "enum_values": ["Development", "Staging", "Production"]
+            }))
+            .unwrap();
+            let mut initialized = false;
+            let mut h = egui_kittest::Harness::new_ui_state(
+                move |ui, values| {
+                    if !initialized {
+                        crate::ui::theme::setup_fonts(ui.ctx());
+                        crate::ui::theme::setup_style(ui.ctx(), &colors);
+                        initialized = true;
+                        return;
+                    }
+                    form_fields(ui, &colors, [&field], values, false, 42);
+                },
+                HashMap::from([("Environment".into(), "Development".into())]),
+            );
+            h.run();
+            h.get_by_role(egui::accesskit::Role::ComboBox).click();
+            h.run();
+            let idle = h.get_by_label("Staging").rect();
+            assert_eq!(
+                idle.height(),
+                style::LIST_ROW_DENSE_H,
+                "{theme}: kit row height"
+            );
+            h.get_by_label("Staging").hover();
+            h.run();
+            assert_eq!(h.get_by_label("Staging").rect(), idle, "hover");
+            h.get_by_label("Staging").click();
+            h.run();
+            assert_eq!(h.state()["Environment"], "Staging");
+            h.get_by_role(egui::accesskit::Role::ComboBox).click();
+            h.run();
+            assert_eq!(h.get_by_label("Staging").rect(), idle, "selected");
+        }
+    }
 }

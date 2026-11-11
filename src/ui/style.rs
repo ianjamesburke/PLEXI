@@ -38,7 +38,8 @@ pub const TEXT_HINT: f32 = 11.0; // Keyboard hints, meta labels.
 pub const TEXT_CAPTION: f32 = 12.0; // Secondary info, small labels.
 pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
-pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
+pub const TEXT_BODY: f32 = 14.0; // Default body text.
+pub const TEXT_CONTROL: f32 = 13.0; // Default control labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
                                   // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
@@ -66,6 +67,10 @@ pub const RADIUS_PANE: CornerRadius = RADIUS_SMALL;
 /// Focus is independent of the inter-pane gap, including when the gap is zero.
 pub const PANE_FOCUS_WIDTH: f32 = 2.5;
 pub const PANE_STATE_WIDTH: f32 = 1.5;
+/// Air between the inner ring edge and pane content (terminal grid, header glyphs).
+pub const PANE_CONTENT_GAP: f32 = 2.0;
+/// Clear both pane rings and leave a small gap for pane content.
+pub const PANE_CONTENT_INSET: f32 = PANE_FOCUS_WIDTH + PANE_STATE_WIDTH + PANE_CONTENT_GAP;
 
 /// Resolve a configured pane radius, fitting it to small pane rectangles.
 pub fn pane_radius(configured: Option<u8>, rect: egui::Rect) -> CornerRadius {
@@ -183,6 +188,23 @@ pub fn radius_fit(rect: egui::Rect) -> CornerRadius {
 
 /// Edge of the square pane-header provenance icon (who spawned the pane).
 pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
+/// Rings that can cover the top and side edges of a pane (focus plus state).
+pub const PANE_RING_WIDTH: f32 = PANE_FOCUS_WIDTH + PANE_STATE_WIDTH;
+/// Header glyphs (state pip, provenance icon) sit in square slots of this edge.
+pub const PANE_HEADER_GLYPH: f32 = PROVENANCE_ICON_SIZE;
+/// Header height. Glyphs and chips center in the whole bar, so the gap from the pane's outer
+/// top edge to the ink equals the gap from the ink to the bar's bottom edge; the side inset
+/// (ring + gap) is at least that vertical gap.
+pub const PANE_HEADER_HEIGHT: f32 = PANE_RING_WIDTH + 2.0 * PANE_CONTENT_GAP + PANE_HEADER_GLYPH;
+
+/// Header chips (outside workspace, state, waiting) are as tall as a glyph slot, so they sit
+/// centered in the band with `PANE_CONTENT_GAP` above and below.
+pub const PANE_HEADER_CHIP_HEIGHT: f32 = PANE_HEADER_GLYPH;
+/// Outside-workspace chip: equal side padding, a fixed arrow-to-text gap, and an arrow whose
+/// ink is as tall as the 10pt label's cap height.
+pub const CHIP_PAD_H: f32 = 6.0;
+pub const CHIP_ICON_GAP: f32 = 3.0;
+pub const CHIP_ARROW: f32 = 6.0;
 
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
 pub const TOOLBAR_H: f32 = 28.0;
@@ -210,6 +232,7 @@ pub const CAMERA_EASE_MS: u64 = 120;
 // NOT better — oversized modals feel empty and force eye travel.
 pub const GALLERY_NARROW_W: f32 = 320.0;
 
+pub const MODAL_WIDTH_SM: f32 = 440.0; // Confirm dialogs: one question, one button row.
 pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
 pub const TOAST_MAX_WIDTH: f32 = 480.0;
 pub const PANE_HEADER_TITLE_MIN: f32 = 72.0;
@@ -227,12 +250,18 @@ pub const NOTES_PICKER_STATUS_HEIGHT: f32 = (TEXT_CAPTION + SPACE_XS) * 2.0;
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
+pub const BUTTON_H_SM: f32 = 28.0; // Compact actions and menus.
 pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 /// Floor width for a modal's confirm/cancel pair. Wide enough that a short
 /// label ("OK") still reads as a button rather than as a chip, and that the
 /// two sit as a matched pair regardless of label length.
 pub const BUTTON_MIN_W_MODAL: f32 = 88.0;
-pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
+pub const MENU_MIN_W: f32 = 200.0; // Readable popup options.
+pub const BUTTON_H_LG: f32 = 40.0; // Prominent actions.
+pub const BUTTON_H_CHOICE: f32 = 52.0; // Choice rows.
+pub const BUTTON_PAD_X_SM: f32 = 10.0;
+pub const BUTTON_PAD_X_MD: f32 = 12.0;
+pub const BUTTON_PAD_X_LG: f32 = 16.0;
 
 // ── List rows ──────────────────────────────────────────────────────────────
 // 48 gives a two-line row (12pt medium + 11pt secondary) ~8px of air inside

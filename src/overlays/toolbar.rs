@@ -59,23 +59,33 @@ impl PlexiApp {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if compact {
-                    let (overflow, _) = egui::containers::menu::MenuButton::from_button(
-                        egui::Button::new(RichText::new("…").size(style::TEXT_CAPTION))
-                            .frame(false).min_size(egui::vec2(style::BUTTON_H_MD - style::SPACE_SM, 0.0))
-                    ).ui(ui, |ui| {
-                        if ui.button("Keyboard shortcuts").clicked() { self.show_shortcuts = !self.show_shortcuts; ui.close(); }
-                        if ui.button("Changelog").clicked() { self.show_changelog = !self.show_changelog; ui.close(); }
-                        if host_ui_gallery_available() && ui.button("Host UI gallery").clicked() { self.show_ui_gallery = !self.show_ui_gallery; ui.close(); }
+                    let mut toggle_changelog = false;
+                    let (overflow, _) = button::overflow_menu(ui, "…", &self.colors, |ui| {
+                        if button::menu_item(ui, "Keyboard shortcuts", &self.colors).clicked() {
+                            self.show_shortcuts = !self.show_shortcuts;
+                            ui.close();
+                        }
+                        if button::menu_item(ui, "Changelog", &self.colors).clicked() {
+                            toggle_changelog = true;
+                            ui.close();
+                        }
+                        if host_ui_gallery_available()
+                            && button::menu_item(ui, "Host UI gallery", &self.colors).clicked()
+                        {
+                            self.show_ui_gallery = !self.show_ui_gallery;
+                            ui.close();
+                        }
                     });
+                    if toggle_changelog {
+                        self.toggle_changelog();
+                    }
                     overflow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Toolbar actions"));
                     record_toolbar_rect(ui, "overflow", overflow.rect);
                 }
                 if !compact && host_ui_gallery_available() {
                     let gallery = button::toolbar_button(
                         ui,
-                        RichText::new("UI")
-                            .size(style::TEXT_CAPTION)
-                            .color(self.colors.text_dim),
+                        button::KitButton::new("UI", &self.colors).text_color(self.colors.text_dim),
                         "Host UI gallery",
                     );
                     record_toolbar_rect(ui, "gallery", gallery.rect);
@@ -99,24 +109,24 @@ impl PlexiApp {
                     self.show_shortcuts = !self.show_shortcuts;
                 }
 
-                let version_label = if self.update_available.is_some() {
-                    RichText::new(format!("\u{2191} v{}", self.display_version))
-                        .size(10.0)
-                        .color(self.colors.accent)
+                let (version_label, version_color) = if self.update_available.is_some() {
+                    (format!("\u{2191} v{}", self.display_version), self.colors.accent)
                 } else {
-                    RichText::new(format!("v{}", self.display_version))
-                        .size(10.0)
-                        .color(self.colors.text_dim)
+                    (format!("v{}", self.display_version), self.colors.text_dim)
                 };
                 let hover_text = if self.update_available.is_some() {
                     "Update available — click to open changelog"
                 } else {
                     "Changelog"
                 };
-                let version = button::toolbar_button(ui, version_label, hover_text);
+                let version = button::toolbar_button(
+                    ui,
+                    button::KitButton::new(&version_label, &self.colors).text_size(10.0).text_color(version_color),
+                    hover_text,
+                );
                 record_toolbar_rect(ui, "version", version.rect);
                 if version.clicked() {
-                    self.show_changelog = !self.show_changelog;
+                    self.toggle_changelog();
                 }
                 }
 
@@ -151,9 +161,7 @@ impl PlexiApp {
 
                 let mailbox = button::toolbar_button(
                     ui,
-                    RichText::new(label)
-                        .size(style::TEXT_CAPTION)
-                        .color(color),
+                    button::KitButton::new(&label, &self.colors).text_color(color),
                     hover_text,
                 );
                 record_toolbar_rect(ui, "attention_mailbox", mailbox.rect);
@@ -206,6 +214,40 @@ impl PlexiApp {
             capture.text_slot("title", &galley, egui::Rect::from_min_max(row.min, egui::pos2(right.max(row.left()), row.bottom())));
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
+            }
+            let title = rect.unwrap_or(egui::Rect::NOTHING);
+            let end = right.clamp(row.left(), row.right());
+            let spans = if title.is_positive() {
+                [(row.left(), title.left()), (title.right(), end)]
+            } else {
+                [(row.left(), end), (end, end)]
+            };
+            for (index, (left, right)) in spans.into_iter().enumerate() {
+                if right <= left {
+                    continue;
+                }
+                let drag_rect = egui::Rect::from_min_max(
+                    egui::pos2(left, row.top()),
+                    egui::pos2(right, row.bottom()),
+                );
+                let response = ui.interact(
+                    drag_rect,
+                    egui::Id::new(("titlebar_drag", index)),
+                    egui::Sense::click_and_drag(),
+                );
+                if response.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if response.double_clicked() {
+                    let action = crate::platform::titlebar::double_click_action(ui.ctx());
+                    log::info!("titlebar: double click action {action:?}");
+                    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    if let Some(command) =
+                        crate::platform::titlebar::double_click_command(true, action, maximized)
+                    {
+                        ui.ctx().send_viewport_cmd(command);
+                    }
+                }
             }
             ui.ctx().data_mut(|d| {
                 d.insert_temp(

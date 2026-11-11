@@ -11,6 +11,7 @@ use crate::app::view_trait::{KeyDisposition, View, ViewCommand, ViewRenderContex
 use crate::editor::preview::{self, LinkKind, LinkTarget, MarkdownLayoutCache};
 use crate::editor::widget::{CodeTheme, EditorWidget, ImageCache, MarkdownTheme};
 use crate::editor::{movement, Document, EditorCommand, EditorMode, SyntaxHighlighter, ViewState};
+use crate::ui::dialog::{UnsavedChangesChoice, UnsavedChangesDialog};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -23,6 +24,11 @@ const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
 const FIND_BAR_FONT_SIZE: f32 = 13.0;
+/// Editor lines that must stay visible above the find bar; below this the
+/// replace row collapses before the editor is squeezed further.
+const FIND_EDITOR_MIN_LINES: f32 = 2.0;
+/// Narrowest the replace input may get before the buttons stack below it.
+const REPLACE_INPUT_MIN_W: f32 = 64.0;
 
 struct FindBar {
     query: String,
@@ -34,6 +40,8 @@ struct FindBar {
     /// One-shot: claim the find input as this pane's focused surface on the
     /// next render (via `claim_text_surface`; the reconciler grants it).
     claim_focus: bool,
+    /// Last replace-row layout, kept only to log layout transitions.
+    layout: Option<ReplaceLayout>,
 }
 
 impl FindBar {
@@ -44,6 +52,7 @@ impl FindBar {
             matches: Vec::new(),
             current: 0,
             claim_focus: true,
+            layout: None,
         }
     }
 
@@ -156,8 +165,9 @@ pub struct TextEditorView {
     disk_hash: Option<u64>,
     /// How the file on disk now disagrees with the buffer, shown in the header.
     external: Option<ExternalChange>,
-    /// Inline modal question awaiting a keypress.
+    /// File-loss decision owned by the host modal focus layer.
     prompt: Option<Prompt>,
+    pending_switch: Option<serde_json::Value>,
     /// Armed lazily from `service_external`; re-armed when `path` moves.
     watch: Option<(PathBuf, crate::host::path_watch::PathWatch)>,
     /// Associated workspace root when opened from a workspace context, used to
@@ -187,7 +197,12 @@ enum Prompt {
     /// Close on a dirty, non-autosaved buffer: save / discard / cancel.
     /// `conflicted` swaps Save for Overwrite so a close never clobbers an
     /// external write unasked.
-    Close { conflicted: bool },
+    Close {
+        conflicted: bool,
+    },
+    Switch {
+        conflicted: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,6 +315,7 @@ impl TextEditorView {
             disk_hash,
             external: None,
             prompt: None,
+            pending_switch: None,
             watch: None,
             workspace_root: inferred_ws_root,
             commands_diagnostics: Vec::new(),
@@ -556,6 +572,19 @@ impl TextEditorView {
         self.last_edit = Some(Instant::now());
     }
 
+    /// Select from `anchor` to `head` (line, column pairs) without editing.
+    #[cfg(test)]
+    pub(crate) fn test_select(&mut self, anchor: (usize, usize), head: (usize, usize)) {
+        self.doc
+            .apply(EditorCommand::SetCursor(crate::editor::Cursor::new(
+                anchor.0, anchor.1,
+            )));
+        self.doc
+            .apply(EditorCommand::ExtendTo(crate::editor::Cursor::new(
+                head.0, head.1,
+            )));
+    }
+
     #[cfg(test)]
     pub(crate) fn test_discard_unsaved(&mut self) {
         self.last_edit = None;
@@ -666,12 +695,10 @@ impl TextEditorView {
         );
         ui.horizontal(|ui| {
             if view.status == "pending" && view.conflict.is_none() {
-                let accept = crate::ui::button::chrome_button(
-                    ui,
-                    "Accept",
-                    crate::ui::button::ButtonKind::Accent,
-                    colors,
-                    72.0,
+                let accept = ui.add(
+                    crate::ui::button::KitButton::new("Accept", colors)
+                        .kind(crate::ui::button::ButtonKind::Primary)
+                        .min_width(72.0),
                 );
                 // Pointer only. `clicked()` also reports keyboard activation,
                 // and `pane key` must not accept a change set.
@@ -680,12 +707,10 @@ impl TextEditorView {
                 }
             }
             if view.status == "pending" || view.status == "stale" {
-                let reject = crate::ui::button::chrome_button(
-                    ui,
-                    "Reject",
-                    crate::ui::button::ButtonKind::Danger,
-                    colors,
-                    72.0,
+                let reject = ui.add(
+                    crate::ui::button::KitButton::new("Reject", colors)
+                        .kind(crate::ui::button::ButtonKind::Danger)
+                        .min_width(72.0),
                 );
                 if reject.clicked_by(egui::PointerButton::Primary) {
                     self.reject_visible_change();
@@ -808,8 +833,10 @@ impl TextEditorView {
         );
         self.disk_hash = Some(hash);
         self.external = Some(ExternalChange::Modified);
-        if matches!(self.prompt, Some(Prompt::Close { .. })) {
-            self.prompt = Some(Prompt::Close { conflicted: true });
+        match self.prompt {
+            Some(Prompt::Close { .. }) => self.prompt = Some(Prompt::Close { conflicted: true }),
+            Some(Prompt::Switch { .. }) => self.prompt = Some(Prompt::Switch { conflicted: true }),
+            _ => {}
         }
         true
     }
@@ -972,49 +999,62 @@ impl TextEditorView {
         true
     }
 
-    /// Prompt answer. Returns true when `key` was one of the prompt's keys.
-    fn apply_prompt_key(&mut self, key: egui::Key) -> bool {
+    fn open_prompt(&mut self, prompt: Prompt) {
+        log::info!(
+            "text_editor: unsaved dialog opened path={:?} reason={prompt:?}",
+            self.path
+        );
+        self.prompt = Some(prompt);
+    }
+
+    fn apply_prompt_choice(&mut self, choice: UnsavedChangesChoice) -> bool {
         let Some(prompt) = self.prompt else {
             return false;
         };
-        use egui::Key;
-        match (prompt, key) {
-            (_, Key::Escape) => {
-                log::info!("notes_editor: prompt cancelled path={:?}", self.path);
+        let conflicted = matches!(
+            prompt,
+            Prompt::Overwrite
+                | Prompt::Close { conflicted: true }
+                | Prompt::Switch { conflicted: true }
+        );
+        use UnsavedChangesChoice::*;
+        if matches!(choice, Save) && conflicted
+            || matches!(choice, Overwrite) && !conflicted
+            || matches!(choice, Reload) && prompt != Prompt::Overwrite
+            || matches!(choice, Discard) && prompt == Prompt::Overwrite
+        {
+            return false;
+        }
+        log::info!(
+            "text_editor: unsaved dialog choice path={:?} choice={choice:?}",
+            self.path
+        );
+        match choice {
+            Cancel => {
                 self.prompt = None;
+                self.pending_switch = None;
+                self.reclaim_editor_focus = true;
+                return true;
             }
-            (Prompt::Overwrite, Key::R) => {
-                self.prompt = None;
-                self.reload_from_disk();
-            }
-            (Prompt::Overwrite, Key::O) | (Prompt::Close { conflicted: true }, Key::O) => {
-                self.prompt = None;
-                log::info!(
-                    "notes_editor: overwriting external change path={:?}",
-                    self.path
-                );
-                self.write_buffer(Durability::Fsync);
-                if matches!(prompt, Prompt::Close { .. }) && self.last_edit.is_none() {
-                    self.wants_close = true;
+            Reload => self.reload_from_disk(),
+            Overwrite => self.write_buffer(Durability::Fsync),
+            Save => self.flush(),
+            Discard => self.last_edit = None,
+        }
+        // A failed write/reload keeps both the buffer and its pending leave
+        // operation. The same dialog offers retry, discard or cancel.
+        if self.last_edit.is_some() {
+            return true;
+        }
+        self.prompt = None;
+        match prompt {
+            Prompt::Close { .. } => self.wants_close = true,
+            Prompt::Switch { .. } => {
+                if let Some(state) = self.pending_switch.take() {
+                    self.restore_state(&state);
                 }
             }
-            (Prompt::Close { conflicted: false }, Key::S) => {
-                self.prompt = None;
-                self.flush();
-                if self.last_edit.is_none() {
-                    self.wants_close = true;
-                }
-            }
-            (Prompt::Close { .. }, Key::D) => {
-                log::info!(
-                    "notes_editor: discarding unsaved edits on close path={:?}",
-                    self.path
-                );
-                self.prompt = None;
-                self.last_edit = None;
-                self.wants_close = true;
-            }
-            _ => return false,
+            Prompt::Overwrite => self.reclaim_editor_focus = true,
         }
         true
     }
@@ -1033,56 +1073,6 @@ impl TextEditorView {
                 log::warn!("notes_editor: reload failed path={:?}: {e}", self.path);
                 self.last_save_result = Some(format!("error: {e}"));
             }
-        }
-    }
-
-    /// Inline prompt row under the header.
-    fn show_prompt(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
-        let Some(prompt) = self.prompt else {
-            return;
-        };
-        let (question, choices): (&str, &[(&str, egui::Key)]) = match prompt {
-            Prompt::Overwrite => (
-                "File changed on disk. Your edits conflict.",
-                &[
-                    ("Reload from disk", egui::Key::R),
-                    ("Overwrite disk", egui::Key::O),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
-            ),
-            Prompt::Close { conflicted: false } => (
-                "Unsaved changes.",
-                &[
-                    ("Save", egui::Key::S),
-                    ("Discard edits", egui::Key::D),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
-            ),
-            Prompt::Close { conflicted: true } => (
-                "Unsaved changes, and the file changed on disk.",
-                &[
-                    ("Overwrite disk", egui::Key::O),
-                    ("Discard edits", egui::Key::D),
-                    ("Cancel (Esc)", egui::Key::Escape),
-                ],
-            ),
-        };
-        let mut chosen = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(crate::ui::style::SPACE_SM);
-            ui.label(
-                egui::RichText::new(question)
-                    .size(crate::ui::style::TEXT_BODY)
-                    .color(colors.warning),
-            );
-            for (label, key) in choices {
-                if ui.button(*label).clicked_by(egui::PointerButton::Primary) {
-                    chosen = Some(*key);
-                }
-            }
-        });
-        if let Some(key) = chosen {
-            self.apply_prompt_key(key);
         }
     }
 
@@ -1109,7 +1099,8 @@ impl TextEditorView {
     /// every rendered frame; extracted so tests can drive the race directly.
     fn maybe_autosave(&mut self) {
         // Only notes autosave. A file opened by path is written by Cmd+S.
-        if !self.is_note || self.external == Some(ExternalChange::Modified) {
+        if self.prompt.is_some() || !self.is_note || self.external == Some(ExternalChange::Modified)
+        {
             return;
         }
         if let Some(t) = self.last_edit {
@@ -1133,7 +1124,7 @@ impl TextEditorView {
                 "notes_editor: save blocked by external change path={:?}",
                 self.path
             );
-            self.prompt = Some(Prompt::Overwrite);
+            self.open_prompt(Prompt::Overwrite);
             return;
         }
         self.flush();
@@ -1212,7 +1203,20 @@ impl TextEditorView {
         let end = movement::char_to_cursor(self.doc.buffer(), range.1);
         self.doc.apply(EditorCommand::SetCursor(start));
         self.doc.apply(EditorCommand::ExtendTo(end));
-        self.view.pending_reveal = Some(end);
+        self.view.pending_reveal = Some(crate::editor::view::Reveal { start, end });
+        log::info!(
+            "notes_editor: find reveal chars {}..{} lines {}..{}",
+            range.0,
+            range.1,
+            start.line,
+            end.line
+        );
+    }
+
+    /// Reveals the caret after an edit. A queued match reveal would address
+    /// the buffer as it was before the edit, so the caret replaces it.
+    fn reveal_caret(&mut self) {
+        self.view.pending_reveal = Some(crate::editor::view::Reveal::caret(self.doc.cursor()));
     }
 
     /// Replaces the current match with the bar's replacement text through the
@@ -1227,6 +1231,7 @@ impl TextEditorView {
         let replacement = bar.replace.clone();
         self.select_match(range);
         self.doc.apply(EditorCommand::InsertText(replacement));
+        self.reveal_caret();
         self.last_edit = Some(Instant::now());
         let text = self.doc.text();
         if let Some(bar) = &mut self.find_bar {
@@ -1251,6 +1256,7 @@ impl TextEditorView {
             self.doc
                 .apply(EditorCommand::InsertText(replacement.clone()));
         }
+        self.reveal_caret();
         self.last_edit = Some(Instant::now());
         let text = self.doc.text();
         if let Some(bar) = &mut self.find_bar {
@@ -1611,7 +1617,7 @@ fn position_caret_at_end(doc: &mut Document, view: &mut ViewState) {
         movement: crate::editor::commands::Movement::DocEnd,
         extend: false,
     });
-    view.pending_reveal = Some(doc.cursor());
+    view.pending_reveal = Some(crate::editor::view::Reveal::caret(doc.cursor()));
 }
 
 fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
@@ -1961,6 +1967,10 @@ fn paint_editor_header(
                     .color(save_color),
             );
             if let Some(switch_label) = chrome.commands_switch_label {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "stint 1209 migrates the editor find bar to the kit"
+                )]
                 let btn = ui.add(
                     egui::Button::new(
                         egui::RichText::new(switch_label)
@@ -1977,6 +1987,240 @@ fn paint_editor_header(
     });
     ui.add_space(crate::ui::style::SPACE_XS);
     switched_scope
+}
+
+/// How the replace controls are laid out under the find row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplaceLayout {
+    /// Replace input, `Replace` and `All` share one band.
+    Inline,
+    /// Input on one band, the two buttons on the next.
+    Stacked,
+    /// No replace controls: the pane cannot hold them without clipping or
+    /// squeezing the editor. The find row is always kept.
+    Hidden,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FindBarPlan {
+    replace: ReplaceLayout,
+}
+
+impl FindBarPlan {
+    fn bands(self) -> f32 {
+        match self.replace {
+            ReplaceLayout::Hidden => 1.0,
+            ReplaceLayout::Inline => 2.0,
+            ReplaceLayout::Stacked => 3.0,
+        }
+    }
+
+    fn height(self) -> f32 {
+        self.bands() * crate::ui::embedded_bar::BAR_TOTAL_H
+    }
+}
+
+/// Measured widths of the two required replace actions (`Replace`, `All`).
+fn replace_button_widths(ui: &egui::Ui) -> [f32; 2] {
+    let pad = 2.0 * ui.spacing().button_padding.x;
+    ["Replace", "All"].map(|label| {
+        ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(crate::ui::style::TEXT_CAPTION),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .ceil()
+            + pad
+    })
+}
+
+/// Required replace actions, right to left: `All` is outermost.
+fn replace_slots(widths: [f32; 2]) -> [crate::ui::bounded::Slot<'static>; 2] {
+    [("all", widths[1]), ("replace", widths[0])].map(|(id, width)| crate::ui::bounded::Slot {
+        id,
+        width,
+        compact: None,
+        required: true,
+    })
+}
+
+/// Chooses the replace layout through `bounded::allocate`, required actions
+/// first: inline when the input keeps its minimum beside them, stacked when
+/// only the buttons fit, hidden when they cannot fit at all. Whatever the
+/// width allows is then dropped to `Hidden` if the editor would be left
+/// shorter than `editor_min_height`.
+fn plan_find_bar(
+    pane_width: f32,
+    available_height: f32,
+    editor_min_height: f32,
+    buttons: [f32; 2],
+) -> FindBarPlan {
+    let row = crate::ui::embedded_bar::inner_rect(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(pane_width, crate::ui::embedded_bar::BAR_TOTAL_H),
+    ));
+    let slots = replace_slots(buttons);
+    let gap = crate::ui::style::SPACE_SM;
+    // `allocate` only fails when the required actions do not fit, so the input
+    // minimum is checked on the text lane it leaves.
+    let inline_fits = crate::ui::bounded::allocate(row, REPLACE_INPUT_MIN_W, gap, &slots)
+        .is_ok_and(|layout| layout.text.width() >= REPLACE_INPUT_MIN_W);
+    let by_width = if inline_fits {
+        ReplaceLayout::Inline
+    } else if crate::ui::bounded::allocate(row, 0.0, gap, &slots).is_ok() {
+        ReplaceLayout::Stacked
+    } else {
+        ReplaceLayout::Hidden
+    };
+    let by_width = FindBarPlan { replace: by_width };
+    if available_height - by_width.height() >= editor_min_height {
+        by_width
+    } else {
+        FindBarPlan {
+            replace: ReplaceLayout::Hidden,
+        }
+    }
+}
+
+struct FindBarIds {
+    find: egui::Id,
+    replace: egui::Id,
+    surface: crate::ui::focus::SurfaceKey,
+}
+
+#[derive(Default)]
+struct FindBarOutput {
+    query_changed: bool,
+    replace_current: bool,
+    replace_all: bool,
+}
+
+/// Paints the find/replace bar into `rect` (exactly `plan.height()` tall).
+/// Every control is placed from rectangles allocated inside its band's safe
+/// insets, so nothing is painted outside `rect`.
+fn draw_find_bar(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    plan: FindBarPlan,
+    bar: &mut FindBar,
+    ids: FindBarIds,
+    colors: &crate::ui::theme::Colors,
+) -> FindBarOutput {
+    use crate::ui::embedded_bar::{embedded_bottom_bar, inner_rect, BAR_TOTAL_H};
+    let mut out = FindBarOutput::default();
+    let gap = crate::ui::style::SPACE_SM;
+    let band = |index: usize| {
+        egui::Rect::from_min_size(
+            rect.min + egui::vec2(0.0, index as f32 * BAR_TOTAL_H),
+            egui::vec2(rect.width(), BAR_TOTAL_H),
+        )
+    };
+    let fill = colors.pane_header_bg();
+
+    embedded_bottom_bar(ui, band(0), fill, |ui| {
+        let mut search = crate::ui::search_bar::SearchBar::with_id(ids.find, "Find\u{2026}")
+            .surface(ids.surface)
+            .claim_focus(std::mem::take(&mut bar.claim_focus))
+            .font_size(FIND_BAR_FONT_SIZE);
+        if !bar.query.is_empty() {
+            search = search.position(bar.current + 1, bar.matches.len());
+        }
+        out.query_changed = search.show(ui, &mut bar.query, colors).changed;
+    });
+
+    if plan.replace == ReplaceLayout::Hidden {
+        return out;
+    }
+    let widths = replace_button_widths(ui);
+    let slots = replace_slots(widths);
+    let replace_input = |ui: &mut egui::Ui, bar: &mut FindBar, lane: egui::Rect| {
+        let mut input_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(lane)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        crate::ui::text_field::TextField::singleline(ids.replace, "Replace\u{2026}")
+            .log_name("text_editor_replace")
+            .show(&mut input_ui, &mut bar.replace, colors);
+        // Registered under the pane so the post-frame focus reconciler keeps
+        // a clicked replace field focused instead of snapping focus back to
+        // the editor.
+        crate::ui::focus::register_text_surface(ui.ctx(), ids.surface, ids.replace);
+    };
+    let buttons = |ui: &mut egui::Ui, row: &crate::ui::bounded::RowLayout, enabled: bool| {
+        let (mut replace, mut all) = (false, false);
+        for slot in &row.slots {
+            let label = if slot.id == "replace" {
+                "Replace"
+            } else {
+                "All"
+            };
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(slot.rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let clicked = child
+                .add_enabled_ui(enabled, |ui| {
+                    ui.add(
+                        crate::ui::button::KitButton::new(label, colors)
+                            .kind(crate::ui::button::ButtonKind::Secondary)
+                            .compact()
+                            .min_size(egui::vec2(
+                                slot.rect.width(),
+                                crate::ui::embedded_bar::BAR_CONTENT_H,
+                            )),
+                    )
+                    .clicked()
+                })
+                .inner;
+            if slot.id == "replace" {
+                replace = clicked;
+            } else {
+                all = clicked;
+            }
+        }
+        (replace, all)
+    };
+    let enabled = !bar.matches.is_empty();
+    match plan.replace {
+        ReplaceLayout::Inline => embedded_bottom_bar(ui, band(1), fill, |ui| {
+            match crate::ui::bounded::allocate(
+                inner_rect(band(1)),
+                REPLACE_INPUT_MIN_W,
+                gap,
+                &slots,
+            ) {
+                Ok(row) => {
+                    replace_input(ui, bar, row.text);
+                    (out.replace_current, out.replace_all) = buttons(ui, &row, enabled);
+                }
+                Err(e) => {
+                    log::warn!("notes_editor: planned inline replace row does not fit: {e:?}")
+                }
+            }
+        }),
+        ReplaceLayout::Stacked => {
+            embedded_bottom_bar(ui, band(1), fill, |ui| {
+                replace_input(ui, bar, inner_rect(band(1)));
+            });
+            embedded_bottom_bar(ui, band(2), fill, |ui| {
+                match crate::ui::bounded::allocate(inner_rect(band(2)), 0.0, gap, &slots) {
+                    Ok(row) => (out.replace_current, out.replace_all) = buttons(ui, &row, enabled),
+                    Err(e) => {
+                        log::warn!("notes_editor: planned stacked replace row does not fit: {e:?}")
+                    }
+                }
+            });
+        }
+        ReplaceLayout::Hidden => {}
+    }
+    out
 }
 
 impl View for TextEditorView {
@@ -2029,23 +2273,7 @@ impl View for TextEditorView {
 
     fn handle_key(&mut self, input: &crate::app::input_router::PlexiInput) -> KeyDisposition {
         if self.prompt.is_some() {
-            if input.key_pressed(egui::Key::Escape) {
-                self.apply_prompt_key(egui::Key::Escape);
-                return KeyDisposition::Consumed;
-            }
-            if input.events().iter().any(|event| {
-                matches!(
-                    event,
-                    egui::Event::Key { pressed: true, .. }
-                        | egui::Event::Text(_)
-                        | egui::Event::Paste(_)
-                        | egui::Event::Cut
-                )
-            }) {
-                // A prompt may appear while the person is writing. Continuing
-                // to type cancels the question, never their buffer or input.
-                self.apply_prompt_key(egui::Key::Escape);
-            }
+            return KeyDisposition::Consumed;
         }
         if input.key_pressed(egui::Key::S)
             && input
@@ -2279,31 +2507,13 @@ impl View for TextEditorView {
             crate::app::input_owner::published_frame_owner_is_pane(ui.ctx(), ctx.pane_id)
                 .unwrap_or(true);
         let editor_focused = egui_editor_focused && owns_input;
-        let find_input_id = egui::Id::new("text_editor_find_input").with(&self.path);
+        let find_input_id = egui::Id::new(("text_editor_find_input", &self.path));
         let replace_input_id = egui::Id::new("text_editor_replace_input").with(&self.path);
         let find_focused = owns_input
             && self.find_bar.is_some()
             && ui.ctx().memory(|memory| {
                 memory.has_focus(find_input_id) || memory.has_focus(replace_input_id)
             });
-
-        if self.prompt.is_some() && owns_input {
-            let escape = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-            let editing = ui.input(|i| {
-                i.events.iter().any(|event| {
-                    matches!(
-                        event,
-                        egui::Event::Key { pressed: true, .. }
-                            | egui::Event::Text(_)
-                            | egui::Event::Paste(_)
-                            | egui::Event::Cut
-                    )
-                })
-            });
-            if escape || editing {
-                self.apply_prompt_key(egui::Key::Escape);
-            }
-        }
 
         // App-level shortcuts, consumed out of the frame's event queue before
         // the editor widget (which reads the same queue) can see them. Gated
@@ -2383,16 +2593,20 @@ impl View for TextEditorView {
 
         self.show_commands_diagnostics_banner(ui, colors);
         self.show_change_banner(ui, colors);
-        self.show_prompt(ui, colors);
 
-        // When the find bar is open, reserve its height at the bottom before
-        // laying out the editor so it doesn't overlap the bar.
-        let find_bar_height = if self.find_bar.is_some() {
-            crate::ui::embedded_bar::BAR_TOTAL_H
-        } else {
-            0.0
-        };
-        let editor_height = (ui.available_height() - find_bar_height).max(1.0);
+        // When the find bar is open, plan its bands from the pane's width and
+        // height first and reserve exactly that at the bottom, so neither the
+        // bar nor the editor is ever painted past the pane edge.
+        let find_plan = self.find_bar.is_some().then(|| {
+            plan_find_bar(
+                ui.available_width(),
+                ui.available_height(),
+                FIND_EDITOR_MIN_LINES * self.view.line_height,
+                replace_button_widths(ui),
+            )
+        });
+        let editor_height =
+            (ui.available_height() - find_plan.map_or(0.0, FindBarPlan::height)).max(0.0);
         let editor_rect = egui::Rect::from_min_size(
             ui.cursor().min,
             egui::vec2(ui.available_width(), editor_height),
@@ -2516,103 +2730,44 @@ impl View for TextEditorView {
 
         self.maybe_autosave();
 
-        // Render the find/replace bar below the editor. The embedded-bar
-        // primitive owns the band geometry and safe insets so the controls
-        // never clip against the pane's bottom edge.
-        if self.find_bar.is_some() {
-            let find_rect = egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), crate::ui::embedded_bar::BAR_TOTAL_H),
+        if let (Some(bar), Some(plan)) = (&mut self.find_bar, find_plan) {
+            if bar.layout != Some(plan.replace) {
+                log::info!(
+                    "notes_editor: find bar layout replace={:?} width={:.0} bands={}",
+                    plan.replace,
+                    editor_rect.width(),
+                    plan.height() / crate::ui::embedded_bar::BAR_TOTAL_H
+                );
+                bar.layout = Some(plan.replace);
+            }
+            let bars_rect = egui::Rect::from_min_size(
+                egui::pos2(editor_rect.left(), editor_rect.bottom()),
+                egui::vec2(editor_rect.width(), plan.height()),
             );
-            ui.advance_cursor_after_rect(find_rect);
-
-            let mut replace_one = false;
-            let mut replace_every = false;
-            crate::ui::embedded_bar::embedded_bottom_bar(
+            ui.advance_cursor_after_rect(bars_rect);
+            let out = draw_find_bar(
                 ui,
-                find_rect,
-                colors.pane_header_bg(),
-                |ui| {
-                    let Some(bar) = &mut self.find_bar else {
-                        return;
-                    };
-
-                    let input_width = ((find_rect.width() - 260.0) / 2.0).max(60.0);
-                    let response =
-                        crate::ui::text_field::TextField::singleline(find_input_id, "Find…")
-                            .desired_width(input_width)
-                            .log_name("text_editor_find")
-                            .show(ui, &mut bar.query, colors);
-
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                        find_input_id,
-                    );
-                    if bar.claim_focus {
-                        crate::ui::focus::claim_text_surface(
-                            ui.ctx(),
-                            crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                            find_input_id,
-                        );
-                        bar.claim_focus = false;
-                    }
-
-                    let query_changed = response.changed();
-
-                    ui.add_space(crate::ui::style::SPACE_SM);
-                    let count_text = if bar.matches.is_empty() {
-                        if bar.query.is_empty() {
-                            String::new()
-                        } else {
-                            "No results".to_string()
-                        }
-                    } else {
-                        format!("{} / {}", bar.current + 1, bar.matches.len())
-                    };
-                    ui.label(
-                        egui::RichText::new(count_text)
-                            .size(FIND_BAR_FONT_SIZE)
-                            .color(colors.text_dim),
-                    );
-
-                    ui.add_space(crate::ui::style::SPACE_SM);
-                    crate::ui::text_field::TextField::singleline(replace_input_id, "Replace…")
-                        .desired_width(input_width)
-                        .log_name("text_editor_replace")
-                        .show(ui, &mut bar.replace, colors);
-                    // Registered under the pane so the post-frame focus
-                    // reconciler keeps a clicked replace field focused instead
-                    // of snapping focus back to the editor.
-                    crate::ui::focus::register_text_surface(
-                        ui.ctx(),
-                        crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
-                        replace_input_id,
-                    );
-                    let has_matches = !bar.matches.is_empty();
-                    replace_one = ui
-                        .add_enabled(has_matches, egui::Button::new("Replace"))
-                        .clicked();
-                    replace_every = ui
-                        .add_enabled(has_matches, egui::Button::new("All"))
-                        .clicked();
-
-                    if query_changed {
-                        let text = self.doc.text();
-                        if let Some(bar) = &mut self.find_bar {
-                            bar.recompute(&text);
-                            log::info!(
-                                "notes_editor: find query changed — {} matches",
-                                bar.matches.len()
-                            );
-                        }
-                    }
+                bars_rect,
+                plan,
+                bar,
+                FindBarIds {
+                    find: find_input_id,
+                    replace: replace_input_id,
+                    surface: crate::ui::focus::SurfaceKey::Pane(ctx.pane_id),
                 },
+                colors,
             );
-            if replace_one {
+            if out.query_changed {
+                bar.recompute(&self.doc.text());
+                log::info!(
+                    "notes_editor: find query changed — {} matches",
+                    bar.matches.len()
+                );
+            }
+            if out.replace_current {
                 self.replace_current();
             }
-            if replace_every {
+            if out.replace_all {
                 self.replace_all();
             }
         }
@@ -2633,7 +2788,8 @@ impl View for TextEditorView {
                     "notes_editor: close vetoed after failed save path={:?}",
                     self.path
                 );
-                self.prompt = Some(Prompt::Close { conflicted: false });
+                self.pending_switch = None;
+                self.open_prompt(Prompt::Close { conflicted: false });
                 return false;
             }
         }
@@ -2645,8 +2801,31 @@ impl View for TextEditorView {
             "notes_editor: close asked about unsaved buffer path={:?}",
             self.path
         );
-        self.prompt = Some(Prompt::Close { conflicted });
+        self.pending_switch = None;
+        self.open_prompt(Prompt::Close { conflicted });
         false
+    }
+
+    fn unsaved_changes_dialog(&self) -> Option<UnsavedChangesDialog> {
+        self.prompt.map(|prompt| UnsavedChangesDialog {
+            path: self.path.display().to_string(),
+            conflicted: matches!(
+                prompt,
+                Prompt::Overwrite
+                    | Prompt::Close { conflicted: true }
+                    | Prompt::Switch { conflicted: true }
+            ),
+            reload: prompt == Prompt::Overwrite,
+            error: self
+                .last_save_result
+                .as_ref()
+                .filter(|result| result.starts_with("error:"))
+                .cloned(),
+        })
+    }
+
+    fn resolve_unsaved_changes(&mut self, choice: UnsavedChangesChoice) {
+        self.apply_prompt_choice(choice);
     }
 
     fn service_external(
@@ -2712,15 +2891,14 @@ impl View for TextEditorView {
                     self.path,
                     new_path
                 );
-                self.flush();
+                if self.is_note && self.last_edit.is_some() {
+                    self.flush();
+                }
                 if self.last_edit.is_some() {
-                    log::info!(
-                        "notes_editor: document switch refused while unsaved path={:?}",
-                        self.path
-                    );
-                    if self.external == Some(ExternalChange::Modified) {
-                        self.prompt = Some(Prompt::Overwrite);
-                    }
+                    self.pending_switch = Some(state.clone());
+                    self.open_prompt(Prompt::Switch {
+                        conflicted: self.external == Some(ExternalChange::Modified),
+                    });
                     return;
                 }
                 let (raw, load_error) = match std::fs::read_to_string(&new_path) {
@@ -3593,6 +3771,376 @@ mod tests {
         assert!(bar.matches.is_empty());
     }
 
+    fn find_regression_harness(
+        file: &str,
+        text: &str,
+        query: &str,
+    ) -> (
+        egui_kittest::Harness<'static, TextEditorView>,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().expect("temp dir for find regression");
+        let path = dir.path().join(file);
+        std::fs::write(&path, text).expect("write find fixture");
+        let mut app = TextEditorView::new(path);
+        let mut bar = FindBar::new();
+        bar.query = query.into();
+        bar.recompute(text);
+        app.find_bar = Some(bar);
+        // `set_fonts` binds the `ui-medium` family on the next frame, so the
+        // first frame only registers fonts (see src/ui/AGENTS.md).
+        let mut fonts_ready = false;
+        let harness = egui_kittest::Harness::new_ui_state(
+            move |ui, app: &mut TextEditorView| {
+                if !fonts_ready {
+                    crate::ui::theme::setup_fonts(ui.ctx());
+                    fonts_ready = true;
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                let colors = crate::ui::theme::Colors::from_config(
+                    &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
+                );
+                app.ui(
+                    ui,
+                    &ViewRenderContext {
+                        colors: &colors,
+                        pane_id: 1,
+                    },
+                    None,
+                );
+            },
+            app,
+        );
+        (harness, dir)
+    }
+
+    fn press_find_enter(h: &mut egui_kittest::Harness<'static, TextEditorView>, backwards: bool) {
+        let modifiers = if backwards {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        let input = crate::app::input_router::PlexiInput::synthetic(
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+        assert!(matches!(
+            h.state_mut().handle_key(&input),
+            KeyDisposition::Consumed
+        ));
+        h.run();
+    }
+
+    /// Horizontal offset of `column` on `line`, measured with the editor font.
+    fn measured_x(
+        h: &egui_kittest::Harness<'static, TextEditorView>,
+        line: &str,
+        column: usize,
+    ) -> f32 {
+        let font = egui::FontId::monospace(h.state().font_size);
+        h.ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(
+                    line.chars().take(column).collect(),
+                    font,
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+    }
+
+    /// The whole selected match is inside the viewport on both axes, keeping
+    /// the horizontal margin whenever the match is narrower than the pane.
+    fn assert_match_revealed(h: &egui_kittest::Harness<'static, TextEditorView>, what: &str) {
+        let app = h.state();
+        let bar = app.find_bar.as_ref().expect("find bar open");
+        let (start, end) = bar.matches[bar.current];
+        let start = movement::char_to_cursor(app.doc.buffer(), start);
+        let end = movement::char_to_cursor(app.doc.buffer(), end);
+        assert!(
+            app.view
+                .cursor_visible(start, app.doc.buffer().line_count())
+                && app.view.cursor_visible(end, app.doc.buffer().line_count()),
+            "{what}: match rows {start:?}..{end:?} outside vertical viewport (scroll_y {})",
+            app.view.scroll_y
+        );
+        if !app.mode.is_code() {
+            return;
+        }
+        let margin = crate::editor::view::SCROLL_X_MARGIN;
+        let left = measured_x(
+            h,
+            &movement::line_text(app.doc.buffer(), start.line),
+            start.column,
+        );
+        let right = measured_x(
+            h,
+            &movement::line_text(app.doc.buffer(), end.line),
+            end.column,
+        );
+        let (view_left, view_right) = (
+            app.view.scroll_x,
+            app.view.scroll_x + app.view.viewport_width,
+        );
+        // Glyph positions are pixel-snapped, so a summed prefix width can
+        // differ from the laid-out caret x by about a pixel; the 8pt margin
+        // is far outside this tolerance.
+        let eps = 1.5;
+        assert!(
+            left >= view_left + margin - eps || view_left == 0.0 && left >= view_left - eps,
+            "{what}: match start {left} violates margin in {view_left}..{view_right}"
+        );
+        if right - left <= app.view.viewport_width - 2.0 * margin {
+            assert!(
+                right <= view_right - margin + eps,
+                "{what}: match end {right} violates margin in {view_left}..{view_right}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_bar_and_header_stay_inside_pane_at_every_size() {
+        use egui_kittest::kittest::{NodeT, Queryable};
+        for width in [100.0_f32, 140.0, 180.0, 250.0] {
+            for height in [100.0_f32, 120.0, 200.0] {
+                let (mut h, _dir) = find_regression_harness("find.rs", "abcdefgh\n", "abcdefgh");
+                h.set_size(egui::vec2(width, height));
+                h.run();
+                let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+                let mut seen = 0;
+                for node in h.root().children_recursive() {
+                    if !matches!(
+                        node.accesskit_node().role(),
+                        egui::accesskit::Role::Button
+                            | egui::accesskit::Role::TextInput
+                            | egui::accesskit::Role::Label
+                    ) {
+                        continue;
+                    }
+                    let rect = node.rect();
+                    seen += 1;
+                    assert!(
+                        pane.expand(0.75).contains_rect(rect),
+                        "{width}x{height}: {:?} {:?} escapes pane {rect:?}",
+                        node.accesskit_node().role(),
+                        node.accesskit_node().label()
+                    );
+                }
+                assert!(seen > 0, "{width}x{height}: no controls found");
+                // The header carries the save indicator and the scope switch;
+                // it is never traded away for height.
+                h.get_by_label("Saved");
+                h.get_by_label("find.rs");
+                // Count and clear belong to the find row.
+                h.get_by_label("\u{00d7}");
+                // The badge is optional text: it degrades full, compact, then
+                // hides when the input would drop under its minimum (the test
+                // harness pane is 16pt narrower than the window).
+                if width >= 180.0 {
+                    assert!(
+                        h.query_by_label("1 / 1").is_some() || h.query_by_label("1/1").is_some(),
+                        "{width}x{height}: position count missing"
+                    );
+                }
+                let view = &h.state().view;
+                // Two lines whenever the replace block can be sacrificed for
+                // them; the find row alone leaves what the pane has.
+                let min_lines = if height >= 120.0 { 2.0 } else { 1.0 };
+                assert!(
+                    view.viewport_height >= min_lines * view.line_height - 0.5,
+                    "{width}x{height}: editor squeezed to {} (line {})",
+                    view.viewport_height,
+                    view.line_height
+                );
+                if width >= 250.0 && height >= 200.0 {
+                    h.get_by_label("Replace");
+                    h.get_by_label("All");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_bar_plan_reflows_then_collapses_replace_row() {
+        let buttons = [50.0, 30.0];
+        let tall = 400.0;
+        let min_editor = 36.0;
+        let plan = |w: f32, h: f32| plan_find_bar(w, h, min_editor, buttons).replace;
+        assert_eq!(plan(300.0, tall), ReplaceLayout::Inline);
+        // Buttons still fit once the input would drop under its minimum.
+        assert_eq!(plan(130.0, tall), ReplaceLayout::Stacked);
+        // Required buttons themselves no longer fit.
+        assert_eq!(plan(60.0, tall), ReplaceLayout::Hidden);
+        // Height collapses the replace block before the editor is squeezed.
+        let inline_h = FindBarPlan {
+            replace: ReplaceLayout::Inline,
+        }
+        .height();
+        assert_eq!(plan(300.0, inline_h + min_editor), ReplaceLayout::Inline);
+        assert_eq!(
+            plan(300.0, inline_h + min_editor - 0.5),
+            ReplaceLayout::Hidden
+        );
+        // Every plan keeps the editor at least its minimum, except when even
+        // the find row alone leaves less (below any supported pane height).
+        for w in 0..400 {
+            for h in 0..400 {
+                let p = plan_find_bar(w as f32, h as f32, min_editor, buttons);
+                if p.replace != ReplaceLayout::Hidden {
+                    assert!(h as f32 - p.height() >= min_editor, "{w}x{h}: {p:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_bar_shows_position_and_no_results() {
+        use egui_kittest::kittest::Queryable;
+        let (mut h, _dir) = find_regression_harness("find.rs", "ab ab ab\n", "ab");
+        h.set_size(egui::vec2(300.0, 200.0));
+        h.run();
+        h.get_by_label("1 / 3");
+        press_find_enter(&mut h, false);
+        h.get_by_label("2 / 3");
+        h.state_mut().find_bar.as_mut().unwrap().query = "zzz".into();
+        h.state_mut()
+            .find_bar
+            .as_mut()
+            .unwrap()
+            .recompute("ab ab ab\n");
+        h.run();
+        h.get_by_label("No results");
+    }
+
+    #[test]
+    fn find_replace_buttons_are_wired_to_replace_current_and_all() {
+        use egui_kittest::kittest::Queryable;
+        let (mut h, _dir) = find_regression_harness("find.rs", "foo bar foo\n", "foo");
+        h.state_mut().find_bar.as_mut().unwrap().replace = "qux".into();
+        h.set_size(egui::vec2(300.0, 200.0));
+        h.run();
+        h.get_by_label("Replace").click();
+        h.run();
+        assert_eq!(h.state().doc.text(), "qux bar foo\n");
+        h.get_by_label("All").click();
+        h.run();
+        assert_eq!(h.state().doc.text(), "qux bar qux\n");
+    }
+
+    #[test]
+    fn find_match_reveal_keeps_whole_match_visible_with_margin_in_narrow_code_pane() {
+        let text = format!("{}abcdefgh{}\n", "x".repeat(80), "x".repeat(80));
+        let (mut h, _dir) = find_regression_harness("find.rs", &text, "abcdefgh");
+        h.set_size(egui::vec2(140.0, 140.0));
+        h.run();
+        let start_x = measured_x(&h, &"x".repeat(80), 80);
+        // Returning to the match from the right: its end is visible, its
+        // start is left of the viewport.
+        h.state_mut().view.scroll_x = start_x + 10.0;
+        h.state_mut().select_match((80, 88));
+        h.run();
+        assert_match_revealed(&h, "backward");
+        // And arriving from the left: the end is right of the viewport.
+        h.state_mut().view.scroll_x = 0.0;
+        h.state_mut().select_match((80, 88));
+        h.run();
+        assert_match_revealed(&h, "forward");
+    }
+
+    #[test]
+    fn find_match_reveal_handles_wide_characters_and_tabs() {
+        let line = format!(
+            "\t{}\u{4e16}\u{754c}\t{}\u{4e16}\u{754c}abcdefgh{}\n",
+            "\u{4e16}".repeat(30),
+            "x".repeat(30),
+            "\t".repeat(20)
+        );
+        let (mut h, _dir) = find_regression_harness("find.rs", &line, "abcdefgh");
+        h.set_size(egui::vec2(160.0, 140.0));
+        h.run();
+        let start = line.chars().position(|c| c == 'a').unwrap();
+        h.state_mut().view.scroll_x = 0.0;
+        h.state_mut().select_match((start, start + 8));
+        h.run();
+        assert_match_revealed(&h, "wide chars and tabs");
+    }
+
+    #[test]
+    fn find_match_reveal_straddling_soft_wrapped_rows_shows_both_rows() {
+        let paragraph = "alpha beta gamma delta epsilon zeta eta theta iota kappa ".repeat(8);
+        let text = format!("{}{paragraph}\n{}", "pad\n".repeat(30), "pad\n".repeat(30));
+        let (mut h, _dir) = find_regression_harness("find.md", &text, "kappa alpha");
+        h.set_size(egui::vec2(220.0, 140.0));
+        h.run();
+        let bar_len = h.state().find_bar.as_ref().unwrap().matches.len();
+        assert!(bar_len >= 2, "fixture has wrapped matches");
+        for _ in 0..bar_len {
+            press_find_enter(&mut h, false);
+            assert_match_revealed(&h, "wrapped markdown");
+        }
+    }
+
+    #[test]
+    fn find_navigation_keeps_each_match_visible_on_both_axes() {
+        let line = format!("{}abcdefgh{}abcdefgh\n", "x".repeat(80), "x".repeat(80));
+        let text = format!("{line}{}{line}", "other\n".repeat(20));
+        let (mut h, _dir) = find_regression_harness("find.rs", &text, "abcdefgh");
+        h.set_size(egui::vec2(180.0, 140.0));
+        h.run();
+        for backwards in [false, false, false, false, true, true, true, true] {
+            press_find_enter(&mut h, backwards);
+            assert_eq!(h.state().doc.selected_text(), "abcdefgh");
+            assert_match_revealed(&h, "navigation");
+        }
+    }
+
+    #[test]
+    fn replace_reveals_the_caret_not_the_stale_match() {
+        let text = format!(
+            "foo{}foo\n{}foo{}foo\n",
+            "x".repeat(200),
+            "pad\n".repeat(3),
+            "x".repeat(200)
+        );
+        let replacement = "y".repeat(60);
+        for all in [false, true] {
+            let (mut h, _dir) = find_regression_harness("find.rs", &text, "foo");
+            h.state_mut().find_bar.as_mut().unwrap().replace = replacement.clone();
+            h.set_size(egui::vec2(160.0, 160.0));
+            h.run();
+            if all {
+                h.state_mut().replace_all();
+            } else {
+                h.state_mut().replace_current();
+            }
+            h.run();
+            let app = h.state();
+            let caret = app.doc.cursor();
+            let caret_x = measured_x(
+                &h,
+                &movement::line_text(app.doc.buffer(), caret.line),
+                caret.column,
+            );
+            assert!(
+                app.view
+                    .cursor_visible(caret, app.doc.buffer().line_count())
+                    && caret_x >= app.view.scroll_x
+                    && caret_x <= app.view.scroll_x + app.view.viewport_width,
+                "replace(all={all}): caret {caret:?} x={caret_x} outside {}..{}",
+                app.view.scroll_x,
+                app.view.scroll_x + app.view.viewport_width
+            );
+        }
+    }
+
     #[test]
     fn replace_current_and_replace_all_route_through_document() {
         let dir = unique_temp_dir("notes-replace");
@@ -4446,6 +4994,23 @@ mod data_safety_tests {
     }
 
     #[test]
+    fn conflicted_note_switch_discard_never_flushes_discarded_text() {
+        let (path, mut app) = plain_file("note-switch-discard", "seed");
+        app.is_note = true;
+        type_text(&mut app, " mine");
+        std::fs::write(&path, "external").unwrap();
+        app.check_disk();
+        let next = path.with_file_name("next.txt");
+        std::fs::write(&next, "next").unwrap();
+        app.restore_state(&serde_json::json!({"path": next}));
+        assert_eq!(app.path, path);
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Discard));
+        assert_eq!(app.path, next);
+        assert_eq!(app.doc.text(), "next");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external");
+    }
+
+    #[test]
     fn note_close_flushes_before_process_exit_and_vetoes_failed_write() {
         let (path, mut app) = plain_file("close-flush", "seed");
         app.is_note = true;
@@ -4535,7 +5100,7 @@ mod data_safety_tests {
         assert_eq!(app.prompt, Some(Prompt::Overwrite));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent wrote this");
 
-        assert!(app.apply_prompt_key(egui::Key::O));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Overwrite));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed mine");
         assert!(app.external.is_none());
         assert!(app.last_edit.is_none());
@@ -4548,7 +5113,7 @@ mod data_safety_tests {
         std::fs::write(&path, "agent wrote this").unwrap();
         app.check_disk();
         app.explicit_save();
-        assert!(app.apply_prompt_key(egui::Key::R));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Reload));
         assert_eq!(app.doc.text(), "agent wrote this");
         assert!(app.last_edit.is_none());
         assert!(app.external.is_none());
@@ -4561,7 +5126,7 @@ mod data_safety_tests {
         std::fs::write(&path, "agent").unwrap();
         app.check_disk();
         app.explicit_save();
-        assert!(app.apply_prompt_key(egui::Key::Escape));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Cancel));
         assert!(app.prompt.is_none());
         assert_eq!(app.doc.text(), "seed mine");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent");
@@ -4593,7 +5158,7 @@ mod data_safety_tests {
         assert!(!app.request_close());
         assert_eq!(app.prompt, Some(Prompt::Close { conflicted: false }));
         assert!(!app.wants_close());
-        assert!(app.apply_prompt_key(egui::Key::D));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Discard));
         assert!(app.wants_close());
         drop(app);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed");
@@ -4604,10 +5169,10 @@ mod data_safety_tests {
         let (path, mut app) = plain_file("close-save", "seed");
         type_text(&mut app, " mine");
         assert!(!app.request_close());
-        assert!(app.apply_prompt_key(egui::Key::Escape));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Cancel));
         assert!(!app.wants_close());
         assert!(!app.request_close());
-        assert!(app.apply_prompt_key(egui::Key::S));
+        assert!(app.apply_prompt_choice(UnsavedChangesChoice::Save));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "seed mine");
         assert!(app.wants_close());
     }
@@ -4620,7 +5185,10 @@ mod data_safety_tests {
         app.check_disk();
         assert!(!app.request_close());
         assert_eq!(app.prompt, Some(Prompt::Close { conflicted: true }));
-        assert!(!app.apply_prompt_key(egui::Key::S), "save is not offered");
+        assert!(
+            !app.apply_prompt_choice(UnsavedChangesChoice::Save),
+            "save is not offered"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent");
     }
 
