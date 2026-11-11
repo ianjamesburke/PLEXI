@@ -6862,6 +6862,83 @@ open(out + ".done", "w").close()
         assert!((zoomed_inset - normal_inset).abs() < 0.01, "zoomed glyph inset {zoomed_inset} must equal normal {normal_inset}");
     }
 
+    /// PTY (rows, cols) from the shell must equal the inset grid of the pane's current widget rect.
+    fn assert_pty_follows_layout(h: &mut PlexiUiHarness, pane: u64, step: &str) {
+        let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
+        loop {
+            h.run_steps(3);
+            let rect = h.harness().ctx.read_response(egui_term::terminal_widget_id(pane)).unwrap().rect;
+            let (cw, ch) = h.with_app_mut(|app| {
+                let size = app.windows[app.active_window].panes.get_mut(&pane).unwrap().as_terminal_mut().unwrap().backend.last_content().terminal_size;
+                (size.cell_width as f32, size.cell_height as f32)
+            });
+            let pad = crate::render::terminal_pane::terminal_content_padding();
+            let expected = (((rect.height() - 2.0 * pad.y) / ch) as usize, ((rect.width() - 2.0 * pad.x) / cw) as usize);
+            let reported = pty_reported_size(h, pane);
+            if reported == expected { return; }
+            assert!(Instant::now() < deadline, "{step}: pane {pane} PTY {reported:?} != inset grid {expected:?} of {rect:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Stint 1213 D1: after a restore, splitting a third pane and zooming must keep every PTY
+    /// size equal to its drawn grid. Reproduces the installed tester's restart sequence.
+    #[test]
+    #[ignore = "requires-pty"]
+    fn pty_follows_layout_after_restore_split_and_zoom() {
+        let (mut h1, first, second) = pane_chrome_fixture_sized(1.0, 1200.0);
+        let root = h1.workspace_root().to_path_buf();
+        h1.with_app_mut(|app| {
+            let term = crate::host::pane::TerminalPane::new(second, app.ctx.clone(), app.pty_event_tx.clone(),
+                egui_term::BackendSettings { shell: "/bin/sh".into(), working_directory: Some(root), ..Default::default() }, 14.0).unwrap();
+            app.windows[app.active_window].panes.insert(second, Pane::Terminal(Box::new(term)));
+        });
+        h1.run_steps(5);
+        for pane in [first, second] { assert_pty_follows_layout(&mut h1, pane, "before restart"); }
+        assert!(h1.with_app(|app| app.save_workspace_now()), "workspace must save");
+
+        // Restart: a fresh app restored from the saved workspace, like a host relaunch.
+        let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);
+        h.with_app_mut(|app| {
+            let profile = crate::config::config_dir();
+            let ws = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
+            let cfg = app.config.clone();
+            let colors = app.colors.clone();
+            let pty_event_tx = app.pty_event_tx.clone();
+            let ctx = app.ctx.clone();
+            let restored = crate::app::restore_workspace(ws, &cfg, crate::app::WorkspaceRestoreCollaborators {
+                profile_dir: &profile, colors: &colors, hot_reload: &mut app.hot_reload, state_watch: &mut app.state_watch,
+                terminal_spawner: Some((&ctx, &pty_event_tx)),
+            }).expect("restore workspace");
+            app.install_restored_workspace(restored);
+            app.sidebar_visible = false;
+        });
+        h.run_steps(5);
+        let mut panes: Vec<u64> = h.with_app(|app| app.windows[app.active_window].panes.keys().copied().collect());
+        panes.sort_unstable();
+        assert_eq!(panes.len(), 2, "restore must bring both terminals back");
+        for &pane in &panes { assert_pty_follows_layout(&mut h, pane, "after restore"); }
+
+        h.with_app_mut(|app| { app.split_focused(true, None, false, false, None); });
+        h.run_steps(5);
+        let mut panes: Vec<u64> = h.with_app(|app| app.windows[app.active_window].panes.keys().copied().collect());
+        panes.sort_unstable();
+        assert_eq!(panes.len(), 3, "split must add a third terminal");
+        for &pane in &panes { assert_pty_follows_layout(&mut h, pane, "after third split"); }
+
+        let zoomed = panes[0];
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let tile = win.tree.tiles.find_pane(&zoomed).unwrap();
+            win.zoom_to(tile);
+        });
+        h.run_steps(5);
+        assert_pty_follows_layout(&mut h, zoomed, "zoomed after restore + split");
+        h.with_app_mut(|app| app.windows[app.active_window].clear_zoom());
+        h.run_steps(5);
+        for &pane in &panes { assert_pty_follows_layout(&mut h, pane, "after unzoom"); }
+    }
+
     #[test]
     #[ignore = "requires-pty"]
     fn pane_provenance_clears_focused_state_rings() {
