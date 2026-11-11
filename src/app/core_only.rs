@@ -25,7 +25,12 @@ impl super::PlexiApp {
         let mut dismiss = false;
         crate::ui::toast::ToastShell::bottom("plugin_unavailable").show(ctx, &self.colors, |ui| {
             ui.label(message);
-            dismiss = ui.button("Dismiss").clicked();
+            dismiss = ui
+                .add(crate::ui::toast::ToastShell::button(
+                    "Dismiss",
+                    &self.colors,
+                ))
+                .clicked();
         });
         if dismiss || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.plugin_notice = None;
