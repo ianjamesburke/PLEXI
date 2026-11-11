@@ -6172,6 +6172,223 @@ fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
     assert_eq!(std::fs::read(&path).unwrap(), b"original bytes\n");
 }
 
+fn unsaved_editor_fixture() -> (tempfile::TempDir, std::path::PathBuf, HostHarness, PaneId) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("document.txt");
+    std::fs::write(&path, b"original bytes\n").unwrap();
+    let mut h = HostHarness::new();
+    h.app.open_builtin_app_pane(
+        Box::new(crate::app::text_editor_app::TextEditorApp::new(
+            path.clone(),
+        )),
+        crate::app::permissions::AppPermissions::builtin(),
+        dir.path().to_path_buf(),
+        None,
+        Some("split_h"),
+        None,
+    );
+    let pane = *h.state().open_panes.last().unwrap();
+    h.focus_pane(pane);
+    h.run_frames(2);
+    (dir, path, h, pane)
+}
+
+#[test]
+fn unsaved_dialog_save_default_and_discard_alias() {
+    for (key, modifiers, expected) in [
+        (egui::Key::S, egui::Modifiers::COMMAND, "unsaved edits"),
+        (egui::Key::Enter, egui::Modifiers::NONE, "unsaved edits"),
+        (egui::Key::D, egui::Modifiers::COMMAND, "original bytes\n"),
+    ] {
+        let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+        let pane_count = h.state().open_panes.len();
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        h.app.close_focused_app();
+        h.run_frames(2);
+        h.press_key(key, modifiers);
+        h.run_frames(2);
+        assert!(!h.app.windows[0].panes.contains_key(&pane));
+        assert_eq!(
+            h.state().open_panes.len(),
+            pane_count - 1,
+            "discard alias must not split"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(h.app.focus_stack.is_empty());
+    }
+}
+
+#[test]
+fn unsaved_dialog_cancel_and_unrecognized_input_never_edit_buffer() {
+    use crate::app::input_owner::{InputOwner, OverlaySurface};
+    use crate::app::FocusKind;
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    h.app.close_focused_app();
+    h.run_frames(2);
+    assert_eq!(
+        h.app.host_input_owner(),
+        InputOwner::Overlay(OverlaySurface::Layer(FocusKind::UnsavedChanges))
+    );
+    h.press_key(
+        egui::Key::D,
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+    );
+    h.run_frames(2);
+    assert!(
+        h.app.windows[0].panes.contains_key(&pane),
+        "Cmd+Shift+D must not discard"
+    );
+    h.press_key(egui::Key::X, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert_eq!(h.app.focus_stack.last(), Some(&FocusKind::UnsavedChanges));
+    h.frame(egui::RawInput {
+        events: vec![
+            egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text("must not leak".into()),
+        ],
+        ..Default::default()
+    });
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert_eq!(h.app.host_input_owner(), InputOwner::Pane(pane));
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
+fn unsaved_dialog_clean_close_has_no_modal() {
+    let (_dir, _path, mut h, pane) = unsaved_editor_fixture();
+    h.app.close_focused_app();
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(h.app.focus_stack.is_empty());
+}
+
+#[test]
+fn unsaved_dialog_switch_cancel_discard_and_save() {
+    use crate::app::app_trait::App;
+    for (key, modifiers, switches, expected) in [
+        (
+            egui::Key::Escape,
+            egui::Modifiers::NONE,
+            false,
+            "original bytes\n",
+        ),
+        (
+            egui::Key::D,
+            egui::Modifiers::NONE,
+            true,
+            "original bytes\n",
+        ),
+        (
+            egui::Key::S,
+            egui::Modifiers::COMMAND,
+            true,
+            "unsaved edits",
+        ),
+    ] {
+        let (dir, path, mut h, pane) = unsaved_editor_fixture();
+        let next = dir.path().join("next.txt");
+        std::fs::write(&next, "target contents").unwrap();
+        h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+        h.text_editor_mut(pane)
+            .restore_state(&serde_json::json!({"path": next}));
+        h.run_frames(2);
+        assert_eq!(
+            h.app.focus_stack.last().map(|k| k.name()),
+            Some("UnsavedChanges")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+        h.press_key(key, modifiers);
+        h.run_frames(2);
+        let buffer = h.text_editor_mut(pane).open_buffer();
+        assert_eq!(
+            buffer.path,
+            if switches { &next } else { &path }.display().to_string()
+        );
+        assert_eq!(
+            buffer.text,
+            if switches {
+                "target contents"
+            } else {
+                "unsaved edits"
+            }
+        );
+        assert_eq!(buffer.dirty, !switches);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(h.app.focus_stack.is_empty());
+        h.text_editor_mut(pane).test_discard_unsaved();
+    }
+}
+
+#[test]
+fn unsaved_dialog_desktop_quit_targets_dirty_pane() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    assert!(!h.app.prepare_user_quit());
+    h.run_frames(2);
+    assert_eq!(h.app.focused_pane_id(), Some(pane));
+    assert_eq!(
+        h.app.focus_stack.last().map(|k| k.name()),
+        Some("UnsavedChanges")
+    );
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.quitting);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original bytes\n");
+    h.text_editor_mut(pane).test_discard_unsaved();
+}
+
+#[test]
+fn unsaved_dialog_failed_save_keeps_pending_close_and_buffer() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    h.app.close_focused_app();
+    h.run_frames(2);
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(
+        h.app.focus_stack.last().map(|k| k.name()),
+        Some("UnsavedChanges")
+    );
+    assert_eq!(h.text_editor_mut(pane).open_buffer().text, "unsaved edits");
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert!(path.is_dir());
+}
+
+#[test]
+fn unsaved_dialog_conflicted_close_requires_explicit_overwrite() {
+    let (_dir, path, mut h, pane) = unsaved_editor_fixture();
+    h.text_editor_mut(pane).test_set_unsaved("unsaved edits");
+    std::fs::write(&path, "external edits").unwrap();
+    h.text_editor_mut(pane).test_check_disk();
+    h.app.close_focused_app();
+    h.run_frames(2);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external edits");
+    h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "unsaved edits");
+}
+
 fn gate_note_semantics(h: &HostHarness, pane_id: PaneId) -> serde_json::Value {
     h.app.windows[0]
         .panes
@@ -6211,7 +6428,14 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     h.frame(input);
     assert!(!h.app.quitting);
     assert_eq!(h.app.quit_press_count, 0);
-    h.text_editor_mut(pane).test_discard_unsaved();
+    h.press_key(egui::Key::D, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(!h.app.windows[0].panes.contains_key(&pane));
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("gate-note.md")).unwrap(),
+        "agent version"
+    );
+    assert!(h.app.focus_stack.is_empty());
     h.frame(egui::RawInput {
         events: vec![egui::Event::Key {
             key: egui::Key::Q,
@@ -6227,10 +6451,9 @@ fn editor_gate_keyboard_quit_vetoes_unsaved_conflict_then_retries() {
     h.press_key(egui::Key::Q, egui::Modifiers::COMMAND);
     assert!(
         h.app.quitting,
-        "explicit resolution permits retry; count={} confirm={} state={}",
+        "explicit resolution permits retry; count={} confirm={}",
         h.app.quit_press_count,
-        h.app.confirm_quit(),
-        gate_note_semantics(&h, pane)
+        h.app.confirm_quit()
     );
 }
 
@@ -6244,6 +6467,21 @@ fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
     std::fs::write(&path, "agent version").unwrap();
     h.text_editor_mut(pane).test_check_disk();
     h.press_key(egui::Key::S, egui::Modifiers::COMMAND);
+    h.run_frames(2);
+    assert_eq!(
+        h.app.focus_stack.last().map(|kind| kind.name()),
+        Some("UnsavedChanges")
+    );
+    assert_eq!(
+        gate_note_semantics(&h, pane)["source_text"],
+        "my whole poem"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "agent version");
+    // Modal prompts require explicit Cancel before prose reaches the editor.
+    h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(2);
+    assert!(h.app.focus_stack.is_empty());
+    assert!(h.text_editor_mut(pane).open_buffer().dirty);
     h.frame(egui::RawInput {
         events: vec![
             egui::Event::Key {
@@ -6263,7 +6501,7 @@ fn editor_gate_prose_after_conflict_prompt_preserves_both_versions() {
         .to_string();
     assert!(
         text.contains("my whole poem"),
-        "typing R must not reload: {text}"
+        "typing R after Cancel must not reload: {text}"
     );
     assert_eq!(
         text.len(),

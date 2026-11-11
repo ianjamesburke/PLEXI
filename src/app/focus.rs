@@ -55,6 +55,7 @@ impl FocusSegmentReason {
 pub(crate) enum FocusKind {
     ApprovalBanner,
     ConfirmClose,
+    UnsavedChanges,
     CommandPalette,
     RenamePane,
     /// Context naming overlay.
@@ -91,6 +92,7 @@ impl FocusKind {
         match self {
             Self::ApprovalBanner => "ApprovalBanner",
             Self::ConfirmClose => "ConfirmClose",
+            Self::UnsavedChanges => "UnsavedChanges",
             Self::CommandPalette => "CommandPalette",
             Self::RenamePane => "RenamePane",
             Self::ContextRename => "ContextRename",
@@ -113,6 +115,7 @@ impl FocusKind {
         match self {
             Self::ApprovalBanner => &ApprovalBannerOwner,
             Self::ConfirmClose => &ConfirmCloseOwner,
+            Self::UnsavedChanges => &UnsavedChangesOwner,
             Self::CommandPalette => &CommandPaletteOwner,
             Self::RenamePane => &RenamePaneOwner,
             Self::ContextRename => &ContextRenameOwner,
@@ -196,6 +199,7 @@ macro_rules! focus_owner_tokens {
 }
 
 focus_owner_tokens! {
+    UnsavedChanges => UnsavedChangesOwner { key: unsaved_changes_handle_key, draw: draw_unsaved_changes },
     Changelog => ChangelogOwner { key: changelog_handle_key, draw: draw_changelog_overlay },
     ApprovalBanner => ApprovalBannerOwner { key: approval_handle_key, draw: approval_focus_draw },
     ConfirmClose => ConfirmCloseOwner { key: confirm_close_handle_key, draw: draw_confirm_close },
@@ -1149,6 +1153,51 @@ impl PlexiApp {
     pub(crate) fn sync_confirm_close_focus(&mut self) {
         let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
         self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
+    }
+
+    pub(crate) fn sync_unsaved_changes_focus(&mut self) {
+        let wanted = self.focused_unsaved_changes().is_some();
+        self.reconcile_promoted_focus_layer(FocusKind::UnsavedChanges, wanted);
+    }
+
+    fn focused_unsaved_changes(&self) -> Option<(u64, crate::ui::dialog::UnsavedChangesDialog)> {
+        let id = self.focused_pane_id()?;
+        let pane = self.windows[self.active_window].panes.get(&id)?.as_app()?;
+        match &pane.runtime {
+            crate::host::pane::AppRuntime::Builtin(app) => {
+                app.unsaved_changes_dialog().map(|dialog| (id, dialog))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unsaved_changes_handle_key(
+        &mut self,
+        _input: &mut crate::app::input_router::PlexiInput,
+    ) -> crate::app::app_trait::KeyDisposition {
+        // ActionModal consumes shortcuts after the router gives the buffer back.
+        crate::app::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn draw_unsaved_changes(&mut self, ctx: &egui::Context) {
+        let Some((id, dialog)) = self.focused_unsaved_changes() else {
+            return;
+        };
+        if let Some(choice) = dialog.show(ctx, &self.colors) {
+            if let Some(pane) = self.windows[self.active_window]
+                .panes
+                .get_mut(&id)
+                .and_then(|p| p.as_app_mut())
+            {
+                if let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime {
+                    app.resolve_unsaved_changes(choice);
+                }
+            }
+        }
+        // The complete input pass belongs to the modal, including paired Text
+        // events and unrecognized shortcuts on the frame that resolves it.
+        let mut input = crate::app::input_router::PlexiInput::take_from(ctx);
+        input.clear();
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {

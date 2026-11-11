@@ -314,6 +314,13 @@ pub trait App: Send {
         true
     }
 
+    /// Pending file-loss decision. The host gives it exclusive modal focus.
+    fn unsaved_changes_dialog(&self) -> Option<crate::ui::dialog::UnsavedChangesDialog> {
+        None
+    }
+
+    fn resolve_unsaved_changes(&mut self, _choice: crate::ui::dialog::UnsavedChangesChoice) {}
+
     /// Off-paint servicing of external state the app mirrors (files on disk).
     /// Runs from `App::logic` every pass for every pane, including panes in
     /// hidden windows and inactive contexts, so it must be cheap when idle.
