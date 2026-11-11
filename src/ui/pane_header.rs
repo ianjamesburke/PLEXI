@@ -33,7 +33,7 @@ fn outside_chip_width(text_width: f32) -> f32 {
 /// Painted north-east arrow filling a `CHIP_ARROW` square centered on `center`.
 fn paint_arrow(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
     let half = style::CHIP_ARROW / 2.0;
-    let stroke = egui::Stroke::new(1.2, color);
+    let stroke = egui::Stroke::new(1.2_f32, color);
     let tail = center + egui::vec2(-half, half);
     let tip = center + egui::vec2(half, -half);
     painter.line_segment([tail, tip], stroke);
