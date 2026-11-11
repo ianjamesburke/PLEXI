@@ -417,7 +417,7 @@ Returns `permission_denied` and writes an audit row with the secret name and fol
 |---|---|---|---|
 | `<name>` | string | yes | Environment variable name |
 | `--agent` | string | no | Agent id. Stored as `agent:<id>` |
-| `--plugin` | string | no | App id. Stored as `plugin:<id>` |
+| `--plugin` | string | no | Plugin id. Stored as `plugin:<id>` |
 | `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
 
 ### `plexi secret read`
@@ -428,7 +428,7 @@ Read a folder secret as an agent or plugin. Without a grant this prints `permiss
 |---|---|---|---|
 | `<name>` | string | yes | Environment variable name |
 | `--agent` | string | no | Agent id. Stored as `agent:<id>` |
-| `--plugin` | string | no | App id. Stored as `plugin:<id>` |
+| `--plugin` | string | no | Plugin id. Stored as `plugin:<id>` |
 | `--folder` | string | no | Directory the secret was bound to. Required when the name exists in more than one folder |
 
 ### `plexi secret exec`
@@ -1107,7 +1107,7 @@ Manage your Plexi plugins — open, install, list, scaffold, and inspect
 | `prune` | Report obsolete first-party pre-v3 plugins that launch-time reseeding quarantines |
 | `check` | Check a local plugin with manifest, scaffold metadata, SDK, and render-size checks |
 | `test` | Run a plugin's PluginHarness tests with `uv run --with pytest pytest tests/` |
-| `info` | Show details about an installed view: manifest fields and tool status |
+| `info` | Show details about an installed plugin: manifest fields and tool status |
 | `state` | Read or replace a file-backed plugin's state document |
 | `init` | Create a new plugin from a template, or adopt an existing plugin directory |
 | `validate` | Check a Plexi plugin directory or .plexipkg package for errors before publishing or installing |
@@ -1142,7 +1142,7 @@ Example: plexi plugin uninstall github-tree
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | yes | App id to remove (use `plexi plugin list` to see installed ids) |
+| `<id>` | string | yes | Plugin id to remove (use `plexi plugin list` to see installed ids) |
 | `--yes` / `-y` | flag | no | Skip the confirmation prompt |
 
 ### `plexi plugin list`
@@ -1177,12 +1177,12 @@ Runs the Python tests in the plugin's `tests/` directory (the `tests/test_plugin
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory to test (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory to test (default: current directory) Default: `.`. |
 | `--snapshot` | flag | no | Update stored snapshots instead of comparing against them |
 
 ### `plexi plugin info`
 
-Show details about an installed view: manifest fields and tool status.
+Show details about an installed plugin: manifest fields and tool status.
 
 Populates `tools` from the live tool registry when a pane of this plugin is running in the current context; otherwise labels the section as manifest-only (or static source scan) so an unopened plugin is never misreported as declaring no tools. Run `plexi plugin tools` to snapshot all live tools in the current context.
 
@@ -1207,7 +1207,7 @@ Print a plugin's current state document to stdout
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin>` | string | yes | App id (from `plexi plugin list`) |
+| `<plugin>` | string | yes | Plugin id (from `plexi plugin list`) |
 | `--scope` | string | no | Which declared scope to read. Defaults to the plugin's first declared scope; a scope the plugin did not declare is an error |
 
 #### `plexi plugin state set`
@@ -1216,7 +1216,7 @@ Replace a plugin's state document, reading from a file or stdin
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin>` | string | yes | App id (from `plexi plugin list`) |
+| `<plugin>` | string | yes | Plugin id (from `plexi plugin list`) |
 | `<file>` | string | no | File to read the new document from. Reads stdin when omitted |
 | `--scope` | string | no | Which declared scope to write. Defaults to the plugin's first declared scope; a scope the plugin did not declare is an error |
 
@@ -1237,10 +1237,10 @@ Use --open to launch it in a split-right pane after scaffolding. See `sdk/python
 | `<name>` | string | no |  |
 | `--adopt` | flag | no | Write or refresh `plexi.scaffold.toml` for an existing plugin directory without altering source files |
 | `--wasm` | string | no | Create a Rust WASM component plugin with the Plexi WASM SDK |
-| `--lang` | string | no | App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
+| `--lang` | string | no | Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component Default: `python`. |
 | `--global` | flag | no | Scaffold into the global plugin registry instead of the workspace |
 | `--open` | flag | no | Open the plugin in a split-right pane after scaffolding |
-| `--no-open` | flag | no | Deprecated compatibility flag. App init no longer opens by default |
+| `--no-open` | flag | no | Deprecated compatibility flag. Plugin init no longer opens by default |
 | `--from` | string | no | Open the new pane relative to this pane id or name. Defaults to the calling pane (PLEXI_PANE_ID env), falling back to the focused pane |
 
 ### `plexi plugin validate`
@@ -1251,7 +1251,7 @@ A directory is validated in place. A `.plexipkg` file is extracted to a temp dir
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory or .plexipkg file to check (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory or .plexipkg file to check (default: current directory) Default: `.`. |
 
 ### `plexi plugin inspect`
 
@@ -1261,7 +1261,7 @@ Validates first (fail-closed), then prints what the plugin is, what runtime it u
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | yes | App directory or .plexipkg file to inspect |
+| `<path>` | string | yes | Plugin directory or .plexipkg file to inspect |
 
 ### `plexi plugin package`
 
@@ -1271,7 +1271,7 @@ Validates the directory first (fail-closed), then writes `<id>-<version>.plexipk
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | yes | App directory to package |
+| `<path>` | string | yes | Plugin directory to package |
 | `--out` | string | no | Output file path (default: ./<id>-<version>.plexipkg) |
 
 ### `plexi plugin freeze`
@@ -1294,7 +1294,7 @@ Reads the `[marketplace]` manifest section (publisher, visibility, price), valid
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no | App directory to publish (default: current directory) Default: `.`. |
+| `<path>` | string | no | Plugin directory to publish (default: current directory) Default: `.`. |
 
 ### `plexi plugin browse`
 
@@ -1320,7 +1320,7 @@ Canonical plugin update command. Resolves workspace-local plugins when run insid
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | no | App id to update (omit to update all installed plugins visible here) |
+| `<id>` | string | no | Plugin id to update (omit to update all installed plugins visible here) |
 
 ### `plexi plugin call`
 
@@ -1332,7 +1332,7 @@ Example: plexi plugin call chess chess.state Example: plexi plugin call chess ch
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin_id>` | string | yes | App id that exposes the tool (from `plexi plugin info`) |
+| `<plugin_id>` | string | yes | Plugin id that exposes the tool (from `plexi plugin info`) |
 | `<tool>` | string | yes | Tool name as the plugin declares it (e.g. `chess.state`) |
 | `--input` | string | no | Tool input as a JSON object Default: `{}`. |
 | `--pane` | string | no | Pane id or name that owns the tool when more than one instance of the plugin is open |
@@ -1943,7 +1943,7 @@ Example: plexi events subscribe event-probe probe.tick --payload full
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin_id>` | string | yes | App id that publishes the stream (e.g. `event-probe`) |
+| `<plugin_id>` | string | yes | Plugin id that publishes the stream (e.g. `event-probe`) |
 | `<stream>` | string | no | Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to subscribe to every stream the plugin declares |
 | `--all` | flag | no | Subscribe to all of the plugin's declared streams instead of one |
 | `--payload` | string | no | How much of each event to deliver: off, summary, full, or state-ref Default: `full`. |
@@ -1960,7 +1960,7 @@ Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin_id>` | string | yes | App-id namespace to declare the stream under (e.g. `my-agent`) |
+| `<plugin_id>` | string | yes | Plugin-id namespace to declare the stream under (e.g. `my-agent`) |
 | `<stream>` | string | yes | Stream name to declare (e.g. `task.done`) |
 | `--schema` | string | no | JSON-Schema object describing the event payload Default: `{"type":"object"}`. |
 | `--description` | string | no | Human-readable description of when this event fires |
@@ -1975,7 +1975,7 @@ Example: plexi events emit my-agent task.done --summary "Build finished" --resou
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<plugin_id>` | string | yes | App-id namespace the stream lives under (e.g. `my-agent`) |
+| `<plugin_id>` | string | yes | Plugin-id namespace the stream lives under (e.g. `my-agent`) |
 | `<event>` | string | yes | Declared stream name to emit on (e.g. `task.done`) |
 | `--summary` | string | yes | One-line human-readable description of what happened |
 | `--resource` | string | yes | Id of the document/game/pane/resource the event is about |

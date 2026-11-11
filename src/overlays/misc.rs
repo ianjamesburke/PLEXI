@@ -180,7 +180,7 @@ impl PlexiApp {
                         // ── Right column ─────────────────────────────
                         ui.vertical(|ui| {
                             ui.set_width(column_width);
-                            section_label(ui, "APPS & TOOLS", colors);
+                            section_label(ui, "PLUGINS & TOOLS", colors);
                             egui::Grid::new("shortcuts_apps")
                                 .num_columns(2)
                                 .min_col_width(0.0)

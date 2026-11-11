@@ -38,7 +38,7 @@ pub fn plugin_browse_cli() -> i32 {
         println!("No public plugins are listed yet.");
         return 0;
     }
-    println!("{} public app(s) in the marketplace:\n", listed.len());
+    println!("{} public plugin(s) in the marketplace:\n", listed.len());
     print_entry_table(&listed);
     crate::cli::print_tip("install one with `plexi plugin install <id>`.");
     0

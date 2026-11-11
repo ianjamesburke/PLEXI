@@ -1166,7 +1166,7 @@ pub enum EventsCmd {
     ///
     /// Example: plexi events subscribe event-probe probe.tick --payload full
     Subscribe {
-        /// App id that publishes the stream (e.g. `event-probe`).
+        /// Plugin id that publishes the stream (e.g. `event-probe`).
         plugin_id: String,
         /// Stream name to subscribe to (e.g. `probe.tick`). Omit with --all to
         /// subscribe to every stream the plugin declares.
@@ -1193,7 +1193,7 @@ pub enum EventsCmd {
     ///
     /// Example: plexi events declare my-agent task.done --schema '{"type":"object"}'
     Declare {
-        /// App-id namespace to declare the stream under (e.g. `my-agent`).
+        /// Plugin-id namespace to declare the stream under (e.g. `my-agent`).
         plugin_id: String,
         /// Stream name to declare (e.g. `task.done`).
         stream: String,
@@ -1213,7 +1213,7 @@ pub enum EventsCmd {
     ///
     /// Example: plexi events emit my-agent task.done --summary "Build finished" --resource build-42 --revision-after done
     Emit {
-        /// App-id namespace the stream lives under (e.g. `my-agent`).
+        /// Plugin-id namespace the stream lives under (e.g. `my-agent`).
         plugin_id: String,
         /// Declared stream name to emit on (e.g. `task.done`).
         event: String,
@@ -1365,7 +1365,7 @@ pub enum SecretCmd {
         /// Agent id. Stored as `agent:<id>`.
         #[arg(long, conflicts_with = "plugin")]
         agent: Option<String>,
-        /// App id. Stored as `plugin:<id>`.
+        /// Plugin id. Stored as `plugin:<id>`.
         #[arg(long, conflicts_with = "agent")]
         plugin: Option<String>,
         /// Directory the secret was bound to. Required when the name exists in more than one folder.
@@ -1381,7 +1381,7 @@ pub enum SecretCmd {
         /// Agent id. Stored as `agent:<id>`.
         #[arg(long, conflicts_with = "plugin")]
         agent: Option<String>,
-        /// App id. Stored as `plugin:<id>`.
+        /// Plugin id. Stored as `plugin:<id>`.
         #[arg(long, conflicts_with = "agent")]
         plugin: Option<String>,
         /// Directory the secret was bound to. Required when the name exists in more than one folder.
@@ -1439,7 +1439,7 @@ pub enum PluginCmd {
     /// Example: plexi plugin uninstall github-tree
     #[command(aliases = ["remove", "delete"])]
     Uninstall {
-        /// App id to remove (use `plexi plugin list` to see installed ids)
+        /// Plugin id to remove (use `plexi plugin list` to see installed ids)
         id: String,
         /// Skip the confirmation prompt
         #[arg(long = "yes", short = 'y')]
@@ -1499,14 +1499,14 @@ pub enum PluginCmd {
     /// the plugin as a real subprocess and checks it renders without overlap; see
     /// `plexi_sdk/testing.py`. Exits nonzero on failure so CI can gate on it.
     Test {
-        /// App directory to test (default: current directory)
+        /// Plugin directory to test (default: current directory)
         #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
         path: String,
         /// Update stored snapshots instead of comparing against them.
         #[arg(long)]
         snapshot: bool,
     },
-    /// Show details about an installed view: manifest fields and tool status.
+    /// Show details about an installed plugin: manifest fields and tool status.
     ///
     /// Populates `tools` from the live tool registry when a pane of this plugin is
     /// running in the current context; otherwise labels the section as
@@ -1549,7 +1549,7 @@ pub enum PluginCmd {
         /// Create a Rust WASM component plugin with the Plexi WASM SDK.
         #[arg(long, value_name = "NAME", conflicts_with_all = ["name", "lang"])]
         wasm: Option<String>,
-        /// App language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
+        /// Plugin language/template: `python` (declarative UI). Use `--wasm <name>` for a Rust WASM component.
         #[arg(long, default_value = "python", value_parser = ["python"])]
         lang: String,
         /// Scaffold into the global plugin registry instead of the workspace
@@ -1558,7 +1558,7 @@ pub enum PluginCmd {
         /// Open the plugin in a split-right pane after scaffolding
         #[arg(long, conflicts_with = "no_open")]
         open: bool,
-        /// Deprecated compatibility flag. App init no longer opens by default.
+        /// Deprecated compatibility flag. Plugin init no longer opens by default.
         #[arg(long)]
         #[arg(hide = true)]
         no_open: bool,
@@ -1573,7 +1573,7 @@ pub enum PluginCmd {
     /// temp dir with path-safety checks and verified end-to-end: descriptor,
     /// content hashes, manifest, entry point, and capability strings.
     Validate {
-        /// App directory or .plexipkg file to check (default: current directory)
+        /// Plugin directory or .plexipkg file to check (default: current directory)
         #[arg(default_value = ".", value_hint = ValueHint::AnyPath)]
         path: String,
     },
@@ -1583,7 +1583,7 @@ pub enum PluginCmd {
     /// runtime it uses with a blunt trust label, and every capability it
     /// declares — the same sheet shown before `plexi plugin install` proceeds.
     Inspect {
-        /// App directory or .plexipkg file to inspect
+        /// Plugin directory or .plexipkg file to inspect
         #[arg(value_hint = ValueHint::AnyPath)]
         path: String,
     },
@@ -1593,7 +1593,7 @@ pub enum PluginCmd {
     /// `<id>-<version>.plexipkg` containing the plugin files plus a generated
     /// PACKAGE.toml with per-file sha256 checksums.
     Package {
-        /// App directory to package
+        /// Plugin directory to package
         #[arg(value_hint = ValueHint::DirPath)]
         path: String,
         /// Output file path (default: ./<id>-<version>.plexipkg)
@@ -1615,7 +1615,7 @@ pub enum PluginCmd {
     /// configured `[marketplace].submit_url` the package is prepared locally but
     /// not uploaded — the artifact path is printed.
     Publish {
-        /// App directory to publish (default: current directory)
+        /// Plugin directory to publish (default: current directory)
         #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
         path: String,
     },
@@ -1631,7 +1631,7 @@ pub enum PluginCmd {
     /// Canonical plugin update command. Resolves workspace-local plugins when run
     /// inside a workspace, and skips installed plugins that are not git checkouts.
     Update {
-        /// App id to update (omit to update all installed plugins visible here)
+        /// Plugin id to update (omit to update all installed plugins visible here)
         id: Option<String>,
     },
     /// Call a tool a plugin exposes and print its JSON result.
@@ -1647,7 +1647,7 @@ pub enum PluginCmd {
     /// Example: plexi plugin call chess chess.play --input '{"game_id":"game-1","expected_revision":0,"operation_id":"op-1","move":"e2e4"}'
     #[command(name = "call")]
     Call {
-        /// App id that exposes the tool (from `plexi plugin info`)
+        /// Plugin id that exposes the tool (from `plexi plugin info`)
         plugin_id: String,
         /// Tool name as the plugin declares it (e.g. `chess.state`)
         tool: String,
@@ -2437,7 +2437,7 @@ pub enum PaneResultCmd {
 pub enum PluginStateCmd {
     /// Print a plugin's current state document to stdout.
     Get {
-        /// App id (from `plexi plugin list`)
+        /// Plugin id (from `plexi plugin list`)
         plugin: String,
         /// Which declared scope to read. Defaults to the plugin's first declared
         /// scope; a scope the plugin did not declare is an error.
@@ -2446,7 +2446,7 @@ pub enum PluginStateCmd {
     },
     /// Replace a plugin's state document, reading from a file or stdin.
     Set {
-        /// App id (from `plexi plugin list`)
+        /// Plugin id (from `plexi plugin list`)
         plugin: String,
         /// File to read the new document from. Reads stdin when omitted.
         file: Option<std::path::PathBuf>,

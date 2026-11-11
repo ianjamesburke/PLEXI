@@ -449,7 +449,7 @@ fn format_onboarding_guide(integrations: &IntegrationReport, rec: &ModelRecommen
 
     out.push_str("\nUseful checks\n");
     out.push_str("   `plexi ai doctor` shows hardware, Ollama, and OpenRouter status.\n");
-    out.push_str("   `plexi plugin list` shows installed apps.\n");
+    out.push_str("   `plexi plugin list` shows installed plugins.\n");
 
     out
 }
