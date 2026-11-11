@@ -670,7 +670,7 @@ mod tests {
             let mut secrets = SecretsView::new(root.path().into());
             secrets.entries.clear();
             h.with_app_mut(|app| {
-                let app_secrets = secrets;
+                let secrets_view = secrets;
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(
@@ -680,7 +680,7 @@ mod tests {
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 app.sidebar_visible = false;
                 app.open_builtin_view_pane(
-                    Box::new(app_secrets),
+                    Box::new(secrets_view),
                     crate::app::permissions::PluginPermissions::builtin(),
                     root.path().into(),
                     None,

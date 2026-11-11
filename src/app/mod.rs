@@ -4035,7 +4035,7 @@ impl eframe::App for PlexiApp {
                 .collect()
         });
         let mut router_input = crate::app::input_router::PlexiInput::take_from(ctx);
-        // Native popup dismissal owns bare Escape before the app/CloseView
+        // Native popup dismissal owns bare Escape before the view/CloseView
         // handlers. Otherwise a dropdown can close its entire parent pane.
         if egui::Popup::is_any_open(ctx)
             && router_input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
@@ -4483,8 +4483,8 @@ impl PlexiApp {
                     self.zoom_out_or_close_surface();
                     return;
                 }
-                // If the focused app pane has a non-empty nav stack
-                // (via PushNav), Escape routes NavBack to the app
+                // If the focused view pane has a non-empty nav stack
+                // (via PushNav), Escape routes NavBack to the plugin
                 // instead of closing the pane.
                 if !self.try_nav_back_focused() && !self.focused_view_vetoes_close() {
                     if let Some(child_ctx_id) = self.get_focused_portal_context_id() {
@@ -4521,7 +4521,7 @@ impl PlexiApp {
                 if !self.try_nav_back_focused() {
                     self.step_focus_history_back();
                 }
-                log::info!("nav: back-app — window={}", self.active_window);
+                log::info!("nav: back-plugin — window={}", self.active_window);
             }
             Action::FocusHistoryForward => {
                 self.step_focus_history_forward();

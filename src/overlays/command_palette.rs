@@ -259,13 +259,13 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitRight),
         name: "Split right",
-        description: "Split right: a new terminal, or a new copy of the focused app",
+        description: "Split right: a new terminal, or a new copy of the focused view",
         search_text: "split right new terminal shell console pane vsplit vertical",
     },
     PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::SplitDown),
         name: "Split down",
-        description: "Split down: a new terminal, or a new copy of the focused app",
+        description: "Split down: a new terminal, or a new copy of the focused view",
         search_text: "split down below new terminal shell console pane hsplit horizontal",
     },
     PaletteCommandEntry {
@@ -414,7 +414,7 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewTab), name: "New tab", description: "Create a new tab in the selected context", search_text: "new tab pane terminal" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::NewPageRight), name: "New window", description: "Create a new window in the current context", search_text: "new pane page window right" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::RenamePane), name: "Rename pane", description: "Rename the selected pane", search_text: "rename pane tab" },
-    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and app back-stacks first)", search_text: "close pane tab" },
+    PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ClosePane), name: "Close pane", description: "Close the focused pane (dismisses overlays and view back-stacks first)", search_text: "close pane tab" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::HidePane), name: "Hide or reveal pane", description: "Hide or reveal the selected pane", search_text: "hide reveal show pane" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ToggleZoom), name: "Zoom pane", description: "Zoom or restore the selected pane (dives into an agent's children first)", search_text: "zoom restore pane fullscreen" },
     PaletteCommandEntry { command: PaletteCommand::Host(crate::host::keys::Action::ZoomIn), name: "Wrap selection or enter pane", description: "Wrap selected panes, enter a portal, or toggle pane zoom", search_text: "wrap selection group subcontext zoom enter" },
@@ -3977,7 +3977,7 @@ mod tests {
         h.focus_pane(pane).run_frames(2);
         fn font(h: &crate::testing::HostHarness, pane: u64) -> f32 {
             let crate::host::pane::Pane::View(app) = &h.app.windows[0].panes[&pane] else {
-                panic!("expected app pane")
+                panic!("expected view pane")
             };
             let crate::host::pane::ViewRuntime::Builtin(b) = &app.runtime else {
                 panic!("expected builtin")
@@ -4040,7 +4040,7 @@ mod tests {
         h.focus_pane(pane).run_frames(2);
         let font = |h: &crate::testing::HostHarness| {
             let crate::host::pane::Pane::View(app) = &h.app.windows[0].panes[&pane] else {
-                panic!("expected app pane")
+                panic!("expected view pane")
             };
             let crate::host::pane::ViewRuntime::Builtin(b) = &app.runtime else {
                 panic!("expected builtin")
@@ -4082,7 +4082,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_split_on_app_pane_mirrors_the_app_not_a_terminal() {
+    fn palette_split_on_view_pane_mirrors_the_view_not_a_terminal() {
         use crate::host::keys::Action;
         for action in [Action::SplitRight, Action::SplitDown] {
             let mut h = crate::testing::HostHarness::new();
@@ -4096,7 +4096,7 @@ mod tests {
                 .count();
             assert_eq!(
                 terminals, 0,
-                "{action:?} on an app pane must mirror the app (shortcut behavior), never open a terminal"
+                "{action:?} on a view pane must mirror the view (shortcut behavior), never open a terminal"
             );
         }
     }
