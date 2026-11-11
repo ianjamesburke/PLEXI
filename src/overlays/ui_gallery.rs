@@ -435,7 +435,6 @@ pub(crate) fn kit_specimens() -> impl Iterator<Item = KitSpecimen> {
             [
                 (ButtonKind::Primary, "Primary"),
                 (ButtonKind::Secondary, "Secondary"),
-                (ButtonKind::Accent, "Accent"),
                 (ButtonKind::Danger, "Danger"),
                 (ButtonKind::Ghost, "Ghost"),
             ]
@@ -712,7 +711,6 @@ impl PlexiApp {
                                     ),
                                     ("Secondary", ButtonKind::Secondary, 92.0),
                                     ("Danger", ButtonKind::Danger, 80.0),
-                                    ("Accent", ButtonKind::Accent, 80.0),
                                 ] {
                                     KitSpecimen::GalleryButton {
                                         kind,

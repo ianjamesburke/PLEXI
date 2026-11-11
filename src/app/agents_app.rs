@@ -1,7 +1,7 @@
 //! Native master/detail fleet pane. State comes from the host's pure projection.
 use crate::agent::fleet::{AgentRow, AgentsView, DisplayState, FleetFilter};
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::ui::button::KitButton;
+use crate::ui::button::{ButtonKind, KitButton};
 use crate::ui::list::ListRow;
 
 pub enum FleetAction {
@@ -187,7 +187,7 @@ impl App for AgentsApp {
                 ui.horizontal(|ui| {
                     ui.heading("Agents");
                     let filter_label = format!("{}  [f]", self.filter.label());
-                    if ui.add(KitButton::new(&filter_label, colors)).clicked() {
+                    if ui.add(KitButton::new(&filter_label, colors).kind(ButtonKind::Secondary)).clicked() {
                         self.filter = self.filter.next();
                     }
                 });
@@ -387,20 +387,20 @@ impl App for AgentsApp {
                                             if ui
                                                 .add_enabled(
                                                     row.live,
-                                                    KitButton::new("Jump [Enter]", colors),
+                                                    KitButton::new("Jump [Enter]", colors).kind(if self.replying { ButtonKind::Secondary } else { ButtonKind::Primary }),
                                                 )
                                                 .clicked()
                                             {
                                                 self.jump();
                                             }
                                             if row.blocked_on.is_some()
-                                                && ui.add(KitButton::new("Answer [a]", colors)).clicked()
+                                                && ui.add(KitButton::new("Answer [a]", colors).kind(ButtonKind::Secondary)).clicked()
                                             {
                                                 self.answer();
                                             }
                                             if (row.display_state == DisplayState::DoneUnseen
                                                 || row.display_state.is_failure_like())
-                                                && ui.add(KitButton::new("Dismiss [x]", colors)).clicked()
+                                                && ui.add(KitButton::new("Dismiss [x]", colors).kind(ButtonKind::Secondary)).clicked()
                                             {
                                                 self.dismiss();
                                             }

@@ -380,7 +380,7 @@ impl SecretsApp {
             if ui
                 .add(
                     button::KitButton::new("Save", colors)
-                        .kind(ButtonKind::Accent)
+                        .kind(ButtonKind::Primary)
                         .min_width(64.0),
                 )
                 .clicked()
@@ -560,7 +560,9 @@ impl App for SecretsApp {
         egui::Frame::NONE.inner_margin(egui::Margin::same(style::SPACE_MD as i8)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Secrets");
-                if ui.add(button::KitButton::new("Add", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() { self.begin_add(); }
+                // One strongest button per view: Save or Delete takes it while open.
+                let add_kind = if self.form_open || self.pending_delete { ButtonKind::Secondary } else { ButtonKind::Primary };
+                if ui.add(button::KitButton::new("Add", colors).kind(add_kind).min_width(64.0)).clicked() { self.begin_add(); }
                 if ui.add(button::KitButton::new("Refresh", colors).kind(ButtonKind::Secondary).min_width(80.0)).clicked() { self.refresh(); }
             });
             if !self.form_open {
@@ -591,7 +593,7 @@ impl App for SecretsApp {
                     if let Some(entry) = self.entries.get(self.selected) { ui.label(format!("Delete {} from {}?", entry.name, entry.scope)); }
                     ui.horizontal(|ui| {
                         if ui
-                            .add(button::KitButton::new("Delete", colors).kind(ButtonKind::Accent).min_width(80.0))
+                            .add(button::KitButton::new("Delete", colors).kind(ButtonKind::Danger).min_width(80.0))
                             .clicked()
                         {
                             self.delete_selected();
@@ -620,7 +622,7 @@ impl App for SecretsApp {
                             let enabled = self.terminal_inject.contains(&entry.name);
                             let label = if enabled { "Export to my terminals: on" } else { "Export to my terminals: off" };
                             if ui
-                                .add(button::KitButton::new(label, colors).kind(if enabled { ButtonKind::Accent } else { ButtonKind::Secondary }).min_width(180.0))
+                                .add(button::KitButton::new(label, colors).kind(ButtonKind::Secondary).selected(enabled).min_width(180.0))
                                 .clicked()
                             {
                                 toggle = Some((entry.name.clone(), root.clone()));

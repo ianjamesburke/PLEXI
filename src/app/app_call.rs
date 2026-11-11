@@ -906,7 +906,7 @@ impl PlexiApp {
                 );
                 ui.add_space(crate::ui::style::SPACE_MD);
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add(crate::ui::button::KitButton::new("Continue", &self.colors).kind(crate::ui::button::ButtonKind::Accent))
+                    if ui.add(crate::ui::button::KitButton::new("Continue", &self.colors).kind(crate::ui::button::ButtonKind::Primary))
                     .clicked_by(egui::PointerButton::Primary)
                     {
                         choice = Some(true);

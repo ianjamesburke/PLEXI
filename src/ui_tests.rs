@@ -2778,7 +2778,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
                 0 => ui
                     .add(
                         crate::ui::button::KitButton::new("Confirm changes", ctx.colors)
-                            .kind(crate::ui::button::ButtonKind::Accent)
+                            .kind(crate::ui::button::ButtonKind::Primary)
                             .min_width(160.0),
                     )
                     .clicked(),
