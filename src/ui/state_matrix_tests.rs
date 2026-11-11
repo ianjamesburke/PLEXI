@@ -410,3 +410,19 @@ fn state_guard_rejects_size_changing_control() {
         ui.allocate_response(egui::vec2(width, 30.0), egui::Sense::click())
     });
 }
+
+#[test]
+fn dropdown_options_state_matrix() {
+    for theme in ["plexi-dusk", "plexi-dawn"] {
+        let colors =
+            crate::ui::theme::Colors::from_config(&crate::ui::theme::preset_colors(theme).unwrap());
+        assert_state_stable(|ui, state| {
+            crate::ui::dropdown::option_row(
+                ui,
+                "Workspace",
+                matches!(state, MatrixState::Selected),
+                &colors,
+            )
+        });
+    }
+}

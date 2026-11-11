@@ -106,9 +106,115 @@ fn button_gallery_factory(_: &Path, _: &[String], _: u64) -> Box<dyn crate::app:
     Box::new(ButtonGalleryFixture)
 }
 
+struct DescriptorDropdownFixture {
+    field: crate::app::plexi_descriptor::ArgSpec,
+    values: std::collections::HashMap<String, String>,
+}
+
+impl crate::app::app_trait::App for DescriptorDropdownFixture {
+    fn type_id(&self) -> &'static str {
+        "descriptor-dropdown-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Deployment settings".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        crate::render::descriptor_widgets::form_fields(
+            ui,
+            ctx.colors,
+            [&self.field],
+            &mut self.values,
+            false,
+            ctx.pane_id,
+        );
+        ui.label(format!(
+            "Selected environment: {}",
+            self.values["Environment"]
+        ));
+    }
+}
+
+fn descriptor_dropdown_factory(
+    _: &Path,
+    _: &[String],
+    _: u64,
+) -> Box<dyn crate::app::app_trait::App> {
+    Box::new(DescriptorDropdownFixture {
+        field: serde_json::from_value(serde_json::json!({
+            "name": "Environment", "type": "enum",
+            "description": "Choose the deployment environment",
+            "enum_values": ["Development", "Staging", "Production"]
+        }))
+        .unwrap(),
+        values: std::collections::HashMap::from([("Environment".into(), "Development".into())]),
+    })
+}
+
+// Seed the popup endpoint directly: generic scene pane gestures do not
+// reproduce kittest's widget click routing. The descriptor and secrets pixel
+// tests separately open the production callers through real widget clicks.
+struct DropdownSceneFixture {
+    selected: &'static str,
+}
+impl crate::app::app_trait::App for DropdownSceneFixture {
+    fn type_id(&self) -> &'static str {
+        "kit-dropdown-fixture"
+    }
+    fn display_name(&self) -> String {
+        "Kit dropdown".into()
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &crate::app::app_trait::AppRenderContext<'_>,
+        _: Option<crate::host::pane::PendingPaneClick>,
+    ) {
+        let response = crate::ui::dropdown::select_value(
+            ui,
+            "scene_dropdown",
+            self.selected,
+            &mut self.selected,
+            [
+                ("Development", "Development"),
+                ("Staging", "Staging"),
+                ("Production", "Production"),
+            ],
+            ctx.colors,
+        );
+        if ui.input(|input| input.key_pressed(egui::Key::F6)) {
+            egui::Popup::open_id(ui.ctx(), response.id.with("popup"));
+        }
+        ui.label(format!("Selected environment: {}", self.selected));
+        ui.label(
+            if egui::Popup::is_id_open(ui.ctx(), response.id.with("popup")) {
+                "Options open"
+            } else {
+                "Options closed"
+            },
+        );
+    }
+}
+fn dropdown_scene_factory(_: &Path, _: &[String], _: u64) -> Box<dyn crate::app::app_trait::App> {
+    Box::new(DropdownSceneFixture {
+        selected: "Development",
+    })
+}
 const HARNESS_BUILTIN_FACTORIES: &[(&str, HarnessBuiltinFactory)] = &[
     ("assistant", assistant_harness_factory),
     ("button-gallery-fixture", button_gallery_factory),
+    ("descriptor-dropdown-fixture", descriptor_dropdown_factory),
+    ("kit-dropdown-fixture", dropdown_scene_factory),
 ];
 
 fn harness_builtin_factory(
@@ -11763,4 +11869,46 @@ open(out + ".done", "w").close()
         }
     }
 
+}
+
+#[test]
+fn screenshot_descriptor_kit_dropdown() {
+    use egui_kittest::kittest::Queryable;
+    for theme in ["plexi-dusk", "plexi-dawn"] {
+        let mut h = PlexiUiHarness::new_sized(720.0, 480.0);
+        h.with_app_mut(|app| {
+            let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+            app.colors = crate::ui::theme::Colors::from_config(&cfg);
+            crate::ui::theme::setup_style(&app.ctx, &app.colors);
+            app.sidebar_visible = false;
+        });
+        let cwd = h.workspace_root().to_path_buf();
+        h.open_target(HarnessOpenTarget::Builtin {
+            id: "descriptor-dropdown-fixture",
+            cwd: &cwd,
+            args: &[],
+        })
+        .unwrap();
+        h.run_steps(4);
+        assert_eq!(
+            h.harness()
+                .get_by_role(egui::accesskit::Role::ComboBox)
+                .rect()
+                .height(),
+            crate::ui::style::BUTTON_H_MD
+        );
+        h.harness()
+            .get_by_role(egui::accesskit::Role::ComboBox)
+            .click();
+        h.run_steps(3);
+        h.harness().get_by_label("Staging").hover();
+        h.run_steps(3);
+        let staging = h.harness().get_by_label("Staging").rect();
+        assert_eq!(staging.height(), crate::ui::style::LIST_ROW_DENSE_H);
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}")))
+            .unwrap();
+        h.harness().get_by_label("Staging").click();
+        h.run_steps(3);
+        h.harness().get_by_label("Selected environment: Staging");
+    }
 }

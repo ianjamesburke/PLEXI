@@ -278,47 +278,32 @@ impl SecretsApp {
         }
     }
 
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "legacy controls await kit replacements"
-    )]
     fn scope_picker(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         labels::description_label(ui, "Scope", colors);
         ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
-            egui::ComboBox::from_id_salt("secret_scope")
-                .selected_text(match self.target {
-                    SecretTarget::Global => "Global",
-                    SecretTarget::Workspace { .. } => "Workspace",
-                    SecretTarget::Folder(_) => "Folder",
-                })
-                .show_ui(ui, |ui| {
-                    ui.set_min_width(style::MENU_MIN_W);
-                    let mut options = vec![(SecretTarget::Global, "Global")];
-                    if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
-                        options.push((target, "Workspace"));
-                    }
-                    if crate::release::feature_enabled(
-                        crate::release::ReleaseFeature::FolderSecrets,
-                    ) {
-                        options.push((
-                            SecretTarget::Folder(crate::platform::path::canonical_or_self(
-                                &self.cwd,
-                            )),
-                            "Folder (current directory)",
-                        ));
-                    }
-                    for (target, label) in options {
-                        if crate::ui::list::ListRow::new(label)
-                            .dense()
-                            .selected(self.target == target)
-                            .show(ui, colors)
-                            .row_clicked()
-                        {
-                            self.target = target;
-                            ui.close();
-                        }
-                    }
-                });
+            let label = match self.target {
+                SecretTarget::Global => "Global",
+                SecretTarget::Workspace { .. } => "Workspace",
+                SecretTarget::Folder(_) => "Folder",
+            };
+            let mut options = vec![(SecretTarget::Global, "Global")];
+            if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
+                options.push((target, "Workspace"));
+            }
+            if crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
+                options.push((
+                    SecretTarget::Folder(crate::platform::path::canonical_or_self(&self.cwd)),
+                    "Folder (current directory)",
+                ));
+            }
+            crate::ui::dropdown::select_value(
+                ui,
+                "secret_scope",
+                label,
+                &mut self.target,
+                options,
+                colors,
+            );
         });
         labels::description_label(ui, &self.target.label(), colors);
     }
@@ -701,20 +686,9 @@ mod tests {
             h.run_steps(4);
             h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_before")))
                 .unwrap();
-            // The stock ComboBox does not expose its selected text as an accessibility node.
-            let selector = egui::pos2(70.0, 255.0);
-            for pressed in [true, false] {
-                h.harness().input_mut().events.extend([
-                    egui::Event::PointerMoved(selector),
-                    egui::Event::PointerButton {
-                        pos: selector,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ]);
-                h.step();
-            }
+            h.harness()
+                .get_by_role(egui::accesskit::Role::ComboBox)
+                .click();
             h.run_steps(3);
             let global = h.harness().get_by_label("Global").rect();
             let workspace = h
@@ -723,6 +697,8 @@ mod tests {
                 .map(|node| node.rect())
                 .max_by(|a, b| a.top().total_cmp(&b.top()))
                 .expect("workspace option");
+            assert_eq!(global.height(), style::LIST_ROW_DENSE_H);
+            assert_eq!(workspace.height(), style::LIST_ROW_DENSE_H);
             for (name, rect) in [("global", global), ("workspace", workspace)] {
                 h.harness()
                     .input_mut()
@@ -740,6 +716,24 @@ mod tests {
                 h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_{name}")))
                     .unwrap();
             }
+            h.harness().get_by_label("Global").click();
+            h.run_steps(3);
+            h.harness()
+                .get_by_role(egui::accesskit::Role::ComboBox)
+                .click();
+            h.run_steps(3);
+            assert_eq!(
+                h.harness().get_by_label("Global").rect(),
+                global,
+                "selected global"
+            );
+            let selected_workspace = h
+                .harness()
+                .get_all_by_label("Workspace")
+                .map(|node| node.rect())
+                .max_by(|a, b| a.top().total_cmp(&b.top()))
+                .unwrap();
+            assert_eq!(selected_workspace, workspace, "unselected workspace");
         }
     }
 
