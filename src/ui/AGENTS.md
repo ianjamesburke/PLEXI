@@ -54,6 +54,7 @@ Instrument migrated surfaces with `layout_report::Capture`, recording allocated 
 
 ## Rules
 
+- Optimistic UI is the default: the interface transitions to the user's intended end state in the same frame, slow work (file, network, clipboard) finishes off the UI thread, and a failure after the fact is reported by a visible notice that leaves user data intact; block the UI only when no safe rollback exists.
 - Components own geometry. Callers should not hand-place modal title gaps, row baselines, scroll-body heights, focus rings, or text styles.
 - Do not add hard-coded spacing, text sizes, radii, or button heights in overlay code. Add a token to `style.rs` or a component API here.
 - Do not render host chrome with direct `RichText::new(...).size(...)` unless this module has no matching semantic helper yet. Add the helper first.
