@@ -60,14 +60,16 @@ pub(crate) fn paint_provenance_icon(
     let stroke = Stroke::new((s * 0.1).max(1.0), color);
     match kind {
         ProvenanceKind::Human => {
+            // Ink fills the square: head touches the top, body the bottom and both sides,
+            // so header insets measured to the ink match insets measured to the slot.
             painter.circle_filled(
-                Pos2::new(rect.center().x, rect.min.y + s * 0.3),
-                s * 0.22,
+                Pos2::new(rect.center().x, rect.min.y + s * 0.25),
+                s * 0.25,
                 color,
             );
             let body = Rect::from_min_max(
-                Pos2::new(rect.center().x - s * 0.36, rect.min.y + s * 0.62),
-                Pos2::new(rect.center().x + s * 0.36, rect.max.y - s * 0.04),
+                Pos2::new(rect.center().x - s * 0.5, rect.min.y + s * 0.6),
+                Pos2::new(rect.center().x + s * 0.5, rect.max.y),
             );
             let r = (s * 0.3) as u8;
             painter.rect_filled(
@@ -83,8 +85,8 @@ pub(crate) fn paint_provenance_icon(
         }
         ProvenanceKind::Agent => {
             let head = Rect::from_min_max(
-                Pos2::new(rect.min.x + s * 0.1, rect.min.y + s * 0.3),
-                Pos2::new(rect.max.x - s * 0.1, rect.max.y - s * 0.08),
+                Pos2::new(rect.min.x, rect.min.y + s * 0.3),
+                Pos2::new(rect.max.x, rect.max.y),
             );
             painter.rect_stroke(
                 head,
@@ -96,13 +98,13 @@ pub(crate) fn paint_provenance_icon(
             for dx in [-0.2_f32, 0.2] {
                 painter.circle_filled(Pos2::new(rect.center().x + dx * s, eye_y), s * 0.07, color);
             }
-            let top = Pos2::new(rect.center().x, rect.min.y + s * 0.1);
+            let top = Pos2::new(rect.center().x, rect.min.y + s * 0.08);
             painter.line_segment([top, Pos2::new(top.x, head.min.y)], stroke);
             painter.circle_filled(top, s * 0.08, color);
         }
         ProvenanceKind::System => {
             painter.rect_stroke(
-                rect.shrink(s * 0.12),
+                rect,
                 crate::ui::style::radius_frac(s, 0.15),
                 stroke,
                 egui::StrokeKind::Inside,

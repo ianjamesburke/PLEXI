@@ -7020,7 +7020,7 @@ open(out + ".done", "w").close()
     fn pane_chrome_state_ring_is_visible_with_and_without_focus() {
         use crate::protocol::AgentState;
         let (mut h, pane, other) = pane_chrome_fixture(1.0);
-        for state in [AgentState::Working, AgentState::Idle, AgentState::Blocked, AgentState::NeedsYou, AgentState::Interrupted, AgentState::Failed, AgentState::Completed] {
+        for state in [AgentState::Working, AgentState::Blocked, AgentState::NeedsYou, AgentState::Interrupted, AgentState::Failed] {
             for focused in [false, true] {
                 h.with_app_mut(|app| {
                     app.windows[app.active_window].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: state.clone(), agent: "fixture".into(), detail: None, session_id: None }));
@@ -7037,6 +7037,30 @@ open(out + ".done", "w").close()
                     assert!(left + 0.001 >= focus.rect.left() + focus.stroke.width, "focus and state strokes overlap");
                 }
             }
+        }
+    }
+
+    /// Stint 1213 round 3: an unfocused pane in a quiet state (Idle, Completed) paints no ring, so
+    /// the edge band is the pane background. The gray `state_waiting` ring was the stray line.
+    #[test]
+    fn unfocused_quiet_pane_edge_is_pane_background() {
+        use crate::protocol::AgentState;
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        for state in [AgentState::Idle, AgentState::Completed] {
+            h.with_app_mut(|app| {
+                app.windows[app.active_window].panes.get_mut(&pane).unwrap().set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: state.clone(), agent: "fixture".into(), detail: None, session_id: None }));
+            });
+            h.focus_pane(other).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let img = h.render().unwrap();
+            let ppp = img.width() as f32 / h.with_app(|app| app.ctx.content_rect().width());
+            let y = ((rect.center().y) * ppp) as u32;
+            let at = |dx: f32| *img.get_pixel(((rect.left() + dx) * ppp) as u32, y);
+            let band = at(crate::ui::style::PANE_STATE_WIDTH / 2.0);
+            let inside = at(crate::ui::style::PANE_RING_WIDTH + 0.5);
+            assert_eq!(band, inside, "{state:?}: ring band pixel {band:?} must equal pane background {inside:?}");
+            assert_ne!(at(-3.0), inside, "probe must sit on the pane edge, not in the gap");
         }
     }
 

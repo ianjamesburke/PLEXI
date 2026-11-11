@@ -40,7 +40,7 @@ impl PaneHeader {
         let bounds = Rect::from_min_max(
             egui::pos2(
                 (bar.left() + leading + style::SPACE_SM).min(right),
-                bar.top(),
+                style::pane_header_band(bar).top(),
             ),
             egui::pos2(right, bar.bottom()),
         );
