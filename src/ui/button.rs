@@ -1271,7 +1271,7 @@ mod tests {
     fn disabled_is_clearly_dimmed_and_far_from_every_enabled_kind() {
         let host = crate::testing::HostHarness::new();
         let colors = host.app.colors;
-        let panel = host.app.ctx.style().visuals.panel_fill;
+        let panel = host.app.ctx.global_style().visuals.panel_fill;
         let ratio = |a: Color32, b: Color32| {
             crate::ui::theme::contrast(
                 crate::ui::theme::luminance(a),
