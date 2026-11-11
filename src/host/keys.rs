@@ -77,6 +77,7 @@ pub enum Action {
     Quit,
     ToggleSidebar,
     ToggleShortcuts,
+    OpenChangelog,
     ToggleZoom,
     ToggleCommandPalette,
     RenamePane,

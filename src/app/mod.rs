@@ -4531,6 +4531,11 @@ impl PlexiApp {
             }
             Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Action::ToggleShortcuts => self.show_shortcuts = !self.show_shortcuts,
+            Action::OpenChangelog => {
+                if !self.show_changelog {
+                    self.toggle_changelog();
+                }
+            }
             Action::ToggleCommandPalette => {
                 self.show_command_palette = !self.show_command_palette;
                 if self.show_command_palette {

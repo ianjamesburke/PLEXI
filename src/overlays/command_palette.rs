@@ -293,6 +293,12 @@ const PALETTE_COMMANDS: &[PaletteCommandEntry] = &[
         search_text: "switch commands scope toggle global workspace",
     },
     PaletteCommandEntry {
+        command: PaletteCommand::Host(crate::host::keys::Action::OpenChangelog),
+        name: "Changelog",
+        description: "Show what changed in this version",
+        search_text: "changelog release notes what's new version",
+    },
+    PaletteCommandEntry {
         command: PaletteCommand::Host(crate::host::keys::Action::ToggleShortcuts),
         name: "Keyboard shortcuts",
         description: "Show keyboard shortcuts reference",
@@ -2953,6 +2959,34 @@ mod tests {
             shortcut_label(overridden),
             shortcut_label(bindings.open_file_browser)
         );
+    }
+
+    #[test]
+    fn palette_changelog_search_and_open_are_idempotent() {
+        use crate::host::keys::Action;
+        let command = PaletteCommand::Host(Action::OpenChangelog);
+        for query in ["changelog", "release notes", "what's new", "version"] {
+            assert!(
+                palette_command_matches(query).contains(&command),
+                "missing {query}"
+            );
+        }
+        let mut h = crate::testing::HostHarness::new();
+        h.app.run_palette_command(command.clone());
+        assert!(h.app.show_changelog);
+        assert_eq!(
+            h.app.focus_stack.last(),
+            Some(&crate::app::FocusKind::Changelog)
+        );
+        h.app.run_palette_command(command);
+        assert!(h.app.show_changelog);
+        assert_eq!(
+            h.app.focus_stack.as_slice(),
+            &[crate::app::FocusKind::Changelog]
+        );
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(!h.app.show_changelog);
+        assert!(h.app.focus_stack.is_empty());
     }
 
     #[test]
