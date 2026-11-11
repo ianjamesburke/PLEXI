@@ -1,0 +1,44 @@
+size = [1000.0, 700.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "editor", args = ["{tmp}/release-notes.txt"] }
+
+[[steps]]
+focus = "editor"
+
+[[steps]]
+key = { target = "editor", value = "cmd+a" }
+
+[[steps]]
+text = { target = "editor", value = "Release notes: keep these unsaved edits until I choose." }
+
+[[steps]]
+key = { target = "host", value = "cmd+w" }
+
+[[steps]]
+assert = { layout_valid = true, layout_surfaces = ["modal_action"] }
+
+[[steps]]
+shot = "editor-unsaved-dialog.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
+
+[[steps]]
+expect = { target = "editor", source_text_contains = "keep these unsaved edits", focused = true }
+
+[[steps]]
+key = { target = "host", value = "cmd+w" }
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+open = { kind = "builtin", id = "text-editor", as = "reopened", args = ["{tmp}/release-notes.txt"] }
+
+[[steps]]
+expect = { target = "reopened", source_text_contains = "keep these unsaved edits" }
+
+[[steps]]
+close = "reopened"

@@ -4067,7 +4067,7 @@ printf 'FIXTURE-DONE\\n'; sleep 300";
             assert!(app.windows[app.active_window].panes.contains_key(&pane_id));
         });
         h.run_steps(2);
-        h.harness().get_by_label("Unsaved changes.");
+        h.harness().get_by_label("Unsaved changes");
         h.save_screenshot(&evidence_png!("_close_prompt")).expect("render close prompt");
 
         // Cancel, then an agent writes the file: conflict state.
