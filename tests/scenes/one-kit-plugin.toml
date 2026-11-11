@@ -5,7 +5,7 @@ suite = false
 [[steps]]
 open = { kind = "process", path = "apps/dev/component-gallery", as = "plugin" }
 [[steps]]
-wait_app_frame = { target = "plugin", timeout_s = 30.0 }
+wait_view_frame = { target = "plugin", timeout_s = 30.0 }
 [[steps]]
 assert = { target = "plugin", lifecycle = "running", tree_contains = "Primary" }
 [[steps]]
