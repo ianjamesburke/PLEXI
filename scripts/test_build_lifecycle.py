@@ -54,7 +54,7 @@ class Lifecycle(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.call(*command, 'check', *args, env=env)
         manifest.write_text(original)
-        for name, value in [('RUSTFLAGS', '-D warnings'), ('PLEXI_BUILD_TEST_CHANNEL', 'pr-2')]:
+        for name, value in [('RUSTFLAGS', '-D warnings -C debuginfo=0'), ('PLEXI_BUILD_TEST_CHANNEL', 'pr-2')]:
             with self.assertRaises(subprocess.CalledProcessError):
                 self.call(*command, 'check', *args, env={**env, name: value})
         (self.repo / 'dirty').write_text('dirty')
