@@ -177,8 +177,9 @@ pub const PROVENANCE_ICON_SIZE: f32 = 14.0;
 pub const PANE_RING_WIDTH: f32 = PANE_FOCUS_WIDTH + PANE_STATE_WIDTH;
 /// Header glyphs (state pip, provenance icon) sit in square slots of this edge.
 pub const PANE_HEADER_GLYPH: f32 = PROVENANCE_ICON_SIZE;
-/// Ring, gap, glyph slot, gap: the header band keeps the same air above, below and beside
-/// its glyphs, so the side inset equals the vertical gap.
+/// Header height. Glyphs and chips center in the whole bar, so the gap from the pane's outer
+/// top edge to the ink equals the gap from the ink to the bar's bottom edge; the side inset
+/// (ring + gap) is at least that vertical gap.
 pub const PANE_HEADER_HEIGHT: f32 = PANE_RING_WIDTH + 2.0 * PANE_CONTENT_GAP + PANE_HEADER_GLYPH;
 
 /// Header chips (outside workspace, state, waiting) are as tall as a glyph slot, so they sit
@@ -189,11 +190,6 @@ pub const PANE_HEADER_CHIP_HEIGHT: f32 = PANE_HEADER_GLYPH;
 pub const CHIP_PAD_H: f32 = 6.0;
 pub const CHIP_ICON_GAP: f32 = 3.0;
 pub const CHIP_ARROW: f32 = 6.0;
-
-/// The part of a header bar below the top ring, where glyphs and title center.
-pub fn pane_header_band(bar: egui::Rect) -> egui::Rect {
-    egui::Rect::from_min_max(egui::pos2(bar.left(), (bar.top() + PANE_RING_WIDTH).min(bar.bottom())), bar.max)
-}
 
 // ── Zoom / Niri Column / Atlas geometry tokens ─────────────────────────────
 pub const TOOLBAR_H: f32 = 28.0;

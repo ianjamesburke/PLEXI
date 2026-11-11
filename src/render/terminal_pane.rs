@@ -553,7 +553,7 @@ pub(crate) fn render_name_bar_and_tabs(
 
         if is_error && bar_rect.width() >= pip_space {
             let cx = header_pip_center_x(bar_rect);
-            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, crate::ui::style::pane_header_band(bar_rect).center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
+            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
         } else if bar_rect.width() >= pip_space {
             if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
@@ -603,7 +603,7 @@ pub(crate) fn render_name_bar_and_tabs(
                 };
                 let text_pos = egui::pos2(
                     left_edge + (avail_width - galley.size().x).max(0.0) / 2.0,
-                    crate::ui::style::pane_header_band(bar_rect).center().y - galley.size().y / 2.0,
+                    bar_rect.center().y - galley.size().y / 2.0,
                 );
                 active_label_rect = Some(egui::Rect::from_min_size(text_pos, galley.size()));
                 active_elided_label = Some(galley.job.text.clone());
@@ -644,7 +644,7 @@ fn paint_activity_dot(
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
     let cx = header_pip_center_x(bar_rect);
-    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, crate::ui::style::pane_header_band(bar_rect).center().y), HEADER_PIP_RADIUS, Some(state), color, false);
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(state), color, false);
 }
 
 
@@ -759,8 +759,8 @@ mod tests {
             .fold(egui::Rect::NOTHING, |a, r| a.union(r))
     }
 
-    /// The pip and the provenance icon keep one inset from the side rings, equal to the gap
-    /// above and below the glyph, at every scale, at narrow widths and for every icon kind.
+    /// The pip and the provenance icon keep one inset from the side rings, at least the gap
+    /// above and below the glyph, and that vertical gap (pane top edge to ink vs ink to bar bottom) is equal, at every scale, at narrow widths and for every icon kind.
     /// The icon's ink fills its slot; the pip is a hollow ring (ink is 0.75 of its radius).
     #[test]
     fn pane_header_glyphs_have_symmetric_insets() {
@@ -789,14 +789,14 @@ mod tests {
                     let pip_slot = pip.center().x - PANE_HEADER_GLYPH / 2.0 - PANE_RING_WIDTH;
                     let icon_slot = (width - PANE_RING_WIDTH) - (icon.center().x + PANE_HEADER_GLYPH / 2.0);
                     assert!((pip_slot - icon_slot).abs() <= 0.5, "pip slot gap {pip_slot} vs icon slot gap {icon_slot}: {ctx_msg}");
-                    let side = (width - PANE_RING_WIDTH) - icon.right();
-                    let top = icon.top() - PANE_RING_WIDTH;
+                    let side = width - icon.right();
+                    let top = icon.top();
                     let bottom = PANE_HEADER_HEIGHT - icon.bottom();
-                    assert!((side - top).abs() <= 0.5 && (top - bottom).abs() <= 0.5, "icon gaps side {side}, top {top}, bottom {bottom}: {ctx_msg}");
-                    let (ptop, pbottom) = (pip.top() - PANE_RING_WIDTH, PANE_HEADER_HEIGHT - pip.bottom());
+                    assert!((top - bottom).abs() <= 0.5 && side >= top - 0.5, "icon gaps from outer edge: side {side}, above {top}, below {bottom}: {ctx_msg}");
+                    let (ptop, pbottom) = (pip.top(), PANE_HEADER_HEIGHT - pip.bottom());
                     assert!((ptop - pbottom).abs() <= 0.5, "pip vertical gaps {ptop} vs {pbottom}: {ctx_msg}");
-                    let pside = pip.left() - PANE_RING_WIDTH;
-                    assert!((pside - ptop).abs() <= 0.5, "pip side gap {pside} vs vertical {ptop}: {ctx_msg}");
+                    let pside = pip.left();
+                    assert!(pside >= ptop - 0.5, "pip side gap {pside} must be at least vertical {ptop}: {ctx_msg}");
                     println!("{ctx_msg}: icon side {side:.2} top {top:.2} bottom {bottom:.2}; pip side {pside:.2} top {ptop:.2} bottom {pbottom:.2}; slot gaps {pip_slot:.2}/{icon_slot:.2}");
                 }
             }
@@ -824,7 +824,7 @@ mod tests {
             });
             let chip = ctx.data(|d| d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", 7_u64)))).and_then(|l| l.outside_workspace_badge_rect).expect("chip rect");
             assert!((chip.height() - PANE_HEADER_CHIP_HEIGHT).abs() < 0.01, "chip height {}", chip.height());
-            let (top, bottom) = (chip.top() - PANE_RING_WIDTH, PANE_HEADER_HEIGHT - chip.bottom());
+            let (top, bottom) = (chip.top(), PANE_HEADER_HEIGHT - chip.bottom());
             assert!((top - bottom).abs() <= 0.5 && top >= 2.0, "chip margins top {top} bottom {bottom} at scale {scale}");
             let text = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(_) if chip.contains(s.shape.visual_bounding_rect().center()) => Some(s.shape.visual_bounding_rect()), _ => None }).next().expect("chip text");
             let pts: Vec<egui::Pos2> = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::LineSegment { points, .. } if chip.contains(points[0]) => Some(points.to_vec()), _ => None }).flatten().collect();

@@ -7071,6 +7071,7 @@ open(out + ".done", "w").close()
         let (mut h, pane, other) = pane_chrome_fixture(1.0);
         h.with_app_mut(|app| {
             let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
+            if let Some(term) = t.as_terminal_mut() { term.name = Some("fixture".into()); term.spawned_by = Some("researcher".into()); }
             t.set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Idle, agent: "fixture".into(), detail: None, session_id: None }));
         });
         let mut tops = Vec::new();
@@ -7080,6 +7081,12 @@ open(out + ".done", "w").close()
             let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
             let body = h.harness().ctx.read_response(egui_term::terminal_widget_id(pane)).unwrap().rect;
             tops.push(body.top() - rect.top());
+            let icon = h.with_app(|app| app.ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("provenance_icon_rect", pane)))));
+            {
+                let icon = icon.filter(|i| *i != egui::Rect::NOTHING).expect("header paints the provenance icon");
+                let (above, below) = (icon.top() - rect.top(), rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - icon.bottom());
+                assert!((above - below).abs() <= 0.5, "icon gap above {above} vs below {below} (focus {focus})");
+            }
         }
         assert!((tops[0] - tops[1]).abs() < 0.01, "terminal top offset focused {} vs unfocused {}", tops[0], tops[1]);
         assert!((tops[0] - crate::ui::style::PANE_HEADER_HEIGHT).abs() < 0.01, "body starts right under the {}pt header, got {}", crate::ui::style::PANE_HEADER_HEIGHT, tops[0]);
