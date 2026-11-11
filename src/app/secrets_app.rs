@@ -704,6 +704,14 @@ mod tests {
                 .expect("workspace option");
             assert_eq!(global.height(), style::LIST_ROW_DENSE_H);
             assert_eq!(workspace.height(), style::LIST_ROW_DENSE_H);
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::PointerMoved(egui::pos2(700.0, 460.0)));
+            h.run_steps(3);
+            assert_eq!(h.harness().get_by_label("Global").rect(), global);
+            h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_open")))
+                .unwrap();
             for (name, rect) in [("global", global), ("workspace", workspace)] {
                 h.harness()
                     .input_mut()

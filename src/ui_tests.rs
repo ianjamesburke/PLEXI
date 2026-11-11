@@ -11899,10 +11899,19 @@ fn screenshot_descriptor_kit_dropdown() {
                 .height(),
             crate::ui::style::BUTTON_H_MD
         );
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_closed")))
+            .unwrap();
         h.harness()
             .get_by_role(egui::accesskit::Role::ComboBox)
             .click();
         h.run_steps(3);
+        h.harness()
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(egui::pos2(700.0, 460.0)));
+        h.run_steps(3);
+        h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_open")))
+            .unwrap();
         h.harness().get_by_label("Staging").hover();
         h.run_steps(3);
         let staging = h.harness().get_by_label("Staging").rect();
