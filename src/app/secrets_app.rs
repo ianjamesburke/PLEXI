@@ -660,6 +660,8 @@ mod tests {
     fn screenshot_scope_popup_rows_stay_fixed_on_hover() {
         use egui_kittest::kittest::Queryable;
 
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
         for theme in ["plexi-dusk", "plexi-dawn"] {
             let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 700.0);
             let root = tempfile::tempdir().unwrap();
@@ -672,7 +674,13 @@ mod tests {
                 manager::workspace_target(root.path()).unwrap(),
                 Some(SecretTarget::Workspace { .. })
             ));
+            // The in-memory system store is process-wide and sibling tests put
+            // global secrets in it. The Scope selector is only drawn in the empty
+            // state, so start from an empty inventory.
+            let mut secrets = SecretsApp::new(root.path().into());
+            secrets.entries.clear();
             h.with_app_mut(|app| {
+                let app_secrets = secrets;
                 let cfg = crate::ui::theme::preset_colors(theme).unwrap();
                 app.colors = crate::ui::theme::Colors::from_config(&cfg);
                 app.theme = crate::ui::theme::terminal_theme(
@@ -682,7 +690,7 @@ mod tests {
                 crate::ui::theme::setup_style(&app.ctx, &app.colors);
                 app.sidebar_visible = false;
                 app.open_builtin_app_pane(
-                    Box::new(SecretsApp::new(root.path().into())),
+                    Box::new(app_secrets),
                     crate::app::permissions::AppPermissions::builtin(),
                     root.path().into(),
                     None,
