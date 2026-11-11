@@ -5566,6 +5566,8 @@ open(out + ".done", "w").close()
         };
         let before = counts(&h);
         let mut saves = 0;
+        let mut previous = before.clone();
+        let mut peak_after_warmup = 0;
         crate::platform::ui_profile::reset_measurement();
         for frame in 0..120 {
             h.harness().set_size(egui::vec2(
@@ -5575,6 +5577,16 @@ open(out + ".done", "w").close()
             let save_before = h.with_app(|app| app.last_workspace_save);
             h.step();
             saves += usize::from(h.with_app(|app| app.last_workspace_save != save_before));
+            let current = counts(&h);
+            let frame_commits: u64 = current
+                .iter()
+                .zip(&previous)
+                .map(|(after, before)| after - before)
+                .sum();
+            if frame >= 16 {
+                peak_after_warmup = peak_after_warmup.max(frame_commits);
+            }
+            previous = current;
         }
         let per_pane: Vec<_> = counts(&h)
             .iter()
@@ -5590,6 +5602,10 @@ open(out + ".done", "w").close()
                 .iter()
                 .all(|commits| *commits <= 120_u64.div_ceil(8) + 1),
             "resize debounce regressed: {per_pane:?}"
+        );
+        assert!(
+            peak_after_warmup <= 1,
+            "sustained resize bunched {peak_after_warmup} scrollback reflows on one frame"
         );
         assert_eq!(saves, 0, "workspace saves must wait for the drag to settle");
         h.save_screenshot(&evidence_png!())

@@ -282,6 +282,11 @@ pub struct TerminalBackend {
     /// Layout geometry seen but not yet committed, held by the frame-stability
     /// debounce in [`Self::request_resize`].
     pending_resize: Option<PendingResize>,
+    /// After the first defer cap, distribute sustained reflows across panes.
+    /// Short drags still wait for their trailing edge; long drags must not
+    /// reflow every pane's entire scrollback on the same frame.
+    live_resize: bool,
+    resize_frame: u32,
 }
 
 #[derive(Default)]
@@ -455,6 +460,8 @@ impl TerminalBackend {
             input_tap: Mutex::new(None),
             resize_commits: 0,
             pending_resize: None,
+            live_resize: false,
+            resize_frame: 0,
         })
     }
 
@@ -1095,11 +1102,13 @@ impl TerminalBackend {
         font_size: Size,
         immediate: bool,
     ) -> ResizeOutcome {
+        self.resize_frame = (self.resize_frame + 1) % MAX_DEFERRED_RESIZE_FRAMES;
         let Some(geometry) = ResizeGeometry::derive(layout_size, font_size)
         else {
             // Degenerate layout (zero rows or columns): there is no grid to
             // give the shell, and a pending one would be equally meaningless.
             self.pending_resize = None;
+            self.live_resize = false;
             return ResizeOutcome::Unchanged;
         };
 
@@ -1107,6 +1116,9 @@ impl TerminalBackend {
             // Sub-pixel layout drift with an identical cell grid: record it,
             // but the shell's view of the world has not changed.
             self.pending_resize = None;
+            if self.size.layout_size == layout_size {
+                self.live_resize = false;
+            }
             self.size.layout_size = layout_size;
             return ResizeOutcome::Unchanged;
         }
@@ -1118,7 +1130,12 @@ impl TerminalBackend {
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
 
-        if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
+        // Only phase an already sustained drag. The initial cap preserves the
+        // short-drag trailing-edge contract; afterward each pane gets one
+        // phase per eight calls, plus at most one initial unphased commit.
+        let phase_due = self.live_resize
+            && self.resize_frame == (self.id % u64::from(MAX_DEFERRED_RESIZE_FRAMES)) as u32;
+        if !immediate && !settled && !phase_due && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
             self.pending_resize = Some(PendingResize {
                 geometry,
                 layout_size,
@@ -1127,12 +1144,15 @@ impl TerminalBackend {
             return ResizeOutcome::Deferred;
         }
 
+        self.live_resize = !immediate && !settled;
         if crate::diag::span_hook_installed() {
             crate::diag::span_note(
                 if immediate {
                     "resize_commit_immediate"
                 } else if settled {
                     "resize_commit_settled"
+                } else if phase_due {
+                    "resize_commit_phase"
                 } else {
                     "resize_commit_cap"
                 },
@@ -1150,6 +1170,8 @@ impl TerminalBackend {
                 "immediate"
             } else if settled {
                 "layout settled"
+            } else if phase_due {
+                "sustained drag phase"
             } else {
                 "defer cap reached"
             },
