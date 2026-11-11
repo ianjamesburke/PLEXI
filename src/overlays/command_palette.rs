@@ -3047,6 +3047,7 @@ mod tests {
                 }
                 PaletteCommand::Host(
                     Action::OpenConfig
+                    | Action::OpenChangelog
                     | Action::NavBackApp
                     | Action::FocusHistoryForward
                     | Action::NextContext
