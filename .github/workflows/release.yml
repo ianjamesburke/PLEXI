@@ -73,6 +73,17 @@ jobs:
       PLEXI_RELEASE_SIGNING_P12_BASE64: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_BASE64 }}
       PLEXI_RELEASE_SIGNING_P12_PASSWORD: ${{ secrets.PLEXI_ALPHA_SIGNING_P12_PASSWORD }}
       PLEXI_RELEASE_SIGNING_CERT_SHA1: ${{ secrets.PLEXI_ALPHA_SIGNING_CERT_SHA1 }}
+  verify-evidence:
+    name: verify-only evidence ${{ inputs.tag }}
+    if: ${{ inputs.verify_only && !inputs.signing_only }}
+    needs: packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the dispatch source to equal the run commit
+        env:
+          SOURCE: ${{ inputs.tag }}
+          HEAD: ${{ github.sha }}
+        run: test "$SOURCE" = "$HEAD"
   publish:
     if: ${{ !inputs.verify_only && !inputs.signing_only }}
     needs: packages

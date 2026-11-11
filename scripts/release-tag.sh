@@ -42,6 +42,9 @@ remote_head=$(git -C "$tree" rev-parse "origin/$branch")
 [[ "$local_head" == "$remote_head" ]] \
     || die "$branch worktree ($local_head) does not match origin/$branch ($remote_head) — run 'just promote $branch' first, or pull"
 
+python3 "$(dirname "${BASH_SOURCE[0]}")/release-evidence.py" "$local_head" "$branch" \
+    || die "missing successful verify-only release evidence for $local_head; run: gh workflow run release.yml --ref $branch -f tag=$local_head -f verify_only=true"
+
 version=$(grep '^version' "$tree/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
 
 if [[ "$channel" == "beta" ]]; then

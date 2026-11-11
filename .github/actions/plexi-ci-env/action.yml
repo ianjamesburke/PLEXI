@@ -32,7 +32,14 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain
+    - name: Install pinned Rust toolchain (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        rustup show
+        rustc --version
+    - name: Install Rust toolchain (other platforms)
+      if: runner.os != 'macOS'
       uses: dtolnay/rust-toolchain@stable
 
     # A cold Cargo cache recompiles the full plexi crate graph, including
