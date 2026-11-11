@@ -11178,7 +11178,7 @@ open(out + ".done", "w").close()
                 "editor snapshot and painted tile must agree: snapshot={:?}, tile={painted:?}", pane.clip_rect);
         });
         h.save_screenshot(&evidence_png!("_multi_window")).unwrap();
-        h.with_app(|app| app.save_workspace_now());
+        h.with_app_mut(|app| app.save_workspace_now());
         let profile = h._profile_dir.path().to_path_buf();
         let saved = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
         let mut restored = PlexiUiHarness::new_sized(1200.0, 700.0);

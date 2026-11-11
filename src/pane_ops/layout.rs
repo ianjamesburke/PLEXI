@@ -942,6 +942,10 @@ impl PlexiApp {
                 log::info!("close_tile: cleared stale zoom (closed tile was zoomed)");
             }
 
+            if is_focused {
+                ctx.reconcile_stale_tiles();
+            }
+
             removed
         };
 
@@ -1526,6 +1530,7 @@ impl PlexiApp {
                 ..SimplificationOptions::default()
             });
             ctx.focused_pane = next_src_focus;
+            ctx.reconcile_stale_tiles();
             pane
         };
 
@@ -1694,6 +1699,7 @@ impl PlexiApp {
                 ..SimplificationOptions::default()
             });
             ctx.focused_pane = next_src_focus;
+            ctx.reconcile_stale_tiles();
             pane
         };
 

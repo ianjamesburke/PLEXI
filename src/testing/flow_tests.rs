@@ -148,3 +148,57 @@ fn ordinary_splits_resized_nested_tree_survives_save_reload() {
     assert_eq!(serde_json::to_value(&after.windows[0].tree).unwrap(), serde_json::to_value(&before.windows[0].tree).unwrap());
     assert_eq!(after.windows[0].panes.len(), 3);
 }
+/// Every saved window's focused tile must be a pane tile of its own saved tree.
+fn assert_save_ok(h: &mut HostHarness, step: &str) {
+    assert!(h.app.save_workspace_now(), "workspace save failed after {step}");
+}
+
+#[test]
+fn save_workspace_after_zoom_and_split_has_valid_focused_tile() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(2);
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    let w = h.app.active_window;
+    let tile = h.app.windows[w].focused_pane.unwrap();
+    h.app.windows[w].zoom_to(tile);
+    // Save immediately after closing the zoomed focused pane, before any frame.
+    let focused = h.app.active_focused_pane_id().unwrap();
+    h.app.close_pane_by_id(focused);
+    let focus = h.app.windows[w].focused_pane.unwrap();
+    assert!(matches!(h.app.windows[w].tree.tiles.get(focus), Some(egui_tiles::Tile::Pane(_))));
+    assert_save_ok(&mut h, "close focused pane while zoomed, before any frame");
+    // A background window must also be saveable without an active render pass.
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    h.run_frames(2);
+    let background = h.app.active_window;
+    h.app.new_context();
+    h.run_frames(3);
+    assert_ne!(h.app.active_window, background);
+    let focused = h.app.windows[background].focused_pane.and_then(|t| match h.app.windows[background].tree.tiles.get(t) {
+        Some(egui_tiles::Tile::Pane(p)) => Some(*p), _ => None }).unwrap();
+    h.app.close_pane_by_id(focused);
+    h.run_frames(5);
+    assert_save_ok(&mut h, "close focused pane in a background window, after frames");
+}
+
+#[test]
+fn save_reconciles_stale_focus_in_background_window() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.app.split_focused(true, None, false, false, None);
+    h.run_frames(2);
+    let background = h.app.active_window;
+    let root = h.app.windows[background].tree.root.unwrap();
+    assert!(matches!(h.app.windows[background].tree.tiles.get(root), Some(egui_tiles::Tile::Container(_))));
+    h.app.new_context();
+    assert_ne!(h.app.active_window, background);
+    h.app.windows[background].focused_pane = Some(root);
+    assert_save_ok(&mut h, "stale background focus without a frame");
+    let focus = h.app.windows[background].focused_pane.unwrap();
+    assert!(matches!(h.app.windows[background].tree.tiles.get(focus), Some(egui_tiles::Tile::Pane(_))));
+}

@@ -2386,8 +2386,17 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn save_workspace_now(&self) -> bool {
+    pub(crate) fn save_workspace_now(&mut self) -> bool {
         let save_start = std::time::Instant::now();
+        // Trees can also be simplified by egui, independently of pane commands.
+        // Reconcile every window before snapshotting, even when UI is occluded.
+        for window in &mut self.windows {
+            let before = (window.focused_pane, window.zoomed_pane);
+            window.reconcile_stale_tiles();
+            if before != (window.focused_pane, window.zoomed_pane) {
+                log::info!("workspace save: reconciled stale focus/zoom window={}", window.window_id);
+            }
+        }
         crate::platform::logging::mark_ui_phase(
             &self.ui_phase,
             crate::platform::logging::UiPhase::WorkspaceSave,
