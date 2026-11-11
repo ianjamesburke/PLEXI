@@ -1126,10 +1126,12 @@ impl TerminalPane {
             })
         });
         if let Some(ref resume_cmd) = cmd {
-            if harness == Some(crate::cli::AgentHarness::Pi)
-                && resume_cmd == "pi"
-                && standby.session_id.is_some()
-            {
+            if harness.is_some_and(|h| {
+                standby
+                    .session_id
+                    .as_deref()
+                    .is_some_and(|sid| !h.session_exists(sid))
+            }) {
                 self.agent_session_id = None;
                 if let Some(ref mut a) = self.agent {
                     a.session_id = None;

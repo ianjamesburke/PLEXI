@@ -12386,6 +12386,10 @@ mod agent_state_restoration_tests {
     ) {
         let profile_dir = tempfile::tempdir().expect("profile_dir");
         let tmp = tempfile::tempdir().expect("tempdir");
+        let claude_store = tmp.path().join("claude-projects");
+        std::fs::create_dir_all(claude_store.join("-proj")).unwrap();
+        std::fs::write(claude_store.join("-proj").join("sess-active-10.jsonl"), "{}\n").unwrap();
+        let _claude_guard = crate::cli::agent::set_test_claude_projects_dir(claude_store);
         for (role, harness) in [("lead", "claude"), ("worker", "codex")] {
             let agent_dir = profile_dir.path().join("agents").join(role);
             std::fs::create_dir_all(&agent_dir).expect("create agent definition");
@@ -12797,6 +12801,63 @@ mod agent_state_restoration_tests {
             terminal.last_resumed_command.as_deref(),
             Some("codex resume thread-enter")
         );
+    }
+
+    #[test]
+    fn standby_wake_with_claude_session_lacking_transcript_launches_bare_and_clears_id() {
+        let claude_store = tempfile::tempdir().expect("claude store");
+        let _claude_guard =
+            crate::cli::agent::set_test_claude_projects_dir(claude_store.path().to_path_buf());
+        let mut h = HostHarness::new();
+        let pane_id = h.add_focused_terminal();
+        let cwd = tempfile::tempdir().expect("cwd");
+        h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("terminal pane")
+            .as_terminal_mut()
+            .expect("terminal pane")
+            .standby_cwd = Some(cwd.path().to_path_buf());
+        let terminal = h.app.windows[0]
+            .panes
+            .get_mut(&pane_id)
+            .and_then(|p| p.as_terminal_mut())
+            .expect("terminal pane");
+        terminal.agent_session_id = Some("9faadb29-no-transcript".to_string());
+        terminal.standby_session = Some(SavedAgentSession {
+            fleet_result: None,
+            fleet_seen: false,
+            fleet_done_unseen: false,
+            fleet_dismissed: false,
+            fleet_since: 0,
+            harness: "claude".to_string(),
+            config_name: None,
+            permission_posture: None,
+            session_id: Some("9faadb29-no-transcript".to_string()),
+            last_state: AgentState::Idle,
+            last_blocked_reason: None,
+            last_detail: None,
+            parent_pane_id: None,
+            spawned_by: None,
+            pending_child_results: Vec::new(),
+            ephemeral: false,
+            tail_preview: None,
+            standby_scrollback_tail: Some(vec!["saved line".to_string()]),
+        });
+
+        h.inject_ipc(AppRequest::KeyPane {
+            pane_id,
+            key: "enter".to_string(),
+            response_file: None,
+        });
+        h.hidden_frame();
+
+        let terminal = h.app.windows[0].panes[&pane_id]
+            .as_terminal()
+            .expect("terminal pane after Enter");
+        assert!(!terminal.is_standby(), "Enter must dismiss Standby");
+        assert_eq!(terminal.last_resumed_command.as_deref(), Some("claude"));
+        assert_eq!(terminal.agent_session_id, None, "dead id must be cleared");
     }
 
     #[test]
