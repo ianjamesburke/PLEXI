@@ -3993,6 +3993,7 @@ impl eframe::App for PlexiApp {
                 self.sync_capability_modal_focus();
                 self.sync_event_consent_focus();
                 self.sync_raw_wasm_review_focus();
+                self.sync_unsaved_changes_focus();
                 disposition
             } // end else (non-preempted path)
         } else {

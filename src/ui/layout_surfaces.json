@@ -381,6 +381,20 @@
       },
       "states": "configuration shadow notice; Dusk/Dawn; zoom 1/2",
       "minimum": "Show notice text without actions in the toast shell"
+    },
+    {
+      "id": "src/app/focus.rs::draw_unsaved_changes",
+      "fixture": {
+        "file": "tests/scenes/editor-unsaved-dialog.toml"
+      },
+      "states": [
+        "dirty plain file",
+        "dark",
+        "light",
+        "cancel",
+        "default save"
+      ],
+      "minimum": "ActionModal owns bounded action rows and wrapping at the host minimum size."
     }
   ]
 }

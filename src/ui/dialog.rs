@@ -11,6 +11,7 @@ pub(crate) struct DialogShortcut<'a> {
     pub(crate) keys: &'a [&'a str],
     modifiers: egui::Modifiers,
     key: egui::Key,
+    exact: bool,
 }
 
 impl<'a> DialogShortcut<'a> {
@@ -19,11 +20,29 @@ impl<'a> DialogShortcut<'a> {
             keys,
             modifiers,
             key,
+            exact: false,
         }
     }
 
+    fn exact(mut self) -> Self {
+        self.exact = true;
+        self
+    }
+
     fn pressed(&self, ctx: &egui::Context) -> bool {
-        ctx.input_mut(|i| i.consume_key(self.modifiers, self.key))
+        ctx.input_mut(|i| {
+            if self.exact
+                && !i.events.iter().any(|event| {
+                    matches!(event,
+                        egui::Event::Key { key, pressed: true, modifiers, .. }
+                            if *key == self.key && modifiers.matches_exact(self.modifiers)
+                    )
+                })
+            {
+                return false;
+            }
+            i.consume_key(self.modifiers, self.key)
+        })
     }
 }
 
@@ -32,6 +51,7 @@ pub(crate) struct DialogAction<'a> {
     pub(crate) label: &'a str,
     pub(crate) kind: ButtonKind,
     pub(crate) shortcut: Option<DialogShortcut<'a>>,
+    alternate: Option<DialogShortcut<'a>>,
 }
 
 impl<'a> DialogAction<'a> {
@@ -41,11 +61,17 @@ impl<'a> DialogAction<'a> {
             label,
             kind,
             shortcut: None,
+            alternate: None,
         }
     }
 
     pub(crate) fn shortcut(mut self, shortcut: DialogShortcut<'a>) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+
+    fn alternate(mut self, shortcut: Option<DialogShortcut<'a>>) -> Self {
+        self.alternate = shortcut;
         self
     }
 }
@@ -60,6 +86,7 @@ pub(crate) struct ActionModal<'a> {
     title: &'a str,
     width: f32,
     actions: &'a [DialogAction<'a>],
+    default_action: Option<&'a str>,
 }
 
 impl<'a> ActionModal<'a> {
@@ -69,7 +96,13 @@ impl<'a> ActionModal<'a> {
             title,
             width: style::MODAL_WIDTH_MD,
             actions,
+            default_action: None,
         }
+    }
+
+    pub(crate) fn default_action(mut self, id: &'a str) -> Self {
+        self.default_action = Some(id);
+        self
     }
 
     pub(crate) fn width(mut self, width: f32) -> Self {
@@ -91,8 +124,21 @@ impl<'a> ActionModal<'a> {
                     .shortcut
                     .as_ref()
                     .is_some_and(|shortcut| shortcut.pressed(ctx))
+                    || action
+                        .alternate
+                        .as_ref()
+                        .is_some_and(|shortcut| shortcut.pressed(ctx))
             })
             .map(|action| action.id);
+
+        if selected.is_none()
+            && self.default_action.is_some()
+            && DialogShortcut::new(&["Enter"], egui::Modifiers::NONE, egui::Key::Enter)
+                .exact()
+                .pressed(ctx)
+        {
+            selected = self.default_action;
+        }
 
         let shell = ModalShell::centered(self.id)
             .title(self.title)
@@ -285,6 +331,98 @@ fn action_row(
         vec![],
     );
     response
+}
+
+/// A pane's pending file-loss decision, rendered by the host focus owner.
+#[derive(Clone, Debug)]
+pub struct UnsavedChangesDialog {
+    pub path: String,
+    pub conflicted: bool,
+    pub reload: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnsavedChangesChoice {
+    Save,
+    Overwrite,
+    Discard,
+    Reload,
+    Cancel,
+}
+
+impl UnsavedChangesDialog {
+    pub(crate) fn show(
+        &self,
+        ctx: &egui::Context,
+        colors: &Colors,
+    ) -> Option<UnsavedChangesChoice> {
+        use egui::{Key, Modifiers};
+        let actions =
+            [
+                DialogAction::new(
+                    "save",
+                    if self.conflicted {
+                        "Overwrite disk"
+                    } else {
+                        "Save"
+                    },
+                    ButtonKind::Primary,
+                )
+                .shortcut(DialogShortcut::new(&["cmd", "S"], Modifiers::COMMAND, Key::S).exact()),
+                DialogAction::new(
+                    "discard",
+                    if self.reload {
+                        "Reload from disk"
+                    } else {
+                        "Discard edits"
+                    },
+                    ButtonKind::Danger,
+                )
+                .shortcut(if self.reload {
+                    DialogShortcut::new(&["R"], Modifiers::NONE, Key::R).exact()
+                } else {
+                    DialogShortcut::new(&["D"], Modifiers::NONE, Key::D).exact()
+                })
+                .alternate((!self.reload).then(|| {
+                    DialogShortcut::new(&["cmd", "D"], Modifiers::COMMAND, Key::D).exact()
+                })),
+                DialogAction::new("cancel", "Cancel", ButtonKind::Secondary)
+                    .shortcut(DialogShortcut::new(&["Esc"], Modifiers::NONE, Key::Escape).exact()),
+            ];
+        let response = ActionModal::new("unsaved_changes", "Unsaved changes", &actions)
+            .default_action("save")
+            .show(ctx, colors, |ui| {
+                super::typography::body(ui, &self.path, colors);
+                super::typography::caption(
+                    ui,
+                    if self.conflicted {
+                        "The file changed on disk. Overwriting replaces those changes."
+                    } else {
+                        "Save your changes before leaving this document?"
+                    },
+                    colors,
+                );
+                if let Some(error) = &self.error {
+                    super::typography::caption(ui, error, colors);
+                }
+            });
+        match response.selected {
+            Some("save") => Some(if self.conflicted {
+                UnsavedChangesChoice::Overwrite
+            } else {
+                UnsavedChangesChoice::Save
+            }),
+            Some("discard") => Some(if self.reload {
+                UnsavedChangesChoice::Reload
+            } else {
+                UnsavedChangesChoice::Discard
+            }),
+            Some("cancel") => Some(UnsavedChangesChoice::Cancel),
+            _ if response.dismissed => Some(UnsavedChangesChoice::Cancel),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
