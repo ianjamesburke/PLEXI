@@ -1,0 +1,34 @@
+size = [1168.0, 720.0]
+
+[[steps]]
+key = { target = "host", value = "cmd+p" }
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+text = { target = "host", value = "release notes" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Changelog" }
+
+[[steps]]
+shot = "command-palette-changelog-row.png"
+
+[[steps]]
+key = { target = "host", value = "enter" }
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert_label = { target = "host", label = "Changelog" }
+
+[[steps]]
+shot = "command-palette-changelog-open.png"
+
+[[steps]]
+key = { target = "host", value = "escape" }
