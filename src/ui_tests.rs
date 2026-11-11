@@ -7041,7 +7041,7 @@ open(out + ".done", "w").close()
         });
         h1.run_steps(5);
         for pane in [first, second] { assert_pty_follows_layout(&mut h1, pane, "before restart"); }
-        assert!(h1.with_app(|app| app.save_workspace_now()), "workspace must save");
+        assert!(h1.with_app_mut(|app| app.save_workspace_now()), "workspace must save");
 
         // Restart: a fresh app restored from the saved workspace, like a host relaunch.
         let mut h = PlexiUiHarness::new_sized(1200.0, 700.0);

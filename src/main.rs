@@ -333,6 +333,10 @@ fn main() -> eframe::Result {
                 let resolve_opt_pane = |t: Option<&cli::PaneTarget>| -> Option<u64> {
                     cli::resolve_opt_pane_target(t).unwrap_or_else(|code| cli::trace::exit(code))
                 };
+                let current_pane = |t: Option<&cli::PaneTarget>, command: &str| -> u64 {
+                    let explicit = resolve_opt_pane(t);
+                    cli::current_pane_id(explicit, command).unwrap_or_else(|code| cli::trace::exit(code))
+                };
                 let resolve_ctx = |t: &cli::ContextTarget| -> u64 {
                     t.resolve().unwrap_or_else(|code| cli::trace::exit(code))
                 };
@@ -1345,39 +1349,19 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::Hide { ref pane_id } | PaneCmd::Reveal { ref pane_id } => {
                             let hidden = matches!(cmd, PaneCmd::Hide { .. });
-                            let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            let pane_id = current_pane(pane_id.as_ref(), if hidden { "pane hide" } else { "pane reveal" });
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_visibility", "hidden":hidden, "pane_id":pane_id}), None))
                         }
                         PaneCmd::Zoom { pane_id } => {
-                            let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom"}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            let pane_id = current_pane(pane_id.as_ref(), "pane zoom");
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_zoom", "pane_id":pane_id}), None))
                         }
                         PaneCmd::Swap { pane_id, direction } => {
-                            let pane_id = resolve_opt_pane(pane_id.as_ref());
-                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction}), Some(("pane_id", pane_id, "PLEXI_PANE_ID"))))
+                            let pane_id = current_pane(pane_id.as_ref(), "pane swap");
+                            cli::trace::exit(cli::host_action_cli(serde_json::json!({"type":"pane_swap", "direction":direction, "pane_id":pane_id}), None))
                         }
                         PaneCmd::Close { pane_id } => {
-                            let id = match pane_id {
-                                Some(ref t) => resolve_pane(t),
-                                None => {
-                                    let s = match std::env::var("PLEXI_PANE_ID") {
-                                        Ok(s) => s,
-                                        Err(_) => {
-                                            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
-                                            cli::trace::exit(1);
-                                        }
-                                    };
-                                    match s.parse::<u64>() {
-                                        Ok(id) => id,
-                                        Err(_) => {
-                                            eprintln!(
-                                                "error: PLEXI_PANE_ID is not a valid number: {s}"
-                                            );
-                                            cli::trace::exit(1);
-                                        }
-                                    }
-                                }
-                            };
+                            let id = current_pane(pane_id.as_ref(), "pane close");
                             log::info!("pane_close:cli: pane_id={id}");
                             cli::trace::exit(cli::pane_close_cli(id));
                         }
@@ -1482,7 +1466,7 @@ fn main() -> eframe::Result {
                             ))
                         }
                         PaneCmd::Wait { pane_id, until, timeout } => {
-                            let pane_id = resolve_pane(&pane_id);
+                            let pane_id = current_pane(pane_id.as_ref(), "pane wait");
                             cli::trace::exit(cli::pane_lifecycle_wait_cli(pane_id, &until, timeout))
                         }
                         PaneCmd::Events { follow: _, pane } => {
@@ -1490,15 +1474,15 @@ fn main() -> eframe::Result {
                             cli::trace::exit(cli::pane_lifecycle_follow_cli(pane))
                         }
                         PaneCmd::Status { pane_id } => {
-                            let pane_id = resolve_pane(&pane_id);
+                            let pane_id = current_pane(pane_id.as_ref(), "pane status");
                             cli::trace::exit(cli::pane_status_cli(pane_id))
                         }
                         PaneCmd::Heartbeat { pane_id, every, text, while_idle_only, off } => {
-                            let pane_id = resolve_pane(&pane_id);
+                            let pane_id = current_pane(pane_id.as_ref(), "pane heartbeat");
                             cli::trace::exit(cli::pane_heartbeat_cli(pane_id, every.as_deref(), text.as_deref(), while_idle_only.then_some(true), off))
                         }
                         PaneCmd::State { pane_id, stale_after } => {
-                            let pane_id = resolve_pane(&pane_id);
+                            let pane_id = current_pane(pane_id.as_ref(), "pane state");
                             cli::trace::exit(cli::pane_state_cli(pane_id, stale_after))
                         }
                         PaneCmd::Slot { cmd } => match cmd {

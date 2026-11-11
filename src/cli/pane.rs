@@ -1,26 +1,9 @@
 use super::{print_json_output, print_tip, send_to_socket};
 
 pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => {
-            let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or provide a pane ID"
-                    );
-                    return 1;
-                }
-            };
-            match pane_id_str.parse::<u64>() {
-                Ok(n) => n,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                    return 1;
-                }
-            }
-        }
+    let resolved_pane_id = match current_pane_id(pane_id, "pane name") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
     log::info!("pane_set_title:cli: pane_id={resolved_pane_id} name_chars={}", name.chars().count());
     send_to_socket(serde_json::json!({
@@ -30,26 +13,41 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
     }))
 }
 
-fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
-    match pane_id {
-        Some(id) => Ok(id),
-        None => {
-            let raw = match std::env::var("PLEXI_PANE_ID") {
-                Ok(v) => v,
-                Err(_) => {
-                    eprintln!(
-                        "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                    );
-                    return Err(1);
-                }
-            };
-            match raw.parse::<u64>() {
-                Ok(id) => Ok(id),
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {raw}");
-                    Err(1)
-                }
+const PANE_ID_FIX_HINT: &str =
+    "Run this inside a Plexi pane or pass a pane id (see 'plexi pane list').";
+
+/// The one current-pane rule: an explicit id wins, else `PLEXI_PANE_ID`, else an
+/// error naming the variable and the fix. Never falls back to the focused pane.
+/// `env` is the raw value of `PLEXI_PANE_ID` (`None` when unset).
+pub(crate) fn pick_current_pane(explicit: Option<u64>, env: Option<&str>) -> Result<u64, String> {
+    if let Some(id) = explicit {
+        return Ok(id);
+    }
+    match env {
+        None => Err(format!(
+            "no pane id given and PLEXI_PANE_ID is not set. {PANE_ID_FIX_HINT}"
+        )),
+        Some(raw) => raw.trim().parse::<u64>().map_err(|_| {
+            format!("PLEXI_PANE_ID is not a valid pane id: {raw:?}. {PANE_ID_FIX_HINT}")
+        }),
+    }
+}
+
+/// Resolve the pane a self-targeting command acts on (see [`pick_current_pane`]).
+/// `command` is only used for the info log when the id came from the environment.
+pub fn current_pane_id(explicit: Option<u64>, command: &str) -> Result<u64, i32> {
+    let env = std::env::var_os("PLEXI_PANE_ID").map(|v| v.to_string_lossy().into_owned());
+    match pick_current_pane(explicit, env.as_deref()) {
+        Ok(id) => {
+            if explicit.is_none() {
+                log::info!("{command}:cli: pane id defaulted from PLEXI_PANE_ID pane_id={id}");
             }
+            Ok(id)
+        }
+        Err(message) => {
+            log::warn!("{command}:cli: {message}");
+            eprintln!("error: {message}");
+            Err(1)
         }
     }
 }
@@ -121,7 +119,7 @@ pub fn pane_slot_write_cli(
         eprintln!("error: slot name empty");
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot write") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -168,7 +166,7 @@ pub fn pane_slot_write_cli(
 
 /// `plexi pane slot read <name> [pane_id]`
 pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot read") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -270,7 +268,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot wait") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -310,7 +308,7 @@ pub fn pane_slot_wait_cli(name: &str, pane_id: Option<u64>, until: &str, timeout
 
 /// `plexi pane slot list [pane_id]`
 pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot list") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -339,7 +337,7 @@ pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
 
 /// `plexi pane slot delete <name> [pane_id]`
 pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane slot delete") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -402,7 +400,7 @@ pub fn pane_message_recv_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> 
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane message recv") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -546,7 +544,7 @@ pub fn pane_result_read_cli(pane_id: Option<u64>, wait: bool, timeout: f64) -> i
         );
         return 1;
     }
-    let resolved_pane_id = match resolve_pane_id(pane_id) {
+    let resolved_pane_id = match current_pane_id(pane_id, "pane result") {
         Ok(id) => id,
         Err(code) => return code,
     };
@@ -851,26 +849,9 @@ pub fn pane_info_cli(pane_id: Option<u64>, previous: Option<u64>) -> i32 {
             "steps": steps,
         })
     } else {
-        let pane_id: u64 = match pane_id {
-            Some(id) => id,
-            None => {
-                let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-                    Ok(v) => v,
-                    Err(_) => {
-                        eprintln!(
-                            "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane, or pass a pane id"
-                        );
-                        return 1;
-                    }
-                };
-                match pane_id_str.parse() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
-                        return 1;
-                    }
-                }
-            }
+        let pane_id = match current_pane_id(pane_id, "pane info") {
+            Ok(id) => id,
+            Err(code) => return code,
         };
         log::info!("pane_info:cli: pane_id={pane_id}");
         serde_json::json!({
@@ -1424,23 +1405,9 @@ pub fn pane_capture_cli(
     from_cursor: Option<u64>,
     plain: bool,
 ) -> i32 {
-    let resolved_pane_id = match pane_id {
-        Some(id) => id,
-        None => match std::env::var("PLEXI_PANE_ID") {
-            Ok(v) => match v.parse::<u64>() {
-                Ok(id) => id,
-                Err(_) => {
-                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {v}");
-                    return 1;
-                }
-            },
-            Err(_) => {
-                eprintln!(
-                    "error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID"
-                );
-                return 1;
-            }
-        },
+    let resolved_pane_id = match current_pane_id(pane_id, "pane capture") {
+        Ok(id) => id,
+        Err(code) => return code,
     };
 
     log::info!(
@@ -2370,5 +2337,38 @@ mod pane_result_tests {
         assert_eq!(pane_focus_cli(focus_pane), 0);
 
         handle.join().expect("listener thread");
+    }
+}
+
+#[cfg(test)]
+mod current_pane_tests {
+    use super::pick_current_pane;
+
+    #[test]
+    fn explicit_id_wins_over_env() {
+        assert_eq!(pick_current_pane(Some(3), Some("9")), Ok(3));
+        assert_eq!(pick_current_pane(Some(3), None), Ok(3));
+    }
+
+    #[test]
+    fn env_is_the_default() {
+        assert_eq!(pick_current_pane(None, Some("42")), Ok(42));
+    }
+
+    #[test]
+    fn unset_names_variable_and_fix() {
+        let err = pick_current_pane(None, None).unwrap_err();
+        assert!(err.contains("PLEXI_PANE_ID is not set"), "{err}");
+        assert!(err.contains("plexi pane list"), "{err}");
+    }
+
+    #[test]
+    fn empty_or_non_numeric_names_variable_and_value() {
+        for raw in ["", "abc", "-1", "4x"] {
+            let err = pick_current_pane(None, Some(raw)).unwrap_err();
+            assert!(err.contains("PLEXI_PANE_ID"), "{err}");
+            assert!(err.contains(&format!("{raw:?}")), "{err}");
+            assert!(err.contains("plexi pane list"), "{err}");
+        }
     }
 }
