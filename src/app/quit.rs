@@ -26,7 +26,17 @@ pub(crate) struct QuitCoordinator {
     retry_at: Option<Instant>,
     hide_requested: bool,
     restart_scheduled: bool,
+    /// Consecutive failed final saves since the last success.
+    save_failures: u32,
+    /// Set once failures reach [`MAX_QUIT_SAVE_ATTEMPTS`]: the cause shown in
+    /// the "Quit without saving" dialog. While set, no retry runs.
+    save_failure: Option<String>,
+    /// The user chose to quit without saving; the file on disk stays untouched.
+    save_waived: bool,
 }
+
+/// Failed final saves tolerated (one per second) before asking the user.
+pub(crate) const MAX_QUIT_SAVE_ATTEMPTS: u32 = 5;
 
 impl QuitCoordinator {
     pub(crate) fn is_active(&self) -> bool {
@@ -34,7 +44,12 @@ impl QuitCoordinator {
     }
 
     pub(crate) fn blocks_input(&self) -> bool {
-        self.is_active() && self.retry_at.is_none()
+        self.is_active() && self.retry_at.is_none() && self.save_failure.is_none()
+    }
+
+    /// The validation message of the save that exhausted the retry budget.
+    pub(crate) fn save_failure(&self) -> Option<&str> {
+        self.save_failure.as_deref()
     }
 }
 
@@ -77,12 +92,51 @@ impl super::PlexiApp {
             trace("save_reused");
             return true;
         }
+        if self.quit_coordinator.save_waived {
+            trace("save_waived");
+            log::warn!("quit: continuing without saving the workspace at the user's request");
+            return true;
+        }
         trace("save_begin");
-        let saved = self.save_workspace_now();
+        let result = self.save_workspace_result();
+        let saved = result.is_ok();
         trace(if saved { "save_ok" } else { "save_failed" });
         self.workspace_dirty = !saved;
         self.quit_coordinator.saved = saved;
+        match result {
+            Ok(()) => self.quit_coordinator.save_failures = 0,
+            Err(error) => {
+                self.quit_coordinator.save_failures += 1;
+                if self.quit_coordinator.save_failures >= MAX_QUIT_SAVE_ATTEMPTS {
+                    self.quit_coordinator.save_failure = Some(error.to_string());
+                }
+            }
+        }
         saved
+    }
+
+    /// Dialog outcome for a quit whose save kept failing. `quit_anyway` skips
+    /// the save (the file on disk is left as it is); otherwise the quit is
+    /// cancelled and the window stays.
+    pub(crate) fn resolve_quit_save_failure(&mut self, quit_anyway: bool) {
+        self.pending_close = false;
+        if quit_anyway {
+            log::warn!(
+                "quit: user chose Quit without saving after {} failed saves: {}",
+                self.quit_coordinator.save_failures,
+                self.quit_coordinator.save_failure().unwrap_or("unknown")
+            );
+            self.quit_coordinator.save_waived = true;
+            self.quit_coordinator.save_failure = None;
+            self.quit_coordinator.retry_at = None;
+            self.ui_wake.wake("quit_without_saving");
+        } else {
+            log::info!("quit: user cancelled after save failures; keeping the window");
+            self.quit_coordinator = QuitCoordinator::default();
+            self.quitting = false;
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
     }
 
     /// Returns true while the coordinator owns servicing. Hidden windows do
@@ -111,6 +165,9 @@ impl super::PlexiApp {
         };
         self.ctx
             .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        if self.quit_coordinator.save_failure.is_some() {
+            return false; // waiting on the user's answer to the dialog
+        }
         if self
             .quit_coordinator
             .retry_at
@@ -129,6 +186,17 @@ impl super::PlexiApp {
             return false;
         }
         if !self.persist_quit_state() {
+            if let Some(cause) = self.quit_coordinator.save_failure() {
+                log::error!(
+                    "quit: workspace save failed {MAX_QUIT_SAVE_ATTEMPTS} times, \
+                     giving up retries: {cause}"
+                );
+                self.quit_coordinator.retry_at = None;
+                self.pending_close = true;
+                self.pending_quit = false;
+                self.ui_wake.wake("quit_save_failed");
+                return false;
+            }
             let delay = Duration::from_secs(1);
             self.quit_coordinator.retry_at = Some(Instant::now() + delay);
             self.schedule_workspace_save_wake(delay);
@@ -579,6 +647,104 @@ mod tests {
                 usize::from(reason == ExitReason::UpdateRestart)
             );
         }
+    }
+
+    /// Drives `request_quit` against an unwritable-as-valid workspace file and
+    /// returns the harness after the retry budget is exhausted.
+    fn quit_with_unsaveable_workspace() -> (crate::testing::HostHarness, std::path::PathBuf) {
+        let mut h = crate::testing::HostHarness::new();
+        h.add_test_pane();
+        let path = crate::workspace::workspace_path_in(h.profile_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"invalid workspace").unwrap();
+        h.app.request_quit(ExitReason::HostStop);
+        for attempt in 1..=MAX_QUIT_SAVE_ATTEMPTS {
+            h.app.quit_coordinator.retry_at = None;
+            assert!(!h
+                .app
+                .service_quit_with_restart(&eframe::Frame::_new_kittest(), || {
+                    panic!("restart must wait for durability")
+                }));
+            assert_eq!(h.app.quit_coordinator.save_failures, attempt);
+            assert_eq!(
+                h.app.quit_coordinator.save_failure().is_some(),
+                attempt == MAX_QUIT_SAVE_ATTEMPTS,
+                "the error is surfaced only once the budget is spent (attempt {attempt})"
+            );
+        }
+        (h, path)
+    }
+
+    #[test]
+    fn quit_save_retry_is_bounded_and_surfaces_the_cause_once() {
+        let (mut h, path) = quit_with_unsaveable_workspace();
+        let cause = h.app.quit_coordinator.save_failure().unwrap().to_owned();
+        assert!(
+            cause.contains("invalid workspace"),
+            "cause names the failure: {cause}"
+        );
+        assert!(h.app.pending_close, "dialog is requested");
+        assert!(
+            !h.app.quit_coordinator.blocks_input(),
+            "the dialog must be usable"
+        );
+        // No further save attempt while the dialog waits.
+        for _ in 0..3 {
+            assert!(!h
+                .app
+                .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
+        }
+        assert_eq!(h.app.quit_coordinator.save_failures, MAX_QUIT_SAVE_ATTEMPTS);
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+    }
+
+    #[test]
+    fn quit_without_saving_proceeds_and_preserves_the_file_on_disk() {
+        let (mut h, path) = quit_with_unsaveable_workspace();
+        h.app.resolve_quit_save_failure(true);
+        assert!(!h.app.pending_close);
+        assert!(h
+            .app
+            .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
+        assert!(
+            h.app.quit_coordinator.hide_requested,
+            "quit proceeds to hide and exit"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+    }
+
+    #[test]
+    fn cancelling_after_save_failures_keeps_the_window() {
+        let (mut h, path) = quit_with_unsaveable_workspace();
+        h.app.resolve_quit_save_failure(false);
+        assert!(!h.app.quit_coordinator.is_active());
+        assert!(!h.app.quitting);
+        assert!(!h.app.pending_close);
+        assert!(!h
+            .app
+            .service_quit_with_restart(&eframe::Frame::_new_kittest(), || Ok(())));
+        assert!(!h.app.quit_coordinator.hide_requested);
+        assert_eq!(std::fs::read(&path).unwrap(), b"invalid workspace");
+    }
+
+    #[test]
+    fn save_failure_dialog_is_keyboard_driven() {
+        let (mut h, _path) = quit_with_unsaveable_workspace();
+        h.run_frames(2);
+        assert!(h
+            .app
+            .focus_stack
+            .contains(&crate::app::focus::FocusKind::ConfirmClose));
+        h.press_key(egui::Key::Escape, egui::Modifiers::NONE);
+        assert!(
+            !h.app.quit_coordinator.is_active(),
+            "Esc cancels and keeps the window"
+        );
+        let (mut h, _path) = quit_with_unsaveable_workspace();
+        h.run_frames(2);
+        h.press_key(egui::Key::Q, egui::Modifiers::NONE);
+        assert!(h.app.quit_coordinator.save_waived, "Q quits without saving");
+        assert!(h.app.quit_coordinator.save_failure().is_none());
     }
 
     #[test]

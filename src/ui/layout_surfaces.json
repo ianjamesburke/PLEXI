@@ -51,6 +51,10 @@
       "gap": "Unresolved: confirmations has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },
     {
+      "id": "src/overlays/confirmations.rs::draw_quit_save_failure",
+      "gap": "Unresolved: confirmations has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
+    },
+    {
       "id": "src/overlays/confirmations.rs::draw_context_close_confirm",
       "gap": "Unresolved: confirmations has no registered full layout-report matrix. Existing local tests are not a whole-surface geometry/contrast guarantee; register a seeded fixture before claiming coverage."
     },

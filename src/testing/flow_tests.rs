@@ -148,3 +148,157 @@ fn ordinary_splits_resized_nested_tree_survives_save_reload() {
     assert_eq!(serde_json::to_value(&after.windows[0].tree).unwrap(), serde_json::to_value(&before.windows[0].tree).unwrap());
     assert_eq!(after.windows[0].panes.len(), 3);
 }
+
+/// Saves the workspace and fails the test, naming `step`, if the save is refused.
+fn assert_save_ok(h: &mut HostHarness, step: &str) {
+    assert!(h.app.save_workspace_now(), "workspace save failed after {step}");
+}
+
+fn focus_is_pane(h: &HostHarness, window: usize) -> bool {
+    let w = &h.app.windows[window];
+    w.focused_pane
+        .is_some_and(|t| matches!(w.tree.tiles.get(t), Some(egui_tiles::Tile::Pane(_))))
+}
+
+/// Saves a three-pane workspace, then rewrites its file so the window's
+/// `focused_pane` names the root container, as an older build could leave it.
+fn save_workspace_with_container_focus(h: &mut HostHarness) -> std::path::PathBuf {
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(2);
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    h.run_frames(2);
+    assert_save_ok(h, "building the fixture workspace");
+    let path = crate::workspace::workspace_path_in(h.profile_dir());
+    let mut ws: crate::workspace::WorkspaceFile =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let root = ws.windows[0].tree.root().unwrap();
+    assert!(matches!(
+        ws.windows[0].tree.tiles.get(root),
+        Some(egui_tiles::Tile::Container(_))
+    ));
+    ws.windows[0].focused_pane = Some(root);
+    std::fs::write(&path, serde_json::to_string_pretty(&ws).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn save_workspace_after_zoom_and_split_has_valid_focused_tile() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(2);
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    let w = h.app.active_window;
+    let tile = h.app.windows[w].focused_pane.unwrap();
+    h.app.windows[w].zoom_to(tile);
+    // Save immediately after closing the zoomed focused pane, before any frame.
+    let focused = h.app.active_focused_pane_id().unwrap();
+    h.app.close_pane_by_id(focused);
+    let focus = h.app.windows[w].focused_pane.unwrap();
+    assert!(matches!(h.app.windows[w].tree.tiles.get(focus), Some(egui_tiles::Tile::Pane(_))));
+    assert_save_ok(&mut h, "close focused pane while zoomed, before any frame");
+    // A background window must also be saveable without an active render pass.
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    h.run_frames(2);
+    let background = h.app.active_window;
+    h.app.new_context();
+    h.run_frames(3);
+    assert_ne!(h.app.active_window, background);
+    let focused = h.app.windows[background].focused_pane.and_then(|t| match h.app.windows[background].tree.tiles.get(t) {
+        Some(egui_tiles::Tile::Pane(p)) => Some(*p), _ => None }).unwrap();
+    h.app.close_pane_by_id(focused);
+    // Before any frame or save: only the close_tile heal can have fixed this.
+    assert!(
+        focus_is_pane(&h, background),
+        "close_tile must leave a pane focused in a background window"
+    );
+    h.run_frames(5);
+    assert_save_ok(&mut h, "close focused pane in a background window, after frames");
+}
+
+#[test]
+fn save_reconciles_stale_focus_in_background_window() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.focus_pane(pane);
+    h.app.split_focused(true, None, false, false, None);
+    h.run_frames(2);
+    let background = h.app.active_window;
+    let root = h.app.windows[background].tree.root.unwrap();
+    assert!(matches!(h.app.windows[background].tree.tiles.get(root), Some(egui_tiles::Tile::Container(_))));
+    h.app.new_context();
+    assert_ne!(h.app.active_window, background);
+    h.app.windows[background].focused_pane = Some(root);
+    assert_save_ok(&mut h, "stale background focus without a frame");
+    let focus = h.app.windows[background].focused_pane.unwrap();
+    assert!(matches!(h.app.windows[background].tree.tiles.get(focus), Some(egui_tiles::Tile::Pane(_))));
+}
+
+#[test]
+fn closing_a_non_focused_pane_before_a_frame_leaves_a_pane_focused() {
+    let mut h = HostHarness::new();
+    let first = h.add_test_pane();
+    h.focus_pane(first);
+    h.run_frames(2);
+    // No frame between splits: bare panes are wrapped by the next simplify.
+    h.app.split_focused(true, None, false, false, None);
+    h.app.split_focused(false, None, false, false, None);
+    let w = h.app.active_window;
+    let focused = h.app.windows[w].focused_pane.unwrap();
+    let victim = h.app.windows[w]
+        .tree
+        .tiles
+        .iter()
+        .find_map(|(id, tile)| {
+            (*id != focused && matches!(tile, egui_tiles::Tile::Pane(_))).then_some(*id)
+        })
+        .expect("a non-focused pane");
+    h.app.close_tile(w, victim);
+    assert!(
+        focus_is_pane(&h, w),
+        "focused_pane must be a Tile::Pane before any frame"
+    );
+}
+
+#[test]
+fn invalid_focus_on_disk_loads_healed() {
+    let mut h = HostHarness::new();
+    save_workspace_with_container_focus(&mut h);
+    let loaded = crate::workspace::WorkspaceFile::load_from(h.profile_dir())
+        .expect("invalid focus must heal, not be rejected");
+    let window = &loaded.windows[0];
+    let focus = window.focused_pane.expect("healed focus");
+    assert!(matches!(
+        window.tree.tiles.get(focus),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
+}
+
+#[test]
+fn invalid_focus_on_disk_does_not_block_later_saves_and_focus_survives_reload() {
+    let mut h = HostHarness::new();
+    let path = save_workspace_with_container_focus(&mut h);
+    let on_disk_before = std::fs::read(&path).unwrap();
+    assert_save_ok(&mut h, "a file on disk with container focus");
+    assert_ne!(
+        std::fs::read(&path).unwrap(),
+        on_disk_before,
+        "the save rewrote the file"
+    );
+    let w = h.app.active_window;
+    let live = h.app.windows[w].focused_pane.expect("live focus");
+    let reloaded = crate::workspace::WorkspaceFile::load_from(h.profile_dir()).expect("reload");
+    assert_eq!(
+        reloaded.windows[w].focused_pane,
+        Some(live),
+        "focused pane id survives save and reload"
+    );
+    assert!(matches!(
+        reloaded.windows[w].tree.tiles.get(live),
+        Some(egui_tiles::Tile::Pane(_))
+    ));
+}

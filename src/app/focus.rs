@@ -1147,7 +1147,8 @@ impl PlexiApp {
     /// toggled from multiple paths, and the focus stack must follow it
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
-        self.reconcile_focus_layer(FocusKind::ConfirmClose, self.pending_close);
+        let wanted = self.pending_close || self.quit_coordinator.save_failure().is_some();
+        self.reconcile_focus_layer(FocusKind::ConfirmClose, wanted);
     }
 
     pub(crate) fn sync_context_close_focus(&mut self) {

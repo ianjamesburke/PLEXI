@@ -646,6 +646,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn screenshot_quit_save_failure_dialog() {
+        let mut h = PlexiUiHarness::new_sized(900.0, 600.0);
+        apply_fixture_theme(&mut h, "plexi-dusk");
+        h.with_app_mut(|app| {
+            let path = crate::workspace::workspace_path_in(&crate::config::config_dir());
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"invalid workspace").unwrap();
+            app.request_quit(crate::app::quit::ExitReason::HostStop);
+            for _ in 0..crate::app::quit::MAX_QUIT_SAVE_ATTEMPTS {
+                assert!(!app.persist_quit_state());
+            }
+            app.pending_close = true;
+        });
+        h.run_steps(4);
+        h.with_app(|app| {
+            assert!(app.quit_coordinator.save_failure().is_some());
+            let reports = crate::ui::layout_report::snapshot(&app.ctx);
+            let errors: Vec<_> = reports.iter().flat_map(|r| r.violations()).collect();
+            assert!(errors.is_empty(), "{errors:?}");
+        });
+        h.save_screenshot(&evidence_png!()).unwrap();
+    }
+
     fn apply_fixture_theme(h: &mut PlexiUiHarness, theme: &str) {
         h.with_app_mut(|app| {
             let cfg = crate::ui::theme::preset_colors(theme).unwrap();
@@ -11178,7 +11202,7 @@ open(out + ".done", "w").close()
                 "editor snapshot and painted tile must agree: snapshot={:?}, tile={painted:?}", pane.clip_rect);
         });
         h.save_screenshot(&evidence_png!("_multi_window")).unwrap();
-        h.with_app(|app| app.save_workspace_now());
+        h.with_app_mut(|app| app.save_workspace_now());
         let profile = h._profile_dir.path().to_path_buf();
         let saved = crate::workspace::WorkspaceFile::load_from(&profile).expect("saved workspace");
         let mut restored = PlexiUiHarness::new_sized(1200.0, 700.0);
