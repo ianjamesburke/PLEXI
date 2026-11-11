@@ -167,7 +167,7 @@ echo ""
 
 echo "--- [3/5] Unit Test Qualification Gates ---"
 echo "Executing focused unit tests for fleet and Pi lifecycle qualification:"
-bash "$ROOT_DIR/scripts/cargo-with-lease.sh" cargo test --bin plexi fleet < /dev/null
+bash "$ROOT_DIR/scripts/cargo-with-lease.sh" --class short cargo test --bin plexi fleet < /dev/null
 echo "✓ Fleet unit suite PASSED."
 echo ""
 

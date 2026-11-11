@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -314,6 +315,158 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.call('bash', str(ROOT / 'scripts/cargo-with-lease.sh'), 'false', env=env)
         self.assertEqual(json.loads((self.root / 'telemetry').read_text().splitlines()[-1])['result'], 1)
+
+    # --- Permit queueing (stint 1250) -------------------------------------
+    # Permit 0 serves any job; permit 1 is reserved for `--class short` jobs.
+    # Full jobs may use either permit (PLEXI_CARGO_FULL_PERMITS=2, the default,
+    # per the stint 1250 measurement); a full job yields to a waiting short job.
+
+    LEASE = str(ROOT / 'scripts/cargo-with-lease.sh')
+    # A short job must start within this many seconds while a full job holds
+    # the lease. Generous for loaded CI, still far below the 900 s default queue.
+    SHORT_START_BOUND_SECS = 5.0
+
+    def lease_env(self, **extra):
+        env = {**self.env, 'PLEXI_CARGO_LOCK': str(self.root / 'permits'),
+               'PLEXI_BUILD_TELEMETRY': str(self.root / 'permit-telemetry'),
+               'PLEXI_CARGO_LEASE_REPORT_SECS': '1', **extra}
+        env.pop('PLEXI_CARGO_LOCK_HELD', None)
+        return env
+
+    def start_holder(self, cls, seconds, env):
+        """Start a wrapped `sleep` and wait until it owns a permit."""
+        args = ['bash', self.LEASE] + (['--class', cls] if cls else []) + ['sleep', str(seconds)]
+        proc = subprocess.Popen(args, env=env, cwd=self.repo, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        self.addCleanup(self.reap, proc)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self.holder_record():
+                return proc
+            time.sleep(0.05)
+        self.fail('holder never acquired a permit')
+
+    def holder_record(self):
+        for path in self.root.glob('permits*.holder'):
+            try:
+                return json.loads(path.read_text())
+            except (ValueError, OSError):
+                continue
+        return None
+
+    def reap(self, proc):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # group already gone (PermissionError: macOS, reaped leader)
+        proc.wait()
+
+    def run_lease(self, *args, env, timeout=30):
+        return subprocess.run(['bash', self.LEASE, *args], env=env, cwd=self.repo, capture_output=True,
+                              text=True, timeout=timeout)
+
+    def test_short_job_starts_while_full_job_holds_the_lease(self):
+        env = self.lease_env()
+        self.start_holder(None, 30, env)
+        started = time.monotonic()
+        result = self.run_lease('--class', 'short', 'true', env=env)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(elapsed, self.SHORT_START_BOUND_SECS)
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        short_acquire = [e for e in events if e['event'] == 'acquire' and e['class'] == 'short'][0]
+        self.assertEqual(short_acquire['permit'], 1)
+
+    def test_full_jobs_serialize_on_permit_zero_when_confined_and_waiter_names_the_holder(self):
+        env = self.lease_env(PLEXI_CARGO_FULL_PERMITS='1')
+        self.start_holder('full', 3, env)
+        started = time.monotonic()
+        result = self.run_lease('true', env=env)  # unmarked call defaults to full
+        waited = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(waited, 1.5, 'second full job must queue behind the first')
+        self.assertIn('waiting', result.stderr)
+        self.assertIn('permit 0 held by pid', result.stderr)
+        self.assertNotIn('permit 1', result.stderr)
+        self.assertIn('class=full', result.stderr)
+        self.assertIn('sleep 3', result.stderr)
+        self.assertRegex(result.stderr, r'for \d+s')
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        second = [e for e in events if e['event'] == 'acquire' and e['command'] == ['true']][0]
+        self.assertEqual((second['class'], second['permit']), ('full', 0))
+        self.assertGreater(second['queue_seconds'], 1.5)
+
+    def test_two_full_jobs_run_together_and_a_third_queues(self):
+        env = self.lease_env()
+        self.start_holder('full', 30, env)
+        second = subprocess.Popen(['bash', self.LEASE, 'sleep', '30'], env=env, cwd=self.repo,
+                                  stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.reap, second)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(list(self.root.glob('permits*.holder'))) < 2:
+            time.sleep(0.05)
+        self.assertEqual(len(list(self.root.glob('permits*.holder'))), 2, 'both permits held by full jobs')
+        env_short_timeout = {**env, 'PLEXI_CARGO_LEASE_TIMEOUT_SECS': '1'}
+        third = self.run_lease('true', env=env_short_timeout)
+        self.assertEqual(third.returncode, 1)
+        self.assertIn('permit 0 held by pid', third.stderr)
+        self.assertIn('permit 1 held by pid', third.stderr)
+
+    def test_waiting_short_job_gets_the_next_free_permit_before_a_waiting_full_job(self):
+        env = self.lease_env()
+        first = subprocess.Popen(['bash', self.LEASE, 'sleep', '4'], env=env, cwd=self.repo,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.reap, first)
+        self.start_holder('full', 30, env)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and len(list(self.root.glob('permits*.holder'))) < 2:
+            time.sleep(0.05)
+        full = subprocess.Popen(['bash', self.LEASE, 'true'], env=env, cwd=self.repo,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.reap, full)
+        time.sleep(0.5)  # the full job queues first
+        short = subprocess.Popen(['bash', self.LEASE, '--class', 'short', 'true'], env=env, cwd=self.repo,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.reap, short)
+        self.assertEqual(short.wait(timeout=20), 0)
+        self.assertIsNone(full.poll(), 'full job must still be queued: the freed permit went to the short job')
+        self.assertEqual([p.name for p in self.root.glob('permits.shortwait.*')], [], 'beacon cleaned up')
+
+    def test_killed_holder_frees_its_permit(self):
+        env = self.lease_env(PLEXI_CARGO_FULL_PERMITS='1')  # only permit 0 usable: the freed permit is what lets it in
+        holder = self.start_holder('full', 60, env)
+        record = self.holder_record()
+        os.kill(record['pid'], signal.SIGKILL)  # no trap runs; only the kernel releases the flock
+        started = time.monotonic()
+        result = self.run_lease('true', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, self.SHORT_START_BOUND_SECS)
+        self.assertNotIn('held by', result.stderr, 'stale record must not be reported as a live holder')
+
+    def test_timeout_names_the_holder(self):
+        env = self.lease_env(PLEXI_CARGO_LEASE_TIMEOUT_SECS='1', PLEXI_CARGO_FULL_PERMITS='1')
+        holder = self.start_holder('full', 30, env)
+        record = self.holder_record()
+        result = self.run_lease('true', env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('timed out', result.stderr)
+        self.assertIn(f"pid {record['pid']}", result.stderr)
+        self.assertIn('sleep 30', result.stderr)
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        self.assertEqual(events[-1]['event'], 'timeout')
+
+    def test_nesting_guard_strips_class_and_runs_directly(self):
+        env = self.lease_env()
+        result = self.run_lease('bash', self.LEASE, '--class', 'short', 'echo', 'nested-ok', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'nested-ok')
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        self.assertEqual([e['event'] for e in events], ['request', 'acquire', 'finish'])
+
+    def test_unknown_class_is_rejected(self):
+        result = self.run_lease('--class', 'medium', 'true', env=self.lease_env())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--class', result.stderr)
 
     def test_actual_build_info_reports_compiled_channel_and_cargo_invalidates(self):
         source = (ROOT / 'src/distribution.rs').read_text()
