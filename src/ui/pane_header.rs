@@ -6,7 +6,8 @@ use super::{badge, bounded, style, theme::Colors};
 use egui::{Color32, Galley, Rect};
 use std::sync::Arc;
 
-pub(crate) const OUTSIDE_LABEL: &str = "↗ outside workspace";
+pub(crate) const OUTSIDE_LABEL: &str = "Outside workspace";
+const OUTSIDE_TEXT: &str = "outside workspace";
 
 pub(crate) struct Labels<'a> {
     pub outside: bool,
@@ -20,6 +21,42 @@ struct Item {
     rect: Rect,
     galley: Option<Arc<Galley>>,
     color: Color32,
+}
+
+/// Chip width for a label of `text_width` (0 for the arrow-only compact form): equal side
+/// padding, and the fixed arrow gap only when there is text.
+fn outside_chip_width(text_width: f32) -> f32 {
+    let gap = if text_width > 0.0 { style::CHIP_ICON_GAP } else { 0.0 };
+    (2.0 * style::CHIP_PAD_H + style::CHIP_ARROW + gap + text_width).max(style::PANE_HEADER_CHIP_HEIGHT)
+}
+
+/// Painted north-east arrow filling a `CHIP_ARROW` square centered on `center`.
+fn paint_arrow(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let half = style::CHIP_ARROW / 2.0;
+    let stroke = egui::Stroke::new(1.2, color);
+    let tail = center + egui::vec2(-half, half);
+    let tip = center + egui::vec2(half, -half);
+    painter.line_segment([tail, tip], stroke);
+    painter.line_segment([tip, tip + egui::vec2(-half * 1.2, 0.0)], stroke);
+    painter.line_segment([tip, tip + egui::vec2(0.0, half * 1.2)], stroke);
+}
+
+/// Text and arrow are centered on the glyph ink (not the line box), so the arrow reads as
+/// aligned with the words. Arrow-and-text content is centered in the chip, so left and right padding are equal.
+fn paint_outside_chip(ui: &mut egui::Ui, item: &Item, backdrop: Color32) {
+    let fill = Color32::from_rgba_unmultiplied(item.color.r(), item.color.g(), item.color.b(), 28);
+    let fg = super::foreground::Surface::over(backdrop, fill).foreground(item.color, super::foreground::Role::SmallText);
+    let rect = item.rect;
+    ui.painter().rect_filled(rect, style::RADIUS_BADGE, fill);
+    let text_width = item.galley.as_ref().map_or(0.0, |g| g.size().x);
+    let gap = if text_width > 0.0 { style::CHIP_ICON_GAP } else { 0.0 };
+    let content = style::CHIP_ARROW + gap + text_width;
+    let left = rect.center().x - content / 2.0;
+    paint_arrow(ui.painter(), egui::pos2(left + style::CHIP_ARROW / 2.0, rect.center().y), fg);
+    if let Some(galley) = item.galley.as_ref().filter(|g| !g.is_empty()) {
+        let pos = egui::pos2(left + style::CHIP_ARROW + gap, rect.center().y - galley.mesh_bounds.center().y);
+        ui.painter().add(egui::epaint::TextShape::new(pos, galley.clone(), fg));
+    }
 }
 
 pub(crate) struct PaneHeader {
@@ -48,8 +85,8 @@ impl PaneHeader {
             ui.painter()
                 .layout_no_wrap(text.into(), badge::badge_font(), Color32::PLACEHOLDER)
         };
-        let outside = labels.outside.then(|| make(OUTSIDE_LABEL));
-        let compact = labels.outside.then(|| make("↗"));
+        let outside = labels.outside.then(|| make(OUTSIDE_TEXT));
+        let compact = labels.outside.then(|| make(""));
         let state = labels.state.map(|(label, _)| make(label));
         let waiting = labels.waiting.map(make);
         let candidates = [
@@ -71,7 +108,7 @@ impl PaneHeader {
             .filter_map(|(id, galley, _)| {
                 let width = galley
                     .as_ref()
-                    .map(|g| badge::badge_size(g.size()).x)
+                    .map(|g| if *id == "outside" { outside_chip_width(g.size().x) } else { badge::badge_size(g.size()).x })
                     .or_else(|| {
                         (*id == "provenance" && labels.provenance.is_some())
                             .then_some(style::PROVENANCE_ICON_SIZE)
@@ -82,7 +119,7 @@ impl PaneHeader {
                     compact: compact
                         .as_ref()
                         .filter(|_| *id == "outside")
-                        .map(|g| badge::badge_size(g.size()).x),
+                        .map(|_| outside_chip_width(0.0)),
                     required: false,
                 })
             })
@@ -115,9 +152,7 @@ impl PaneHeader {
             } else {
                 galley.clone()
             };
-            let height = galley.as_ref().map_or(style::PROVENANCE_ICON_SIZE, |g| {
-                badge::badge_size(g.size()).y
-            });
+            let height = style::PANE_HEADER_CHIP_HEIGHT;
             let Some(rect) = bounded::centered_text(
                 slot.rect,
                 slot.rect.center().x,
@@ -149,7 +184,7 @@ impl PaneHeader {
 
     pub fn record_slots(&self, capture: &mut super::layout_report::Capture) {
         for item in &self.items {
-            if let Some(galley) = &item.galley {
+            if let Some(galley) = item.galley.as_ref().filter(|g| !g.is_empty()) {
                 capture.text_slot(item.id, galley, item.rect);
             }
         }
@@ -157,8 +192,16 @@ impl PaneHeader {
 
     pub fn paint(&self, ui: &mut egui::Ui, labels: &Labels<'_>, pane_id: u64, backdrop: Color32) {
         for item in &self.items {
-            if let Some(galley) = &item.galley {
-                let alpha = if item.id == "outside" { 28 } else { 36 };
+            if item.id == "outside" {
+                paint_outside_chip(ui, item, backdrop);
+                ui.interact(
+                    item.rect,
+                    egui::Id::new(("outside", pane_id)),
+                    egui::Sense::hover(),
+                )
+                .on_hover_text(OUTSIDE_LABEL);
+            } else if let Some(galley) = &item.galley {
+                let alpha = 36;
                 badge::paint_badge(
                     ui.painter(),
                     item.rect,
@@ -172,14 +215,6 @@ impl PaneHeader {
                     item.color,
                     backdrop,
                 );
-                if item.id == "outside" {
-                    ui.interact(
-                        item.rect,
-                        egui::Id::new(("outside", pane_id)),
-                        egui::Sense::hover(),
-                    )
-                    .on_hover_text(OUTSIDE_LABEL);
-                }
             } else if let Some(label) = labels.provenance {
                 super::provenance::paint_provenance_icon(
                     ui.painter(),
@@ -230,7 +265,8 @@ mod tests {
                 }
                 if width == 160.0 {
                     assert!(layout.text.width() >= style::PANE_HEADER_TITLE_MIN);
-                    assert_eq!(layout.items[0].galley.as_ref().unwrap().text(), "↗");
+                    assert_eq!(layout.items[0].id, "outside");
+                    assert_eq!(layout.items[0].galley.as_ref().unwrap().text(), "", "compact outside chip is arrow-only");
                     assert!(!layout.items.iter().any(|item| item.id == "state"));
                 }
             }

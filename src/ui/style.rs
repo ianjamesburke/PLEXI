@@ -181,6 +181,15 @@ pub const PANE_HEADER_GLYPH: f32 = PROVENANCE_ICON_SIZE;
 /// its glyphs, so the side inset equals the vertical gap.
 pub const PANE_HEADER_HEIGHT: f32 = PANE_RING_WIDTH + 2.0 * PANE_CONTENT_GAP + PANE_HEADER_GLYPH;
 
+/// Header chips (outside workspace, state, waiting) are as tall as a glyph slot, so they sit
+/// centered in the band with `PANE_CONTENT_GAP` above and below.
+pub const PANE_HEADER_CHIP_HEIGHT: f32 = PANE_HEADER_GLYPH;
+/// Outside-workspace chip: equal side padding, a fixed arrow-to-text gap, and an arrow whose
+/// ink is as tall as the 10pt label's cap height.
+pub const CHIP_PAD_H: f32 = 6.0;
+pub const CHIP_ICON_GAP: f32 = 3.0;
+pub const CHIP_ARROW: f32 = 6.0;
+
 /// The part of a header bar below the top ring, where glyphs and title center.
 pub fn pane_header_band(bar: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(egui::pos2(bar.left(), (bar.top() + PANE_RING_WIDTH).min(bar.bottom())), bar.max)

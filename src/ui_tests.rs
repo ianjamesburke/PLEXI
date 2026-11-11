@@ -7064,6 +7064,69 @@ open(out + ".done", "w").close()
         }
     }
 
+    /// Stint 1216 rule: focus changes paint, never layout. Header height and terminal top
+    /// offset from the pane rect are identical focused and unfocused.
+    #[test]
+    fn header_and_body_layout_is_identical_focused_and_unfocused() {
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
+            t.set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Idle, agent: "fixture".into(), detail: None, session_id: None }));
+        });
+        let mut tops = Vec::new();
+        for focus in [pane, other] {
+            h.focus_pane(focus).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let body = h.harness().ctx.read_response(egui_term::terminal_widget_id(pane)).unwrap().rect;
+            tops.push(body.top() - rect.top());
+        }
+        assert!((tops[0] - tops[1]).abs() < 0.01, "terminal top offset focused {} vs unfocused {}", tops[0], tops[1]);
+        assert!((tops[0] - crate::ui::style::PANE_HEADER_HEIGHT).abs() < 0.01, "body starts right under the {}pt header, got {}", crate::ui::style::PANE_HEADER_HEIGHT, tops[0]);
+    }
+
+    /// An unfocused idle pane paints no outline, seam or veil: below the header, edge band and
+    /// the strip under it are the pane background, exactly as in the focused render except the ring.
+    #[test]
+    fn unfocused_idle_pane_has_no_seam_or_outline_pixels() {
+        let (mut h, pane, other) = pane_chrome_fixture(1.0);
+        h.with_app_mut(|app| {
+            let t = app.windows[app.active_window].panes.get_mut(&pane).unwrap();
+            t.set_agent(Some(crate::protocol::PaneAgentState { pane_id: pane, state: crate::protocol::AgentState::Idle, agent: "fixture".into(), detail: None, session_id: None }));
+        });
+        let mut shots = Vec::new();
+        for focus in [other, pane] {
+            h.focus_pane(focus).unwrap();
+            h.run_steps(4);
+            let rect = h.with_app(|app| app.visible_pane_rect(pane).unwrap());
+            let img = h.render().unwrap();
+            let ppp = img.width() as f32 / h.with_app(|app| app.ctx.content_rect().width());
+            shots.push((rect, img, ppp));
+        }
+        let (rect, img, ppp) = &shots[0];
+        let px = |x: f32, y: f32| *img.get_pixel((x * ppp) as u32, (y * ppp) as u32);
+        let body = px(rect.right() - 20.0, rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 30.0);
+        let header = px(rect.right() - 3.0, rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - 2.0);
+        assert_ne!(header, body, "header fill differs from body, so a seam would be visible");
+        // Column under the header must switch from header fill to body fill with no intermediate colour.
+        let mut colours = std::collections::BTreeSet::new();
+        let mut y = rect.top() + crate::ui::style::PANE_HEADER_HEIGHT - 3.0;
+        while y < rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 20.0 { colours.insert(px(rect.right() - 3.0, y).0); y += 0.5; }
+        assert!(colours.len() <= 2, "unfocused header/body column has seam colours {colours:?}");
+        // Edge band down the left side below the header is the body fill.
+        let mut y = rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 20.0;
+        while y < rect.bottom() - 20.0 {
+            for dx in [0.5, 1.5, 3.0, 5.0] { assert_eq!(px(rect.left() + dx, y), body, "edge pixel {dx} at y {y}"); }
+            y += 7.0;
+        }
+        // Focused render: same layout; only the ring colours the edge.
+        let (_, focused, _) = &shots[1];
+        let fpx = |x: f32, y: f32| *focused.get_pixel((x * ppp) as u32, (y * ppp) as u32);
+        let f = fpx(rect.right() - 20.0, rect.top() + crate::ui::style::PANE_HEADER_HEIGHT + 30.0);
+        // Ghost opacity may round one channel by 1/255; anything more would be a veil.
+        assert!(f.0.iter().zip(body.0).all(|(a, b)| a.abs_diff(b) <= 1), "focused body {f:?} vs unfocused {body:?}");
+    }
+
     #[test]
     fn pane_chrome_selected_app_keeps_its_state_ring() {
         let (mut h, terminal, app_pane) = pane_chrome_fixture(1.0);
