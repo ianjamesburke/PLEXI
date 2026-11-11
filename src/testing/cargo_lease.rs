@@ -71,7 +71,10 @@ fn cargo_lease_propagates_exit_code() {
         .env("PLEXI_CARGO_LOCK", &lock_path)
         .status()
         .expect("run wrapper with true");
-    assert!(ok.success(), "wrapper must succeed when the command succeeds");
+    assert!(
+        ok.success(),
+        "wrapper must succeed when the command succeeds"
+    );
 
     let fail = wrapper()
         .arg("false")
@@ -89,7 +92,9 @@ fn cargo_lease_propagates_exit_code() {
 
 /// Runs the wrapper around a shell snippet that appends a start marker,
 /// sleeps, then appends an end marker to `marker_path` — used to prove two
-/// concurrent wrapper invocations never overlap.
+/// concurrent wrapper invocations never overlap. Pinned to one full permit
+/// (`PLEXI_CARGO_FULL_PERMITS=1`) so full jobs are mutually exclusive; the
+/// default is two.
 fn run_marked(script: &Path, lock_path: &Path, marker_path: &Path, label: &str) {
     let inline = format!(
         "echo start-{label} >> {marker}; sleep 0.3; echo end-{label} >> {marker}",
@@ -101,14 +106,14 @@ fn run_marked(script: &Path, lock_path: &Path, marker_path: &Path, label: &str) 
         .arg("-c")
         .arg(inline)
         .env("PLEXI_CARGO_LOCK", lock_path)
+        .env("PLEXI_CARGO_FULL_PERMITS", "1")
         .status()
         .expect("run marked wrapper invocation");
     assert!(status.success(), "marked invocation {label} must succeed");
 }
 
-/// Two concurrent wrapper invocations around a shared lock must never have
-/// their start/end intervals interleave — the whole point of the lock as a
-/// build throttle.
+/// With `PLEXI_CARGO_FULL_PERMITS=1`, two concurrent full invocations around a
+/// shared lock must never have their start/end intervals interleave.
 #[test]
 fn cargo_lease_serializes_concurrent_invocations() {
     let lock_path = temp_lock_path("serialize");
@@ -117,8 +122,7 @@ fn cargo_lease_serializes_concurrent_invocations() {
     let script_a = script_path();
     let lock_a = lock_path.clone();
     let marker_a = marker_path.clone();
-    let handle_a =
-        std::thread::spawn(move || run_marked(&script_a, &lock_a, &marker_a, "a"));
+    let handle_a = std::thread::spawn(move || run_marked(&script_a, &lock_a, &marker_a, "a"));
 
     // Give the first invocation a head start so ordering is deterministic
     // enough to reason about, though the assertion below holds regardless
@@ -128,8 +132,7 @@ fn cargo_lease_serializes_concurrent_invocations() {
     let script_b = script_path();
     let lock_b = lock_path.clone();
     let marker_b = marker_path.clone();
-    let handle_b =
-        std::thread::spawn(move || run_marked(&script_b, &lock_b, &marker_b, "b"));
+    let handle_b = std::thread::spawn(move || run_marked(&script_b, &lock_b, &marker_b, "b"));
 
     handle_a.join().expect("thread a");
     handle_b.join().expect("thread b");
@@ -157,7 +160,127 @@ fn cargo_lease_serializes_concurrent_invocations() {
             panic!("unexpected marker line: {line:?}");
         }
     }
-    assert!(open_label.is_none(), "an invocation never closed: {contents}");
+    assert!(
+        open_label.is_none(),
+        "an invocation never closed: {contents}"
+    );
+}
+
+// ─── Three-permit contract ──────────────────────────────────────────────────
+
+/// A running wrapper whose wrapped command holds its permit until the shared
+/// `release` file appears. Dropping the group releases and reaps every holder
+/// so a failed assertion never leaks sleeping children.
+struct HeldPermits {
+    dir: PathBuf,
+    children: Vec<std::process::Child>,
+}
+
+impl HeldPermits {
+    fn new(lock_path: &Path) -> Self {
+        Self {
+            dir: lock_path.parent().expect("lock dir").to_path_buf(),
+            children: Vec::new(),
+        }
+    }
+
+    fn started(&self, label: &str) -> PathBuf {
+        self.dir.join(format!("started-{label}"))
+    }
+
+    fn release(&self) {
+        std::fs::write(self.dir.join("release"), b"").expect("write release file");
+    }
+
+    /// Spawns a wrapper (default two full permits, `class` as given) around a
+    /// command that touches `started-<label>` and then waits for `release`.
+    fn spawn(&mut self, lock_path: &Path, class: &str, label: &str) {
+        let inline = format!(
+            "touch {started}; while [ ! -e {release} ]; do sleep 0.05; done",
+            started = self.started(label).display(),
+            release = self.dir.join("release").display()
+        );
+        let child = wrapper()
+            .args(["--class", class, "bash", "-c", &inline])
+            .env("PLEXI_CARGO_LOCK", lock_path)
+            .env("PLEXI_CARGO_FULL_PERMITS", "2")
+            .spawn()
+            .expect("spawn permit holder");
+        self.children.push(child);
+    }
+
+    fn wait_started(&self, label: &str) {
+        let path = self.started(label);
+        let begun = Instant::now();
+        while !path.exists() {
+            assert!(
+                begun.elapsed() < Duration::from_secs(10),
+                "invocation {label} never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for HeldPermits {
+    fn drop(&mut self) {
+        let _ = std::fs::write(self.dir.join("release"), b"");
+        for child in &mut self.children {
+            let _ = child.wait();
+        }
+    }
+}
+
+/// With the default two full permits, two concurrent full invocations hold
+/// permits at the same time and a third full invocation waits for one.
+#[test]
+fn cargo_lease_default_allows_two_concurrent_full_jobs_and_queues_a_third() {
+    let lock_path = temp_lock_path("two-full");
+    let mut held = HeldPermits::new(&lock_path);
+
+    held.spawn(&lock_path, "full", "a");
+    held.wait_started("a");
+    held.spawn(&lock_path, "full", "b");
+    held.wait_started("b"); // overlap: a is still holding its permit.
+
+    held.spawn(&lock_path, "full", "c");
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(
+        !held.started("c").exists(),
+        "a third full job started while two full jobs held both general permits"
+    );
+
+    held.release();
+    held.wait_started("c");
+}
+
+/// A `--class short` invocation starts immediately while two full jobs hold
+/// both general permits, via the short-only permit.
+#[test]
+fn cargo_lease_short_job_starts_while_two_full_jobs_hold_permits() {
+    let lock_path = temp_lock_path("short-while-full");
+    let mut held = HeldPermits::new(&lock_path);
+
+    held.spawn(&lock_path, "full", "a");
+    held.wait_started("a");
+    held.spawn(&lock_path, "full", "b");
+    held.wait_started("b");
+
+    let started = Instant::now();
+    let status = wrapper()
+        .args(["--class", "short", "true"])
+        .env("PLEXI_CARGO_LOCK", &lock_path)
+        .env("PLEXI_CARGO_FULL_PERMITS", "2")
+        .env("PLEXI_CARGO_LEASE_TIMEOUT_SECS", "10")
+        .status()
+        .expect("run short invocation");
+    let elapsed = started.elapsed();
+
+    assert!(status.success(), "short invocation must succeed");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "short invocation took {elapsed:?} — it waited behind two full jobs          instead of taking the short-only permit"
+    );
 }
 
 // ─── SIGKILL self-release ───────────────────────────────────────────────────
@@ -220,10 +343,7 @@ fn cargo_lease_nested_invocation_skips_the_lock() {
     // Hold the real lock in the background: this outer invocation writes a
     // ready marker once it has (almost certainly) acquired the lock, then
     // sleeps well past the nested call's own duration.
-    let inline = format!(
-        "touch {ready}; sleep 5",
-        ready = ready_marker.display()
-    );
+    let inline = format!("touch {ready}; sleep 5", ready = ready_marker.display());
     let mut outer_holder = wrapper()
         .arg("bash")
         .arg("-c")
