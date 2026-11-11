@@ -3752,8 +3752,17 @@ mod tests {
         bar.query = query.into();
         bar.recompute(text);
         app.find_bar = Some(bar);
+        // `set_fonts` binds the `ui-medium` family on the next frame, so the
+        // first frame only registers fonts (see src/ui/AGENTS.md).
+        let mut fonts_ready = false;
         let harness = egui_kittest::Harness::new_ui_state(
-            |ui, app: &mut TextEditorApp| {
+            move |ui, app: &mut TextEditorApp| {
+                if !fonts_ready {
+                    crate::ui::theme::setup_fonts(ui.ctx());
+                    fonts_ready = true;
+                    ui.ctx().request_repaint();
+                    return;
+                }
                 let colors = crate::ui::theme::Colors::from_config(
                     &crate::ui::theme::preset_colors("catppuccin-mocha").unwrap(),
                 );
