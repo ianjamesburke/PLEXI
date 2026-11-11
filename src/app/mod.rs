@@ -5881,9 +5881,10 @@ pub(crate) fn restore_workspace(
                                     session.session_id.as_deref(),
                                     &flags,
                                 );
-                                if harness == crate::cli::AgentHarness::Pi
-                                    && resume_cmd == harness.adapter().binary
-                                    && session.session_id.is_some()
+                                if session
+                                    .session_id
+                                    .as_deref()
+                                    .is_some_and(|sid| !harness.session_exists(sid))
                                 {
                                     session.session_id = None;
                                 }
