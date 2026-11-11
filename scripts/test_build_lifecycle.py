@@ -317,9 +317,8 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(json.loads((self.root / 'telemetry').read_text().splitlines()[-1])['result'], 1)
 
     # --- Permit queueing (stint 1250) -------------------------------------
-    # Permit 0 serves any job; permit 1 is reserved for `--class short` jobs.
-    # Full jobs may use either permit (PLEXI_CARGO_FULL_PERMITS=2, the default,
-    # per the stint 1250 measurement); a full job yields to a waiting short job.
+    # Permits 0 and 1 are general; permit 2 (`<lock>.short`) is short-only.
+    # Full jobs may use both general permits (PLEXI_CARGO_FULL_PERMITS=2, the default).
 
     LEASE = str(ROOT / 'scripts/cargo-with-lease.sh')
     # A short job must start within this many seconds while a full job holds
@@ -375,7 +374,7 @@ class Lifecycle(unittest.TestCase):
         self.assertLess(elapsed, self.SHORT_START_BOUND_SECS)
         events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
         short_acquire = [e for e in events if e['event'] == 'acquire' and e['class'] == 'short'][0]
-        self.assertEqual(short_acquire['permit'], 1)
+        self.assertEqual(short_acquire['permit'], 2)
 
     def test_full_jobs_serialize_on_permit_zero_when_confined_and_waiter_names_the_holder(self):
         env = self.lease_env(PLEXI_CARGO_FULL_PERMITS='1')
@@ -412,25 +411,40 @@ class Lifecycle(unittest.TestCase):
         self.assertIn('permit 0 held by pid', third.stderr)
         self.assertIn('permit 1 held by pid', third.stderr)
 
-    def test_waiting_short_job_gets_the_next_free_permit_before_a_waiting_full_job(self):
+    def test_short_job_starts_while_two_full_jobs_hold_both_general_permits(self):
         env = self.lease_env()
-        first = subprocess.Popen(['bash', self.LEASE, 'sleep', '4'], env=env, cwd=self.repo,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
-        self.addCleanup(self.reap, first)
         self.start_holder('full', 30, env)
+        second = subprocess.Popen(['bash', self.LEASE, 'sleep', '30'], env=env, cwd=self.repo,
+                                  stderr=subprocess.DEVNULL, start_new_session=True)
+        self.addCleanup(self.reap, second)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and len(list(self.root.glob('permits*.holder'))) < 2:
             time.sleep(0.05)
-        full = subprocess.Popen(['bash', self.LEASE, 'true'], env=env, cwd=self.repo,
-                                stderr=subprocess.DEVNULL, start_new_session=True)
-        self.addCleanup(self.reap, full)
-        time.sleep(0.5)  # the full job queues first
-        short = subprocess.Popen(['bash', self.LEASE, '--class', 'short', 'true'], env=env, cwd=self.repo,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
-        self.addCleanup(self.reap, short)
-        self.assertEqual(short.wait(timeout=20), 0)
-        self.assertIsNone(full.poll(), 'full job must still be queued: the freed permit went to the short job')
-        self.assertEqual([p.name for p in self.root.glob('permits.shortwait.*')], [], 'beacon cleaned up')
+        self.assertEqual(len(list(self.root.glob('permits*.holder'))), 2, 'both general permits held by full jobs')
+        started = time.monotonic()
+        result = self.run_lease('--class', 'short', 'true', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, self.SHORT_START_BOUND_SECS)
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        acquire = [e for e in events if e['event'] == 'acquire' and e['class'] == 'short'][0]
+        self.assertEqual(acquire['permit'], 2, 'short-only permit')
+
+    def test_short_job_falls_back_to_a_free_general_permit(self):
+        env = self.lease_env()
+        self.start_holder('short', 30, env)  # takes the short-only permit
+        started = time.monotonic()
+        result = self.run_lease('--class', 'short', 'true', env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, self.SHORT_START_BOUND_SECS)
+        events = [json.loads(l) for l in (self.root / 'permit-telemetry').read_text().splitlines()]
+        acquires = [e for e in events if e['event'] == 'acquire' and e['command'] == ['true']]
+        self.assertIn(acquires[0]['permit'], (0, 1))
+
+    def test_full_job_never_takes_the_short_only_permit(self):
+        env = self.lease_env(PLEXI_CARGO_FULL_PERMITS='1', PLEXI_CARGO_LEASE_TIMEOUT_SECS='1')
+        self.start_holder('full', 30, env)
+        result = self.run_lease('true', env=env)
+        self.assertEqual(result.returncode, 1, 'short-only permit is free but a full job must not use it')
 
     def test_killed_holder_frees_its_permit(self):
         env = self.lease_env(PLEXI_CARGO_FULL_PERMITS='1')  # only permit 0 usable: the freed permit is what lets it in

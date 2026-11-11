@@ -69,7 +69,7 @@ release-host-gate:
 # Run selected host tests with the same flags and isolation as `just scene`.
 # Pass libtest filters and options after the recipe name.
 test-host +args:
-    bash scripts/cargo-with-lease.sh --class short {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi -- {{args}} < /dev/null
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi -- {{args}} < /dev/null
 
 # Resolve every ROADMAP.toml evidence entry and execute every resolved proof.
 # This includes scenes that opt out of scene_suite.
@@ -670,7 +670,7 @@ ship +issues:
 scene FILE out="/tmp/plexi-scenes" shots="1":
     PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
     {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
-    bash scripts/cargo-with-lease.sh --class short {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
+    bash scripts/cargo-with-lease.sh {{TEST_ENV_SCRUB}} python3 scripts/cargo-channel-inputs.py test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture
 
 # Run the same TOML scene against an explicit installed host channel.
 # The runner owns and tears down the host unless PLEXI_SCENE_ATTACH=1 is set.

@@ -108,8 +108,9 @@ class Cleanup(unittest.TestCase):
         env = {**os.environ, 'PLEXI_DISTRIBUTION_CACHE_ROOT': str(cache),
                'PLEXI_CARGO_LOCK': str(lock_path), 'PLEXI_CARGO_LEASE_TIMEOUT_SECS': '0.01'}
         command = ['bash', str(ROOT / 'scripts/distribution-tool.sh'), 'prepare']
-        with lock_path.open('w') as lock, Path(f'{lock_path}.1').open('w') as reserved:
-            fcntl.flock(lock, fcntl.LOCK_EX)  # a busy lease holds both permits
+        with lock_path.open('w') as lock, Path(f'{lock_path}.1').open('w') as second, Path(f'{lock_path}.short').open('w') as reserved:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # a busy lease holds every permit
+            fcntl.flock(second, fcntl.LOCK_EX)
             fcntl.flock(reserved, fcntl.LOCK_EX)
             self.assertEqual(self.call(*command, env=env).returncode, 0)
             with (private / 'plexi-installer').open('ab') as stream:
@@ -126,8 +127,9 @@ class Cleanup(unittest.TestCase):
         lock_path = self.root / 'cargo.lock'
         env = {**os.environ, 'PLEXI_DISTRIBUTION_HOME': str(self.share),
                'PLEXI_CARGO_LOCK': str(lock_path), 'PLEXI_CARGO_LEASE_TIMEOUT_SECS': '0.1'}
-        with lock_path.open('w') as lock, Path(f'{lock_path}.1').open('w') as reserved:
-            fcntl.flock(lock, fcntl.LOCK_EX)  # a busy lease holds both permits
+        with lock_path.open('w') as lock, Path(f'{lock_path}.1').open('w') as second, Path(f'{lock_path}.short').open('w') as reserved:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # a busy lease holds every permit
+            fcntl.flock(second, fcntl.LOCK_EX)
             fcntl.flock(reserved, fcntl.LOCK_EX)
             started = time.monotonic()
             result = self.call('bash', str(ROOT / 'scripts/distribution-tool.sh'), 'locate', '--channel', 'pr-901', env=env)

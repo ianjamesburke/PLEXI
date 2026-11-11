@@ -8,20 +8,24 @@
 # kernel flock self-releases when the holder process dies by any means,
 # including SIGKILL — that's the whole point of this rewrite.
 #
-# Two permits: permit 0 is the lock file itself ($PLEXI_CARGO_LOCK or
-# ~/.plexi/cargo-build.lock, so wrapper copies that predate permits still
-# exclude full jobs), permit 1 is `<lock>.1`. Permit 0 serves any job. Permit 1 is reserved
-# for jobs the call site declares `--class short`; a full job never takes it,
-# so a doc generator or focused test never queues behind a full build.
-# Class is declared, never guessed from duration; unmarked calls are `full`.
-# Full jobs may take either permit (PLEXI_CARGO_FULL_PERMITS=2, the default):
-# two simultaneous cold full release builds were measured on this 16 GiB
-# machine at 5.7 GB peak summed RSS, no swap growth, 38% memory free at the
-# low point (stint 1250, .stint/runs/1250). Set PLEXI_CARGO_FULL_PERMITS=1 to
-# confine full jobs to permit 0. Either way at most two cargo jobs run at once,
-# and a full job yields to any waiting short job, so one permit frees up for it.
+# Three permits. Permits 0 and 1 are general: any job may take them, and full
+# jobs only ever use these (permit 1 only when PLEXI_CARGO_FULL_PERMITS=2, the
+# default). Permit 2 is short-only: only a job the call site declares
+# `--class short` can take it, so a doc generator or focused test starts
+# within seconds even while two full builds run. Short jobs prefer permit 2 and
+# fall back to a free general permit. Class is declared, never guessed from
+# duration; unmarked calls are `full`. Permit 0 is the lock file itself
+# ($PLEXI_CARGO_LOCK or ~/.plexi/cargo-build.lock), so wrapper copies that
+# predate permits still exclude full jobs; permit 1 is `<lock>.1`, permit 2 is
+# `<lock>.short`. At most FULL_PERMITS full jobs plus the short-only permit run at once
+# (shorts may also borrow a free general permit; never more than three jobs).
+# Measured on the 16 GiB dev machine (stint 1250): two cold release builds plus
+# a cold test-profile compile peaked at 6.9 GB summed RSS, no swap growth.
+# Mark `short` by cost: cold wall time near 2 min or less and no whole-host
+# build (doc generators). Anything that builds the host bin or its tests is full.
+# PLEXI_CARGO_FULL_PERMITS=1 confines full jobs to permit 0.
 #
-# Each holder writes `<lock>.<permit>.holder` (pid, cwd, command, class,
+# Each holder writes `<permit file>.holder` (pid, cwd, command, class,
 # start time). Waiters print it. A holder killed by SIGKILL leaves the file
 # behind, but waiters only read it while the permit's flock is held, so a stale
 # record is never reported and the next holder overwrites it.
@@ -62,7 +66,6 @@ fi
 # (a codesign/keychain prompt, a cargo prompt, any interactive command).
 read -r -d '' PLEXI_CARGO_LEASE_PY <<'PY' || true
 import fcntl
-import glob
 import json
 import uuid
 import os
@@ -77,13 +80,15 @@ TIMEOUT_SECS = float(os.environ.get("PLEXI_CARGO_LEASE_TIMEOUT_SECS", "900"))
 REPORT_SECS = float(os.environ.get("PLEXI_CARGO_LEASE_REPORT_SECS", "30"))
 POLL_INTERVAL_SECS = 0.2
 JOB_CLASS = os.environ["PLEXI_CARGO_JOB_CLASS"]
+SHORT_ONLY = 2
 FULL_PERMITS = int(os.environ.get("PLEXI_CARGO_FULL_PERMITS", "2"))
 if FULL_PERMITS not in (1, 2):
     print(f"cargo-lease: PLEXI_CARGO_FULL_PERMITS must be 1 or 2, got {FULL_PERMITS}", file=sys.stderr)
     sys.exit(2)
-# Permit order = preference. Short jobs prefer permit 1 so permit 0 stays free
-# for a full build; full jobs use permit 1 only when FULL_PERMITS allows it.
-CANDIDATES = [1, 0] if JOB_CLASS == "short" else ([0, 1] if FULL_PERMITS == 2 else [0])
+GENERAL = [0, 1] if FULL_PERMITS == 2 else [0]
+# Permit order = preference: short jobs try the short-only permit first so the
+# general permits stay free for full builds.
+CANDIDATES = [SHORT_ONLY] + GENERAL if JOB_CLASS == "short" else GENERAL
 
 argv = sys.argv[1:]
 if not argv:
@@ -91,13 +96,13 @@ if not argv:
     sys.exit(2)
 
 def permit_path(index):
-    return LOCK_BASE if index == 0 else f"{LOCK_BASE}.{index}"
+    return {0: LOCK_BASE, 1: f"{LOCK_BASE}.1", SHORT_ONLY: f"{LOCK_BASE}.short"}[index]
 
 def holder_path(index):
     return permit_path(index) + ".holder"
 
 os.makedirs(os.path.dirname(LOCK_BASE), exist_ok=True)
-lock_fds = {i: os.open(permit_path(i), os.O_CREAT | os.O_RDWR, 0o644) for i in (0, 1)}
+lock_fds = {i: os.open(permit_path(i), os.O_CREAT | os.O_RDWR, 0o644) for i in (0, 1, SHORT_ONLY)}
 
 started = time.monotonic()
 run_id = str(uuid.uuid4())
@@ -125,7 +130,7 @@ def describe_holders():
         try:
             fcntl.flock(lock_fds[index], fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(lock_fds[index], fcntl.LOCK_UN)
-            lines.append(f"permit {index} free (yielding to a waiting short job)")
+            lines.append(f"permit {index} free")
             continue
         except BlockingIOError:
             pass
@@ -138,48 +143,6 @@ def describe_holders():
         except (OSError, ValueError, KeyError):
             lines.append(f"permit {index} held by an unknown holder (no record)")
     return lines
-
-# A short job that cannot get a permit publishes a beacon: a file it holds an
-# flock on for as long as it waits. Full jobs yield while any live beacon
-# exists, so the next permit to free up goes to the short job. A beacon left by
-# a SIGKILLed waiter is detected by its flock being free and removed.
-beacon = None
-
-def short_waiting():
-    live = False
-    for name in glob.glob(f"{LOCK_BASE}.shortwait.*"):
-        try:
-            fd = os.open(name, os.O_RDWR)
-        except OSError:
-            continue
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.unlink(name)  # nobody holds it: stale
-        except BlockingIOError:
-            live = True
-        except OSError:
-            pass
-        finally:
-            os.close(fd)
-    return live
-
-def publish_beacon():
-    global beacon
-    if beacon is None:
-        path = f"{LOCK_BASE}.shortwait.{os.getpid()}"
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        beacon = (fd, path)
-
-def drop_beacon():
-    global beacon
-    if beacon is not None:
-        try:
-            os.unlink(beacon[1])
-        except OSError:
-            pass
-        os.close(beacon[0])
-        beacon = None
 
 def write_holder(index):
     record = {"pid": os.getpid(), "cwd": os.getcwd(), "command": argv,
@@ -197,21 +160,17 @@ event("request")
 deadline = started + TIMEOUT_SECS
 next_report = started + REPORT_SECS
 while permit is None:
-    if JOB_CLASS == "short" or not short_waiting():
-        for index in CANDIDATES:
-            try:
-                fcntl.flock(lock_fds[index], fcntl.LOCK_EX | fcntl.LOCK_NB)
-                permit = index
-                break
-            except BlockingIOError:
-                continue
+    for index in CANDIDATES:
+        try:
+            fcntl.flock(lock_fds[index], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            permit = index
+            break
+        except BlockingIOError:
+            continue
     if permit is not None:
         break
-    if JOB_CLASS == "short":
-        publish_beacon()
     now = time.monotonic()
     if now >= deadline:
-        drop_beacon()
         holders = "; ".join(describe_holders())
         event("timeout", queue_seconds=now - started, holders=holders)
         print(
@@ -226,7 +185,6 @@ while permit is None:
         next_report = now + REPORT_SECS
     time.sleep(POLL_INTERVAL_SECS)
 
-drop_beacon()
 acquired_at = time.monotonic()
 write_holder(permit)
 event("acquire", queue_seconds=acquired_at - started)
