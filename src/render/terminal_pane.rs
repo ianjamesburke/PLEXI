@@ -24,7 +24,15 @@ use std::sync::Once;
 use std::time::{Duration, Instant};
 
 const TAB_PIP_RADIUS: f32 = 4.0;
+/// Header pip radius: with its 0.7pt stroke extent the ink nearly fills the glyph slot, like the icon.
+const HEADER_PIP_RADIUS: f32 = 6.0;
+/// Left pad of a tab member's pip; mirrors `TAB_PIP_LEFT_PAD` in `paint_tab_bar`.
 const TAB_PIP_MARGIN: f32 = 7.0;
+
+/// The header pip's center: its glyph slot starts at the shared content inset, like the icon's.
+fn header_pip_center_x(bar: egui::Rect) -> f32 {
+    bar.left() + crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::PANE_HEADER_GLYPH / 2.0
+}
 
 /// Host-supplied, frame-scoped keyboard input for one terminal pane
 /// (stint 0387). Built in `PlexiApp::update` by taking the frame's
@@ -40,7 +48,12 @@ pub struct TerminalInput {
 }
 
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
-const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
+
+/// Single source for the terminal grid padding: one inset token on both axes. Normal and
+/// zoomed views both use it, so the PTY grid and the drawn grid agree.
+pub(crate) fn terminal_content_padding() -> Vec2 {
+    Vec2::splat(crate::ui::style::PANE_CONTENT_INSET)
+}
 static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 fn standby_view_rects(
@@ -272,8 +285,8 @@ pub fn render(
     let font_size = terminal.font_size;
     LOG_TERMINAL_GLYPH_PADDING.call_once(|| {
         log::info!(
-            "terminal_renderer: glyph padding enabled x={}px",
-            TERMINAL_GLYPH_PADDING_X
+            "terminal_renderer: content padding enabled {} points on both axes",
+            crate::ui::style::PANE_CONTENT_INSET
         );
     });
     // The terminal's deterministic widget id is this pane's default text
@@ -288,7 +301,7 @@ pub fn render(
         .set_focus(is_focused)
         .set_theme(theme.clone())
         .set_font(theme::terminal_font(font_size))
-        .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
+        .set_padding(terminal_content_padding())
         .set_size(Vec2::new(ui.available_width(), ui.available_height()))
         .resize_immediately(resize_immediately)
         .with_input(input.keyboard_events, input.modifiers);
@@ -335,6 +348,15 @@ pub(crate) struct NameBarParams<'a> {
     pub(crate) spawned_by_badge: Option<&'a str>,
     pub(crate) waiting_results_badge: Option<&'a str>,
     pub(crate) overtake_hint: bool,
+}
+
+/// Place the cursor flush under the header. egui's `advance_cursor_after_rect` adds item
+/// spacing, which left a pane-colored strip between header and body that only showed
+/// (as a translucent band) when the pane was ghosted.
+fn advance_past_header(ui: &mut egui::Ui, bar_rect: egui::Rect) {
+    let spacing = std::mem::take(&mut ui.spacing_mut().item_spacing.y);
+    ui.advance_cursor_after_rect(bar_rect);
+    ui.spacing_mut().item_spacing.y = spacing;
 }
 
 fn header_pip_extent(ctx: &egui::Context, state: Option<&AgentState>) -> f32 {
@@ -403,7 +425,7 @@ pub(crate) fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
-        ui.advance_cursor_after_rect(bar_rect);
+        advance_past_header(ui, bar_rect);
         let extent = header_pip_extent(ui.ctx(), agent_state);
         let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
         let labels = crate::ui::pane_header::Labels {
@@ -506,9 +528,8 @@ pub(crate) fn render_name_bar_and_tabs(
             egui::vec2(ui.available_width(), TAB_BAR_HEIGHT),
         );
         let mut capture = crate::ui::layout_report::Capture::begin(ui.painter(), "pane_header");
-        ui.advance_cursor_after_rect(bar_rect);
-        let extent = header_pip_extent(ui.ctx(), agent_state);
-        let leading = if agent_state.is_some() || is_error { TAB_PIP_MARGIN + TAB_PIP_RADIUS + extent } else { 0.0 };
+        advance_past_header(ui, bar_rect);
+                let leading = if agent_state.is_some() || is_error { crate::ui::style::PANE_CONTENT_INSET + crate::ui::style::PANE_HEADER_GLYPH } else { 0.0 };
         let labels = crate::ui::pane_header::Labels {
             outside: outside_workspace, waiting: waiting_results_badge, provenance: spawned_by_badge,
             state: escalation_lbl.zip(escalation_col),
@@ -531,8 +552,8 @@ pub(crate) fn render_name_bar_and_tabs(
         let pip_space = leading;
 
         if is_error && bar_rect.width() >= pip_space {
-            let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
+            let cx = header_pip_center_x(bar_rect);
+            crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(&AgentState::Failed), colors.state_error, false);
         } else if bar_rect.width() >= pip_space {
             if let Some(state) = agent_state { paint_activity_dot(ui, bar_rect, state, colors); }
         }
@@ -622,8 +643,8 @@ fn paint_activity_dot(
 ) {
     let t = ui.input(|i| i.time);
     let color = crate::ui::activity::dot_color_from_time(state, colors, t, 0);
-    let cx = bar_rect.left() + TAB_PIP_MARGIN + TAB_PIP_RADIUS;
-    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), TAB_PIP_RADIUS, Some(state), color, false);
+    let cx = header_pip_center_x(bar_rect);
+    crate::ui::activity::paint_pip(ui.painter(), egui::pos2(cx, bar_rect.center().y), HEADER_PIP_RADIUS, Some(state), color, false);
 }
 
 
@@ -711,6 +732,124 @@ mod tests {
             if width == 30.0 { assert!(badge.is_none(), "minimal header hides the chip"); }
         }
 
+    }
+
+    #[test]
+    fn pane_header_provenance_icon_clears_content_inset() {
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        for width in [120.0, 200.0, 400.0, 1200.0] {
+            let ctx = egui::Context::default();
+            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
+                    render_name_bar_and_tabs(ui, NameBarParams {
+                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &HashMap::new(),
+                        pane_agent_state: None, is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some("human"), waiting_results_badge: None, overtake_hint: false,
+                    });
+                });
+            });
+            let icon: egui::Rect = ctx.data(|d| d.get_temp(egui::Id::new(("provenance_icon_rect", 7_u64)))).expect("header paints provenance icon");
+            assert!(icon.right() <= width - crate::ui::style::PANE_CONTENT_INSET, "provenance icon {icon:?} crosses the content inset at width {width}");
+        }
+    }
+
+    /// Ink bounds of the shapes whose center satisfies `pick`, ignoring bar-wide fills.
+    fn header_ink(shapes: &[egui::epaint::ClippedShape], pick: impl Fn(egui::Pos2) -> bool) -> egui::Rect {
+        shapes.iter().map(|s| s.shape.visual_bounding_rect())
+            .filter(|r| r.is_positive() && r.width() <= 20.0 && pick(r.center()))
+            .fold(egui::Rect::NOTHING, |a, r| a.union(r))
+    }
+
+    /// The pip and the provenance icon keep one inset from the side rings, at least the gap
+    /// above and below the glyph, and that vertical gap (pane top edge to ink vs ink to bar bottom) is equal, at every scale, at narrow widths and for every icon kind.
+    /// The icon's ink fills its slot; the pip is a hollow ring (ink is 0.75 of its radius).
+    #[test]
+    fn pane_header_glyphs_have_symmetric_insets() {
+        use crate::ui::style::{PANE_HEADER_GLYPH, PANE_HEADER_HEIGHT, PANE_RING_WIDTH};
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let mut names = HashMap::new();
+        names.insert(7, "title".to_owned());
+        for badge in ["spawned by you", "spawned by researcher", "spawned by system"] {
+            for scale in [1.0, 1.5] {
+                for width in [140.0, 400.0] {
+                    let ctx = egui::Context::default();
+                    ctx.set_zoom_factor(scale);
+                    let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, TAB_BAR_HEIGHT))), |ui| {
+                            render_name_bar_and_tabs(ui, NameBarParams {
+                                tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
+                                pane_agent_state: Some(&AgentState::Idle), is_error: false, colors: &colors, outside_workspace: false, name_font_size: 12.0, spawned_by_badge: Some(badge), waiting_results_badge: None, overtake_hint: false,
+                            });
+                        });
+                    });
+                    let ctx_msg = format!("{badge}, scale {scale}, width {width}");
+                    let pip = header_ink(&output.shapes, |c| c.x < 30.0);
+                    let icon = header_ink(&output.shapes, |c| c.x > width - 30.0);
+                    assert!(pip.is_positive() && icon.is_positive(), "pip and icon must paint: {ctx_msg}");
+                    // Slot-to-ring gap on each side: pip slot is centered on the pip, icon slot on the icon.
+                    let pip_slot = pip.center().x - PANE_HEADER_GLYPH / 2.0 - PANE_RING_WIDTH;
+                    let icon_slot = (width - PANE_RING_WIDTH) - (icon.center().x + PANE_HEADER_GLYPH / 2.0);
+                    assert!((pip_slot - icon_slot).abs() <= 0.5, "pip slot gap {pip_slot} vs icon slot gap {icon_slot}: {ctx_msg}");
+                    let side = width - icon.right();
+                    let top = icon.top();
+                    let bottom = PANE_HEADER_HEIGHT - icon.bottom();
+                    assert!((top - bottom).abs() <= 0.5 && side >= top - 0.5, "icon gaps from outer edge: side {side}, above {top}, below {bottom}: {ctx_msg}");
+                    let (ptop, pbottom) = (pip.top(), PANE_HEADER_HEIGHT - pip.bottom());
+                    assert!((ptop - pbottom).abs() <= 0.5, "pip vertical gaps {ptop} vs {pbottom}: {ctx_msg}");
+                    let pside = pip.left();
+                    assert!(pside >= ptop - 0.5, "pip side gap {pside} must be at least vertical {ptop}: {ctx_msg}");
+                    println!("{ctx_msg}: icon side {side:.2} top {top:.2} bottom {bottom:.2}; pip side {pside:.2} top {ptop:.2} bottom {pbottom:.2}; slot gaps {pip_slot:.2}/{icon_slot:.2}");
+                }
+            }
+        }
+    }
+
+    /// The outside-workspace chip sits inside the band with equal margins above and below, its
+    /// arrow is centered on the text, and its side padding is equal.
+    #[test]
+    fn outside_chip_is_centered_in_band_with_equal_padding() {
+        use crate::ui::style::{CHIP_ICON_GAP, PANE_HEADER_CHIP_HEIGHT, PANE_HEADER_HEIGHT};
+        let colors = Colors::from_config(&crate::config::ThemeConfig::default());
+        let mut names = HashMap::new();
+        names.insert(7, "title".to_owned());
+        for scale in [1.0, 1.5] {
+            let ctx = egui::Context::default();
+            ctx.set_zoom_factor(scale);
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, TAB_BAR_HEIGHT))), |ui| {
+                    render_name_bar_and_tabs(ui, NameBarParams {
+                        tile_id: TileId::from_u64(1), pane_id: &7, tab_info: &HashMap::new(), tab_labels: &HashMap::new(), tab_activities: &HashMap::new(), pane_names: &names,
+                        pane_agent_state: None, is_error: false, colors: &colors, outside_workspace: true, name_font_size: 12.0, spawned_by_badge: None, waiting_results_badge: None, overtake_hint: false,
+                    });
+                });
+            });
+            let chip = ctx.data(|d| d.get_temp::<TerminalTabBarLayout>(egui::Id::new(("terminal_tab_bar_layout", 7_u64)))).and_then(|l| l.outside_workspace_badge_rect).expect("chip rect");
+            assert!((chip.height() - PANE_HEADER_CHIP_HEIGHT).abs() < 0.01, "chip height {}", chip.height());
+            let (top, bottom) = (chip.top(), PANE_HEADER_HEIGHT - chip.bottom());
+            assert!((top - bottom).abs() <= 0.5 && top >= 2.0, "chip margins top {top} bottom {bottom} at scale {scale}");
+            let text = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(_) if chip.contains(s.shape.visual_bounding_rect().center()) => Some(s.shape.visual_bounding_rect()), _ => None }).next().expect("chip text");
+            let pts: Vec<egui::Pos2> = output.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::LineSegment { points, .. } if chip.contains(points[0]) => Some(points.to_vec()), _ => None }).flatten().collect();
+            assert!(pts.len() >= 6, "arrow is three painted segments");
+            let arrow = egui::Rect::from_points(&pts);
+            assert!((arrow.center().y - text.center().y).abs() <= 0.5, "arrow centre {} vs text centre {}", arrow.center().y, text.center().y);
+            assert!((arrow.left() - chip.left() - (chip.right() - text.right())).abs() <= 0.5, "left pad {} vs right pad {}", arrow.left() - chip.left(), chip.right() - text.right());
+            assert!((text.left() - arrow.right() - CHIP_ICON_GAP).abs() <= 0.5, "arrow-to-text gap {}", text.left() - arrow.right());
+            println!("chip scale {scale}: margins {top:.2}/{bottom:.2}, arrow-text dy {:.2}, pads {:.2}/{:.2}", arrow.center().y - text.center().y, arrow.left() - chip.left(), chip.right() - text.right());
+        }
+    }
+
+    #[test]
+    fn terminal_padding_is_one_token_clearing_pane_rings() {
+        use crate::ui::style::{PANE_CONTENT_INSET, PANE_FOCUS_WIDTH, PANE_STATE_WIDTH};
+        let pad = terminal_content_padding();
+        assert_eq!(pad.x, pad.y, "x and y share one inset token");
+        assert_eq!(pad.x, PANE_CONTENT_INSET);
+        assert_eq!(pad.x, PANE_FOCUS_WIDTH + PANE_STATE_WIDTH + crate::ui::style::PANE_CONTENT_GAP);
+        assert_eq!(crate::ui::style::PANE_CONTENT_GAP, 2.0, "split the difference: 2pt of air beyond the rings");
+        assert!(pad.x > PANE_FOCUS_WIDTH + PANE_STATE_WIDTH, "inset leaves a gap beyond both rings");
+        let frame = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 200.0));
+        let grid = egui::Rect::from_min_max(frame.min + pad, frame.max - pad);
+        let inside_rings = frame.shrink(PANE_FOCUS_WIDTH + PANE_STATE_WIDTH);
+        assert!(inside_rings.contains_rect(grid), "grid {grid:?} overlaps rings; frame {frame:?}");
     }
 
     #[test]

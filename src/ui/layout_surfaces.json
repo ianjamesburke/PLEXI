@@ -181,8 +181,14 @@
         "file": "src/ui_tests.rs",
         "test": "screenshot_pane_chrome_state_matrix"
       },
-      "states": "terminal/app/portal/tabbed callers covered by renderer tests; states in screenshot matrix",
-      "minimum": "Header minimum and collapse owned by PaneHeader"
+      "states": "terminal/app/portal/tabbed callers covered by renderer tests; states in screenshot matrix; terminal content with focused state ring, normal/narrow, Dusk/Dawn in the additional fixture",
+      "minimum": "Terminal grid clears pane rings using the shared content inset; padded grid determines PTY size",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "screenshot_terminal_inset_and_provenance_matrix"
+        }
+      ]
     },
     {
       "id": "src/ui/activity.rs",
@@ -288,8 +294,14 @@
         "file": "src/ui_tests.rs",
         "test": "screenshot_pane_chrome_state_matrix"
       },
-      "states": "seven activity states; narrow/wide; Dusk/Dawn; zoom 1/2",
-      "minimum": "Optional accessories collapse before minimum title lane; below minimum title hides"
+      "states": "seven activity states; narrow/wide; Dusk/Dawn; zoom 1/2; human provenance with focused state in the additional fixture",
+      "minimum": "Right accessories clear the shared content inset; optional accessories collapse before minimum title lane",
+      "additional_fixtures": [
+        {
+          "file": "src/ui_tests.rs",
+          "test": "screenshot_terminal_inset_and_provenance_matrix"
+        }
+      ]
     },
     {
       "id": "src/ui/provenance.rs",

@@ -44,11 +44,12 @@ def check(root: Path, entries: list[dict]) -> list[str]:
         if not fixture and not gap:
             errors.append(f"{entry['id']}: needs seeded fixture or explicit unresolved gap")
         if fixture:
-            path = root / fixture["file"]
-            if not path.is_file():
-                errors.append(f"{entry['id']}: missing fixture {path}")
-            elif fixture.get("test") and f"fn {fixture['test']}" not in path.read_text():
-                errors.append(f"{entry['id']}: missing fixture test")
+            for item in [fixture, *entry.get("additional_fixtures", [])]:
+                path = root / item["file"]
+                if not path.is_file():
+                    errors.append(f"{entry['id']}: missing fixture {path}")
+                elif item.get("test") and f"fn {item['test']}" not in path.read_text():
+                    errors.append(f"{entry['id']}: missing fixture test {item['test']}")
             if not entry.get("states") or not entry.get("minimum"):
                 errors.append(f"{entry['id']}: fixture needs states and minimum policy")
     return errors
@@ -127,6 +128,10 @@ def self_test(entries: list[dict]) -> None:
     broken[0].pop("fixture", None)
     broken[0].pop("gap", None)
     assert any("needs seeded" in e for e in check(ROOT, broken))
+    # An additional fixture naming a missing test must fail like the primary one.
+    extra = [dict(entry) for entry in entries]
+    next(entry for entry in extra if entry.get("fixture"))["additional_fixtures"] = [{"file": "src/ui_tests.rs", "test": "no_such_fixture_test"}]
+    assert any("no_such_fixture_test" in e for e in check(ROOT, extra))
 
 
 def main() -> int:
