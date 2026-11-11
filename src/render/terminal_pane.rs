@@ -764,7 +764,7 @@ mod tests {
     /// The icon's ink fills its slot; the pip is a hollow ring (ink is 0.75 of its radius).
     #[test]
     fn pane_header_glyphs_have_symmetric_insets() {
-        use crate::ui::style::{PANE_HEADER_GLYPH, PANE_HEADER_HEIGHT};
+        use crate::ui::style::{PANE_HEADER_GLYPH, PANE_HEADER_HEIGHT, PANE_RING_WIDTH};
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut names = HashMap::new();
         names.insert(7, "title".to_owned());
