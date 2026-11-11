@@ -15,6 +15,8 @@
 //! extreme, which is exactly Ghostty's output.
 
 use egui::Color32;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// Lowest accepted minimum: 1.0 is the WCAG floor and means "off".
@@ -71,10 +73,63 @@ pub fn contrast_ratio(a: Color32, b: Color32) -> f32 {
     ratio(luminance_of(linear_rgb(a)), luminance_of(linear_rgb(b)))
 }
 
+// Bounded per-render-thread cache, shared by all panes. Key the final painted
+// colors (including alpha) and exact minimum: theme/selection/SGR/cursor changes
+// cannot reuse an adjustment for a different input. The last-pair shortcut
+// handles runs of text without hashing, locking, or cloning a per-view cache.
+const CACHE_CAPACITY: usize = 4096;
+type ContrastKey = (Color32, Color32, u32);
+
+#[derive(Default)]
+struct ContrastCache {
+    colors: HashMap<ContrastKey, Color32>,
+    last: Option<(ContrastKey, Color32)>,
+    #[cfg(test)]
+    computations: usize,
+}
+
+impl ContrastCache {
+    fn get(&mut self, fg: Color32, bg: Color32, minimum: f32) -> Color32 {
+        let key = (fg, bg, minimum.to_bits());
+        if let Some((previous, color)) = self.last {
+            if previous == key {
+                return color;
+            }
+        }
+        let color = if let Some(&color) = self.colors.get(&key) {
+            color
+        } else {
+            let color = compute_min_contrast(fg, bg, minimum);
+            #[cfg(test)]
+            {
+                self.computations += 1;
+            }
+            if self.colors.len() == CACHE_CAPACITY {
+                self.colors.clear();
+            }
+            self.colors.insert(key, color);
+            color
+        };
+        self.last = Some((key, color));
+        color
+    }
+}
+
+thread_local! {
+    static CACHE: RefCell<ContrastCache> = RefCell::new(ContrastCache::default());
+}
+
 /// Return `fg` unchanged when its contrast against `bg` already meets
 /// `minimum`; otherwise the closest color toward black or white that does.
 /// `minimum <= 1.0` disables the adjustment. Alpha is carried through.
 pub fn ensure_min_contrast(fg: Color32, bg: Color32, minimum: f32) -> Color32 {
+    if minimum <= MIN_CONTRAST_OFF {
+        return fg;
+    }
+    CACHE.with(|cache| cache.borrow_mut().get(fg, bg, minimum))
+}
+
+fn compute_min_contrast(fg: Color32, bg: Color32, minimum: f32) -> Color32 {
     if minimum <= MIN_CONTRAST_OFF {
         return fg;
     }
@@ -135,6 +190,90 @@ mod tests {
     const DAWN_BG: Color32 = Color32::from_rgb(0xf4, 0xec, 0xdf);
     const DARK_GREY: Color32 = Color32::from_rgb(153, 153, 153);
     const PALE_BLUE: Color32 = Color32::from_rgb(177, 185, 249);
+
+    #[test]
+    fn unchanged_cell_inputs_are_computed_once_across_resize_frames() {
+        CACHE.with(|cache| *cache.borrow_mut() = ContrastCache::default());
+        for _frame in 0..120 {
+            for _cell in 0..100 {
+                for fg in [DARK_GREY, PALE_BLUE] {
+                    assert_eq!(
+                        ensure_min_contrast(fg, DAWN_BG, 3.0),
+                        compute_min_contrast(fg, DAWN_BG, 3.0)
+                    );
+                }
+            }
+        }
+        CACHE.with(|cache| assert_eq!(cache.borrow().computations, 2));
+    }
+
+    #[test]
+    fn cache_keys_every_color_input_and_stays_bounded() {
+        let mut cache = ContrastCache::default();
+        for fg in [
+            DARK_GREY,
+            PALE_BLUE,
+            Color32::from_rgba_premultiplied(100, 100, 100, 128),
+        ] {
+            for bg in [DAWN_BG, Color32::BLACK, Color32::WHITE] {
+                for minimum in [1.0, 3.0, 4.5, 21.0] {
+                    assert_eq!(
+                        cache.get(fg, bg, minimum),
+                        compute_min_contrast(fg, bg, minimum)
+                    );
+                }
+            }
+        }
+        assert_eq!(cache.computations, 36);
+        for value in 0..(CACHE_CAPACITY * 2) {
+            let fg = Color32::from_rgb(value as u8, (value >> 8) as u8, 100);
+            assert_eq!(
+                cache.get(fg, DAWN_BG, 3.0),
+                compute_min_contrast(fg, DAWN_BG, 3.0)
+            );
+            assert!(cache.colors.len() <= CACHE_CAPACITY);
+        }
+        assert_eq!(
+            cache.get(DARK_GREY, DAWN_BG, 3.0),
+            compute_min_contrast(DARK_GREY, DAWN_BG, 3.0)
+        );
+    }
+
+    /// CPU-only probe for the per-cell path, independent of debug host/layout
+    /// instrumentation. Report separately from full ui() and installed timings.
+    #[test]
+    #[ignore = "perf-gate: run resize contrast probe on a quiet machine"]
+    fn perf_gate_resize_contrast_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        for enabled in [false, true] {
+            let mut samples = Vec::new();
+            for frame in 0..240 {
+                let start = Instant::now();
+                for _pane in 0..4 {
+                    for cell in 0..((100 - frame % 30) * 40) {
+                        let fg = black_box(if cell % 2 == 0 {
+                            DARK_GREY
+                        } else {
+                            PALE_BLUE
+                        });
+                        black_box(if enabled {
+                            ensure_min_contrast(
+                                fg,
+                                black_box(DAWN_BG),
+                                black_box(3.0),
+                            )
+                        } else {
+                            fg
+                        });
+                    }
+                }
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!("CONTRAST_PROBE enabled={enabled} frames=240 p50_ms={:.4} p95_ms={:.4}", samples[120], samples[227]);
+        }
+    }
 
     #[test]
     fn low_contrast_pairs_on_light_bg_are_lifted_to_the_minimum() {

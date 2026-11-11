@@ -186,6 +186,9 @@ impl ResizeGeometry {
 #[derive(Debug, Clone, Copy)]
 struct PendingResize {
     geometry: ResizeGeometry,
+    /// Pixel geometry must settle too: a slow drag can keep the same cell
+    /// count for several frames while the pane continues moving.
+    layout_size: Size,
     /// Consecutive frames the reflow has been held back, including the frame
     /// that produced this record.
     deferred_frames: u32,
@@ -1109,16 +1112,32 @@ impl TerminalBackend {
         }
 
         let held = self.pending_resize.take();
-        let settled = held.is_some_and(|pending| pending.geometry == geometry);
+        let settled = held.is_some_and(|pending| {
+            pending.geometry == geometry && pending.layout_size == layout_size
+        });
         let deferred_frames =
             held.map_or(0, |pending| pending.deferred_frames) + 1;
 
         if !immediate && !settled && deferred_frames < MAX_DEFERRED_RESIZE_FRAMES {
             self.pending_resize = Some(PendingResize {
                 geometry,
+                layout_size,
                 deferred_frames,
             });
             return ResizeOutcome::Deferred;
+        }
+
+        if crate::diag::span_hook_installed() {
+            crate::diag::span_note(
+                if immediate {
+                    "resize_commit_immediate"
+                } else if settled {
+                    "resize_commit_settled"
+                } else {
+                    "resize_commit_cap"
+                },
+                0,
+            );
         }
 
         log::info!(

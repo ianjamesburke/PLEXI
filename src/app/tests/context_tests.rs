@@ -2,6 +2,43 @@ use super::super::*;
 use crate::host::context::Window;
 
 #[test]
+fn live_resize_defers_workspace_flush_until_settled() {
+    let mut h = crate::testing::HostHarness::new();
+    let pane = h.add_test_pane();
+    let context = h.app.router.active().context_id;
+    h.app.set_context_columns(context, vec![vec![pane]]);
+    h.hidden_frame();
+    let old_save = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    h.app.last_workspace_save = old_save;
+    h.app.workspace_dirty = true;
+    for frame in 0..60 {
+        h.frame(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1276.0 - frame as f32 * 4.0, 800.0),
+            )),
+            ..Default::default()
+        });
+        assert_eq!(
+            h.app.last_workspace_save, old_save,
+            "workspace flush during live resize frame {frame}"
+        );
+        assert!(h.app.workspace_dirty);
+    }
+    // Expire the trailing hold without sleeping. Occluded servicing must
+    // still flush pending state through App::logic once the gesture settles.
+    h.app.drag_window_last_seen =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+    h.app.prev_screen_rect = Some(egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(1280.0, 800.0),
+    ));
+    h.hidden_frame();
+    assert!(!h.app.workspace_dirty);
+    assert!(h.app.last_workspace_save > old_save);
+}
+
+#[test]
 fn failed_workspace_save_remains_dirty_for_retry() {
     let mut h = crate::testing::HostHarness::new();
     let pane = h.add_test_pane();
