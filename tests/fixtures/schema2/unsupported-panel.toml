@@ -1,0 +1,15 @@
+schema_version = 2
+[plugin]
+id = "sample"
+name = "Schema contract fixture"
+version = "1.0.0"
+[plugin.capabilities]
+capabilities = []
+[runtime]
+kind = "wasm"
+entry = "main.wasm"
+[[contributes.views]]
+id = "sample.main"
+
+[[contributes.panels]]
+id = "sample.panel"

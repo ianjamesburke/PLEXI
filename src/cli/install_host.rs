@@ -250,6 +250,13 @@ fn install_one_git(
             return Err(e);
         }
     };
+    let _command_install = match manifest.lock_command_install(target_root) {
+        Ok(guard) => guard,
+        Err(error) => {
+            cleanup(&stage_root);
+            return Err(error.to_string());
+        }
+    };
     let id = manifest.plugin.id.clone();
     let dest = target_root.join(&id);
 
@@ -292,7 +299,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .get_file(format!("{name}/manifest.toml"))
         .and_then(|f| f.contents_utf8())
         .ok_or_else(|| format!("local source '{name}' has no manifest.toml"))?;
-    let manifest: PluginManifest = toml::from_str(manifest_text)
+    let manifest = PluginManifest::parse(manifest_text)
         .map_err(|e| format!("local source '{name}' manifest invalid: {e}"))?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
@@ -300,6 +307,9 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
             manifest.schema_version, MANIFEST_SCHEMA_VERSION
         ));
     }
+    let _command_install = manifest
+        .lock_command_install(target_root)
+        .map_err(|e| e.to_string())?;
     let id = manifest.plugin.id.clone();
     let dest = target_root.join(&id);
     if dest.exists() {
@@ -354,8 +364,7 @@ fn read_manifest(repo_dir: &Path) -> Result<PluginManifest, String> {
             manifest_path.display()
         )
     })?;
-    let manifest: PluginManifest =
-        toml::from_str(&text).map_err(|e| format!("manifest.toml invalid: {e}"))?;
+    let manifest = PluginManifest::parse(&text).map_err(|e| e.to_string())?;
     if manifest.schema_version > MANIFEST_SCHEMA_VERSION {
         return Err(format!(
             "manifest schema_version = {} is newer than this Plexi build supports (max {}); \

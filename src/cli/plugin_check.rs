@@ -196,6 +196,12 @@ pub fn plugin_check_cli(path: &str, sizes: &[String], png_dir: Option<&str>) -> 
         "✓ manifest — {} ({})",
         manifest.plugin.id, manifest.plugin.name
     );
+    for command in &manifest.contributes.commands {
+        println!(
+            "✓ command — {} → {} (reserved declaration; dispatch not yet available)",
+            command.id, command.handler
+        );
+    }
     // #0336: reject an invalid `[launch] on_launch` here, the same way
     // `PluginRegistry::load_plugin` does at install time. Without this, an author gets
     // a green `plugin check` and then a silent runtime skip (the launch resolver
@@ -713,8 +719,7 @@ pub(super) fn load_local_plugin(plugin_dir: &Path) -> Result<(PluginManifest, Pa
     let manifest_path = plugin_dir.join("manifest.toml");
     let manifest_raw = std::fs::read_to_string(&manifest_path)
         .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
-    let manifest: PluginManifest =
-        toml::from_str(&manifest_raw).map_err(|e| format!("invalid manifest.toml: {e}"))?;
+    let manifest = PluginManifest::parse(&manifest_raw).map_err(|e| e.to_string())?;
 
     if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
         return Err(format!(
