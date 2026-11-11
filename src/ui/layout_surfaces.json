@@ -140,7 +140,7 @@
       "fixture": {
         "file": "tests/scenes/one-kit-gallery.toml"
       },
-      "states": "Primary/Secondary/Accent/Danger/Ghost and disabled at Sm/Md/Lg; Dusk/Dawn",
+      "states": "Primary/Secondary/Danger/Ghost and disabled at Sm/Md/Lg; Dusk/Dawn",
       "minimum": "Gallery button rows wrap at the available width; complete labels remain visible and padded from the pane edge"
     },
     {

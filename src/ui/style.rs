@@ -38,7 +38,8 @@ pub const TEXT_HINT: f32 = 11.0; // Keyboard hints, meta labels.
 pub const TEXT_CAPTION: f32 = 12.0; // Secondary info, small labels.
 pub const TEXT_META: f32 = 10.0; // Compact badges and sidebar metadata.
 pub const TEXT_SIDEBAR_TITLE: f32 = 14.0; // Sidebar context row titles.
-pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
+pub const TEXT_BODY: f32 = 14.0; // Default body text.
+pub const TEXT_CONTROL: f32 = 13.0; // Default control labels.
 pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
                                   // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
@@ -240,7 +241,12 @@ pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 /// label ("OK") still reads as a button rather than as a chip, and that the
 /// two sit as a matched pair regardless of label length.
 pub const BUTTON_MIN_W_MODAL: f32 = 88.0;
-pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
+pub const MENU_MIN_W: f32 = 200.0; // Readable popup options.
+pub const BUTTON_H_LG: f32 = 40.0; // Prominent actions.
+pub const BUTTON_H_CHOICE: f32 = 52.0; // Choice rows.
+pub const BUTTON_PAD_X_SM: f32 = 10.0;
+pub const BUTTON_PAD_X_MD: f32 = 12.0;
+pub const BUTTON_PAD_X_LG: f32 = 16.0;
 
 // ── List rows ──────────────────────────────────────────────────────────────
 // 48 gives a two-line row (12pt medium + 11pt secondary) ~8px of air inside

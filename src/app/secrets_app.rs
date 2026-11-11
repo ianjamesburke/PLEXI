@@ -278,6 +278,10 @@ impl SecretsApp {
         }
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn scope_picker(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         labels::description_label(ui, "Scope", colors);
         ui.add_enabled_ui(!self.editing && self.pending_import.is_none(), |ui| {
@@ -288,20 +292,31 @@ impl SecretsApp {
                     SecretTarget::Folder(_) => "Folder",
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.target, SecretTarget::Global, "Global");
+                    ui.set_min_width(style::MENU_MIN_W);
+                    let mut options = vec![(SecretTarget::Global, "Global")];
                     if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
-                        ui.selectable_value(&mut self.target, target, "Workspace");
+                        options.push((target, "Workspace"));
                     }
                     if crate::release::feature_enabled(
                         crate::release::ReleaseFeature::FolderSecrets,
                     ) {
-                        ui.selectable_value(
-                            &mut self.target,
+                        options.push((
                             SecretTarget::Folder(crate::platform::path::canonical_or_self(
                                 &self.cwd,
                             )),
                             "Folder (current directory)",
-                        );
+                        ));
+                    }
+                    for (target, label) in options {
+                        if crate::ui::list::ListRow::new(label)
+                            .dense()
+                            .selected(self.target == target)
+                            .show(ui, colors)
+                            .row_clicked()
+                        {
+                            self.target = target;
+                            ui.close();
+                        }
                     }
                 });
         });
@@ -362,11 +377,25 @@ impl SecretsApp {
         );
         ui.add_space(style::SPACE_SM);
         ui.horizontal(|ui| {
-            if ui.add(button::KitButton::new("Save", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() || save
+            if ui
+                .add(
+                    button::KitButton::new("Save", colors)
+                        .kind(ButtonKind::Primary)
+                        .min_width(64.0),
+                )
+                .clicked()
+                || save
             {
                 self.commit_add();
             }
-            if ui.add(button::KitButton::new("Cancel", colors).kind(ButtonKind::Secondary).min_width(64.0)).clicked() {
+            if ui
+                .add(
+                    button::KitButton::new("Cancel", colors)
+                        .kind(ButtonKind::Secondary)
+                        .min_width(64.0),
+                )
+                .clicked()
+            {
                 self.close_form();
             }
         });
@@ -384,7 +413,7 @@ impl SecretsApp {
             Ok(()) => {
                 self.refresh();
                 self.status_msg = format!(
-                    "{name}: human terminal environment {}. Agent panes remain excluded.",
+                    "{name}: export to my terminals {}. Agent panes do not receive injected env secrets.",
                     if enabled { "on" } else { "off" }
                 );
             }
@@ -531,7 +560,9 @@ impl App for SecretsApp {
         egui::Frame::NONE.inner_margin(egui::Margin::same(style::SPACE_MD as i8)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading("Secrets");
-                if ui.add(button::KitButton::new("Add", colors).kind(ButtonKind::Accent).min_width(64.0)).clicked() { self.begin_add(); }
+                // One strongest button per view: Save or Delete takes it while open.
+                let add_kind = if self.form_open || self.pending_delete { ButtonKind::Secondary } else { ButtonKind::Primary };
+                if ui.add(button::KitButton::new("Add", colors).kind(add_kind).min_width(64.0)).clicked() { self.begin_add(); }
                 if ui.add(button::KitButton::new("Refresh", colors).kind(ButtonKind::Secondary).min_width(80.0)).clicked() { self.refresh(); }
             });
             if !self.form_open {
@@ -562,7 +593,7 @@ impl App for SecretsApp {
                     if let Some(entry) = self.entries.get(self.selected) { ui.label(format!("Delete {} from {}?", entry.name, entry.scope)); }
                     ui.horizontal(|ui| {
                         if ui
-                            .add(button::KitButton::new("Delete", colors).kind(ButtonKind::Accent).min_width(80.0))
+                            .add(button::KitButton::new("Delete", colors).kind(ButtonKind::Danger).min_width(80.0))
                             .clicked()
                         {
                             self.delete_selected();
@@ -589,13 +620,14 @@ impl App for SecretsApp {
                         labels::description_label(ui, &format!("Grants: {grant}"), colors);
                         if let SecretTarget::Workspace { root, .. } = &entry.target {
                             let enabled = self.terminal_inject.contains(&entry.name);
-                            let label = if enabled { "Human terminal env: on" } else { "Human terminal env: off" };
+                            let label = if enabled { "Export to my terminals: on" } else { "Export to my terminals: off" };
                             if ui
-                                .add(button::KitButton::new(label, colors).kind(ButtonKind::Secondary).min_width(180.0))
+                                .add(button::KitButton::new(label, colors).kind(ButtonKind::Secondary).selected(enabled).min_width(180.0))
                                 .clicked()
                             {
                                 toggle = Some((entry.name.clone(), root.clone()));
                             }
+                            labels::description_label(ui, "Terminals you open get this as an env var. Agent panes do not.", colors);
                         }
                     });
                     if index == self.selected && self.scroll_to_selected { response.scroll_to_me(Some(egui::Align::Center)); }
@@ -622,6 +654,94 @@ impl App for SecretsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn screenshot_scope_popup_rows_stay_fixed_on_hover() {
+        use egui_kittest::kittest::Queryable;
+
+        let profile = tempfile::tempdir().unwrap();
+        let _profile = crate::config::set_test_profile_dir(profile.path().into());
+        for theme in ["plexi-dusk", "plexi-dawn"] {
+            let mut h = crate::ui_tests::PlexiUiHarness::new_sized(1000.0, 700.0);
+            let root = tempfile::tempdir().unwrap();
+            crate::workspace::secrets::init_workspace(
+                root.path(),
+                &crate::config::workspace_channel_dir(),
+            )
+            .unwrap();
+            assert!(matches!(
+                manager::workspace_target(root.path()).unwrap(),
+                Some(SecretTarget::Workspace { .. })
+            ));
+            // The in-memory system store is process-wide and sibling tests put
+            // global secrets in it. The Scope selector is only drawn in the empty
+            // state, so start from an empty inventory.
+            let mut secrets = SecretsApp::new(root.path().into());
+            secrets.entries.clear();
+            h.with_app_mut(|app| {
+                let app_secrets = secrets;
+                let cfg = crate::ui::theme::preset_colors(theme).unwrap();
+                app.colors = crate::ui::theme::Colors::from_config(&cfg);
+                app.theme = crate::ui::theme::terminal_theme(
+                    &cfg,
+                    crate::config::DEFAULT_TERMINAL_MINIMUM_CONTRAST,
+                );
+                crate::ui::theme::setup_style(&app.ctx, &app.colors);
+                app.sidebar_visible = false;
+                app.open_builtin_app_pane(
+                    Box::new(app_secrets),
+                    crate::app::permissions::AppPermissions::builtin(),
+                    root.path().into(),
+                    None,
+                    None,
+                    None,
+                );
+            });
+            h.run_steps(4);
+            h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_before")))
+                .unwrap();
+            // The stock ComboBox does not expose its selected text as an accessibility node.
+            let selector = egui::pos2(70.0, 255.0);
+            for pressed in [true, false] {
+                h.harness().input_mut().events.extend([
+                    egui::Event::PointerMoved(selector),
+                    egui::Event::PointerButton {
+                        pos: selector,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                h.step();
+            }
+            h.run_steps(3);
+            let global = h.harness().get_by_label("Global").rect();
+            let workspace = h
+                .harness()
+                .get_all_by_label("Workspace")
+                .map(|node| node.rect())
+                .max_by(|a, b| a.top().total_cmp(&b.top()))
+                .expect("workspace option");
+            for (name, rect) in [("global", global), ("workspace", workspace)] {
+                h.harness()
+                    .input_mut()
+                    .events
+                    .push(egui::Event::PointerMoved(rect.center()));
+                h.run_steps(3);
+                assert_eq!(h.harness().get_by_label("Global").rect(), global);
+                let current_workspace = h
+                    .harness()
+                    .get_all_by_label("Workspace")
+                    .map(|node| node.rect())
+                    .max_by(|a, b| a.top().total_cmp(&b.top()))
+                    .unwrap();
+                assert_eq!(current_workspace, workspace);
+                h.save_screenshot(&crate::ui_tests::evidence_png!(format!("_{theme}_{name}")))
+                    .unwrap();
+            }
+        }
+    }
 
     #[test]
     fn secrets_app_mutations_use_shared_audited_handlers() {
@@ -840,7 +960,10 @@ mod tests {
         h.save_screenshot(&crate::ui_tests::evidence_png!("_narrow"))
             .unwrap();
         for _ in 0..2 {
-            h.harness().input_mut().events.push(egui::Event::Text("j".into()));
+            h.harness()
+                .input_mut()
+                .events
+                .push(egui::Event::Text("j".into()));
             h.run_steps(2);
         }
         h.harness().key_press(egui::Key::Enter);

@@ -11,7 +11,15 @@ pub(crate) struct Action {
     pub painted_label: String,
     pub hit: Rect,
     pub minimum: egui::Vec2,
+    /// The action is disabled. Its label is an inactive component (WCAG 1.4.3)
+    /// and is held to `INACTIVE_TEXT_MIN` instead of the SmallText minimum.
+    pub inactive: bool,
 }
+
+/// Legibility floor for inactive (disabled) text. WCAG 1.4.3 exempts inactive
+/// components from any minimum; this floor keeps disabled labels from
+/// vanishing into their chip.
+pub(crate) const INACTIVE_TEXT_MIN: f32 = 2.0;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TextPaint {
@@ -23,6 +31,7 @@ pub(crate) struct TextPaint {
     pub foreground: Color32,
     pub background: Color32,
     pub fit: &'static str,
+    pub inactive: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -80,7 +89,12 @@ impl LayoutReport {
                 super::theme::luminance(text.foreground),
                 super::theme::luminance(text.background),
             );
-            if ratio + 0.001 < super::foreground::Role::SmallText.minimum() {
+            let minimum = if text.inactive {
+                INACTIVE_TEXT_MIN
+            } else {
+                super::foreground::Role::SmallText.minimum()
+            };
+            if ratio + 0.001 < minimum {
                 errors.push(format!("{}: contrast {ratio:.3}", text.id));
             }
             for other in &self.texts[index + 1..] {
@@ -134,7 +148,7 @@ impl LayoutReport {
             "texts": self.texts.iter().map(|t| serde_json::json!({
                 "slot": t.id, "text": t.text, "allocated": rect(t.allocated), "paint": rect(t.paint),
                 "clip": rect(t.clip), "foreground": t.foreground.to_array(),
-                "background": t.background.to_array(), "fit": t.fit,
+                "background": t.background.to_array(), "fit": t.fit, "inactive": t.inactive,
             })).collect::<Vec<_>>(),
             "actions": self.actions.iter().map(|a| serde_json::json!({
                 "slot": a.id, "name": a.name, "painted_label": a.painted_label,
@@ -270,6 +284,7 @@ impl Capture {
             if let Some(action) = report.actions.iter().find(|a| a.painted_label == text.text) {
                 text.id = action.id.clone();
                 text.allocated = action.hit;
+                text.inactive = action.inactive;
             }
         }
         if report.scroll {
@@ -360,6 +375,7 @@ fn collect(
                 } else {
                     "full"
                 },
+                inactive: false,
             });
         }
         _ => {}
@@ -385,6 +401,7 @@ mod tests {
                 foreground: Color32::WHITE,
                 background: Color32::BLACK,
                 fit: "full",
+                inactive: false,
             }],
             actions: vec![Action {
                 id: "undo".into(),
@@ -392,6 +409,7 @@ mod tests {
                 painted_label: "Undo".into(),
                 hit,
                 minimum: egui::vec2(28.0, 28.0),
+                inactive: false,
             }],
             exclusions: vec![],
             slots: vec![],
@@ -400,19 +418,26 @@ mod tests {
     }
     #[test]
     fn emitted_button_contrast_includes_disabled_tint() {
+        // Inactive text is exempt from SmallText 4.5:1 but held to
+        // INACTIVE_TEXT_MIN. `faded_below_small_text` proves the exemption is
+        // doing work: some theme's disabled label really is under 4.5:1.
+        let mut faded_below_small_text = false;
         for theme in crate::ui::theme::preset_names() {
             let ctx = egui::Context::default();
             let colors = crate::ui::theme::Colors::from_config(
                 &crate::ui::theme::preset_colors(theme).unwrap(),
             );
+            // The kit button labels in the medium UI family, which a bare
+            // context does not bind.
+            crate::ui::theme::setup_fonts(&ctx);
             crate::ui::theme::setup_style(&ctx, &colors);
             for enabled in [true, false] {
                 let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
                     for kind in [
                         crate::ui::button::ButtonKind::Primary,
                         crate::ui::button::ButtonKind::Secondary,
-                        crate::ui::button::ButtonKind::Accent,
                         crate::ui::button::ButtonKind::Danger,
+                        crate::ui::button::ButtonKind::Ghost,
                     ] {
                         let capture = Capture::begin(ui.painter(), "button");
                         let response = ui
@@ -434,6 +459,7 @@ mod tests {
                                 painted_label: "Action".into(),
                                 hit: response.rect,
                                 minimum: egui::vec2(28.0, 28.0),
+                                inactive: !enabled,
                             }],
                             vec![],
                         );
@@ -444,8 +470,55 @@ mod tests {
                     .flat_map(LayoutReport::violations)
                     .collect();
                 assert!(errors.is_empty(), "{theme} enabled={enabled}: {errors:?}");
+                for report in snapshot(&ctx) {
+                    for text in &report.texts {
+                        assert_eq!(text.inactive, !enabled, "{theme}: inactive flag");
+                        let ratio = crate::ui::theme::contrast(
+                            crate::ui::theme::luminance(text.foreground),
+                            crate::ui::theme::luminance(text.background),
+                        );
+                        if !enabled {
+                            assert!(
+                                ratio + 0.001 >= INACTIVE_TEXT_MIN,
+                                "{theme}: disabled label {ratio:.2} under the floor"
+                            );
+                            faded_below_small_text |=
+                                ratio < crate::ui::foreground::Role::SmallText.minimum();
+                        }
+                    }
+                }
             }
         }
+        assert!(
+            faded_below_small_text,
+            "disabled labels are not dimmed below SmallText in any theme"
+        );
+    }
+
+    #[test]
+    fn inactive_text_below_the_floor_is_still_a_violation() {
+        let mut report = sample();
+        report.texts[0].foreground = Color32::from_gray(120);
+        report.texts[0].background = Color32::from_gray(128);
+        report.texts[0].inactive = true;
+        assert!(
+            report.violations().iter().any(|s| s.contains("contrast")),
+            "inactive text near its background must still fail"
+        );
+        report.texts[0].foreground = Color32::from_gray(190);
+        report.texts[0].background = Color32::from_gray(60);
+        assert!(
+            report.violations().iter().all(|s| !s.contains("contrast")),
+            "inactive text above the floor passes: {:?}",
+            report.violations()
+        );
+        report.texts[0].inactive = false;
+        report.texts[0].foreground = Color32::from_gray(100);
+        report.texts[0].background = Color32::from_gray(60);
+        assert!(
+            report.violations().iter().any(|s| s.contains("contrast")),
+            "active low-contrast text keeps the 4.5:1 minimum"
+        );
     }
 
     #[test]

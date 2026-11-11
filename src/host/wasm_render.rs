@@ -721,9 +721,9 @@ fn render_button_node(
     use crate::ui::button::{ButtonKind, KitButton};
     let kind = match b.style {
         // The SDK encodes selected state for Checkbox/Toggle/Radio/Segmented/Tabs
-        // as primary vs secondary (sdk/python/plexi_sdk/ui.py), so plugin Primary
-        // stays visibly distinct from Secondary: the kit's Accent emphasis.
-        ButtonStyle::Primary => ButtonKind::Accent,
+        // as primary vs secondary (sdk/python/plexi_sdk/ui.py); Primary is the
+        // accent-filled kind, visibly distinct from Secondary.
+        ButtonStyle::Primary => ButtonKind::Primary,
         ButtonStyle::Secondary => ButtonKind::Secondary,
         ButtonStyle::Danger => ButtonKind::Danger,
         ButtonStyle::Ghost => ButtonKind::Ghost,

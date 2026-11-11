@@ -1,0 +1,16 @@
+# Shared kit buttons in the Calculator app, in both built-in themes.
+size = [1000.0, 700.0]
+themes = ["plexi-dusk", "plexi-dawn"]
+suite = false
+
+[[steps]]
+open = { kind = "process", path = "apps/calc", as = "calc" }
+
+[[steps]]
+wait_app_frame = { target = "calc", timeout_s = 30.0 }
+
+[[steps]]
+assert = { target = "calc", lifecycle = "running", tree_contains = "0" }
+
+[[steps]]
+shot = "button-calculator.png"

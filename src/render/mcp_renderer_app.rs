@@ -477,7 +477,7 @@ impl App for McpRendererApp {
                         "Connect / retry"
                     },
                     ctx.colors,
-                ))
+                ).kind(crate::ui::button::ButtonKind::Secondary))
                 .clicked()
             {
                 self.connect_requested = true;
@@ -489,7 +489,7 @@ impl App for McpRendererApp {
             .show(ui, |ui| {
                 if self.form {
                     if ui
-                        .add(crate::ui::button::KitButton::new("← Back", ctx.colors))
+                        .add(crate::ui::button::KitButton::new("← Back", ctx.colors).kind(crate::ui::button::ButtonKind::Secondary))
                         .clicked()
                     {
                         self.form = false;
@@ -535,7 +535,7 @@ impl App for McpRendererApp {
                 ui.horizontal(|ui| {
                     ui.strong("Result");
                     if ui
-                        .add(crate::ui::button::KitButton::new("Copy", ctx.colors))
+                        .add(crate::ui::button::KitButton::new("Copy", ctx.colors).kind(crate::ui::button::ButtonKind::Secondary))
                         .clicked()
                     {
                         ui.ctx().copy_text(self.result.clone());

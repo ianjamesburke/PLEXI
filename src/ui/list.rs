@@ -439,6 +439,7 @@ impl<'a> ListRow<'a> {
                 painted_label: label.into(),
                 hit,
                 minimum: Vec2::splat(style::BUTTON_H_MD),
+                inactive: false,
             });
         }
         if stacked {
@@ -611,6 +612,15 @@ pub struct ListRowResponse {
 }
 
 impl ListRowResponse {
+    pub(crate) fn response(&self) -> egui::Response {
+        self.row.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rect(&self) -> egui::Rect {
+        self.row.rect
+    }
+
     pub fn row_clicked(&self) -> bool {
         self.row.clicked() || self.trailing_clicked
     }

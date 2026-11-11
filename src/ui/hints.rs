@@ -170,6 +170,10 @@ impl<'a> HintBar<'a> {
         for row in hint_rows(&widths, full, style::SPACE_MD) {
             let total = widths[row.clone()].iter().sum::<f32>()
                 + style::SPACE_MD * row.len().saturating_sub(1) as f32;
+            let layer = ui.layer_id();
+            let start = ui
+                .ctx()
+                .graphics(|g| g.get(layer).map_or(0, |list| list.all_entries().len()));
             let row_resp = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = style::SPACE_MD;
                 ui.add_space(((full - total) / 2.0).max(0.0));
@@ -178,6 +182,18 @@ impl<'a> HintBar<'a> {
                     resp.chip_rects.extend(chips);
                     if let Some(l) = label {
                         resp.label_rects.push(l);
+                    }
+                }
+            });
+            // Keep rasterized glyph edges inside the allocated row even when
+            // fractional layout coordinates round outward to the pixel grid.
+            ui.ctx().graphics_mut(|g| {
+                if let Some(list) = g.get_mut(layer) {
+                    let end = list.all_entries().len();
+                    for index in start..end {
+                        list.mutate_shape(egui::layers::ShapeIdx(index), |entry| {
+                            entry.clip_rect = entry.clip_rect.intersect(row_resp.response.rect);
+                        });
                     }
                 }
             });
@@ -208,8 +224,7 @@ impl<'a> HintBar<'a> {
             egui::pos2(clip.min.x, rect.min.y),
             egui::vec2(clip.width(), total_h),
         );
-        ui.painter()
-            .rect_filled(full_rect, 0.0, colors.bg_toolbar);
+        ui.painter().rect_filled(full_rect, 0.0, colors.bg_toolbar);
 
         if divider {
             ui.painter().rect_filled(
@@ -273,10 +288,7 @@ impl<'a> HintBar<'a> {
         let total = widths.iter().sum::<f32>()
             + style::SPACE_MD * self.groups.len().saturating_sub(1) as f32;
         let rem = ui.available_width().max(0.0);
-        let row_h = ui
-            .max_rect()
-            .height()
-            .max(shortcuts::chip_row_height(ui));
+        let row_h = ui.max_rect().height().max(shortcuts::chip_row_height(ui));
         let slot_rect = egui::Rect::from_min_size(
             egui::pos2(ui.max_rect().max.x - rem, ui.max_rect().min.y),
             egui::vec2(rem, row_h),

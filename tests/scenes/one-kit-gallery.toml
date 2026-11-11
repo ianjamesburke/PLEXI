@@ -6,6 +6,6 @@ open = { kind = "builtin", id = "button-gallery-fixture", as = "gallery" }
 [[steps]]
 assert_label = { target = "gallery", label = "Md · 32 (default)" }
 [[steps]]
-assert_label = { target = "gallery", label = "Lg · 52" }
+assert_label = { target = "gallery", label = "Lg · 40" }
 [[steps]]
 shot = "one-kit-gallery.png"

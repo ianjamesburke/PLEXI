@@ -678,7 +678,7 @@ impl TextEditorApp {
             if view.status == "pending" && view.conflict.is_none() {
                 let accept = ui.add(
                     crate::ui::button::KitButton::new("Accept", colors)
-                        .kind(crate::ui::button::ButtonKind::Accent)
+                        .kind(crate::ui::button::ButtonKind::Primary)
                         .min_width(72.0),
                 );
                 // Pointer only. `clicked()` also reports keyboard activation,

@@ -304,7 +304,7 @@ Same-user native processes are not isolated from each other. A process running a
 
 Save a secret to the platform secret store.
 
-Plexi will prompt you to type the value (hidden). On macOS the secret is stored in the system keychain; on Linux it uses Secret Service or a labeled encrypted-file fallback. See https://plexiapp.com/docs/secrets/#linux-storage for storage and migration details. Terminal injection is opt-in in Secrets.
+Plexi will prompt you to type the value (hidden). On macOS the secret is stored in the system keychain; on Linux it uses Secret Service or a labeled encrypted-file fallback. See https://plexiapp.com/docs/secrets/#linux-storage for storage and migration details. Export to terminals is opt-in in Secrets.
 
 Use --from-env to read the value from an existing environment variable instead of typing it. Use --global to make the secret available across all projects, not just the current one.
 

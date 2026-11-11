@@ -736,17 +736,17 @@ impl AssistantRenderer {
                 let actions: [(&str, ButtonKind, PermissionChoice); 5] = [
                     (
                         "Allow once",
-                        ButtonKind::Accent,
+                        ButtonKind::Primary,
                         PermissionChoice::AllowOnce,
                     ),
                     (
                         "Allow this session",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowSession,
                     ),
                     (
                         "Always allow",
-                        ButtonKind::Primary,
+                        ButtonKind::Secondary,
                         PermissionChoice::AllowAlways,
                     ),
                     (

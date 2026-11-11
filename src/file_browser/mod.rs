@@ -2553,6 +2553,10 @@ impl FileBrowserApp {
             .collect()
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "legacy controls await kit replacements"
+    )]
     fn draw_toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -2651,6 +2655,7 @@ impl FileBrowserApp {
                 let bar_id = ui.id().with("view_menu");
                 let menu_button = ui.add(
                     crate::ui::button::KitButton::new("View \u{2304}", colors)
+                        .kind(crate::ui::button::ButtonKind::Secondary)
                         .size(crate::ui::button::ButtonSize::Sm),
                 );
                 let synthetic_open =
@@ -6020,6 +6025,8 @@ mod tests {
 
         // Render one UI pass of the action palette and verify SurfaceKey::Pane(pane_id) is claimed.
         let ctx = egui::Context::default();
+        // Kit buttons label in the medium UI family, which a bare context does not bind.
+        crate::ui::theme::setup_fonts(&ctx);
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let _ = ctx.run_ui(RawInput::default(), |ui| {
             app.draw_action_palette(ui, &colors, 77, None);
