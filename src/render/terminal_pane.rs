@@ -764,7 +764,7 @@ mod tests {
     /// The icon's ink fills its slot; the pip is a hollow ring (ink is 0.75 of its radius).
     #[test]
     fn pane_header_glyphs_have_symmetric_insets() {
-        use crate::ui::style::{PANE_HEADER_GLYPH, PANE_HEADER_HEIGHT, PANE_RING_WIDTH};
+        use crate::ui::style::{PANE_HEADER_GLYPH, PANE_HEADER_HEIGHT};
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut names = HashMap::new();
         names.insert(7, "title".to_owned());
@@ -807,7 +807,7 @@ mod tests {
     /// arrow is centered on the text, and its side padding is equal.
     #[test]
     fn outside_chip_is_centered_in_band_with_equal_padding() {
-        use crate::ui::style::{CHIP_ICON_GAP, PANE_HEADER_CHIP_HEIGHT, PANE_HEADER_HEIGHT, PANE_RING_WIDTH};
+        use crate::ui::style::{CHIP_ICON_GAP, PANE_HEADER_CHIP_HEIGHT, PANE_HEADER_HEIGHT};
         let colors = Colors::from_config(&crate::config::ThemeConfig::default());
         let mut names = HashMap::new();
         names.insert(7, "title".to_owned());
