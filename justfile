@@ -4,9 +4,7 @@
 PYTHON_VERSION := "3.12.13"
 PYTHON_PBS_DATE := "20260414"
 
-# Rust 1.97 warns on f64-to-f32 literal fallback throughout egui call sites.
-# Keep the global warning gate while upstream APIs transition to typed literals.
-export RUSTFLAGS := "-D warnings -A float-literal-f32-fallback"
+export RUSTFLAGS := "-D warnings"
 
 # Pane-inherited Plexi vars that must not reach a test process: they would let
 # a test resolve real channel state instead of its own isolated profile.
@@ -63,6 +61,10 @@ test:
         --skip routine \
         --skip changes \
         --skip scene_suite
+
+# Full release host suite, test-target compilation and strict lint.
+release-host-gate:
+    {{TEST_ENV_SCRUB}} bash scripts/release-host-gate.sh
 
 # Run selected host tests with the same flags and isolation as `just scene`.
 # Pass libtest filters and options after the recipe name.
@@ -578,6 +580,7 @@ test-build-inputs:
 
 # Infrastructure checks, including offline Cargo build-input fixtures.
 test-infra-scripts: test-build-inputs
+    python3 scripts/test_release_evidence.py
     uv run --no-project python scripts/test_docs_gate_scope.py
     uv run --no-project python scripts/test_babysitter_policy.py
     uv run --no-project python scripts/test_pr_install_pretests.py
