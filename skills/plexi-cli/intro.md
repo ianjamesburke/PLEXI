@@ -141,6 +141,8 @@ plexi app open file_browser           # no path: browses the pane's directory
 Built-in pane types do not appear in `plexi app list` (that lists installed
 apps only), and `text-editor` with no path opens a fresh scratch note. Read an
 open app pane with `plexi pane state <id>`; `pane capture` is terminal-only.
+`pane state|status|wait|heartbeat` with no id act on the calling pane
+(`PLEXI_PANE_ID`); outside a pane they exit 1 and ask for an id.
 
 ## Capture and handle notes
 

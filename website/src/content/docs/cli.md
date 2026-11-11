@@ -1501,7 +1501,7 @@ Wait for current idle, blocked, or exited state; print its lifecycle record. Exi
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Target pane id or name |
+| `<pane_id>` | string | no | Target pane id or name. Defaults to the current pane (PLEXI_PANE_ID) |
 | `--until` | string | yes | Predicate: idle, blocked, or exited (any exit, including unknown status) |
 | `--timeout` | string | no | Host deadline in seconds; must be finite and positive Default: `300`. |
 
@@ -1593,11 +1593,13 @@ This moves what the user sees on screen — it does not change which pane an age
 
 Configure a host-owned recurring prompt for a terminal pane.
 
+Defaults to the current pane when no pane id is given.
+
 Example: plexi pane heartbeat 42 --every 5m --text "cycle"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id or name to prompt (from `plexi pane list`) |
+| `<pane_id>` | string | no | Pane id or name to prompt (from `plexi pane list`). Defaults to the current pane (PLEXI_PANE_ID) |
 | `--every` | string | no | Interval such as 30s, 5m, or 1h |
 | `--text` | string | no | Prompt text submitted on each beat |
 | `--while-idle-only` | flag | no | Only submit when the shared agent detector reports idle (default) |
@@ -1670,7 +1672,7 @@ Report one composite working, idle, blocked, or unknown verdict as JSON
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id or name to inspect |
+| `<pane_id>` | string | no | Pane id or name to inspect. Defaults to the current pane (PLEXI_PANE_ID) |
 
 ### `plexi pane key`
 
@@ -1764,11 +1766,13 @@ For terminal panes: returns a simple status object (type, title, pane_id).
 
 Every response also carries `claimed_state` (the pane's own `status` slot — an agent-authored claim, with its step token embedded in the value by convention, or `null` if never written) and `observed_state` (host-derived: process alive, seconds since last output, child pids, current foreground command) — always together, never one without the other. Pass `--stale-after <secs>` to additionally raise a typed `stale_claim` when a claim exists but the host has observed no output within that many seconds; omit it and `stale_claim` stays `null` with no evaluation performed.
 
+Defaults to the current pane when no pane id is given.
+
 Example: plexi pane state 42 --stale-after 300
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<pane_id>` | string | yes | Pane id or name to query (from `plexi pane list`) |
+| `<pane_id>` | string | no | Pane id or name to query (from `plexi pane list`). Defaults to the current pane (PLEXI_PANE_ID) |
 | `--stale-after` | string | no | Raise `stale_claim` when the claimed state looks fresh but no output has been observed within this many seconds. Omitted by default — no stale evaluation runs unless this is set |
 
 ### `plexi pane slot`

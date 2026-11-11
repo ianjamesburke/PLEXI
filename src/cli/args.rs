@@ -1903,8 +1903,8 @@ pub enum PaneCmd {
     /// Wait for current idle, blocked, or exited state; print its lifecycle record.
     /// Exit 0 on match, 2 on timeout, 1 on invalid predicate or plumbing failure.
     Wait {
-        /// Target pane id or name.
-        pane_id: PaneTarget,
+        /// Target pane id or name. Defaults to the current pane (PLEXI_PANE_ID).
+        pane_id: Option<PaneTarget>,
         /// Predicate: idle, blocked, or exited (any exit, including unknown status).
         #[arg(long)]
         until: String,
@@ -2058,10 +2058,12 @@ pub enum PaneCmd {
     },
     /// Configure a host-owned recurring prompt for a terminal pane.
     ///
+    /// Defaults to the current pane when no pane id is given.
+    ///
     /// Example: plexi pane heartbeat 42 --every 5m --text "cycle"
     Heartbeat {
-        /// Pane id or name to prompt (from `plexi pane list`)
-        pane_id: PaneTarget,
+        /// Pane id or name to prompt (from `plexi pane list`). Defaults to the current pane (PLEXI_PANE_ID).
+        pane_id: Option<PaneTarget>,
         /// Interval such as 30s, 5m, or 1h.
         #[arg(long, conflicts_with = "off")]
         every: Option<String>,
@@ -2169,8 +2171,8 @@ pub enum PaneCmd {
     },
     /// Report one composite working, idle, blocked, or unknown verdict as JSON.
     Status {
-        /// Pane id or name to inspect.
-        pane_id: PaneTarget,
+        /// Pane id or name to inspect. Defaults to the current pane (PLEXI_PANE_ID).
+        pane_id: Option<PaneTarget>,
     },
     /// Send a key press to a pane.
     ///
@@ -2312,10 +2314,12 @@ pub enum PaneCmd {
     /// within that many seconds; omit it and `stale_claim` stays `null` with
     /// no evaluation performed.
     ///
+    /// Defaults to the current pane when no pane id is given.
+    ///
     /// Example: plexi pane state 42 --stale-after 300
     State {
-        /// Pane id or name to query (from `plexi pane list`)
-        pane_id: PaneTarget,
+        /// Pane id or name to query (from `plexi pane list`). Defaults to the current pane (PLEXI_PANE_ID).
+        pane_id: Option<PaneTarget>,
         /// Raise `stale_claim` when the claimed state looks fresh but no
         /// output has been observed within this many seconds. Omitted by
         /// default — no stale evaluation runs unless this is set.
