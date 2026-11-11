@@ -1,5 +1,58 @@
 //! Native titlebar button area, expressed in AppKit points before UI zoom.
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DoubleClickAction {
+    Maximize,
+    Minimize,
+    None,
+}
+
+#[cfg(target_os = "macos")]
+fn parse_double_click_action(value: Option<&str>) -> DoubleClickAction {
+    match value {
+        Some("Maximize") => DoubleClickAction::Maximize,
+        Some("Minimize") => DoubleClickAction::Minimize,
+        Some("None") => DoubleClickAction::None,
+        other => {
+            log::info!(
+                "titlebar: unknown or unset AppleActionOnDoubleClick {other:?}; using Maximize"
+            );
+            DoubleClickAction::Maximize
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn double_click_action(ctx: &egui::Context) -> DoubleClickAction {
+    #[cfg(test)]
+    if let Some(action) = ctx.data(|d| d.get_temp(egui::Id::new("titlebar_test_action"))) {
+        return action;
+    }
+    let _ = ctx;
+    use objc2_foundation::{NSString, NSUserDefaults};
+    let value = NSUserDefaults::standardUserDefaults()
+        .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
+        .map(|value| value.to_string());
+    parse_double_click_action(value.as_deref())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn double_click_command(
+    double_click: bool,
+    action: DoubleClickAction,
+    maximized: bool,
+) -> Option<egui::ViewportCommand> {
+    if !double_click {
+        return None;
+    }
+    match action {
+        DoubleClickAction::Maximize => Some(egui::ViewportCommand::Maximized(!maximized)),
+        DoubleClickAction::Minimize => Some(egui::ViewportCommand::Minimized(true)),
+        DoubleClickAction::None => None,
+    }
+}
+
 trait ButtonMetrics {
     fn native_button_area(&self) -> Option<egui::Vec2>;
 }
@@ -131,6 +184,33 @@ pub(crate) fn toolbar_height(ctx: &egui::Context) -> f32 {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use super::{double_click_command, parse_double_click_action, DoubleClickAction};
+
+    #[test]
+    fn titlebar_double_click_setting_maps_to_commands() {
+        use egui::ViewportCommand;
+        assert!(matches!(
+            double_click_command(true, parse_double_click_action(None), false),
+            Some(ViewportCommand::Maximized(true))
+        ));
+        assert!(matches!(
+            double_click_command(true, parse_double_click_action(Some("Maximize")), true),
+            Some(ViewportCommand::Maximized(false))
+        ));
+        assert!(matches!(
+            double_click_command(true, parse_double_click_action(Some("Minimize")), false),
+            Some(ViewportCommand::Minimized(true))
+        ));
+        assert!(
+            double_click_command(true, parse_double_click_action(Some("None")), false).is_none()
+        );
+        assert!(matches!(
+            double_click_command(true, parse_double_click_action(Some("unexpected")), false),
+            Some(ViewportCommand::Maximized(true))
+        ));
+        assert!(double_click_command(false, DoubleClickAction::Maximize, false).is_none());
+    }
+
     #[test]
     fn missing_native_metrics_never_means_zero_exclusion() {
         let ctx = egui::Context::default();

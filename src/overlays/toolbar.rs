@@ -215,6 +215,40 @@ impl PlexiApp {
             if let Some(rect) = rect {
                 ui.painter().galley(rect.min, galley, self.colors.text_dim);
             }
+            let title = rect.unwrap_or(egui::Rect::NOTHING);
+            let end = right.clamp(row.left(), row.right());
+            let spans = if title.is_positive() {
+                [(row.left(), title.left()), (title.right(), end)]
+            } else {
+                [(row.left(), end), (end, end)]
+            };
+            for (index, (left, right)) in spans.into_iter().enumerate() {
+                if right <= left {
+                    continue;
+                }
+                let drag_rect = egui::Rect::from_min_max(
+                    egui::pos2(left, row.top()),
+                    egui::pos2(right, row.bottom()),
+                );
+                let response = ui.interact(
+                    drag_rect,
+                    egui::Id::new(("titlebar_drag", index)),
+                    egui::Sense::click_and_drag(),
+                );
+                if response.drag_started() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if response.double_clicked() {
+                    let action = crate::platform::titlebar::double_click_action(ui.ctx());
+                    log::info!("titlebar: double click action {action:?}");
+                    let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    if let Some(command) =
+                        crate::platform::titlebar::double_click_command(true, action, maximized)
+                    {
+                        ui.ctx().send_viewport_cmd(command);
+                    }
+                }
+            }
             ui.ctx().data_mut(|d| {
                 d.insert_temp(
                     egui::Id::new("titlebar_title_rect"),
