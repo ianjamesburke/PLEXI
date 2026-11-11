@@ -286,22 +286,27 @@ impl SecretsApp {
                 SecretTarget::Workspace { .. } => "Workspace",
                 SecretTarget::Folder(_) => "Folder",
             };
-            let mut options = vec![(SecretTarget::Global, "Global")];
-            if let Ok(Some(target)) = manager::workspace_target(&self.cwd) {
-                options.push((target, "Workspace"));
-            }
-            if crate::release::feature_enabled(crate::release::ReleaseFeature::FolderSecrets) {
-                options.push((
-                    SecretTarget::Folder(crate::platform::path::canonical_or_self(&self.cwd)),
-                    "Folder (current directory)",
-                ));
-            }
+            let cwd = self.cwd.clone();
             crate::ui::dropdown::select_value(
                 ui,
                 "secret_scope",
                 label,
                 &mut self.target,
-                options,
+                || {
+                    let mut options = vec![(SecretTarget::Global, "Global")];
+                    if let Ok(Some(target)) = manager::workspace_target(&cwd) {
+                        options.push((target, "Workspace"));
+                    }
+                    if crate::release::feature_enabled(
+                        crate::release::ReleaseFeature::FolderSecrets,
+                    ) {
+                        options.push((
+                            SecretTarget::Folder(crate::platform::path::canonical_or_self(&cwd)),
+                            "Folder (current directory)",
+                        ));
+                    }
+                    options
+                },
                 colors,
             );
         });

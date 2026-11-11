@@ -7,12 +7,14 @@ use super::{list::ListRow, style, theme::Colors};
     clippy::disallowed_methods,
     reason = "the kit dropdown is the sole ComboBox construction boundary"
 )]
-pub(crate) fn select_value<'a, T: PartialEq>(
+/// `options` is built only while the popup is open, so callers may resolve
+/// them from disk without paying for it on every closed frame.
+pub(crate) fn select_value<'a, T: PartialEq, O: IntoIterator<Item = (T, &'a str)>>(
     ui: &mut egui::Ui,
     id_salt: impl std::hash::Hash,
     selected_text: &str,
     value: &mut T,
-    options: impl IntoIterator<Item = (T, &'a str)>,
+    options: impl FnOnce() -> O,
     colors: &Colors,
 ) -> egui::Response {
     ui.scope(|ui| {
@@ -27,7 +29,7 @@ pub(crate) fn select_value<'a, T: PartialEq>(
             .truncate()
             .show_ui(ui, |ui| {
                 ui.set_width(style::MENU_MIN_W);
-                for (option, label) in options {
+                for (option, label) in options() {
                     if option_row(ui, label, *value == option, colors).clicked() {
                         changed = *value != option;
                         *value = option;
@@ -56,4 +58,48 @@ pub(super) fn option_row(
         .selected(selected)
         .show(ui, colors)
         .response()
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::Queryable;
+    use std::cell::Cell;
+
+    #[test]
+    fn options_are_resolved_only_while_the_popup_is_open() {
+        let colors = crate::ui::theme::Colors::from_config(
+            &crate::ui::theme::preset_colors("plexi-dusk").unwrap(),
+        );
+        let calls = Cell::new(0_u32);
+        let mut initialized = false;
+        let mut h = egui_kittest::Harness::new_ui_state(
+            |ui, value: &mut &'static str| {
+                if !initialized {
+                    crate::ui::theme::setup_fonts(ui.ctx());
+                    crate::ui::theme::setup_style(ui.ctx(), &colors);
+                    initialized = true;
+                    return;
+                }
+                let selected = *value;
+                super::select_value(
+                    ui,
+                    "d",
+                    selected,
+                    value,
+                    || {
+                        calls.set(calls.get() + 1);
+                        [("A", "A"), ("B", "B")]
+                    },
+                    &colors,
+                );
+            },
+            "A",
+        );
+        h.run();
+        h.run();
+        assert_eq!(calls.get(), 0, "closed dropdown must not build options");
+        h.get_by_role(egui::accesskit::Role::ComboBox).click();
+        h.run();
+        assert!(calls.get() > 0, "open dropdown builds options");
+    }
 }

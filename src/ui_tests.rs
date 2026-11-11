@@ -185,11 +185,13 @@ impl crate::app::app_trait::App for DropdownSceneFixture {
             "scene_dropdown",
             self.selected,
             &mut self.selected,
-            [
-                ("Development", "Development"),
-                ("Staging", "Staging"),
-                ("Production", "Production"),
-            ],
+            || {
+                [
+                    ("Development", "Development"),
+                    ("Staging", "Staging"),
+                    ("Production", "Production"),
+                ]
+            },
             ctx.colors,
         );
         if ui.input(|input| input.key_pressed(egui::Key::F6)) {

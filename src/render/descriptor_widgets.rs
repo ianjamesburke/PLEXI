@@ -131,9 +131,11 @@ fn render_field(
                             ("descriptor_enum", pane_key, &arg.name),
                             &selected,
                             val,
-                            options
-                                .iter()
-                                .map(|option| (option.clone(), option.as_str())),
+                            || {
+                                options
+                                    .iter()
+                                    .map(|option| (option.clone(), option.as_str()))
+                            },
                             colors,
                         );
                     }
