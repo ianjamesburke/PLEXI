@@ -17251,3 +17251,73 @@ fn changelog_toolbar_and_click_away_close_focus_layer() {
     assert!(!h.app.show_changelog);
     assert!(h.app.focus_stack.is_empty());
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn titlebar_background_double_click_emits_zoom() {
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("titlebar_test_action"), crate::platform::titlebar::DoubleClickAction::Maximize));
+    h.run_frames(3);
+    let row: egui::Rect = h.ctx.data(|d| d.get_temp(egui::Id::new("titlebar_row_rect"))).unwrap();
+    let pos = egui::pos2(row.left() + 20.0, row.center().y);
+    for (i, pressed) in [true, false, true, false].into_iter().enumerate() {
+        h.frame(egui::RawInput {
+            time: Some(1.0 + i as f64 * 0.05),
+            events: vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        });
+    }
+    let commands = &h.last_full_output.as_ref().unwrap().viewport_output[&egui::ViewportId::ROOT].commands;
+    assert!(commands.iter().any(|c| matches!(c, egui::ViewportCommand::Maximized(true))), "expected zoom, got {commands:?}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn titlebar_drag_and_exclusions_preserve_pointer_routing() {
+    fn frame(h: &mut HostHarness, time: f64, events: Vec<egui::Event>) -> Vec<egui::ViewportCommand> {
+        h.frame(egui::RawInput { time: Some(time), events, ..Default::default() });
+        h.last_full_output.as_ref().unwrap().viewport_output[&egui::ViewportId::ROOT].commands.clone()
+    }
+    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+    fn double_click(h: &mut HostHarness, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+        let mut commands = Vec::new();
+        for (i, pressed) in [true, false, true, false].into_iter().enumerate() {
+            commands.extend(frame(h, 1.0 + i as f64 * 0.05, vec![egui::Event::PointerMoved(pos), button(pos, pressed)]));
+        }
+        commands
+    }
+    let mut h = HostHarness::new();
+    h.app.last_sent_window_title = Some("A visible title".to_owned());
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("titlebar_test_action"), crate::platform::titlebar::DoubleClickAction::Maximize));
+    h.run_frames(3);
+    let title: egui::Rect = h.ctx.data(|d| d.get_temp(egui::Id::new("titlebar_title_rect"))).unwrap();
+    assert!(title.is_positive());
+    let commands = double_click(&mut h, title.center());
+    assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::StartDrag)));
+
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("titlebar_test_action"), crate::platform::titlebar::DoubleClickAction::Maximize));
+    h.run_frames(3);
+    let help: egui::Rect = h.ctx.data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "help")))).unwrap();
+    frame(&mut h, 1.0, vec![egui::Event::PointerMoved(help.center()), button(help.center(), true)]);
+    frame(&mut h, 1.05, vec![button(help.center(), false)]);
+    assert!(h.app.show_shortcuts, "toolbar button must receive its click");
+    let mut h = HostHarness::new();
+    h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("titlebar_test_action"), crate::platform::titlebar::DoubleClickAction::Maximize));
+    h.run_frames(3);
+    let help: egui::Rect = h.ctx.data(|d| d.get_temp(egui::Id::new(("toolbar_ctl_rect", "help")))).unwrap();
+    let commands = double_click(&mut h, help.center());
+    assert!(!commands.iter().any(|c| matches!(c, egui::ViewportCommand::Maximized(_) | egui::ViewportCommand::StartDrag)));
+
+    let mut h = HostHarness::new();
+    h.run_frames(3);
+    let row: egui::Rect = h.ctx.data(|d| d.get_temp(egui::Id::new("titlebar_row_rect"))).unwrap();
+    let pos = egui::pos2(row.left() + 20.0, row.center().y);
+    frame(&mut h, 1.0, vec![egui::Event::PointerMoved(pos), button(pos, true)]);
+    let commands = frame(&mut h, 1.05, vec![egui::Event::PointerMoved(pos + egui::vec2(20.0, 0.0))]);
+    assert!(commands.iter().any(|c| matches!(c, egui::ViewportCommand::StartDrag)), "expected drag, got {commands:?}");
+}

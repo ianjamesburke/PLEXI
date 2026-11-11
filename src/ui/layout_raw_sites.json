@@ -181,6 +181,13 @@
   },
   "approved": [
     {
+      "source": "src/overlays/toolbar.rs",
+      "site": "draw_toolbar | let response = ui.interact(",
+      "count": 1,
+      "surface": "src/overlays/toolbar.rs::draw_toolbar",
+      "rationale": "Window drag regions use measured toolbar and title bounds; titlebar fixtures and pointer tests cover their exclusions."
+    },
+    {
       "source": "src/ui/dialog.rs",
       "site": "action_row | .galley_with_override_text_color(label_pos, galley, color);",
       "count": 1,
