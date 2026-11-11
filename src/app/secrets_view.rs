@@ -667,7 +667,7 @@ mod tests {
             // The in-memory system store is process-wide and sibling tests put
             // global secrets in it. The Scope selector is only drawn in the empty
             // state, so start from an empty inventory.
-            let mut secrets = SecretsApp::new(root.path().into());
+            let mut secrets = SecretsView::new(root.path().into());
             secrets.entries.clear();
             h.with_app_mut(|app| {
                 let app_secrets = secrets;
@@ -681,7 +681,7 @@ mod tests {
                 app.sidebar_visible = false;
                 app.open_builtin_view_pane(
                     Box::new(app_secrets),
-                    crate::app::permissions::AppPermissions::builtin(),
+                    crate::app::permissions::PluginPermissions::builtin(),
                     root.path().into(),
                     None,
                     None,

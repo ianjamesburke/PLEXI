@@ -2460,7 +2460,7 @@ pub(crate) fn workspace_config_shadows(root: &Path, saved_key: Option<&str>) -> 
         ("effects", "ghost_opacity", toml::Value::Float(EffectsConfig::default().unfocused_opacity().unwrap_or(0.75) as f64)),
         ("notifications", "enabled", toml::Value::Boolean(true)),
         ("notifications", "focus_mode", toml::Value::Boolean(false)),
-        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_app_daily_usd())),
+        ("ai", "per_app_daily_usd", toml::Value::Float(ai_defaults.effective_per_plugin_daily_usd())),
         ("ai", "global_daily_usd", toml::Value::Float(ai_defaults.effective_global_daily_usd())),
         ("terminal", "minimum_contrast", toml::Value::Float(DEFAULT_TERMINAL_MINIMUM_CONTRAST as f64)),
         ("permissions", "soft_grant_days", toml::Value::Integer(DEFAULT_SOFT_GRANT_DAYS as i64)),

@@ -3976,10 +3976,10 @@ mod tests {
         let pane = h.add_test_pane();
         h.focus_pane(pane).run_frames(2);
         fn font(h: &crate::testing::HostHarness, pane: u64) -> f32 {
-            let crate::host::pane::Pane::App(app) = &h.app.windows[0].panes[&pane] else {
+            let crate::host::pane::Pane::View(app) = &h.app.windows[0].panes[&pane] else {
                 panic!("expected app pane")
             };
-            let crate::host::pane::AppRuntime::Builtin(b) = &app.runtime else {
+            let crate::host::pane::ViewRuntime::Builtin(b) = &app.runtime else {
                 panic!("expected builtin")
             };
             b.font_size().unwrap()
@@ -4039,10 +4039,10 @@ mod tests {
         let pane = h.add_test_pane();
         h.focus_pane(pane).run_frames(2);
         let font = |h: &crate::testing::HostHarness| {
-            let crate::host::pane::Pane::App(app) = &h.app.windows[0].panes[&pane] else {
+            let crate::host::pane::Pane::View(app) = &h.app.windows[0].panes[&pane] else {
                 panic!("expected app pane")
             };
-            let crate::host::pane::AppRuntime::Builtin(b) = &app.runtime else {
+            let crate::host::pane::ViewRuntime::Builtin(b) = &app.runtime else {
                 panic!("expected builtin")
             };
             b.font_size().unwrap()
@@ -4475,7 +4475,7 @@ mod tests {
             .panes
             .get_mut(&pane)
             .unwrap()
-            .as_app_mut()
+            .as_view_mut()
             .unwrap()
             .workspace_root = nested.clone();
         h.focus_pane(pane);

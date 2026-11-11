@@ -1166,7 +1166,7 @@ impl PlexiApp {
         let id = self.focused_pane_id()?;
         let pane = self.windows[self.active_window].panes.get(&id)?.as_view()?;
         match &pane.runtime {
-            crate::host::pane::AppRuntime::Builtin(app) => {
+            crate::host::pane::ViewRuntime::Builtin(app) => {
                 app.unsaved_changes_dialog().map(|dialog| (id, dialog))
             }
             _ => None,
@@ -1189,9 +1189,9 @@ impl PlexiApp {
             if let Some(pane) = self.windows[self.active_window]
                 .panes
                 .get_mut(&id)
-                .and_then(|p| p.as_app_mut())
+                .and_then(|p| p.as_view_mut())
             {
-                if let crate::host::pane::AppRuntime::Builtin(app) = &mut pane.runtime {
+                if let crate::host::pane::ViewRuntime::Builtin(app) = &mut pane.runtime {
                     app.resolve_unsaved_changes(choice);
                 }
             }

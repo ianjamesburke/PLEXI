@@ -6432,7 +6432,7 @@ fn unsaved_plain_file_close_owns_keyboard_and_discard_preserves_disk() {
         Box::new(crate::app::text_editor_view::TextEditorView::new(
             path.clone(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.path().to_path_buf(),
         None,
         Some("split_h"),
@@ -6463,7 +6463,7 @@ fn unsaved_editor_fixture() -> (tempfile::TempDir, std::path::PathBuf, HostHarne
         Box::new(crate::app::text_editor_view::TextEditorView::new(
             path.clone(),
         )),
-        crate::app::permissions::AppPermissions::builtin(),
+        crate::app::permissions::PluginPermissions::builtin(),
         dir.path().to_path_buf(),
         None,
         Some("split_h"),
