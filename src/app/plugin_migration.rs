@@ -4,6 +4,34 @@ use std::path::Path;
 
 const MIGRATION: &str = "migration-plugin-v2";
 
+/// Migration runs during profile initialization, before `platform::logging::init`
+/// installs the file logger, so `log::info!` lines emitted then are dropped.
+/// Every trace is also buffered here and replayed by [`replay_early_traces`].
+static EARLY_TRACES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn trace(message: String) {
+    log::info!("{message}");
+    if let Ok(mut buffer) = EARLY_TRACES.lock() {
+        buffer.push(message);
+    }
+}
+
+/// Re-emit migration traces recorded before the logger existed. Call once,
+/// immediately after logger initialization.
+pub(crate) fn replay_early_traces() {
+    let drained = EARLY_TRACES
+        .lock()
+        .map(|mut buffer| std::mem::take(&mut *buffer))
+        .unwrap_or_default();
+    for message in drained {
+        log::info!("{message} (recorded before logger init)");
+    }
+}
+
+fn count_entries(dir: &Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| entries.flatten().count())
+}
+
 pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -37,6 +65,7 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
     if !old.exists() && !backup.exists() {
         return Ok(());
     }
+    let source_count = count_entries(&old);
     let run = || -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir_all(&journal)?;
         if old.exists() && new.exists() {
@@ -113,11 +142,14 @@ pub(crate) fn migrate(root: &Path) -> Result<(), String> {
         log::error!("{message}");
         message
     })?;
-    log::info!(
-        "plugin_migration: schema=2 root={} backup={}",
-        root.display(),
-        backup.display()
-    );
+    trace(format!(
+        "plugin_migration: schema=2 source={} destination={} backup={} packages_in={} packages_out={} outcome=ok",
+        old.display(),
+        new.display(),
+        backup.display(),
+        source_count,
+        count_entries(&new),
+    ));
     Ok(())
 }
 
@@ -158,8 +190,13 @@ fn migrate_pack(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // Publish first, then archive the input. A crash leaves an explicit collision,
     // never a missing pack or an implicit fallback to the old parser.
     std::fs::rename(staged, new)?;
-    std::fs::rename(old, backup)?;
-    log::info!("plugin_pack_migration: schema=2 root={}", root.display());
+    std::fs::rename(old, &backup)?;
+    trace(format!(
+        "plugin_pack_migration: schema=2 source={} destination={} backup={} outcome=ok",
+        root.join("apps.toml").display(),
+        root.join("plugins.toml").display(),
+        backup.display(),
+    ));
     Ok(())
 }
 
@@ -304,6 +341,28 @@ mod tests {
             std::fs::read_to_string(root.path().join(MIGRATION).join("apps.toml")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn plugin_rename_tree_migration_records_trace_with_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = root.path().join("apps/notes");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("manifest.toml"), "schema_version = 1\n[app]\nid = 'notes'\nname = 'Notes'\ntype = 'app'\nentry = 'main.py'\n").unwrap();
+        std::fs::write(legacy.join("main.py"), "").unwrap();
+        migrate(root.path()).unwrap();
+        assert!(root.path().join("plugins/notes/manifest.toml").is_file());
+        assert!(root.path().join(MIGRATION).join("apps/notes").is_dir());
+        let traces = EARLY_TRACES.lock().unwrap();
+        let line = traces
+            .iter()
+            .find(|line| line.contains(&root.path().join("apps").display().to_string()))
+            .expect("migration must record a trace");
+        assert!(
+            line.contains("packages_in=1 packages_out=1 outcome=ok"),
+            "{line}"
+        );
+        assert!(line.contains("destination="), "{line}");
     }
 
     #[test]
