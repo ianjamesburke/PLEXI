@@ -326,53 +326,65 @@ mod tests {
             crate::ui::theme::setup_style(ctx, &colors);
             for screen_width in [900.0_f32, 420.0, 300.0] {
                 for message in ["Moved note to Trash", long] {
-                    let case =
-                        format!("{name} screen={screen_width} message_len={}", message.len());
-                    let mut natural = egui::Vec2::ZERO;
-                    let mut action = egui::Rect::NOTHING;
-                    let mut output = None;
-                    for frame in 0..4 {
-                        output = Some(ctx.run_ui(
-                            egui::RawInput {
-                                time: Some(frame as f64),
-                                screen_rect: Some(egui::Rect::from_min_size(
-                                    egui::Pos2::ZERO,
-                                    egui::vec2(screen_width, 600.0),
-                                )),
-                                ..Default::default()
-                            },
-                            |ui| {
-                                egui::Area::new(egui::Id::new("natural"))
-                                    .fixed_pos(egui::pos2(0.0, 0.0))
-                                    .show(ui.ctx(), |ui| {
-                                        natural = default_kit_button(ui, &colors).rect.size();
-                                    });
-                                action = super::ToastShell::bottom("never_wrap")
-                                    .action(ctx, &colors, message, "Undo", None)
-                                    .rect;
-                            },
-                        ));
+                    for label in ["Undo", "Restore deleted note"] {
+                        let case =
+                            format!("{name} screen={screen_width} message_len={}", message.len())
+                                + label;
+                        let mut natural = egui::Vec2::ZERO;
+                        let mut action = egui::Rect::NOTHING;
+                        let mut output = None;
+                        for frame in 0..4 {
+                            output = Some(ctx.run_ui(
+                                egui::RawInput {
+                                    time: Some(frame as f64),
+                                    screen_rect: Some(egui::Rect::from_min_size(
+                                        egui::Pos2::ZERO,
+                                        egui::vec2(screen_width, 600.0),
+                                    )),
+                                    ..Default::default()
+                                },
+                                |ui| {
+                                    egui::Area::new(egui::Id::new(("natural", label)))
+                                        .fixed_pos(egui::pos2(0.0, 0.0))
+                                        .show(ui.ctx(), |ui| {
+                                            natural = ui
+                                                .add(super::ToastShell::button(label, &colors))
+                                                .rect
+                                                .size();
+                                        });
+                                    action = super::ToastShell::bottom("never_wrap")
+                                        .action(ctx, &colors, message, label, None)
+                                        .rect;
+                                },
+                            ));
+                        }
+                        let output = output.unwrap();
+                        let galley = output
+                            .shapes
+                            .iter()
+                            .find_map(|s| match &s.shape {
+                                egui::Shape::Text(text)
+                                    if text.galley.job.text == label
+                                        && action
+                                            .contains(text.visual_bounding_rect().center()) =>
+                                {
+                                    Some(text.galley.clone())
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| panic!("{case}: action label not painted"));
+                        assert_eq!(
+                            action.height(),
+                            crate::ui::style::BUTTON_H_MD,
+                            "{case}: hit height"
+                        );
+                        assert_eq!(galley.rows.len(), 1, "{case}: the action label wrapped");
+                        assert_eq!(
+                            action.width(),
+                            natural.x,
+                            "{case}: the action keeps its natural width"
+                        );
                     }
-                    let output = output.unwrap();
-                    let galley = output
-                        .shapes
-                        .iter()
-                        .find_map(|s| match &s.shape {
-                            egui::Shape::Text(text)
-                                if text.galley.job.text == "Undo"
-                                    && action.contains(text.visual_bounding_rect().center()) =>
-                            {
-                                Some(text.galley.clone())
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| panic!("{case}: action label not painted"));
-                    assert_eq!(galley.rows.len(), 1, "{case}: the action label wrapped");
-                    assert_eq!(
-                        action.width(),
-                        natural.x,
-                        "{case}: the action keeps its natural width"
-                    );
                 }
             }
         }
