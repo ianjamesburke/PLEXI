@@ -30,7 +30,56 @@ impl PlexiApp {
         );
     }
 
+    /// Shown when the final quit save failed `MAX_QUIT_SAVE_ATTEMPTS` times.
+    fn draw_quit_save_failure(&mut self, ctx: &egui::Context, cause: &str) {
+        let actions = [
+            crate::ui::dialog::DialogAction::new(
+                "quit_without_saving",
+                "Quit without saving",
+                crate::ui::button::ButtonKind::Danger,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Q"],
+                egui::Modifiers::NONE,
+                egui::Key::Q,
+            )),
+            crate::ui::dialog::DialogAction::new(
+                "cancel",
+                "Cancel",
+                crate::ui::button::ButtonKind::Secondary,
+            )
+            .shortcut(crate::ui::dialog::DialogShortcut::new(
+                &["Esc"],
+                egui::Modifiers::NONE,
+                egui::Key::Escape,
+            )),
+        ];
+        let response = crate::ui::dialog::ActionModal::new(
+            "confirm_close_overlay",
+            "Workspace could not be saved",
+            &actions,
+        )
+        .width(super::MODAL_WIDTH)
+        .show(ctx, &self.colors, |ui| {
+            crate::ui::typography::caption(ui, cause, &self.colors);
+            crate::ui::typography::caption(
+                ui,
+                "Quitting now leaves the saved workspace file as it is.",
+                &self.colors,
+            );
+        });
+        if response.selected == Some("quit_without_saving") {
+            self.resolve_quit_save_failure(true);
+        } else if response.dismissed || response.selected == Some("cancel") {
+            self.resolve_quit_save_failure(false);
+        }
+    }
+
     pub(crate) fn draw_confirm_close(&mut self, ctx: &egui::Context) {
+        if let Some(cause) = self.quit_coordinator.save_failure().map(str::to_owned) {
+            self.draw_quit_save_failure(ctx, &cause);
+            return;
+        }
         let actions = [
             crate::ui::dialog::DialogAction::new(
                 "close",

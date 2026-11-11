@@ -2387,14 +2387,28 @@ impl PlexiApp {
     }
 
     pub(crate) fn save_workspace_now(&mut self) -> bool {
+        self.save_workspace_result().is_ok()
+    }
+
+    /// Same save, but hands the cause back so the quit path can show it.
+    pub(crate) fn save_workspace_result(&mut self) -> std::io::Result<()> {
         let save_start = std::time::Instant::now();
         // Trees can also be simplified by egui, independently of pane commands.
         // Reconcile every window before snapshotting, even when UI is occluded.
         for window in &mut self.windows {
-            let before = (window.focused_pane, window.zoomed_pane);
+            let (old_focus, old_zoom) = (window.focused_pane, window.zoomed_pane);
             window.reconcile_stale_tiles();
-            if before != (window.focused_pane, window.zoomed_pane) {
-                log::info!("workspace save: reconciled stale focus/zoom window={}", window.window_id);
+            if (old_focus, old_zoom) != (window.focused_pane, window.zoomed_pane) {
+                let message = format!(
+                    "workspace save: reconciled stale focus/zoom window={} \
+                     focus {:?} -> {:?} zoom {:?} -> {:?}",
+                    window.window_id, old_focus, window.focused_pane, old_zoom, window.zoomed_pane
+                );
+                if window.focused_pane.is_none() && !window.panes.is_empty() {
+                    log::warn!("{message} (window still has panes but no focus)");
+                } else {
+                    log::info!("{message}");
+                }
             }
         }
         crate::platform::logging::mark_ui_phase(
@@ -2540,14 +2554,11 @@ impl PlexiApp {
             context_active_window: self.context_active_window.clone(),
         };
 
-        if let Err(e) = ws.save() {
-            log::error!("Failed to save workspace: {e}");
-            false
-        } else {
-            let save_duration = save_start.elapsed();
-            log::info!("save_workspace_now: saved workspace in {save_duration:?}");
-            true
-        }
+        ws.save()
+            .inspect_err(|e| log::error!("Failed to save workspace: {e}"))?;
+        let save_duration = save_start.elapsed();
+        log::info!("save_workspace_now: saved workspace in {save_duration:?}");
+        Ok(())
     }
 }
 
