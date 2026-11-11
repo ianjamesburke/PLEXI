@@ -148,7 +148,7 @@ fn manually_launched_agent_exit_clears_working_report() {
 #[test]
 #[ignore = "requires-pty"]
 fn manually_launched_idle_agent_exit_is_not_idle() {
-    assert_manual_agent_exit(crate::protocol::AgentState::Idle, crate::protocol::AgentState::ExitedUnreported);
+    assert_manual_agent_exit(crate::protocol::AgentState::Idle, crate::protocol::AgentState::Idle);
 }
 
 fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expected: crate::protocol::AgentState) {
@@ -178,7 +178,7 @@ fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expecte
         std::thread::sleep(Duration::from_millis(20));
     }
     h.app.windows[0].panes.get_mut(&id).unwrap().set_agent(Some(PaneAgentState {
-        pane_id: id, state: reported_state, agent: "codex".into(), detail: None, session_id: None,
+        pane_id: id, state: reported_state.clone(), agent: "codex".into(), detail: None, session_id: None,
     }));
     h.terminal_backend(id).process_command(BackendCommand::Write(b"\x03".to_vec()));
     let deadline = Instant::now() + crate::testing::load_aware_timeout(Duration::from_secs(10));
@@ -187,11 +187,17 @@ fn assert_manual_agent_exit(reported_state: crate::protocol::AgentState, expecte
         let pane = &h.app.windows[0].panes[&id];
         let terminal = pane.as_terminal().unwrap();
         if terminal.observed_agent.is_none() && terminal.activity.is_none() {
-            assert_eq!(pane.effective_agent().map(|a| a.state), Some(expected.clone()),
+            let expected_state = if reported_state == crate::protocol::AgentState::Idle { None } else { Some(expected.clone()) };
+            assert_eq!(pane.effective_agent().map(|a| a.state), expected_state,
                 "shell={} fg={:?} last={:?} harness={:?} role={:?}",
                 terminal.backend.child_pid(), terminal.backend.foreground_pid(), terminal.last_observed_agent,
                 terminal.agent_harness, terminal.agent_role);
-            assert_eq!(pane.effective_activity(), Some(&expected));
+            assert_eq!(pane.effective_activity(), expected_state.as_ref());
+            if reported_state == crate::protocol::AgentState::Idle {
+                assert!(pane.agent().is_none(), "the idle hook must be cleared");
+                assert!(terminal.build_saved_agent_session().is_none(), "the plain shell must not restore as an agent");
+                assert!(h.app.fleet_history.borrow().iter().any(|record| record.pane_id == id && record.harness == "codex"), "the departed agent must remain in fleet history");
+            }
             break;
         }
         assert!(Instant::now() < deadline, "manual agent did not exit");

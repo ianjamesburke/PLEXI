@@ -5692,8 +5692,11 @@ impl PlexiApp {
     pub(super) fn tick_terminal_activity(&mut self) {
         use crate::protocol::AgentState;
         let mut transitions = Vec::new();
+        let mut departed_history = Vec::new();
         let mut observed_dirty = false;
         for window in self.windows.iter_mut() {
+            let context_name = self.router.iter().find(|c| c.context_id == window.context_id)
+                .map(|c| c.name.displayed().to_string()).unwrap_or_default();
             for (pane_id, pane) in window.panes.iter_mut() {
                 let Some(t) = pane.as_terminal_mut() else {
                     continue;
@@ -5817,15 +5820,29 @@ impl PlexiApp {
                     && t.activity.is_none()
                 {
                     let departed = t.last_observed_agent.take();
-                    if let Some(hook) = t.agent.as_mut().filter(|hook| {
-                        matches!(hook.state, AgentState::Working | AgentState::Idle)
+                    let hand_launched = t.parent_pane_id.is_none()
+                        && !t.agent_spawned
+                        && !t.spawned_by.as_deref().is_some_and(|s| s.starts_with("agent:") || s.starts_with("team:"))
+                        && !self.pane_results.get(pane_id).is_some_and(|r| r.schema.is_some())
+                        && !self.team_runs.iter().any(|run| run.members.iter().any(|(id, _)| id == pane_id));
+                    if t.agent.as_ref().is_some_and(|hook| hook.state == AgentState::Idle
+                        && Some(hook.agent.as_str()) == departed.as_deref()) && hand_launched {
+                        if let Some(record) = t.build_history_record(window.context_id, &context_name, window.path.clone()) {
+                            departed_history.push(record);
+                        }
+                        t.agent = None;
+                        t.agent_reported_at = None;
+                        t.agent_harness = None;
+                        t.agent_role = None;
+                        t.agent_session_id = None;
+                        t.set_reported_7501(None);
+                        log::info!("observed agent: pane {pane_id} returned to shell; cleared idle hand-launched agent");
+                        observed_dirty = true;
+                    } else if let Some(hook) = t.agent.as_mut().filter(|hook| {
+                        hook.state == AgentState::Working
                             && Some(hook.agent.as_str()) == departed.as_deref()
                     }) {
-                        hook.state = if hook.state == AgentState::Working {
-                            AgentState::Interrupted
-                        } else {
-                            AgentState::ExitedUnreported
-                        };
+                        hook.state = AgentState::Interrupted;
                         log::info!("observed agent: pane {pane_id} returned to shell; marking {:?}", hook.state);
                         transitions.push((*pane_id, hook.clone()));
                         observed_dirty = true;
@@ -5878,6 +5895,12 @@ impl PlexiApp {
                     observed_dirty = true;
                 }
             }
+        }
+        for record in departed_history {
+            if let Err(error) = crate::workspace::append_agent_history(&record) {
+                log::warn!("agent_history: failed to append departed run for pane {}: {error}", record.pane_id);
+            }
+            self.fleet_history.borrow_mut().push(record);
         }
         if observed_dirty {
             self.mark_workspace_dirty();

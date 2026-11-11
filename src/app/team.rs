@@ -75,6 +75,8 @@ mod tests {
         h.inject_ipc(serde_json::from_value(json!({"type":"set_agent_state","pane_id":panes[2],"state":"exited_unreported","agent":"script",
             "event":"HarnessExit","detail":"harness exited with code 0 without agent done"})).unwrap());
         h.hidden_frame();
+        let worker = h.app.windows.iter().find_map(|window| window.panes.get(&panes[2])).unwrap();
+        assert_eq!(worker.agent().unwrap().state, crate::protocol::AgentState::ExitedUnreported);
         let response: Value =
             serde_json::from_str(&std::fs::read_to_string(reply).unwrap()).unwrap();
         assert_eq!(response["status"], "PARTIAL");
