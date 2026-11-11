@@ -332,6 +332,43 @@ The release sequence stages these destination workflows; this inventory does not
 
 Keep terminal/PTY ownership, layout, context identity, routing, generic editor/media rendering primitives, the command palette engine, broker, audit, trusted confirmations and secure inputs in core. Rich note semantics, cleanup policy, dashboard choices and presentation workflows move out. Hackability comes from exposing machine operations as typed capabilities with explicit admission and service boundaries. If a core plugin needs a missing operation, add it publicly with negative tests before extracting that feature.
 
+## Host projections
+
+Release label: **0.5.0** defines the family and reserves the IDs; the first consumer, AI usage (stints 1229 and 1225), lands after 0.5.0.
+
+A host projection is a host-owned typed stream a plugin may read but never publish. Each has a reserved publisher, a snapshot plus a cursor for resuming, and read grants admitted by the one broker like any other capability. It is modelled on the pane lifecycle projection (`src/host/pane_lifecycle.rs`: publisher `plexi.host.panes`, stream `pane.lifecycle`), which today is an in-memory event timeline without a snapshot read; the shared snapshot-plus-cursor shape is new and defined by the schema stint. Data is redacted at the host before it is published, so a reader never holds anything it could not safely display.
+
+Reserved capability IDs: `usage.read` and `usage.refresh`. The schema stint must still define and validate capability IDs, and rejects a request for a reserved ID that no projection serves. The flagship projection reader is the AI usage plugin: the host owns the usage stream and adapters, and the plugin only renders it. A plugin without the grant gets a typed denial, and an independently installed copy behaves exactly like the bundled one.
+
+## Plugin taxonomy by authority
+
+Release label: **0.5.0** (rule and table); individual plugins land per the release sequence.
+
+| Kind | Authority needed | Examples |
+|---|---|---|
+| View-only renderers | Safe UI and placement only | Themes, UI gallery, Focus Writing presentation |
+| Projection readers | Read grants on host projections | AI usage view, Agents dashboard |
+| Automation plugins acting through the broker | Per-operation broker admission | Routines, Stint board, light/dark sync |
+| Harness and provider adapters | Credentials or long-lived vendor processes | Core only; never a plugin |
+
+Deciding rule: anything that bears credentials or spawns a process as the user is host-owned, or brokered per operation. Rendering and policy are plugin-owned. Third-party plugins must never read `~/.claude`, `~/.codex` or `~/.pi`, call vendor endpoints, or see an unredacted account label.
+
+## Agent hooks and state placement
+
+Release label: **0.5.0**.
+
+- Agent hook installers and the hook-event to agent-state translation table (`src/cli/agent.rs`, for example `map_hook_payload` and the Claude settings overlay) move to a bundled plugin. The `set_agent_state` protocol and host process/PTY observation stay core.
+- The pane `state` and `status` commands merge into one command that carries provenance on every value: `reported` (hook or agent claim), `observed` (host process/PTY detection) or `inferred`.
+- A harness with no hooks is shown as "observed only". It is never shown as "exited without report"; that state belongs only to supervised workers that owe a result.
+
+## Routines and the scheduler
+
+Release label: **0.5.x** for the plugin; the manifest reservation and the core-only item are **0.5.0**.
+
+- The scheduler for routines is a core primitive with its own approved activation scope. Routines become a bundled plugin on that primitive in 0.5.x. Stint 1219 already gated the scheduler on the Routines experiment.
+- Reserve `[[contributes.commands]]` and CLI namespace contribution in the schema-2 manifest now (0.5.0): host-executed typed commands, core namespaces reserved, first install wins between plugins, consent at install. A plugin never supplies a shell command line for the host to run.
+- 0.5.0 core-only checklist item: core-only mode must also stop the scheduler.
+
 ## Proof specifications
 
 Each proof runs through a bundled package and an independently installed copy using the same manifest/schema. Removing bundled provenance must not change the admitted behavior. Required checks follow [TESTING.md](../../src/testing/TESTING.md); the cases below are specifications, not reported test results.
