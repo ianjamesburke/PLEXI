@@ -1185,7 +1185,7 @@ fn plugin_install_with_pin_inner(
         let _ = std::fs::remove_dir_all(&staging);
         return 1;
     }
-    if let Some(report) = validated_report.as_ref() {
+    if let (Some(report), InstallConfirm::Interactive) = (validated_report.as_ref(), confirm) {
         announce_capabilities_ask_at_launch(report);
     }
 
@@ -1325,6 +1325,9 @@ fn plugin_install_package_inner(
         InstallConfirm::PreApproved,
         assume_yes,
     );
+    if code == 0 && confirm == InstallConfirm::Interactive {
+        announce_capabilities_ask_at_launch(&report);
+    }
     if code == 0 {
         if let Some(metadata) = source_metadata {
             let plugin_dir = crate::app::registry::plugins_dir().join(&report.id);
