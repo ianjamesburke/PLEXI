@@ -495,6 +495,85 @@ fn cached_cpython_module(path: &Path) -> Result<(WasmtimeEngine, Module), String
     Ok((engine, module))
 }
 
+/// A finished one-shot script run in the bundled CPython.
+pub(crate) struct ScriptRun {
+    pub(crate) exit_code: i32,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) compiled_in: std::time::Duration,
+}
+
+/// Why a one-shot script could not run at all. `Interpreter` means the bundle
+/// itself is unusable (missing, unreadable, or not a CPython module).
+pub(crate) enum ScriptError {
+    Interpreter(String),
+    Sandbox(String),
+}
+
+/// Run `python -S -B -c <script> <args>` in the bundled CPython WASI module.
+/// The guest sees only the read-only stdlib and the one writable `mount`
+/// directory at `guest_dir`; it has no environment, network, or other files.
+pub(crate) fn run_bundled_script(
+    script: &str,
+    args: &[&str],
+    mount: &Path,
+    guest_dir: &str,
+) -> Result<ScriptRun, ScriptError> {
+    let bundle = resolve_default_cpython_bundle()
+        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
+    let stdlib = bundle
+        .parent()
+        .ok_or_else(|| ScriptError::Interpreter("CPython bundle has no parent".to_string()))?
+        .join("Lib");
+    let compile_begin = std::time::Instant::now();
+    let (engine, module) = cached_cpython_module(&bundle).map_err(|error| {
+        ScriptError::Interpreter(format!("cannot load {}: {error}", bundle.display()))
+    })?;
+    let compiled_in = compile_begin.elapsed();
+    let sandbox = |error: wasmtime::Error| ScriptError::Sandbox(error.to_string());
+    let mut linker = Linker::<WasiP1Ctx>::new(&engine);
+    p1::add_to_linker_sync(&mut linker, |ctx| ctx).map_err(sandbox)?;
+    let stdout = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(1 << 20);
+    let stderr = wasmtime_wasi::p2::pipe::MemoryOutputPipe::new(1 << 20);
+    let mut argv = vec!["python", "-S", "-B", "-c", script];
+    argv.extend_from_slice(args);
+    let mut builder = WasiCtxBuilder::new();
+    builder
+        .stdout(stdout.clone())
+        .stderr(stderr.clone())
+        .env("PYTHONHOME", "/usr/local")
+        .args(&argv)
+        .preopened_dir(
+            &stdlib,
+            "/usr/local/lib/python3.12",
+            DirPerms::READ,
+            FilePerms::READ,
+        )
+        .map_err(sandbox)?
+        .preopened_dir(mount, guest_dir, DirPerms::all(), FilePerms::all())
+        .map_err(sandbox)?;
+    let mut store = Store::new(&engine, builder.build_p1());
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
+    let start = instance
+        .get_typed_func::<(), ()>(&mut store, "_start")
+        .map_err(|error| ScriptError::Interpreter(error.to_string()))?;
+    let exit_code = match start.call(&mut store, ()) {
+        Ok(()) => 0,
+        Err(error) => match error.downcast_ref::<wasmtime_wasi::I32Exit>() {
+            Some(exit) => exit.0,
+            None => return Err(ScriptError::Sandbox(format!("{error:#}"))),
+        },
+    };
+    Ok(ScriptRun {
+        exit_code,
+        stdout: String::from_utf8_lossy(&stdout.contents()).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr.contents()).into_owned(),
+        compiled_in,
+    })
+}
+
 #[derive(Debug, Error)]
 pub enum WasmPythonError {
     /// The plugin's own code raised; the text is the SDK runtime's structured
