@@ -1,10 +1,9 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
 use super::{ClickFlash, PlexiApp};
-use crate::protocol::AgentState;
 use crate::spatial::tiling::{PaneId, PlexiBehavior};
-use egui::{Color32, Stroke, StrokeKind, Vec2};
-use egui_tiles::{Tile, TileId};
+use egui::{Stroke, StrokeKind};
+use egui_tiles::Tile;
 use std::collections::HashMap;
 
 const FLASH_DUR: f32 = 0.4;
@@ -610,15 +609,6 @@ impl PlexiApp {
                 ctx.assert_focus_invariants();
 
                 let zoomed_pane = ctx.zoomed_pane;
-                // The tiled tree intentionally paints only placeholders while
-                // zoomed, so retain the ownership-transferred keyboard buffer
-                // for the overlay's direct TerminalView instead of handing it
-                // to a behavior that cannot consume it.
-                let mut zoomed_terminal_input = if zoomed_pane.is_some() {
-                    focused_terminal_input.take()
-                } else {
-                    None
-                };
                 let tab_info = ctx.compute_tab_info();
                 let mut pane_names: HashMap<PaneId, String> = ctx
                     .panes
@@ -816,12 +806,57 @@ impl PlexiApp {
                 });
                 log::debug!("[DRAG] tiling: done");
 
+                // Zoom changes only the viewport: the zoomed pane is presented
+                // by the same path as a tiled pane, over the whole canvas, while
+                // the tiled tree above painted placeholders. Its focus and state
+                // rings below use the same geometry as a tiled pane's.
+                let zoom_frame: Option<(PaneId, egui::Rect)> = zoomed_pane.and_then(|zoomed_tile| {
+                    let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) else {
+                        return None;
+                    };
+                    let mut pane_id = *pane_id;
+                    let zoom_rect = canvas_full_rect;
+                    let clip_rect = zoom_rect.intersect(ui.clip_rect());
+                    let mut zoom_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("zoomed_pane", pane_id))
+                            .max_rect(zoom_rect),
+                    );
+                    zoom_ui.set_clip_rect(clip_rect);
+                    behavior.present_pane(
+                        &mut zoom_ui,
+                        zoomed_tile,
+                        &mut pane_id,
+                        crate::spatial::tiling::PaneViewport {
+                            hit_rect: clip_rect,
+                            clip_rect,
+                            sole_drop_target: true,
+                        },
+                    );
+                    if ui.ctx().data(|d| d.get_temp::<PaneId>(egui::Id::new("zoom_presented_pane"))) != Some(pane_id) {
+                        log::info!("zoom: presenting pane={pane_id} through the shared pane presentation at {zoom_rect:?}");
+                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("zoom_presented_pane"), pane_id));
+                    }
+                    Some((pane_id, zoom_rect))
+                });
+                if zoom_frame.is_none() {
+                    ui.ctx().data_mut(|d| d.remove_temp::<PaneId>(egui::Id::new("zoom_presented_pane")));
+                }
+                // The frame each pane's rings are painted on: the zoom viewport
+                // for the zoomed pane, the tile rect otherwise; none for the
+                // placeholders behind a zoom.
+                let ring_rect = |pane_id: PaneId| -> Option<egui::Rect> {
+                    match zoom_frame {
+                        Some((zoomed, rect)) => (zoomed == pane_id).then_some(rect),
+                        None => ctx.tree.tiles.find_pane(&pane_id).and_then(|tile| ctx.tree.tiles.rect(tile)),
+                    }
+                };
+
                 // Paint after the tile contents and their corner masks, clipping to
                 // the viewport rather than manufacturing corners at a scroll edge.
-                if zoomed_pane.is_none() {
-                    if let Some(tile_id) = owner_pane.and_then(|id| ctx.tree.tiles.find_pane(&id)) {
-                        let focus_rect = ctx.tree.tiles.rect(tile_id);
-                        if let Some(rect) = focus_rect.filter(|r| r.width() > 0.5 && r.height() > 0.5) {
+                if let Some(owner) = owner_pane {
+                    if let Some(tile_id) = ctx.tree.tiles.find_pane(&owner) {
+                        if let Some(rect) = ring_rect(owner).filter(|r| r.width() > 0.5 && r.height() > 0.5) {
                             let stroke_color = if let Some(ref flash) = self.click_flash {
                                 if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
@@ -864,11 +899,11 @@ impl PlexiApp {
 
                 // State rings are painted after focus, selection, and corner masks so
                 // neither a selection wash nor a focus stroke obscures their color.
-                if zoomed_pane.is_none() {
+                {
                     let selected = self.host.pane_selection(ctx.window_id);
                     for (&pane_id, pane) in behavior.panes.iter() {
-                        if behavior.off_strip_panes.contains(&pane_id) { continue; }
-                        let Some(rect) = ctx.tree.tiles.find_pane(&pane_id).and_then(|tile| ctx.tree.tiles.rect(tile)) else { continue; };
+                        if zoom_frame.is_none() && behavior.off_strip_panes.contains(&pane_id) { continue; }
+                        let Some(rect) = ring_rect(pane_id) else { continue; };
                         if !rect.intersects(canvas_full_rect) { continue; }
                         let color = if pane.as_portal().is_some() {
                             behavior.portal_info.get(&pane_id).and_then(|preview| crate::ui::activity::context_status_color(&preview.status, &self.colors))
@@ -892,7 +927,7 @@ impl PlexiApp {
                     }
                 }
 
-                // Extract new_focused before the zoom overlay block so we can
+                // Extract the frame's pane outputs (tiled and zoomed) so we can
                 // call ctx.navigate_to() after behavior is dropped (navigate_to
                 // needs &mut ctx but behavior holds &mut ctx.panes).
                 let resized = behavior.resized;
@@ -904,241 +939,7 @@ impl PlexiApp {
                 let portal_zoom = behavior.portal_zoom_request.take();
                 let child_agent_dive = behavior.child_agent_dive.take();
 
-                // Draw zoom overlay if a pane is zoomed
-                let mut zoomed_tab_action: Option<(
-                    TileId,
-                    crate::spatial::tiling::TabBarAction,
-                )> = None;
-                if let Some(zoomed_tile) = zoomed_pane {
-                    if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.get(zoomed_tile) {
-                        let pane_id = *pane_id;
-                        let panel_rect = ui.max_rect();
-                        let zoomed_tab_info = behavior.tab_info.get(&zoomed_tile).cloned();
-                        let zoomed_pane_name = behavior.pane_names.get(&pane_id).cloned();
-                        let zoomed_tab_labels = behavior.tab_labels.clone();
-                        let zoomed_tab_activities: HashMap<PaneId, (AgentState, bool)> = zoomed_tab_info
-                            .as_ref()
-                            .map(|group| {
-                                group
-                                    .members
-                                    .iter()
-                                    .filter_map(|id| {
-                                        behavior
-                                            .panes
-                                            .get(id)
-                                            .and_then(|p| p.effective_activity().cloned().map(|state| (state, p.static_health_pip())))
-                                            .map(|a| (*id, a))
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        // Drop behavior to release the mutable borrow on ctx.panes
-                        drop(behavior);
-
-                        // Semi-transparent scrim over the entire central panel
-                        ui.painter()
-                            .rect_filled(panel_rect, 0.0, Color32::from_black_alpha(75));
-
-                        // Inset rect for the zoomed pane
-                        let inset = 10.0;
-                        let zoom_rect = panel_rect.shrink(inset);
-
-                        // Thicker accent border (2px)
-                        ui.painter().rect_stroke(
-                            zoom_rect,
-                            crate::ui::style::RADIUS_SMALL,
-                            Stroke::new(2.0_f32, self.colors.accent),
-                            StrokeKind::Inside,
-                        );
-
-                        let inner_rect = zoom_rect.shrink(2.0); // inside the border
-                        let mut child_ui =
-                            ui.new_child(egui::UiBuilder::new().max_rect(inner_rect));
-                        // Files dropped onto a zoomed pane must go to the
-                        // zoomed terminal, NOT a background tile. The
-                        // per-tile drop path in `tiling.rs` is gated off
-                        // while zoomed; we handle the drop here instead.
-                        let has_drop =
-                            child_ui.input(|i| !i.raw.dropped_files.is_empty());
-                        // When zoomed there is only one pane covering the entire overlay —
-                        // no ambiguity about the target. Skip rect_contains_pointer: egui's
-                        // pointer position is stale during macOS OS-level file drags (we skip
-                        // the NSApplication cursor query when zoomed), so rect_contains_pointer
-                        // would only return true if the last known position happened to fall
-                        // inside inner_rect (typically the original split-pane location).
-                        let dropped_to_zoom = has_drop;
-                        if has_drop {
-                            log::info!(
-                                "drop: zoomed overlay received drop event — pane_id={pane_id:?}"
-                            );
-                        }
-                        child_ui.set_opacity(0.88);
-                        // Render name bar outside the Frame so the terminal's background
-                        // fill inside the Frame cannot paint over it. The Frame gets its
-                        // own child_ui scoped to the area below the name bar, so there
-                        // is no cursor/spacing gap between them.
-                        let has_name = zoomed_pane_name.is_some();
-                        let has_tabs = zoomed_tab_info.is_some();
-                        let is_overtaken_plugin = ctx
-                            .panes
-                            .get(&pane_id)
-                            .and_then(|p| p.as_view())
-                            .is_some_and(|a| a.overlay_replaced.is_some());
-                        let has_top_bar = has_name || has_tabs;
-                        const NAME_BAR_HEIGHT: f32 = 20.0;
-                        if has_top_bar {
-                            let bar_rect = egui::Rect::from_min_size(
-                                inner_rect.min,
-                                egui::vec2(inner_rect.width(), NAME_BAR_HEIGHT),
-                            );
-                            ui.painter().rect_filled(
-                                bar_rect,
-                                0.0,
-                                self.colors.pane_header_bg(),
-                            );
-                            if let Some(ref group) = zoomed_tab_info {
-                                if let Some(action) = crate::spatial::tiling::paint_tab_bar(
-                                    ui.ctx(),
-                                    ui.painter(),
-                                    crate::spatial::tiling::TabBarPaintParams {
-                                        bar_rect,
-                                        group,
-                                        tab_labels: &zoomed_tab_labels,
-                                        tab_activities: &zoomed_tab_activities,
-                                        colors: &self.colors,
-                                        font_size: self.config.pane_title_font_size.unwrap_or(12.0),
-                                        overtake_hint: is_overtaken_plugin,
-                                    },
-                                ) {
-                                    zoomed_tab_action = Some((group.container_tile, action));
-                                }
-                            } else if let Some(ref name) = zoomed_pane_name {
-                                ui.painter().text(
-                                    bar_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    name,
-                                    egui::FontId::proportional(11.0),
-                                    self.colors.text_dim,
-                                );
-                            }
-                        }
-                        let frame_rect = if has_top_bar {
-                            inner_rect.with_min_y(inner_rect.min.y + NAME_BAR_HEIGHT)
-                        } else {
-                            inner_rect
-                        };
-                        // Branch on pane type BEFORE the Frame. PGAP plugin runtimes
-                        // paint via `ui.painter()` WITHOUT allocating UI space, so
-                        // wrapping them in an `egui::Frame` collapses it to ~16x16
-                        // at the top-left (see src/host/wasm_pane.rs docs). Mirror
-                        // the tiling path (tiling.rs pane_ui) for view panes instead:
-                        // full-rect background fill + child Ui + view_pane::render,
-                        // which also restores the overtake bar and nav-back chrome.
-                        let is_view_pane = ctx
-                            .panes
-                            .get(&pane_id)
-                            .is_some_and(|p| p.as_view().is_some());
-                        if is_view_pane {
-                            ui.painter()
-                                .rect_filled(frame_rect, 0.0, self.colors.bg_darkest);
-                            let mut app_ui =
-                                ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
-                            app_ui.set_opacity(0.88);
-                            if let Some(view_pane) =
-                                ctx.panes.get_mut(&pane_id).and_then(|p| p.as_view_mut())
-                            {
-                                if dropped_to_zoom {
-                                    crate::spatial::tiling::deliver_dropped_files_to_plugin(
-                                        &app_ui, pane_id, view_pane,
-                                    );
-                                }
-                                let pending_click = pending_pane_clicks.remove(&pane_id);
-                                crate::render::view_pane::render(
-                                    &mut app_ui,
-                                    view_pane,
-                                    &self.colors,
-                                    has_tabs,
-                                    pending_click,
-                                    &self.router.active().root,
-                                );
-                            }
-                        } else {
-                            let mut frame_ui = ui.new_child(egui::UiBuilder::new().max_rect(frame_rect));
-                            frame_ui.set_opacity(0.88);
-                            egui::Frame::new()
-                                .fill(self.colors.terminal_bg)
-                                .inner_margin(egui::Margin::ZERO)
-                                .show(&mut frame_ui, |ui| {
-                                    if let Some(pane) = ctx.panes.get_mut(&pane_id) {
-                                        if let Some(t) = pane.as_terminal_mut() {
-                                            if dropped_to_zoom {
-                                                crate::spatial::tiling::write_dropped_paths_to_terminal(ui, t);
-                                            }
-                                            if t.exited {
-                                                let rect = ui.max_rect();
-                                                ui.painter().rect_filled(
-                                                    rect,
-                                                    0.0,
-                                                    self.colors.terminal_bg,
-                                                );
-                                                ui.scope_builder(
-                                                    egui::UiBuilder::new().max_rect(rect),
-                                                    |ui| {
-                                                        ui.centered_and_justified(|ui| {
-                                                            ui.colored_label(
-                                                                self.colors.text_dim,
-                                                                "[process exited]",
-                                                            );
-                                                        });
-                                                    },
-                                                );
-                                            } else {
-                                                let font_size = t.font_size;
-                                                log::debug!("[DRAG] zoom overlay: TerminalView render start");
-                                                use egui_term::TerminalView;
-                                                use crate::ui::theme;
-                                                crate::ui::focus::register_default_text_surface(
-                                                    ui.ctx(),
-                                                    crate::ui::focus::SurfaceKey::Pane(pane_id),
-                                                    egui_term::terminal_widget_id(pane_id),
-                                                );
-                                                let terminal_input =
-                                                    zoomed_terminal_input.take().unwrap_or_else(
-                                                        || {
-                                                            crate::render::terminal_pane::TerminalInput {
-                                                                keyboard_events: Vec::new(),
-                                                                modifiers: ui
-                                                                    .input(|input| input.modifiers),
-                                                            }
-                                                        },
-                                                    );
-                                                let terminal = TerminalView::new(ui, &mut t.backend)
-                                                    .set_focus(owner_pane == Some(pane_id))
-                                                    .set_theme(self.theme.clone())
-                                                    .set_font(theme::terminal_font(font_size))
-                                                    .set_padding(crate::render::terminal_pane::terminal_content_padding())
-                                                    .set_size(Vec2::new(
-                                                        ui.available_width(),
-                                                        ui.available_height(),
-                                                    ))
-                                                    .with_input(
-                                                        terminal_input.keyboard_events,
-                                                        terminal_input.modifiers,
-                                                    );
-                                                ui.add(terminal);
-                                                log::debug!("[DRAG] zoom overlay: TerminalView render done");
-                                            }
-                                        }
-                                    }
-                                });
-                        }
-                    } else {
-                        drop(behavior);
-                    }
-                } else {
-                    drop(behavior);
-                }
+                drop(behavior);
 
                 // Tree::ui can still restructure the tree (a tab or pane drag);
                 // heal focus and zoom against the tree it left (stint 1230).
@@ -1256,8 +1057,7 @@ impl PlexiApp {
                     }
                 }
 
-                let effective_tab_action = tab_action.or(zoomed_tab_action);
-                if let Some((container_tile, action)) = effective_tab_action {
+                if let Some((container_tile, action)) = tab_action {
                     match action {
                         crate::spatial::tiling::TabBarAction::Switch(idx) => {
                             self.switch_to_tab(container_tile, idx);
