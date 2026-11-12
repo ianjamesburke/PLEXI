@@ -2299,6 +2299,107 @@ mod close_pane_by_id_tests {
             "focus and zoom name the same tile"
         );
     }
+
+    /// Stint 1251 fixture: window 0 is `[D | Tabs[A, B, C]]` with tab
+    /// `focused_idx` active and focused. `history` names the panes pushed onto
+    /// the focus history, oldest first. Returns `(d, [a, b, c])`.
+    fn tab_close_fixture(
+        h: &mut crate::testing::HostHarness,
+        focused_idx: usize,
+        history: impl Fn(PaneId, [PaneId; 3]) -> Vec<PaneId>,
+    ) -> (PaneId, [PaneId; 3]) {
+        let d = h.add_test_pane();
+        let tabs = [h.add_test_pane(), h.add_test_pane(), h.add_test_pane()];
+        let window = &mut h.app.windows[0];
+        let tile_of = |window: &crate::host::context::Window, pane: PaneId| {
+            window
+                .tree
+                .tiles
+                .find_pane(&pane)
+                .expect("fixture pane tile")
+        };
+        let d_tile = tile_of(&*window, d);
+        let tab_tiles: Vec<TileId> = tabs.iter().map(|pane| tile_of(&*window, *pane)).collect();
+        let tabs_tile = window.tree.tiles.insert_tab_tile(tab_tiles.clone());
+        if let Some(Tile::Container(Container::Tabs(container))) =
+            window.tree.tiles.get_mut(tabs_tile)
+        {
+            container.set_active(tab_tiles[focused_idx]);
+        }
+        let root = window
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![d_tile, tabs_tile]);
+        window.tree.root = Some(root);
+        window.focused_pane = Some(tab_tiles[focused_idx]);
+        let window_id = window.window_id;
+        for pane in history(d, tabs) {
+            let tile = tile_of(&h.app.windows[0], pane);
+            h.app.pane_focus_history.push((window_id, tile));
+        }
+        (d, tabs)
+    }
+
+    /// The tab bar's active tab after a close must hold `expected`, and focus
+    /// must be on that same pane.
+    fn assert_active_tab_is_focused(app: &PlexiApp, expected: PaneId, message: &str) {
+        assert_focus_pane(app, expected, message);
+        let window = &app.windows[0];
+        let tile = window
+            .tree
+            .tiles
+            .find_pane(&expected)
+            .expect("expected pane stays in the tree");
+        let (tabs_id, child) = window
+            .find_ancestor_tabs(tile)
+            .expect("expected pane stays inside a tab group");
+        let Some(Tile::Container(Container::Tabs(tabs))) = window.tree.tiles.get(tabs_id) else {
+            panic!("{message}: ancestor is not a Tabs container");
+        };
+        assert_eq!(
+            tabs.active,
+            Some(child),
+            "{message}: the tab bar must show the focused pane"
+        );
+    }
+
+    /// Stint 1251: closing the focused first tab focuses the next tab even
+    /// when the newest focus-history entry is a visible pane outside the group.
+    #[test]
+    fn close_focused_first_tab_focuses_next_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [a, b, _c]) = tab_close_fixture(&mut h, 0, |d, _| vec![d]);
+        h.app.close_pane_by_id(a);
+        assert_active_tab_is_focused(&h.app, b, "closing tab A must focus tab B, not pane D");
+    }
+
+    /// Stint 1251: closing the focused middle tab focuses the tab after it.
+    #[test]
+    fn close_focused_middle_tab_focuses_next_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [_a, b, c]) = tab_close_fixture(&mut h, 1, |d, _| vec![d]);
+        h.app.close_pane_by_id(b);
+        assert_active_tab_is_focused(&h.app, c, "closing tab B must focus tab C, not pane D");
+    }
+
+    /// Stint 1251: closing the focused last tab focuses the previous tab.
+    #[test]
+    fn close_focused_last_tab_focuses_previous_tab_over_history() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [_a, b, c]) = tab_close_fixture(&mut h, 2, |d, _| vec![d]);
+        h.app.close_pane_by_id(c);
+        assert_active_tab_is_focused(&h.app, b, "closing tab C must focus tab B, not pane D");
+    }
+
+    /// Stint 1251: a history entry naming another (inactive) tab of the same
+    /// group does not override the tab the tab bar activates.
+    #[test]
+    fn close_focused_tab_ignores_history_entry_for_sibling_tab() {
+        let mut h = crate::testing::HostHarness::new();
+        let (_d, [a, b, _c]) = tab_close_fixture(&mut h, 0, |_, [_, _, c]| vec![c]);
+        h.app.close_pane_by_id(a);
+        assert_active_tab_is_focused(&h.app, b, "closing tab A must focus tab B, not tab C");
+    }
 }
 
 #[cfg(test)]
