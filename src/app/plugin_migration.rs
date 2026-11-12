@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 const MIGRATION: &str = "migration-plugin-v2";
 const OPERATION_TREE: &str = "plugin migration v2";
 const OPERATION_PACK: &str = "plugin pack migration v2";
+/// `generated_by` stamped into a migrated package's regenerated scaffold metadata.
+const SCAFFOLD_GENERATED_BY: &str = "plexi plugin migration v2";
 
 /// Migration runs during profile initialization, before `platform::logging::init`
 /// installs the file logger, so lines logged then are dropped. Every trace is
@@ -568,6 +570,7 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
                     ));
                 }
                 std::fs::write(&path, rewritten)?;
+                regenerate_scaffold_metadata(&entry.path(), &name)?;
             }
             std::fs::write(&ready, b"schema=2\n")?;
             std::fs::rename(&old, &backup)?;
@@ -631,6 +634,35 @@ fn migrate_profile(root: &Path) -> Result<(), Box<MigrationFailure>> {
         backup.display(),
         source_count,
         count_entries(&new),
+    ));
+    Ok(())
+}
+
+/// A package that carried scaffold metadata gets it rewritten for schema 2
+/// and this build, so `plugin check` does not report the migration itself as
+/// drift. The staged copy is rewritten; the backup keeps the original.
+fn regenerate_scaffold_metadata(package: &Path, name: &str) -> std::io::Result<()> {
+    let metadata = package.join(crate::cli::plugin::SCAFFOLD_METADATA_FILE);
+    match std::fs::symlink_metadata(&metadata) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(found) if !found.file_type().is_file() => {
+            // Writing through a link would change a file outside the package.
+            record(
+                log::Level::Warn,
+                format!(
+                    "plugin_migration: package={name} scaffold metadata {} is not a regular file; left as is",
+                    metadata.display()
+                ),
+            );
+            return Ok(());
+        }
+        Ok(_) => {}
+    }
+    crate::cli::plugin::write_scaffold_metadata_file(package, SCAFFOLD_GENERATED_BY)?;
+    trace(format!(
+        "plugin_migration: package={name} regenerated scaffold metadata {}",
+        metadata.display()
     ));
     Ok(())
 }
