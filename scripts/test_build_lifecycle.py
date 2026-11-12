@@ -10,6 +10,8 @@ import tempfile
 import time
 import unittest
 
+from fixture_env import utf8_env
+
 ROOT = Path(__file__).resolve().parents[1]
 
 def module(name):
@@ -27,8 +29,7 @@ class Lifecycle(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
         self.repo.mkdir()
-        self.env = {**os.environ, 'LC_ALL': 'en_US.UTF-8', 'LANG': 'en_US.UTF-8',
-                    'PLEXI_BUILD_CACHE_ROOT': str(self.root / 'cache')}
+        self.env = {**utf8_env(), 'PLEXI_BUILD_CACHE_ROOT': str(self.root / 'cache')}
         self.call('git', 'init', '-q')
         self.call('git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'initial', '--allow-empty')
 

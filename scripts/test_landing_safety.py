@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fixture_env import utf8_env
+
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -34,7 +36,7 @@ class LandingSafety(unittest.TestCase):
         self.run_cmd('git', 'push', '-u', 'origin', 'alpha')
         self.bin = self.base / 'bin'
         self.bin.mkdir()
-        self.env = os.environ.copy()
+        self.env = utf8_env()
         self.env.pop('PLEXI_PANE_ID', None)
         self.env['PATH'] = str(self.bin) + os.pathsep + self.env['PATH']
         self.stub('stint', 'exit 0')

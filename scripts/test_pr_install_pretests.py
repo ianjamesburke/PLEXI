@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fixture_env import utf8_env
+
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts/pr-install-pretests.sh"
@@ -42,7 +44,7 @@ class InstallPretests(unittest.TestCase):
         self.log = self.root / "commands.log"
 
     def run_scope(self, scope="scoped", filters="cli::tests::affected", final=False, **extra):
-        env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
+        env = {**utf8_env(), "PATH": f"{self.bin}:{os.environ['PATH']}",
                "PR_PRETEST_FIXTURE_FILTERS": filters, "PR_PRETEST_FIXTURE_LOG": str(self.log),
                "PLEXI_TEST_LIST_CACHE_DIR": str(self.root / "list-cache"),
                "PLEXI_PR_REQUIRED_PTY_FILTERS": "none", "PLEXI_PR_REQUIRED_SCENES": "none", **extra}
