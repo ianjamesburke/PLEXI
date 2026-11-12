@@ -171,9 +171,7 @@ retrying. Capture rendered pixels with `host screenshot`; use `pane state`
 for semantics. Use `pane layout` for the active strip's membership, widths,
 bounds, geometry generation, and input owner without pane content. Updates
 preserve the channel; restart after rollback to run
-the restored package. To recover a pre-migration workspace with an older build,
-run `plexi-alpha host workspace-rollback --to-channel recovery` with a new
-channel name. The export is the earlier workspace; later changes stay in Alpha.
+the restored package.
 
 Use `pane status <id>` for an agent's reported state and supporting terminal
 evidence. A tool-like output line can suggest work only after the pane has an

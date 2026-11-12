@@ -393,11 +393,6 @@ pub struct PlexiApp {
     pub(crate) quick_note_image_cache: crate::editor::widget::ImageCache,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// Cleared after the one-shot notes migration off the pre-tier store has
-    /// run. Boot-time rather than picker-time so `plexi note list`, which has
-    /// no router and therefore cannot migrate, still sees migrated notes without
-    /// the GUI ever opening.
-    pub(crate) notes_migration_pending: bool,
     /// Notes picker: every visible tier's notes, grouped by tier, newest first.
     pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
     /// Notes picker: currently highlighted index into the filtered view.
@@ -1854,7 +1849,6 @@ impl PlexiApp {
                     quick_note_attachments: Vec::new(),
                     quick_note_image_cache: crate::editor::widget::ImageCache::default(),
                     quick_note_ctx: QuickNoteCtx::default(),
-                    notes_migration_pending: true,
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
                     notes_picker_last_drawn_selected: None,
@@ -2142,7 +2136,6 @@ impl PlexiApp {
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
             quick_note_ctx: QuickNoteCtx::default(),
-            notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
             notes_picker_last_drawn_selected: None,
@@ -3128,7 +3121,6 @@ impl PlexiApp {
             quick_note_attachments: Vec::new(),
             quick_note_image_cache: crate::editor::widget::ImageCache::default(),
             quick_note_ctx: QuickNoteCtx::default(),
-            notes_migration_pending: true,
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
             notes_picker_last_drawn_selected: None,
@@ -3767,18 +3759,6 @@ impl eframe::App for PlexiApp {
         // there is no background-load result to drain here anymore. Keep the
         // watcher set in sync with whatever roots are now cached.
         self.reconcile_registry_watchers();
-
-        // One-shot notes migration off the pre-tier store. Here rather than in
-        // `PlexiApp::new` because it needs the restored router to resolve the old
-        // one-way-hashed directory names, and in `logic` rather than `ui` so an
-        // occluded host still runs it (see the drain rules above).
-        if self.notes_migration_pending {
-            self.notes_migration_pending = false;
-            let report = crate::notes::migrate_notes_storage(self.router.as_slice());
-            if report.moved > 0 || report.failed > 0 || !report.left_behind.is_empty() {
-                log::info!("notes_migration: {report:?}");
-            }
-        }
 
         // Notes picker index: load the persisted snapshot once, then apply any
         // background refresh. Both are filesystem work that must not live in

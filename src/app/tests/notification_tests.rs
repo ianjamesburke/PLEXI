@@ -2265,9 +2265,8 @@ fn notification_counts_toward_context_matrix() {
 /// that names the file and the fix. Reporting never touches the file.
 #[test]
 fn retired_data_shapes_surface_as_launch_notices() {
-    let mut h = HostHarness::new();
-    h.app.notifications_enabled = true;
-    let profile = h.profile_dir().to_path_buf();
+    let profile_dir = tempfile::tempdir().unwrap();
+    let profile = profile_dir.path().to_path_buf();
     let workspace = crate::workspace::workspace_path_in(&profile);
     std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
     let layout = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
@@ -2278,6 +2277,14 @@ fn retired_data_shapes_surface_as_launch_notices() {
     let ledger = profile.join("agent-ledger.jsonl");
     std::fs::write(&ledger, "{\"ts\":\"2026-09-01T00:00:00Z\"}\n").unwrap();
 
+    let mut h = HostHarness::from_profile_dir(profile.clone());
+    assert!(
+        h.app.workspace_save_block.is_some(),
+        "a version 2 layout blocks this session's saves"
+    );
+    // Notices about the user's own data ignore the notifications switch.
+    h.app.notifications_enabled = false;
+    h.app.surface_workspace_load_failure();
     h.app.surface_retired_data_notices();
 
     let bodies: Vec<&str> = h
@@ -2286,6 +2293,7 @@ fn retired_data_shapes_surface_as_launch_notices() {
         .iter()
         .map(|n| n.body.as_str())
         .collect();
+    assert_eq!(bodies.len(), 3, "one notice per retired shape: {bodies:?}");
     for path in [&workspace, &notes, &ledger] {
         let path = path.display().to_string();
         assert!(
@@ -2293,10 +2301,14 @@ fn retired_data_shapes_surface_as_launch_notices() {
             "no launch notice names {path}: {bodies:?}"
         );
     }
+    h.add_test_pane();
+    h.app.mark_workspace_dirty();
+    assert!(!h.app.save_workspace_now(), "the version 2 file is never replaced");
     assert_eq!(std::fs::read(&workspace).unwrap(), layout);
     assert_eq!(
         std::fs::read_to_string(notes.join("inbox").join("staged.md")).unwrap(),
         "staged body"
     );
     assert!(ledger.is_file());
+    assert!(!profile.join("ai-ledger.jsonl").exists());
 }

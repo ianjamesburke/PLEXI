@@ -306,10 +306,12 @@ pub fn append(row: &LedgerRow) {
 /// missing ledger line is a failed spawn, not a silent zero.
 pub fn append_result(row: &LedgerRow) -> Result<(), String> {
     let _guard = ledger_lock();
-    // One-shot for files written before tags existed; a no-op once every
-    // object already has `client` and `kind`. Runs under the same lock as
-    // `fill_cost` so a cost patch cannot race a rewrite.
-    migrate_null_tags_locked();
+    // Checked before the file is created: a new ledger beside an old-name one
+    // would silently orphan its history.
+    if let Some(error) = retired_ledger_error() {
+        log::error!("plexi_ai ledger: {error}");
+        return Err(error);
+    }
     let path = ledger_path();
 
     if let Some(parent) = path.parent() {
@@ -339,92 +341,32 @@ pub fn append_result(row: &LedgerRow) -> Result<(), String> {
     Ok(())
 }
 
-/// Returns the ledger path, migrating from the old `agent-ledger.jsonl` name
-/// if it exists and the new file does not yet.
+/// File name of the AI ledger in the channel profile.
+const LEDGER_FILE: &str = "ai-ledger.jsonl";
+
+/// The ledger's name before October 2026. Its rename shim is deleted
+/// (stint 1312); a ledger still under this name is reported, never moved.
+const RETIRED_LEDGER_FILE: &str = "agent-ledger.jsonl";
+
 pub(crate) fn ledger_path() -> PathBuf {
+    crate::config::config_dir().join(LEDGER_FILE)
+}
+
+/// The error for a ledger still under its pre-October name with no current
+/// ledger beside it, or `None`. Reads only.
+pub fn retired_ledger_error() -> Option<String> {
     let config_dir = crate::config::config_dir();
-    let new_path = config_dir.join("ai-ledger.jsonl");
-    let old_path = config_dir.join("agent-ledger.jsonl");
-
-    // One-time migration: if the old file exists and the new one doesn't,
-    // move it so historical entries are preserved.
-    if old_path.exists() && !new_path.exists() {
-        if let Err(e) = std::fs::rename(&old_path, &new_path) {
-            log::warn!(
-                "plexi_ai ledger: failed to migrate {} → {}: {e}",
-                old_path.display(),
-                new_path.display()
-            );
-        }
-    }
-
-    new_path
-}
-
-/// Give every existing object row explicit null `client` and `kind` when those
-/// keys are absent. Malformed lines are kept verbatim. Token and cost bytes
-/// on a migrated row are not rewritten. Returns how many rows gained a null
-/// tag. Idempotent: a second call rewrites nothing.
-pub fn migrate_null_tags() -> usize {
-    let _guard = ledger_lock();
-    migrate_null_tags_locked()
-}
-
-fn migrate_null_tags_locked() -> usize {
-    let path = ledger_path();
-    let data = match std::fs::read_to_string(&path) {
-        Ok(data) => data,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
-        Err(e) => {
-            log::warn!(
-                "plexi_ai ledger: tag migration skipped, failed to read {}: {e}",
-                path.display()
-            );
-            return 0;
-        }
-    };
-
-    let mut changed = 0usize;
-    let mut out = String::new();
-    for line in data.split_inclusive('\n') {
-        let (body, newline) = line
-            .strip_suffix('\n')
-            .map(|body| (body, true))
-            .unwrap_or((line, false));
-        let updated = match null_tag_line(body) {
-            Some(updated) => {
-                changed += 1;
-                updated
-            }
-            None => body.to_string(),
-        };
-        out.push_str(&updated);
-        if newline {
-            out.push('\n');
-        }
-    }
-    if changed == 0 {
-        return 0;
-    }
-
-    let tmp = path.with_extension("jsonl.migrating");
-    if let Err(e) = std::fs::write(&tmp, &out) {
-        log::warn!(
-            "plexi_ai ledger: tag migration failed to write {}: {e}",
-            tmp.display()
-        );
-        return 0;
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        log::warn!(
-            "plexi_ai ledger: tag migration failed to replace {}: {e}",
-            path.display()
-        );
-        let _ = std::fs::remove_file(&tmp);
-        return 0;
-    }
-    log::info!("ai ledger: migrated {changed} row(s) with null client and kind tags");
-    changed
+    let old_path = config_dir.join(RETIRED_LEDGER_FILE);
+    let new_path = config_dir.join(LEDGER_FILE);
+    (old_path.exists() && !new_path.exists()).then(|| {
+        format!(
+            "AI ledger {} uses the name from before October 2026, which Plexi no longer \
+             migrates. It was left unchanged, and no usage is recorded until it is moved. \
+             Fix: Rename it to {} to keep its history, or delete it.",
+            old_path.display(),
+            new_path.display()
+        )
+    })
 }
 
 /// Fill `cost_usd` on the row whose `ts` matches, when that field is still
@@ -518,36 +460,6 @@ fn patch_null_cost_line(line: &str, ts: &str, cost_usd: f64) -> Option<String> {
     Some(updated)
 }
 
-/// `Some(rewritten)` when `line` is a JSON object missing `client` or `kind`.
-/// The original bytes stay; the missing keys are appended as JSON null.
-fn null_tag_line(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    let object = value.as_object()?;
-    let need_client = !object.contains_key("client");
-    let need_kind = !object.contains_key("kind");
-    if !need_client && !need_kind {
-        return None;
-    }
-    let end = line.trim_end();
-    if !end.ends_with('}') {
-        log::warn!("plexi_ai ledger: tag migration left a line unchanged (no closing brace)");
-        return None;
-    }
-    let mut updated = end[..end.len() - 1].to_string();
-    if need_client {
-        updated.push_str(",\"client\":null");
-    }
-    if need_kind {
-        updated.push_str(",\"kind\":null");
-    }
-    updated.push('}');
-    Some(updated)
-}
-
 /// Aggregate ledger rows. Missing tag keys count as null. Token, cost, and
 /// wall totals are null when no row in the group recorded that field.
 /// `since` is a `YYYY-MM-DD` or RFC3339 lower bound compared against `ts`.
@@ -555,7 +467,9 @@ pub fn summary(by: SummaryBy, since: Option<&str>) -> Result<LedgerSummary, Stri
     if let Some(since) = since {
         validate_since(since)?;
     }
-    migrate_null_tags();
+    if let Some(error) = retired_ledger_error() {
+        return Err(error);
+    }
     let path = ledger_path();
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
@@ -1223,39 +1137,6 @@ mod ledger_tests {
             text.starts_with(original),
             "an append must leave earlier lines byte for byte: {text}"
         );
-    }
-
-    #[test]
-    fn migrate_null_tags_preserves_usage_and_is_idempotent() {
-        let (_dir, _guard) = isolated_ledger();
-        let original = "\
-{\"ts\":\"2026-04-16T12:00:00Z\",\"backend\":\"openrouter\",\"billing\":\"metered\",\"input_tokens\":234,\"output_tokens\":512,\"cost_usd\":0.5,\"cost_cents\":50}\n\
-not json\n\
-{\"ts\":\"2026-04-17T12:00:00Z\",\"client\":\"du\",\"kind\":\"output\",\"input_tokens\":1,\"output_tokens\":2,\"cost_usd\":0.25,\"cost_cents\":25}\n";
-        std::fs::write(ledger_file(), original).unwrap();
-        assert_eq!(migrate_null_tags(), 1);
-        let text = std::fs::read_to_string(ledger_file()).unwrap();
-        let mut lines = text.lines();
-        let migrated = lines.next().unwrap();
-        assert!(
-            migrated.contains("\"input_tokens\":234") && migrated.contains("\"output_tokens\":512"),
-            "token bytes must survive migration: {migrated}"
-        );
-        assert!(
-            migrated.contains("\"cost_usd\":0.5") && migrated.contains("\"cost_cents\":50"),
-            "cost bytes must survive migration: {migrated}"
-        );
-        let value: serde_json::Value = serde_json::from_str(migrated).unwrap();
-        assert!(value["client"].is_null());
-        assert!(value["kind"].is_null());
-        assert_eq!(value["input_tokens"], 234);
-        assert_eq!(lines.next().unwrap(), "not json");
-        let already = lines.next().unwrap();
-        assert!(already.contains("\"client\":\"du\""));
-        assert!(already.contains("\"kind\":\"output\""));
-        let after = std::fs::read_to_string(ledger_file()).unwrap();
-        assert_eq!(migrate_null_tags(), 0);
-        assert_eq!(std::fs::read_to_string(ledger_file()).unwrap(), after);
     }
 
     #[test]
