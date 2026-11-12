@@ -536,18 +536,20 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(policy.PolicyError):
                 policy.check_gate(self.settings, self.record, self.pr, [], self.base, "batch")
 
-    def test_rust_host_runs_on_alpha_prs_without_secrets_and_from_nightly(self):
+    def test_rust_host_runs_on_alpha_prs_and_pushes_without_secrets_and_from_nightly(self):
         root = SCRIPT.parent.parent
         host = (root / ".github/workflows/rust-host.yml").read_text()
         trigger = host.split("\non:\n", 1)[1].split("\n\n", 1)[0]
-        self.assertEqual(trigger, "  pull_request:\n    branches: [alpha]\n  workflow_call:")
+        self.assertEqual(trigger, "  pull_request:\n    branches: [alpha]\n"
+                                  "  push:\n    branches: [alpha]\n  workflow_call:")
         self.assertIn("\npermissions:\n  contents: read\n", host)
         for banned in ("secrets.", "secrets:", "pull_request_target", "environment:", "codesign", "notary"):
             self.assertNotIn(banned, host)
-        self.assertIn("cancel-in-progress: true", host)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", host)
         self.assertIn("python3 scripts/docs_gate_scope.py", host)
         self.assertEqual(host.count("if: ${{ !cancelled() && needs.scope.outputs.build != 'false' }}"), 2)
-        self.assertIn("if: github.event_name != 'pull_request'\n    runs-on: ubuntu-22.04", host)
+        self.assertIn("if: github.event_name != 'pull_request' && github.event_name != 'push'\n"
+                      "    runs-on: ubuntu-22.04", host)
         nightly = (root / ".github/workflows/nightly.yml").read_text()
         self.assertIn("uses: ./.github/workflows/rust-host.yml", nightly)
         self.assertIn("schedule:", nightly)

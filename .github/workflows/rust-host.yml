@@ -7,19 +7,25 @@ name: Rust host
 #   (src/testing/TESTING.md). The `scope` job skips docs-only PRs with the same
 #   classifier the local gate uses (scripts/docs_gate_scope.py), failing closed.
 #   The Linux observer stays nightly-only.
+# - push to alpha (stint 1389): seeds the alpha-ref caches every PR restores
+#   (PR runs never save, see plexi-ci-env). It builds and lints but does not
+#   run the tests: per-push host verification stays retired (stint 0799).
 # - workflow_call from nightly.yml: post-landing full verification.
 # Reads repository contents only: no secrets, no signing identity.
 
 on:
   pull_request:
     branches: [alpha]
+  push:
+    branches: [alpha]
   workflow_call:
 
 # Pull requests group on refs/pull/<n>/merge, so a push cancels that PR's
-# superseded run and no other.
+# superseded run and no other. Alpha runs queue instead: cancelling would let a
+# steady merge rate stop every seeding run before its cache saves.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -79,15 +85,22 @@ jobs:
         with:
           cache-key: test
           cpython-bundle: 'true'
+          uv: 'true'
+
+      - name: Build host and tests
+        # Closed-stdout regression drives the real CLI, never a libtest child.
+        run: |
+          cargo build --release --bin plexi
+          cargo test --bin plexi --no-run
 
       - name: Test host
+        # Alpha pushes only seed the cache.
+        if: github.event_name != 'push'
         # Zero skips: the whole suite runs, including the network-fetched
         # CPython-WASI integration test, whose sha256-verified bundle the setup
         # action restores from the Actions cache (fetching it in its own step on
         # a miss, so a network failure is attributed to the fetch, not the test).
         run: |
-          # Closed-stdout regression drives the real CLI, never a libtest child.
-          cargo build --release --bin plexi
           env -u PLEXI_CHANNEL -u PLEXI_CONTEXT_ROOT -u PLEXI_CONTEXT_ID \
             -u PLEXI_CONTEXT_NAME -u PLEXI_SOCKET -u PLEXI_RUNNING -u PLEXI_PANE_ID \
             cargo test --bin plexi
@@ -123,8 +136,9 @@ jobs:
   # `AGENTS.md`, Testing.
   linux:
     name: linux
-    # Nightly-only (root AGENTS.md, Testing); pull requests get the macOS jobs.
-    if: github.event_name != 'pull_request'
+    # Nightly-only (root AGENTS.md, Testing); pull requests and alpha pushes
+    # get the macOS jobs.
+    if: github.event_name != 'pull_request' && github.event_name != 'push'
     runs-on: ubuntu-22.04
     continue-on-error: true
     timeout-minutes: 30
@@ -143,6 +157,7 @@ jobs:
         with:
           cache-key: linux-host
           cpython-bundle: 'true'
+          uv: 'true'
       - name: Build and test host
         run: |
           cargo build --release --bin plexi

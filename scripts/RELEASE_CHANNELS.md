@@ -81,8 +81,9 @@ regenerates the changelog.
 
 Alpha tags are cut nightly by `.github/workflows/nightly.yml` when `alpha` has
 commits since the last alpha tag (`scripts/nightly-alpha-tag.sh` picks the next
-`N`); beta and stable stay manual. Pushes to `alpha` run no Rust host CI, only
-pull requests do.
+`N`); beta and stable stay manual. Pushes to `alpha` run the Rust host
+workflow only to build, lint and save the caches pull requests restore; they
+run no tests.
 
 SemVer ordering: `vX.Y.Z-alpha.1 < alpha.2 < beta.1 < beta.2 < vX.Y.Z`.
 The Python SDK publishes only on stable tags; prerelease tags skip
