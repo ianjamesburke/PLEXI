@@ -1573,6 +1573,47 @@ mod tests {
         assert_eq!(std::fs::read(path).unwrap(), current);
     }
 
+    /// Stint 1312: the version 2 converter is deleted. A version 2 file is a
+    /// load error, and a save refuses to replace it with an error that names
+    /// the file and the fix. Nothing is written beside it: no rollback copy,
+    /// no previous generation, no temp file.
+    #[test]
+    fn retired_v2_workspace_fails_loudly_and_is_never_rewritten() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = workspace_path_in(profile.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":2,"active_context":0,"sidebar_visible":true,"next_pane_id":1,"contexts":[],"windows":[]}"#;
+        std::fs::write(&path, original).unwrap();
+
+        assert!(WorkspaceFile::load_from(profile.path()).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let mut current: WorkspaceFile = serde_json::from_slice(original).unwrap();
+        current.version = 3;
+        let message = current
+            .save_to(profile.path())
+            .expect_err("a save must not replace a version 2 file")
+            .to_string();
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains("version 2"), "{message}");
+        assert!(message.contains("left unchanged"), "{message}");
+        assert!(
+            message.contains("Plexi 0.4"),
+            "the fix names the converting release: {message}"
+        );
+        assert!(
+            message.contains("move"),
+            "the fix names moving it aside: {message}"
+        );
+
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let entries: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, [std::ffi::OsString::from("default.json")]);
+    }
+
     #[test]
     fn rollback_export_preserves_current_workspace_and_refuses_existing_profile() {
         let root = tempfile::tempdir().unwrap();
