@@ -1,4 +1,6 @@
+# Spatial minimap overlay in every core Plexi theme.
 size = [1280.0, 800.0]
+themes = ["plexi-night", "plexi-dusk", "plexi-dawn", "plexi-day"]
 
 [[steps]]
 open = { kind = "builtin", id = "assistant", as = "initial" }
