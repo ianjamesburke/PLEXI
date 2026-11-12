@@ -16,7 +16,13 @@ names = {
     "app_id": "plugin_id", "_app_id": "_plugin_id",
     "V3AppRuntime": "PluginRuntime", "app_path": "plugin_path",
 }
-for root, dirs, files in os.walk(target, followlinks=False):
+def unreadable(error):
+    # A directory the walk cannot list would otherwise be skipped silently,
+    # leaving its source unconverted while the migration reports success.
+    raise error
+
+
+for root, dirs, files in os.walk(target, onerror=unreadable, followlinks=False):
     dirs[:] = [d for d in dirs if d != ".git"]
     for filename in files:
         path = Path(root) / filename

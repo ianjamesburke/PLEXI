@@ -1071,9 +1071,9 @@ mod tests {
         );
     }
 
-    /// Output of the bundled route is byte-identical to the 0.4 `uv` route.
-    /// The expected text was produced by running the previous converter
-    /// (`uv run --python 3.12`, copy and rewrite in one script) on this fixture.
+    /// Golden conversion of a fixture covering every rewrite rule, the copy
+    /// rules (skipped dirs, links, modes) and the rewritten-file trace. The
+    /// expected text was checked once by hand against the previous converter.
     #[test]
     #[cfg(unix)]
     fn plugin_rename_bundled_conversion_matches_previous_converter() {
@@ -1184,6 +1184,33 @@ mod tests {
         assert!(!root.path().join(MIGRATION).exists());
         assert_eq!(
             std::fs::read_to_string(outside.path().join("evil.py")).unwrap(),
+            "app_id = 1\n"
+        );
+    }
+
+    /// A directory the converter cannot list fails the migration instead of
+    /// being skipped with its source left unconverted.
+    #[test]
+    #[cfg(unix)]
+    fn plugin_rename_unlistable_directory_fails_the_conversion() {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = tempfile::tempdir().unwrap();
+        let locked = staged.path().join("notes/pkg");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("main.py"), "app_id = 1\n").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let run = crate::host::wasm_python::run_bundled_script(
+            include_str!("plugin_source_migration.py"),
+            &["/staged"],
+            staged.path(),
+            "/staged",
+        );
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let run = run.unwrap_or_else(|_| panic!("sandbox did not start"));
+        assert_ne!(run.exit_code, 0, "{}", run.stdout);
+        assert!(run.stderr.contains("PermissionError"), "{}", run.stderr);
+        assert_eq!(
+            std::fs::read_to_string(locked.join("main.py")).unwrap(),
             "app_id = 1\n"
         );
     }
