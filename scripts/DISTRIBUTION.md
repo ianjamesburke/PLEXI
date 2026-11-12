@@ -95,10 +95,11 @@ notarized. See [the opening guide](../docs/unsigned-install.md) for the macOS
 warning and first-open steps. Developer ID and notarization remain future work.
 
 Release-owner setup: retain the existing `Plexi Dev` certificate and private
-key together in a password-protected PKCS#12 backup. Configure repository Actions
-existing repository secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
+key together in a password-protected PKCS#12 backup. Store it as the
+`release-signing` environment secrets `PLEXI_ALPHA_SIGNING_P12_BASE64` (base64 of that backup),
 `PLEXI_ALPHA_SIGNING_P12_PASSWORD`, and `PLEXI_ALPHA_SIGNING_CERT_SHA1` (the
-certificate fingerprint, not its name). Never generate a replacement identity
+certificate fingerprint, not its name); the approval rules for that environment
+are in [Release Channels](RELEASE_CHANNELS.md#signed-publish-approval). Never generate a replacement identity
 in CI. Missing credentials or a fingerprint mismatch stop publication. The
 imported key is kept in a temporary runner Keychain, selected explicitly for
 signing without replacing the default Keychain, and removed
