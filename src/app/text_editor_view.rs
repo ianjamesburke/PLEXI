@@ -5366,3 +5366,218 @@ mod data_safety_tests {
         );
     }
 }
+
+/// Stint 1236: the editor returns to where a file was left, through the pane
+/// state across a host restart and through the host position store across a
+/// close and reopen. A file changed on disk since then opens at the default.
+#[cfg(test)]
+mod position_memory_tests {
+    use super::*;
+    use crate::editor::view::ScrollAnchor;
+    use crate::editor::{Cursor, Selection};
+    use crate::spatial::tiling::PaneId;
+    use crate::testing::HostHarness;
+
+    const TOP_LINE: usize = 120;
+
+    fn long_body() -> String {
+        (0..200)
+            .map(|n| format!("line {n} of a long file\n"))
+            .collect()
+    }
+
+    fn open_editor(h: &mut HostHarness, path: &Path) -> PaneId {
+        let before: std::collections::HashSet<PaneId> =
+            h.app.windows[0].panes.keys().copied().collect();
+        h.app.open_builtin_view_pane(
+            Box::new(TextEditorView::new(path.to_path_buf())),
+            crate::app::permissions::PluginPermissions::builtin(),
+            path.parent().expect("file has a parent").to_path_buf(),
+            None,
+            Some("split_h"),
+            None,
+        );
+        let pane = *h.app.windows[0]
+            .panes
+            .keys()
+            .find(|id| !before.contains(id))
+            .expect("editor pane must have been inserted");
+        h.focus_pane(pane);
+        h.run_frames(3);
+        pane
+    }
+
+    /// Scrolls `TOP_LINE` to the top of the viewport and selects a range a
+    /// few lines below it, then returns what the editor holds after it settles.
+    fn park(h: &mut HostHarness, pane: PaneId) -> (Selection, ScrollAnchor) {
+        let editor = h.text_editor_mut(pane);
+        let top = editor.view.line_top(TOP_LINE);
+        editor.test_set_scroll_y(top);
+        editor.test_select((TOP_LINE + 5, 2), (TOP_LINE + 6, 4));
+        h.run_frames(2);
+        let editor = h.text_editor_mut(pane);
+        let parked = (editor.doc.selection(), editor.view.anchor);
+        assert_eq!(
+            parked.1.cursor.line, TOP_LINE,
+            "setup: the viewport must be parked at line {TOP_LINE}"
+        );
+        assert!(parked.0.is_range(), "setup: a range must be selected");
+        parked
+    }
+
+    fn assert_position(
+        editor: &TextEditorView,
+        selection: Selection,
+        anchor: ScrollAnchor,
+        what: &str,
+    ) {
+        assert_eq!(editor.doc.selection(), selection, "{what}: selection");
+        assert_eq!(
+            editor.view.anchor.cursor, anchor.cursor,
+            "{what}: top visible source position"
+        );
+        assert!(
+            (editor.view.anchor.offset - anchor.offset).abs() < 0.01,
+            "{what}: scroll offset {} != {}",
+            editor.view.anchor.offset,
+            anchor.offset
+        );
+    }
+
+    fn assert_default_position(editor: &TextEditorView, what: &str) {
+        assert_eq!(
+            editor.doc.selection(),
+            Selection::default(),
+            "{what}: caret"
+        );
+        assert_eq!(
+            editor.view.anchor.cursor,
+            Cursor::default(),
+            "{what}: viewport must start at the top"
+        );
+    }
+
+    #[test]
+    fn pane_restore_after_restart_keeps_caret_and_scroll() {
+        let mut h = HostHarness::new();
+        let profile = h.profile_dir().to_path_buf();
+        let path = h.workspace_root().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        let pane = open_editor(&mut h, &path);
+        let (selection, anchor) = park(&mut h, pane);
+        assert!(h.app.save_workspace_now(), "workspace must save");
+
+        // `h` stays alive, so its pane is never closed: only the saved pane
+        // state can carry the position into the restarted host.
+        let mut restored = HostHarness::from_profile_dir(&profile);
+        assert_position(
+            restored.text_editor_mut(pane),
+            selection,
+            anchor,
+            "restored pane before its first frame",
+        );
+        restored.run_frames(3);
+        assert_position(
+            restored.text_editor_mut(pane),
+            selection,
+            anchor,
+            "restored pane after rendering",
+        );
+    }
+
+    #[test]
+    fn closing_then_reopening_a_file_returns_to_the_saved_position() {
+        let mut h = HostHarness::new();
+        let _sibling = h.add_test_pane();
+        let path = h.workspace_root().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        let pane = open_editor(&mut h, &path);
+        let (selection, anchor) = park(&mut h, pane);
+
+        h.app.close_pane_by_id(pane);
+        h.run_frames(1);
+        assert!(
+            h.app.find_open_text_editor_pane_any_window(&path).is_none(),
+            "setup: the editor pane must be closed"
+        );
+
+        let reopened = open_editor(&mut h, &path);
+        assert_position(
+            h.text_editor_mut(reopened),
+            selection,
+            anchor,
+            "reopened file",
+        );
+    }
+
+    #[test]
+    fn a_file_changed_on_disk_reopens_at_the_default_position() {
+        let mut h = HostHarness::new();
+        let _sibling = h.add_test_pane();
+        let path = h.workspace_root().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        let pane = open_editor(&mut h, &path);
+        park(&mut h, pane);
+
+        h.app.close_pane_by_id(pane);
+        h.run_frames(1);
+        std::fs::write(&path, format!("edited elsewhere\n{}", long_body())).unwrap();
+
+        let reopened = open_editor(&mut h, &path);
+        assert_default_position(h.text_editor_mut(reopened), "file changed on disk");
+    }
+
+    fn isolated_long_file() -> (
+        tempfile::TempDir,
+        crate::config::TestProfileDirGuard,
+        PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let guard = crate::config::set_test_profile_dir(profile);
+        let path = dir.path().join("long.txt");
+        std::fs::write(&path, long_body()).unwrap();
+        (dir, guard, path)
+    }
+
+    #[test]
+    fn saved_pane_position_is_ignored_when_the_file_changed() {
+        let (_dir, _guard, path) = isolated_long_file();
+        let mut app = TextEditorView::new(path.clone());
+        app.test_select((50, 1), (50, 1));
+        let state = app.serialize_state().expect("editor state");
+        assert!(
+            state.get("position").is_some(),
+            "a clean editor must save its position in the pane state"
+        );
+
+        std::fs::write(&path, "rewritten\n").unwrap();
+        let mut restored = TextEditorView::new(path.clone());
+        restored.restore_state(&state);
+        assert_default_position(&restored, "pane state for a changed file");
+    }
+
+    #[test]
+    fn switching_files_in_place_returns_to_each_files_position() {
+        let (dir, _guard, first) = isolated_long_file();
+        let second = dir.path().join("second.txt");
+        std::fs::write(&second, long_body()).unwrap();
+
+        let mut app = TextEditorView::new(first.clone());
+        app.test_select((70, 3), (72, 0));
+        let selection = app.doc.selection();
+
+        app.restore_state(&serde_json::json!({ "path": second.to_string_lossy() }));
+        assert_eq!(app.path, second);
+        assert_default_position(&app, "a file never opened before");
+
+        app.restore_state(&serde_json::json!({ "path": first.to_string_lossy() }));
+        assert_eq!(app.path, first);
+        assert_eq!(
+            app.doc.selection(),
+            selection,
+            "switching back must return to the first file's selection"
+        );
+    }
+}
