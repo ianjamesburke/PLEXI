@@ -5967,36 +5967,26 @@ fn first_boot_shape_matches_new_context() {
     );
 }
 
-/// Stint 1008: Deterministic measurement of new-context workspace initialization
-/// latency across cold and warm runs for both empty directory and existing project paths.
-///
-/// Verifies:
-/// 1. Each stage (id_resolve/config, pane_spawn, router_register, first_paint) is measured.
-/// 2. Stage timings are non-vacuous (timing records exist, match active context_id and kind,
-///    and record nonzero pane spawn and total durations).
-/// 3. Invariants are maintained: context window shape, terminal pane presence, tree root,
-///    and anchor defaults detection for project paths.
-#[test]
-fn measure_new_context_initialization_latency_cold_and_warm() {
+/// Harness whose root pane is seeded in the harness workspace (never the
+/// machine's temp dir), plus an empty directory and a project directory
+/// carrying anchor workspace defaults: the inputs both new-context tests use.
+fn new_context_fixture() -> (HostHarness, tempfile::TempDir, tempfile::TempDir) {
     let mut h = HostHarness::new();
-    let initial_cwd = std::env::temp_dir();
+    let root = h.workspace_root();
     let context0 = h.app.pane_context_env_for_window(0);
     h.app
         .seed_window_root_pane(
             0,
             &context0,
-            initial_cwd,
+            root,
             crate::pane_ops::create::TerminalSpawnOptions::default(),
         )
-        .expect("PTY and shell measurement must be available for latency test");
-
-    // Prepare test directories:
-    // A. An empty directory (no .plexi directory or config).
+        .expect("PTY and shell must be available for the new-context root pane");
     let empty_dir = tempfile::tempdir().expect("create empty tempdir");
-    // B. An existing project directory with anchor workspace defaults.
     let project_dir = tempfile::tempdir().expect("create project tempdir");
-    let channel_dir = crate::config::workspace_channel_dir();
-    let plexi_dir = project_dir.path().join(&channel_dir);
+    let plexi_dir = project_dir
+        .path()
+        .join(crate::config::workspace_channel_dir());
     std::fs::create_dir_all(&plexi_dir).expect("create channel dir");
     std::fs::write(
         plexi_dir.join("workspace.toml"),
@@ -6008,130 +5998,84 @@ description = "test anchor project"
 "#,
     )
     .expect("write workspace.toml");
+    (h, empty_dir, project_dir)
+}
 
-    let initial_context_count = h.app.router.len();
-    assert_eq!(initial_context_count, 1);
+/// Stint 1008: every new-context path records a stage timing for the context
+/// it created (empty directory, existing project, standalone), with nonzero
+/// pane-spawn and total durations, and leaves the first-boot window shape.
+/// Wall-clock relations live in `perf_gate_new_context_latency`.
+#[test]
+fn new_context_initialization_records_stage_timing() {
+    let (mut h, empty_dir, project_dir) = new_context_fixture();
+    assert_eq!(h.app.router.len(), 1);
 
-    // --- Cold Phase 1: New context at an empty directory ---
-    let cold_empty_start = std::time::Instant::now();
+    let check = |h: &mut HostHarness, kind: crate::pane_ops::NewContextKind, contexts: usize| {
+        assert_eq!(h.app.router.len(), contexts);
+        let active = h.app.router.active().clone();
+        let window = &h.app.windows[h.app.active_window];
+        assert_eq!(window.context_id, active.context_id);
+        assert_eq!(window.panes.len(), 1);
+        assert!(window.tree.root.is_some());
+        assert!(window.focused_pane.is_some());
+        let timing = h
+            .app
+            .last_new_context_timing
+            .clone()
+            .expect("every new-context path records stage timing");
+        assert_eq!(timing.context_id, active.context_id);
+        assert_eq!(timing.kind, kind);
+        assert!(timing.pane_spawn > std::time::Duration::ZERO);
+        assert!(timing.total >= timing.pane_spawn);
+        h.run_frames(1);
+        active
+    };
+
     h.app.new_context_at_path(empty_dir.path().to_path_buf());
-    let cold_empty_host_elapsed = cold_empty_start.elapsed();
+    check(&mut h, crate::pane_ops::NewContextKind::AtPath, 2);
 
-    assert_eq!(h.app.router.len(), 2);
-    let active_ctx = h.app.router.active().clone();
-    let active_win = &h.app.windows[h.app.active_window];
-    assert_eq!(active_win.context_id, active_ctx.context_id);
-    assert_eq!(active_win.panes.len(), 1);
-    assert!(active_win.tree.root.is_some());
-    assert!(active_win.focused_pane.is_some());
-
-    // Non-vacuous timing assertion:
-    let timing_cold_empty = h
-        .app
-        .last_new_context_timing
-        .clone()
-        .expect("new_context_at_path must record stage timing");
-    assert_eq!(timing_cold_empty.context_id, active_ctx.context_id);
-    assert_eq!(
-        timing_cold_empty.kind,
-        crate::pane_ops::NewContextKind::AtPath
-    );
-    assert!(timing_cold_empty.total >= timing_cold_empty.pane_spawn);
-    assert!(
-        timing_cold_empty.total <= cold_empty_host_elapsed + std::time::Duration::from_millis(50)
-    );
-
-    // First paint frame:
-    let paint_start = std::time::Instant::now();
-    h.run_frames(1);
-    let cold_empty_first_paint = paint_start.elapsed();
-    assert!(cold_empty_first_paint > std::time::Duration::ZERO);
-
-    // Workspace save:
-    let save_start = std::time::Instant::now();
-    h.app.save_workspace_now();
-    let cold_empty_save = save_start.elapsed();
-
-    eprintln!(
-        "[BENCH] Cold Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?} save={:?}",
-        timing_cold_empty.total,
-        timing_cold_empty.id_resolve,
-        timing_cold_empty.pane_spawn,
-        timing_cold_empty.router_register,
-        cold_empty_first_paint,
-        cold_empty_save,
-    );
-
-    // --- Cold Phase 2: New context at an existing project directory ---
-    let cold_project_start = std::time::Instant::now();
     h.app.new_context_at_path(project_dir.path().to_path_buf());
-    let cold_project_host_elapsed = cold_project_start.elapsed();
+    let project = check(&mut h, crate::pane_ops::NewContextKind::AtPath, 3);
+    assert_eq!(project.name.displayed(), "anchor-project");
+    assert_eq!(project.description.as_deref(), Some("test anchor project"));
 
-    assert_eq!(h.app.router.len(), 3);
-    let active_project_ctx = h.app.router.active().clone();
-    assert_eq!(active_project_ctx.name.displayed(), "anchor-project");
-    assert_eq!(
-        active_project_ctx.description.as_deref(),
-        Some("test anchor project")
-    );
-    let timing_cold_project = h
-        .app
-        .last_new_context_timing
-        .clone()
-        .expect("new_context_at_path for project must record stage timing");
-    assert_eq!(
-        timing_cold_project.context_id,
-        active_project_ctx.context_id
-    );
-    assert_eq!(
-        timing_cold_project.kind,
-        crate::pane_ops::NewContextKind::AtPath
-    );
-    assert!(timing_cold_project.total >= timing_cold_project.pane_spawn);
-    assert!(
-        timing_cold_project.total
-            <= cold_project_host_elapsed + std::time::Duration::from_millis(50)
-    );
-
-    let paint_project_start = std::time::Instant::now();
-    h.run_frames(1);
-    let cold_project_first_paint = paint_project_start.elapsed();
-
-    eprintln!(
-        "[BENCH] Cold Project: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
-        timing_cold_project.total,
-        timing_cold_project.id_resolve,
-        timing_cold_project.pane_spawn,
-        timing_cold_project.router_register,
-        cold_project_first_paint,
-    );
-
-    // --- Cold Phase 3: New standalone empty context (home directory) ---
     h.app.new_context();
-    assert_eq!(h.app.router.len(), 4);
-    let active_empty_home = h.app.router.active().clone();
-    let timing_cold_home = h
-        .app
-        .last_new_context_timing
-        .clone()
-        .expect("new_context must record stage timing");
-    assert_eq!(timing_cold_home.context_id, active_empty_home.context_id);
-    assert_eq!(
-        timing_cold_home.kind,
-        crate::pane_ops::NewContextKind::Empty
-    );
-    let paint_home_start = std::time::Instant::now();
-    h.run_frames(1);
-    let cold_home_first_paint = paint_home_start.elapsed();
+    check(&mut h, crate::pane_ops::NewContextKind::Empty, 4);
+}
 
-    eprintln!(
-        "[BENCH] Cold Home Empty: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={:?}",
-        timing_cold_home.total,
-        timing_cold_home.id_resolve,
-        timing_cold_home.pane_spawn,
-        timing_cold_home.router_register,
-        cold_home_first_paint,
-    );
+/// Stint 1008: new-context latency, cold and warm, for an empty directory and
+/// an existing project, plus login-shell start-up. Recorded totals must stay
+/// within the host's own measured elapsed time; samples print as `[BENCH]`.
+#[test]
+#[ignore = "perf-gate: wall-clock stage timings; run on a quiet machine"]
+fn perf_gate_new_context_latency() {
+    let (mut h, empty_dir, project_dir) = new_context_fixture();
+    let channel_dir = crate::config::workspace_channel_dir();
+
+    for (label, dir) in [("Empty", &empty_dir), ("Project", &project_dir)] {
+        let start = std::time::Instant::now();
+        h.app.new_context_at_path(dir.path().to_path_buf());
+        let host_elapsed = start.elapsed();
+        let timing = h
+            .app
+            .last_new_context_timing
+            .clone()
+            .expect("new_context_at_path must record stage timing");
+        assert!(timing.total <= host_elapsed + std::time::Duration::from_millis(50));
+        let paint_start = std::time::Instant::now();
+        h.run_frames(1);
+        let first_paint = paint_start.elapsed();
+        let save_start = std::time::Instant::now();
+        h.app.save_workspace_now();
+        eprintln!(
+            "[BENCH] Cold {label}: total={:?} id_resolve={:?} pane_spawn={:?} router_register={:?} first_paint={first_paint:?} save={:?}",
+            timing.total,
+            timing.id_resolve,
+            timing.pane_spawn,
+            timing.router_register,
+            save_start.elapsed(),
+        );
+    }
 
     // --- Warm Phase: Repeated iterations to measure warm latency distribution ---
     #[derive(Debug, Clone, Copy)]
