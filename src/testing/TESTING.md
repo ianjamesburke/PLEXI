@@ -77,7 +77,7 @@ fi
 
 A filter that matches no test is an error, not a pass. Use `just test-for <path>` instead of composing filters by hand.
 
-When backgrounding a long gate, run it as `just run-logged <name> -- ...` and wait for its `RESULT` line or read `<name>.status`. Cite the log path in hand-offs instead of pasting output.
+When backgrounding a long gate, run it as `just run-logged <name> -- ...` and wait for its `RESULT` line or read the `.status` file beside the log it names. Cite the log path in hand-offs instead of pasting output.
 
 No filters means no host Rust test is selected; run the affected script, SDK, documentation, or other checks instead. Markdown is code when `include_str!` reaches it: use the path-specific `scripts/scoped-tests.sh --gate` decision. A broad `::` fallback requires a reviewed relevant selection, not an automatic full-suite run. State why the selected tests cover the diff.
 
