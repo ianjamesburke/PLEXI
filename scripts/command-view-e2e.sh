@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# V1-11 acceptance. Ported from #2707 scripts/agents-dashboard-e2e.sh onto the
+# V1-11 acceptance. Ported from #2707's agents-dashboard-e2e.sh onto the
 # real-lead command view (#2717). #2707's in-memory board is not installed:
 # enqueue, pause, and block are not commands, and agents-dashboard allow / resolve
 # do not grant. This script opens the pane, refuses an ungranted send, shows
 # both leads plus a queued task, screenshots the warning-color waiting line,
 # then clicks Allow once with HUMAN_APPROVE. An agent pane still cannot
 # allow or resolve.
-# Usage: scripts/agents-dashboard-e2e.sh <PR>
+# Usage: scripts/command-view-e2e.sh <PR>
 set -euo pipefail
 
 if [[ -z "${DISPLAY:-}" ]] && command -v xvfb-run >/dev/null 2>&1; then
   exec xvfb-run -a "$0" "$@"
 fi
 
-PR="${1:?usage: scripts/agents-dashboard-e2e.sh <PR>}"
+PR="${1:?usage: scripts/command-view-e2e.sh <PR>}"
 BIN="plexi-pr-${PR}"
 if ! command -v "$BIN" >/dev/null 2>&1; then
   echo "FAIL: $BIN is not on PATH. Run: just pr-install ${PR}"
